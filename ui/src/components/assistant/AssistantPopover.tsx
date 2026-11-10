@@ -39,6 +39,7 @@
  * error line under the person's words, with a `Retry` that sends them again.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
 import AssistantPanel, {
@@ -71,6 +72,13 @@ import type {
   TrustLevel,
 } from "./types";
 import { pageContextFor, pageContextPayload, readPageContextOn } from "./pageContext";
+
+/**
+ * The PREFIX every threads read lives under (`assistantQueryKeys.conversations`
+ * adds the size as its last segment), so one forget covers the header's 5 and
+ * the thread column's 30.
+ */
+const ASSISTANT_THREADS_KEY = ["assistant", "conversations"] as const;
 import type { ComposerRestore } from "./AssistantPanel";
 import type { ComposerSendOptions } from "./Composer";
 
@@ -479,6 +487,14 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * visible text.
    */
   const localSeq = useRef(0);
+  /**
+   * The first message gives a conversation its title (ADR-0050 decision 2), so
+   * the threads read behind the header title and the thread column is stale the
+   * moment a turn lands. Forgetting it here is what makes a NEW thread's own
+   * name appear in the header instead of "New thread" — the header names the
+   * thread with what the server called it, never with the page (finding 2).
+   */
+  const queryClient = useQueryClient();
 
   /**
    * The route the ask is ABOUT: the page the full page was opened from. On the
@@ -568,6 +584,9 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
               : [{ ...optimistic, local: undefined }];
             return [...rest, ...head, ...result];
           });
+          // The turn may have named the conversation: the header title and the
+          // thread column read it from this list.
+          queryClient.invalidateQueries({ queryKey: ASSISTANT_THREADS_KEY });
           return true;
         } catch (error) {
           // Issue #63: the person's words stay on screen — the honest line
@@ -593,6 +612,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       conversationId,
       createConversation,
       handBackToComposer,
+      queryClient,
       mode,
       post,
       location.pathname,
@@ -600,14 +620,17 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     ],
   );
 
-  /** ui-newconv: `New thread` — clear the panel; the next send
-   * creates the fresh conversation (no transcript, no change chip). */
+  /** Handoff §1: `New thread` — clear the panel; the next send
+   * creates the fresh conversation (no transcript, no change chip). The chat a
+   * docked draft ask was opened from goes with it: the header of the empty
+   * thread reads "New thread", the page-context button still names the page. */
   const startNew = useCallback(() => {
     setConversationId(null);
     setMessages([]);
     setSendError(null);
     setAwaitingNew(true);
     setThreadsMenuOpen(false);
+    setDockedChatTitle(null);
   }, []);
 
   /** ui-newconv: the Threads menu's switch — adopt that conversation's
@@ -768,12 +791,20 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     return () => root.removeAttribute("data-assistant-open");
   }, [open]);
 
-  /** `Retry` / `Not now` on a pending approval_request (ADR-0050 Decision 4).
+  /** `Confirm` / `Not now` on a pending approval_request (ADR-0050 Decision 4).
    * The decision post carries ONLY the request id — `{confirm: <id>}` or
    * `{dismiss: <id>}` — never `text` (the handler 400s a decision post that
    * carries text); a failed decision shows the API's own message inline.
    * Part 1 answers `400 approval_requests_not_available` until the gate
-   * lands; the honest line says so. */
+   * lands; the honest line says so.
+   *
+   * The card must then read as DECIDED. The POST's response holds the
+   * acknowledgement (and any change row) the turn appended — the
+   * approval_request row itself is updated in place server-side and is not
+   * echoed back — so the row on screen is re-stamped here (the same
+   * `pending → confirmed | dismissed` move the store made). A decision that
+   * FAILED (the 409s) leaves the card pending: the server never ran anything,
+   * and the retry really is still there to press. */
   const answerApproval = (messageId: string, confirm: boolean) => {
     void (async () => {
       setSendError(null);
@@ -792,7 +823,17 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           conversationId: id,
           body: confirm ? { confirm: messageId } : { dismiss: messageId },
         });
-        setMessages((current) => [...current, ...result]);
+        const state = confirm ? ("confirmed" as const) : ("dismissed" as const);
+        setMessages((current) => [
+          ...current.map((message) =>
+            message.id === messageId && message.payload.kind === "approval_request"
+              ? { ...message, payload: { ...message.payload, state } }
+              : message,
+          ),
+          // A re-read of the transcript answers the decided row with its own
+          // updated copy; the same row must not stand on screen twice.
+          ...result.filter((row) => row.id !== messageId),
+        ]);
       } catch (error) {
         setSendError(failureLine(error, "decision"));
       }
@@ -854,6 +895,9 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
 
   if (!open) return null;
 
+  // The conversation's own title (null until the first message gives it one);
+  // the panel's header names the thread with it, never with the page section.
+  const threadTitle = recentConversations.find((row) => row.id === conversationId)?.title ?? null;
   const contextLabel = contextLabelOf(askRoute);
   const changes: AssistantChange[] = changesQuery.data?.changes ?? [];
 
@@ -862,8 +906,9 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   const panelProps = {
     contextLabel,
     // The chat the panel was opened from (2f docked draft ask); names the
-    // header thread `“<title>”` instead of the section name (rcn-6 review).
+    // header thread `“<title>”` when the thread has no title of its own.
     chatContext: dockedChatTitle,
+    threadTitle,
     messages,
     trustLevel,
     onTrustLevelChange: (level: TrustLevel) => setTrustLevel(level),

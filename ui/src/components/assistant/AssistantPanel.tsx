@@ -95,10 +95,16 @@ export interface AssistantPanelProps {
   contextLabel: string;
   /**
    * The chat the panel was opened FROM (the 2f thread → workflow draft ask).
-   * A thread that has no title of its own reads as `from “<this>”` rather
-   * than the bare section name (rcn-6 review).
+   * A thread that has no title of its own reads as `“<this>”` rather than the
+   * generic "New thread" (rcn-6 review).
    */
   chatContext?: string | null;
+  /**
+   * The conversation's OWN title, when the caller knows it (null until the
+   * first message gives the thread one). The header names the thread with it;
+   * absent, the panel reads the title off `recentConversations` itself.
+   */
+  threadTitle?: string | null;
   /** Transcript, oldest first; `change` rows are rendered by the chip. */
   messages: AssistantMessage[];
   trustLevel: TrustLevel;
@@ -163,6 +169,14 @@ const HEADER_HEIGHT_PX = 39;
 const MENU_INSET_PX = 8;
 /** The Threads button's centre, measured from the header's right edge. */
 const THREADS_BUTTON_CENTRE_PX = 111;
+
+/** The header's wording for a thread that has no title of its own (finding 2:
+ * never the page section — that label belongs to the page-context button). */
+const NEW_THREAD_TITLE = "New thread";
+
+/** How far off the newest row still counts as "reading the newest row" — the
+ * chat transcript's own pin band (`conversation/useTranscriptScroll`). */
+const NEAR_BOTTOM_PX = 80;
 
 /** A 26px header icon button (handoff §1): wording in `title` + name. */
 function HeaderIconButton({
@@ -422,7 +436,7 @@ export function AssistantThreadColumn({
   return (
     <aside
       data-testid="assistant-page-threads"
-      className="flex w-[240px] shrink-0 flex-col gap-[6px] border-r border-line bg-surface px-[10px] py-3"
+      className="flex h-full min-h-0 w-[240px] shrink-0 flex-col gap-[6px] overflow-hidden border-r border-line bg-surface px-[10px] py-3"
     >
       <span className="flex items-center gap-[6px] px-1 pb-1">
         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink">
@@ -483,7 +497,7 @@ export function AssistantPageSideColumn({
   return (
     <aside
       data-testid="assistant-page-side"
-      className="flex w-[260px] shrink-0 flex-col gap-[8px] overflow-y-auto border-l border-line bg-paper px-[12px] py-[14px]"
+      className="flex h-full min-h-0 w-[260px] shrink-0 flex-col gap-[8px] overflow-y-auto border-l border-line bg-paper px-[12px] py-[14px]"
     >
       <span className="font-mono text-[10px] tracking-[0.06em] text-muted">LOOKING AT</span>
       <span className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2">
@@ -530,6 +544,14 @@ function changeUndoWord(change: AssistantChange): string {
  * the viewport is too narrow for are simply not passed (the caller answers the
  * media query; handoff: below ~1240px the right column hides, below ~1000px
  * the thread list hides and the thread buttons return to the header).
+ *
+ * Height (the lab walk-through's finding 1): the frame FILLS the host it is
+ * portalled into — `h-full`, with `min-h-0` on every column that holds a
+ * scroll box — so the three columns run the length of the viewport under the
+ * shell instead of stopping where their content happens to end. The host
+ * (`pages/AssistantPage.tsx`) owns the viewport height; `flex-1` + `min-h-0`
+ * is what carries it down, and `overflow-hidden` is what stops a column's own
+ * content from stretching the frame past it.
  */
 export function AssistantPageFrame({
   threadColumn,
@@ -541,9 +563,12 @@ export function AssistantPageFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div data-testid="assistant-page" className="flex min-h-full w-full bg-surface">
+    <div
+      data-testid="assistant-page"
+      className="flex h-full min-h-0 w-full flex-1 flex-row overflow-hidden bg-surface"
+    >
       {threadColumn}
-      <span className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</span>
+      <span className="flex h-full min-h-0 min-w-0 flex-1 flex-col">{children}</span>
       {sideColumn}
     </div>
   );
@@ -553,6 +578,7 @@ export function AssistantPanel({
   variant,
   contextLabel,
   chatContext = null,
+  threadTitle = null,
   messages,
   trustLevel,
   onTrustLevelChange,
@@ -678,11 +704,68 @@ export function AssistantPanel({
   const popover = variant === "popover";
   const docked = variant === "dock";
   const pageMode = variant === "page";
-  /** The header title: the thread's own title, else what the ask is about. */
-  const threadTitle =
-    recentConversations.find((row) => row.id === activeConversationId)?.title ??
+  /**
+   * The header names the THREAD (finding 2): the conversation's own title, or
+   * the chat a docked draft ask was opened FROM (rcn-6). A thread with no
+   * title of its own — a fresh one, an empty one, one the person has not
+   * spoken to — is "New thread". The page section (`today`, `run 029e1a20`) is
+   * the page-context button's words — the composer's ctx row and the full
+   * page's LOOKING AT column — and never stands in for a thread title.
+   */
+  const headerTitle =
+    threadTitle ?? recentConversations.find((row) => row.id === activeConversationId)?.title ??
     chatContext ??
-    contextLabel;
+    NEW_THREAD_TITLE;
+
+  /**
+   * The transcript's auto-scroll (prototype `componentDidUpdate`): a new row —
+   * an answer, a question card, an approval card, the `thinking…` line — lands
+   * at the bottom of the body, and a reader who was AT the bottom stays there.
+   * A reader who has scrolled up to read (> `NEAR_BOTTOM_PX` off the bottom)
+   * is never yanked: their place holds until they come back down.
+   *
+   * The signature is the transcript's tail, not its length: an optimistic
+   * bubble is REPLACED by the server's rows for the same ask (same count), and
+   * an approval card moving to CONFIRMED changes no row count at all.
+   */
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  const tailRef = useRef<string | null>(null);
+  const last = messages.length > 0 ? messages[messages.length - 1] : null;
+  const tail = `${variant}|${messages.length}|${last?.id ?? ""}|${
+    last?.payload.kind === "approval_request" ? last.payload.state : ""
+  }|${busy ? "busy" : ""}`;
+  const onBodyScroll = useCallback(() => {
+    const el = bodyRef.current;
+    if (el === null) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  }, []);
+  useEffect(() => {
+    const el = bodyRef.current;
+    const previous = tailRef.current;
+    tailRef.current = tail;
+    if (el === null || previous === tail) return;
+    // A thread switched out from under the surface: its empty journal starts
+    // the pin again, at the newest row it is about to get.
+    if (messages.length === 0) {
+      stickRef.current = true;
+      return;
+    }
+    // A transcript coming into view (an open, a reload, a size change) starts
+    // AT the newest row, the way every chat does.
+    if (previous === null) stickRef.current = true;
+    // A reader who has climbed away from the newest row keeps their place;
+    // nothing here moves the view out from under them.
+    if (!stickRef.current) return;
+    const pin = () => {
+      const box = bodyRef.current;
+      if (box !== null) box.scrollTop = box.scrollHeight;
+    };
+    // The row's own layout (a card's grid, a markdown table) settles after this
+    // commit; the rAF pass is what lands the pin BELOW it, as the browser paints.
+    pin();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(pin);
+  }, [tail, messages.length]);
 
   /**
    * Round-17 (rcn-review17-2f): the FOOTER's `Open draft` door — the wide
@@ -698,7 +781,7 @@ export function AssistantPanel({
         pageMode ? "px-[16px] py-[10px]" : "pb-[6px] pl-[10px] pr-[8px] pt-[6px]"
       } ${popover ? "bg-fill" : "bg-surface"}`}
     >
-      {popover ? (
+      {popover || docked ? (
         <span className="shrink-0 whitespace-nowrap font-mono text-[10.5px] font-semibold tracking-wider text-ink">
           ASSISTANT
         </span>
@@ -706,9 +789,9 @@ export function AssistantPanel({
       <span
         className="min-w-0 flex-1 truncate text-[13px] text-ink"
         data-testid="assistant-thread-title"
-        title={threadTitle}
+        title={headerTitle}
       >
-        {threadTitle}
+        {headerTitle}
       </span>
       {showThreadControls ? (
         <>
@@ -763,7 +846,12 @@ export function AssistantPanel({
   );
 
   const body = (
-    <div data-testid="assistant-body" className="min-h-0 flex-1 overflow-y-auto">
+    <div
+      ref={bodyRef}
+      data-testid="assistant-body"
+      onScroll={onBodyScroll}
+      className="min-h-0 flex-1 overflow-y-auto"
+    >
       <div className={pageMode ? "mx-auto w-full max-w-[720px] px-[16px] py-[8px]" : "w-full"}>
         <MessageList
           messages={messages}
@@ -792,7 +880,7 @@ export function AssistantPanel({
   const footer = (
     <>
       {changes.length > 0 && !pageMode ? (
-        <div className="px-[10px] pb-[6px]">
+        <div className="shrink-0 px-[10px] pb-[6px]">
           <ChangeChip
             changes={changes}
             onUndo={onUndoChange ?? (() => undefined)}
@@ -807,11 +895,11 @@ export function AssistantPanel({
           box is the design's 752px column with its own breathing room. */}
       <div
         data-testid="assistant-composer-frame"
-        className={
+        className={`shrink-0 ${
           pageMode
             ? "mx-auto w-full max-w-[752px] px-[16px] pb-[18px] pt-[10px]"
             : "border-t border-line px-[10px] py-[8px]"
-        }
+        }`}
       >
         <Composer
           draft={draft}
@@ -850,7 +938,10 @@ export function AssistantPanel({
       className={
         popover
           ? "flex max-h-[min(72vh,600px)] min-w-0 flex-col overflow-hidden rounded-[4px] border border-ink bg-surface shadow-raised"
-          : "flex min-h-0 w-full flex-1 flex-col bg-surface"
+          : // The wide sizes FILL the column they are handed (finding 1): the
+            // conversation's own scroll is the body, the composer stays pinned
+            // at the bottom of the column.
+            "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-surface"
       }
     >
       {header}

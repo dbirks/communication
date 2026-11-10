@@ -391,7 +391,7 @@ describe("CommandPalette", () => {
 
     // The tools it used are transparency, folded away until asked for.
     const tools = screen.getByTestId("assistant-tools");
-    expect(tools.textContent).toContain("used 2 tools");
+    expect(tools.textContent).toContain("used approval.pending, run.list");
     expect(tools.tagName).toBe("DETAILS");
     expect(tools.hasAttribute("open")).toBe(false);
     expect(tools.textContent).toContain("approval.pending");

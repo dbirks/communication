@@ -30,10 +30,17 @@ export default function AssistantPage() {
 
   return (
     <Page layout="canvas" testid="assistant-page-host">
+      {/* Walk-through finding 1: the host OWNS the viewport under the shell and
+          clips. It carries no `flex-1` on purpose — a flex item with
+          `flex-basis:0%` in an auto-height column ignores its own `h-screen`
+          and collapses to the height of its content, which is what stopped the
+          three columns at ~470px on the 1280/1440 shots. The height here is
+          definite, and the frame inside it runs the chain down
+          (`flex-1 min-h-0`) to the columns. */}
       <div
         ref={hostRef}
         data-testid="assistant-page-column"
-        className="flex h-[calc(100vh-44px)] min-h-0 flex-1 flex-col md:h-screen"
+        className="flex h-[calc(100vh-44px)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-surface md:h-screen"
       />
     </Page>
   );

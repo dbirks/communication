@@ -29,6 +29,29 @@ const PROPOSAL_TOOLS: readonly string[] = ["project.create", "repo.add"];
 /** CONTRACT §3's fixed-table reason, used when the row carries none. */
 const DEFAULT_REASON = "Creates real state.";
 
+/**
+ * The primary button NAMES the action it runs — a person deciding has to see
+ * what they are saying yes to, not a bare verb that could be anything. One
+ * table for both cards; a tool the design has no words for falls back to
+ * "Confirm" (never "Retry", which is the OTHER action's word — a retry of a
+ * step is named by `run.retry` below).
+ */
+const CONFIRM_LABELS: Record<string, string> = {
+  "run.start": "Start run",
+  "run.retry": "Retry step",
+  "run.cancel": "Cancel run",
+  "pipeline.publish": "Publish",
+  "assignment.set": "Assign",
+  "schedule.create": "Create schedule",
+  "repo.add": "Connect repository",
+  "project.create": "Create project",
+};
+
+/** The confirm button's wording for one gated tool. */
+export function approvalConfirmLabel(action: string): string {
+  return CONFIRM_LABELS[action] ?? "Confirm";
+}
+
 export interface ApprovalRequestCardProps {
   /** The transcript row's id — what confirm/dismiss name. */
   messageId: string;
@@ -198,7 +221,7 @@ function ProposalCard({
             data-testid="assistant-approval-confirm"
             onClick={() => onConfirm(messageId)}
           >
-            Create project
+            {approvalConfirmLabel(request.action)}
           </Button>
           <Button
             variant="ghost"
@@ -237,8 +260,8 @@ function GateCard({
   onConfirm: (messageId: string) => void;
   onDismiss: (messageId: string) => void;
 }) {
-  const headerText = pending ? "! NEEDS APPROVAL" : "· NOT NOW — DISMISSED";
-  const approved = !pending && request.state === "confirmed";
+  const confirmed = !pending && request.state === "confirmed";
+  const headerText = pending ? "! NEEDS APPROVAL" : confirmed ? "· CONFIRMED" : "· DISMISSED";
 
   return (
     <div
@@ -264,10 +287,10 @@ function GateCard({
           margin: "-8px -10px 8px",
         }}
       >
-        {approved ? (
+        {confirmed ? (
           <span className="inline-flex items-center gap-[4px]">
             <IconCheck size={10} stroke={2} aria-hidden className="shrink-0" />
-            APPROVED
+            {headerText}
           </span>
         ) : (
           headerText
@@ -296,7 +319,7 @@ function GateCard({
             data-testid="assistant-approval-confirm"
             onClick={() => onConfirm(messageId)}
           >
-            Retry
+            {approvalConfirmLabel(request.action)}
           </Button>
           <Button
             variant="secondary"
@@ -309,7 +332,7 @@ function GateCard({
         </div>
       ) : request.state === "confirmed" ? (
         <p className="m-0 mt-[6px] font-mono text-[10.5px] text-st-done-pale-fg">
-          approved · the action ran once as you
+          confirmed · the action ran once as you
         </p>
       ) : (
         <p className="m-0 mt-[6px] font-mono text-[10.5px] text-faint">dismissed · nothing ran</p>

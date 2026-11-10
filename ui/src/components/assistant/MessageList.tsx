@@ -9,7 +9,7 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { Button } from "../ds/Button";
-import { MarkdownBody } from "../../lib/markdown";
+import { MarkdownBody, renderInline } from "../../lib/markdown";
 import { useDraft } from "../../api/pipelines";
 import { assumedOf, judgeOf, spokenOf } from "../../api/assistant";
 import ApprovalRequestCard from "./ApprovalRequestCard";
@@ -17,7 +17,12 @@ import QuestionCard from "./QuestionCard";
 import { SetupMessage } from "./SetupChecklist";
 import { draftStepRows, openDraftIdOf } from "./draftSteps";
 import { AnswerLinks } from "./links";
-import type { AssistantAnswerPayload, AssistantMessage, AssistantQuestionPayload } from "./types";
+import type {
+  AssistantAnswerPayload,
+  AssistantMessage,
+  AssistantQuestionPayload,
+  AssistantToolCallJudge,
+} from "./types";
 
 /**
  * The assistant transcript (2a/2c/3d). Presentational: messages flow in as
@@ -498,6 +503,142 @@ function StepRowInner({
 }
 
 /**
+ * A GFM table inside an answer (`| name | meta |` + `|---|---|` + body rows).
+ *
+ * The app's markdown reader keeps a pipe row as paragraph text (its own header
+ * says so), which is honest for a plan and useless for the answer the assistant
+ * writes when it compares workflows, credentials or runs — the lab screenshots
+ * printed the raw pipes. The table is therefore read HERE, in the answer
+ * renderer, and drawn as the compact table the design draws: a mono uppercase
+ * header row faint as every other panel header, 12.5px body rows on 1px line
+ * rules, and a horizontal scroll INSIDE the bubble when the columns are wider
+ * than the column (never a bubble that stretches past the transcript).
+ *
+ * Cells keep their inline markup — `` `code` `` and **bold** — through the same
+ * reader the prose uses; nothing here is turned into HTML (ADR-0020).
+ */
+interface AnswerTableData {
+  header: string[];
+  rows: string[][];
+}
+
+/** One pipe row's cells, or null when the line is not a table row at all. */
+function tableCellsOf(line: string): string[] | null {
+  const text = line.trim();
+  if (text.length === 0 || !text.includes("|")) return null;
+  const body = text.replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  for (let i = 0; i < body.length; i += 1) {
+    // An escaped pipe is a pipe in the cell, not a column break.
+    if (body[i] === "\\" && body[i + 1] === "|") {
+      current += "|";
+      i += 1;
+      continue;
+    }
+    if (body[i] === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += body[i];
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+/** The `|---|:--:|` rule row: every cell is dashes with optional alignment. */
+function isTableSeparator(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{1,}:?$/.test(cell));
+}
+
+/** Where a table starts in one prose run, as its line index (or null). */
+function tableStartOf(lines: string[]): number | null {
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    const header = tableCellsOf(lines[i]);
+    const separator = tableCellsOf(lines[i + 1]);
+    if (header === null || separator === null) continue;
+    if (header.length !== separator.length || !isTableSeparator(separator)) continue;
+    return i;
+  }
+  return null;
+}
+
+/**
+ * Split one prose run into the pieces the answer is made of: prose stays prose,
+ * a header row + separator row + the body rows under it become one table.
+ */
+function answerPieces(text: string): Array<{ type: "prose"; text: string } | ({ type: "table" } & AnswerTableData)> {
+  const lines = text.split("\n");
+  const pieces: Array<{ type: "prose"; text: string } | ({ type: "table" } & AnswerTableData)> = [];
+  let prose: string[] = [];
+  const flush = () => {
+    const joined = prose.join("\n");
+    if (joined.trim().length > 0) pieces.push({ type: "prose", text: joined });
+    prose = [];
+  };
+  for (let i = 0; i < lines.length; ) {
+    const start = tableStartOf(lines.slice(i));
+    if (start === null) {
+      prose.push(...lines.slice(i));
+      break;
+    }
+    prose.push(...lines.slice(i, i + start));
+    flush();
+    const at = i + start;
+    const header = tableCellsOf(lines[at]) as string[];
+    let next = at + 2;
+    const rows: string[][] = [];
+    while (next < lines.length) {
+      const cells = tableCellsOf(lines[next]);
+      if (cells === null) break;
+      rows.push(header.map((_, column) => cells[column] ?? ""));
+      next += 1;
+    }
+    pieces.push({ type: "table", header, rows });
+    i = next;
+  }
+  flush();
+  return pieces;
+}
+
+function AnswerTable({ header, rows }: AnswerTableData) {
+  return (
+    <div
+      data-testid="assistant-table"
+      className="max-w-full overflow-x-auto rounded-[3px] border border-line bg-surface py-[2px]"
+    >
+      <table className="w-full max-w-none border-collapse text-left text-[12.5px] leading-[1.45] text-ink">
+        <thead>
+          <tr>
+            {header.map((cell, column) => (
+              <th
+                key={column}
+                scope="col"
+                className="border-b border-line px-[8px] py-[4px] text-left font-mono text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint"
+              >
+                {renderInline(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index} data-testid="assistant-table-row">
+              {header.map((_, column) => (
+                <td key={column} className="border-b border-line-soft px-[8px] py-[4px] align-top">
+                  {renderInline(row[column] ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
  * The answer's prose: `answer_markdown` read as markdown (review 2f: the
  * draft's `**Adapter swap → PR**` reached the person as asterisks). The
  * app's own markdown reader (`lib/markdown.tsx`) draws the paragraphs,
@@ -567,11 +708,19 @@ function AnswerProse({
           return index === firstSteps ? draftList(index) : null;
         }
         return (
-          <MarkdownBody
-            key={index}
-            text={chunk.text}
-            paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
-          />
+          <div key={index} className="space-y-[6px]">
+            {answerPieces(chunk.text).map((piece, pieceIndex) =>
+              piece.type === "table" ? (
+                <AnswerTable key={pieceIndex} header={piece.header} rows={piece.rows} />
+              ) : (
+                <MarkdownBody
+                  key={pieceIndex}
+                  text={piece.text}
+                  paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
+                />
+              ),
+            )}
+          </div>
         );
       })}
       {draftId !== null && firstSteps === -1 ? draftList("draft") : null}
@@ -617,12 +766,11 @@ function DraftStepList({
 
 /**
  * Transparency, not a replay log: what the turn looked at, collapsed by
- * default (2a "used 2 tools" + the chevron). Marks: IconCheck ok / IconX
- * failed, with the
- * server-supplied summary sentence. Handoff A5 §4 appends the judge's own
- * verdict per call when there was one — `used run.retry · judge asked` — so
- * the person can see whether a fixed table or the decision model let a call
- * through.
+ * default (handoff A4 §4: the line names the TOOLS — `used workflow.list`,
+ * `used run.nodes, palette.search +2` — never a count of them), with the
+ * judge's verdict beside it when one verdict covered the turn (CONTRACT §3).
+ * Marks inside the list: IconCheck ok / IconX failed, with the server-supplied
+ * summary sentence and each call's own judge verdict.
  */
 const JUDGE_WORD: Record<"allowed" | "asked" | "unavailable", string> = {
   allowed: "judge allowed",
@@ -630,15 +778,42 @@ const JUDGE_WORD: Record<"allowed" | "asked" | "unavailable", string> = {
   unavailable: "judge unavailable",
 };
 
+/** How many tool names the folded line spells out before it counts the rest. */
+const DISCLOSED_TOOL_NAMES = 2;
+
+/**
+ * The folded disclosure line: `used workflow.list · judge allowed`,
+ * `used run.nodes, palette.search`, `used a, b +2`. The names are the tools
+ * themselves in the order the turn called them (a tool called twice is named
+ * once — the list is what was looked at, and the expansion carries every
+ * call); the count is what the names do not spell out.
+ */
+export function toolDisclosureLine(calls: AssistantAnswerPayload["tool_calls"]): string {
+  const names: string[] = [];
+  for (const call of calls) if (!names.includes(call.name)) names.push(call.name);
+  const shown = names.slice(0, DISCLOSED_TOOL_NAMES).join(", ");
+  const rest = names.length - DISCLOSED_TOOL_NAMES;
+  const verdicts: AssistantToolCallJudge[] = [];
+  for (const call of calls) {
+    const judge = judgeOf(call);
+    if (judge !== null && !verdicts.includes(judge)) verdicts.push(judge);
+  }
+  // One verdict for the whole turn rides the line; mixed verdicts are said per
+  // row, where each call's own answer stands next to its name.
+  const tag = verdicts.length === 1 ? ` · ${JUDGE_WORD[verdicts[0]]}` : "";
+  return `used ${shown}${rest > 0 ? ` +${rest}` : ""}${tag}`;
+}
+
 function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"] }) {
   if (calls.length === 0) return null;
   return (
     <details
       data-testid="assistant-tools"
-      style={{ borderTop: "1px solid var(--color-line)", marginTop: 6 }}
+      className="mt-[6px] border-t border-line pt-[4px]"
+      style={{ borderTopWidth: 1 }}
     >
-      <summary className="inline-flex cursor-pointer items-center gap-[4px] font-mono text-[10.5px] text-faint">
-        {`used ${calls.length} tool${calls.length === 1 ? "" : "s"}`}
+      <summary className="inline-flex max-w-full cursor-pointer items-center gap-[4px] font-mono text-[10.5px] text-faint">
+        <span className="min-w-0 truncate">{toolDisclosureLine(calls)}</span>
         <IconChevronRight size={11} stroke={2} aria-hidden className="shrink-0" />
       </summary>
       <ul className="m-0 mt-[4px] list-none space-y-[2px] p-0">

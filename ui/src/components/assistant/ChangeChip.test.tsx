@@ -193,3 +193,66 @@ describe("ChangeChip", () => {
     ]);
   });
 });
+
+/**
+ * Walk-through finding 6: "undo all" is an offer, not a decoration. It stands
+ * only while the list holds at least one change that could actually be undone —
+ * a draft edit that is still standing — because a thread whose every change is
+ * a run, an approval or a created project has nothing for it to undo.
+ */
+describe("undo all appears only when something is undoable", () => {
+  const notUndoable = (overrides = {}) => ({
+    ...change(overrides),
+    kind: "run_start" as const,
+    undoable: false,
+  });
+
+  it("hides undo all when no listed change can be undone", () => {
+    render(
+      <ChangeChip
+        changes={[
+          notUndoable({ id: "run-1", summary: "Started run 4f2a" }),
+          notUndoable({ id: "ap-1", kind: "approval_decision", summary: "Approved the gate" }),
+        ]}
+        onUndo={() => {}}
+        onUndoAll={() => {}}
+        defaultOpen
+      />,
+    );
+    expect(screen.queryByTestId("assistant-change-undo-all")).toBeNull();
+    // The chip itself still reports what happened, and each row says why not.
+    expect(screen.getByTestId("assistant-change-chip-toggle").textContent).toContain("2 changes");
+    expect(screen.getAllByTestId("assistant-change-not-undoable")).toHaveLength(2);
+    // The separator that introduced the offer is gone with it.
+    expect(screen.getByTestId("assistant-change-chip-toggle").parentElement?.textContent).toBe(
+      "2 changes",
+    );
+  });
+
+  it("shows undo all when one draft edit is still undoable", () => {
+    render(
+      <ChangeChip
+        changes={[notUndoable({ id: "run-1" }), change({ id: "draft-1" })]}
+        onUndo={() => {}}
+        onUndoAll={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("assistant-change-undo-all")).toBeTruthy();
+  });
+
+  it("drops undo all once the only undoable row has been undone", () => {
+    render(
+      <ChangeChip
+        changes={[
+          change({ id: "draft-1", undone_at: "2026-10-20T11:00:00Z" }),
+          notUndoable({ id: "run-1" }),
+        ]}
+        onUndo={() => {}}
+        onUndoAll={() => {}}
+        defaultOpen
+      />,
+    );
+    expect(screen.queryByTestId("assistant-change-undo-all")).toBeNull();
+    expect(screen.getAllByTestId("assistant-change-undone")).toHaveLength(1);
+  });
+});

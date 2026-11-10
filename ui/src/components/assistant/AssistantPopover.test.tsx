@@ -149,6 +149,9 @@ interface Stub {
 function stubFetch(
   postResponses: (() => Response | Promise<Response>) | Array<() => Response | Promise<Response>>,
   statusBody: unknown = STATUS_BODY,
+  // The transcript conv-1 answers with — a test about a different gated tool
+  // (a proposal `project.create`, say) swaps its own rows in.
+  transcript: unknown[] = [WIRE_PENDING],
 ): Stub {
   const queue = Array.isArray(postResponses) ? postResponses : [postResponses];
   const stub: Stub = { posted: [], created: 0, fetchMock: vi.fn() };
@@ -170,7 +173,7 @@ function stubFetch(
     const msgs = /^\/api\/v1\/assistant\/conversations\/([^/]+)\/messages\?limit=200$/.exec(url);
     if (method === "GET" && msgs) {
       // Only conv-1 carries the pending approval; the others are empty.
-      return json({ messages: msgs[1] === CONV ? [WIRE_PENDING] : [], next_cursor: null });
+      return json({ messages: msgs[1] === CONV ? transcript : [], next_cursor: null });
     }
     const post = /^\/api\/v1\/assistant\/conversations\/([^/]+)\/messages$/.exec(url);
     if (method === "POST" && post) {
@@ -250,29 +253,131 @@ afterEach(() => {
 });
 
 describe("approval decision post body (ui-confirm)", () => {
-  it("Retry posts exactly {confirm: id} — no text", async () => {
-    const stub = stubFetch(() => json({ messages: [WIRE_CONFIRMED], next_cursor: null }));
+  it("Confirm posts exactly {confirm: id} — no text — and the card turns CONFIRMED", async () => {
+    // What the real route answers a decision: the acknowledgement (and any
+    // change) the turn appended. The approval_request row is updated IN PLACE
+    // server-side and is not echoed back, and the transcript already on
+    // screen is never clobbered by a refetch — so the decided state has to
+    // reach the card from this round-trip (finding 4).
+    const stub = stubFetch(() =>
+      json(
+        {
+          messages: [
+            {
+              id: "msg-ack",
+              kind: "assistant",
+              payload: {
+                kind: "assistant",
+                turn_id: "t-1",
+                answer_markdown: "Done — the step is running again.",
+                links: [],
+                tool_calls: [],
+              },
+              created_at: "2026-07-07T00:01:00Z",
+            },
+          ],
+          next_cursor: null,
+        },
+      ),
+    );
     await openToApproval();
     fireEvent.click(screen.getByTestId("assistant-approval-confirm"));
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     expect(JSON.parse(stub.posted[0].body)).toEqual({ confirm: MSG });
-    // The decision's ack row lands in the transcript with the outcome
-    // (check icon + text); the stale pending row stays until the next refetch.
-    const headers = screen.getAllByTestId("assistant-approval-header");
-    expect(headers.map((el) => el.textContent)).toContain("APPROVED");
-    const approved = headers.find((el) => el.textContent === "APPROVED");
-    expect(approved?.querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
+    // The card shows the CONFIRMED state with its outcome line and NO buttons,
+    // and the row stands exactly once in the history.
+    await waitFor(() =>
+      expect(screen.getByTestId("assistant-approval-header").textContent).toBe("· CONFIRMED"),
+    );
+    expect(screen.getAllByTestId("assistant-approval")).toHaveLength(1);
+    expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
+    expect(screen.queryByTestId("assistant-approval-dismiss")).toBeNull();
+    expect(screen.getByTestId("assistant-approval").textContent).toContain(
+      "confirmed · the action ran once as you",
+    );
+    // The turn's acknowledgement rode into the transcript under the card.
+    expect(screen.getByTestId("assistant-answer").textContent).toContain(
+      "Done — the step is running again.",
+    );
   });
 
-  it("Not now posts exactly {dismiss: id} — no text", async () => {
+  it("Not now posts exactly {dismiss: id} and the card reads DISMISSED", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     await openToApproval();
     fireEvent.click(screen.getByTestId("assistant-approval-dismiss"));
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     expect(JSON.parse(stub.posted[0].body)).toEqual({ dismiss: MSG });
+    await waitFor(() =>
+      expect(screen.getByTestId("assistant-approval-header").textContent).toBe("· DISMISSED"),
+    );
+    expect(screen.getByTestId("assistant-approval").textContent).toContain(
+      "dismissed · nothing ran",
+    );
   });
 
-  it("a rejected decision shows the API's message inline", async () => {
+  /**
+   * Finding 4's proposal case: confirming a create leaves the card showing
+   * CONFIRMED / "created · can't be undone from here", not the NEEDS YOUR OK
+   * banner and its buttons. The wire row is the server's, through the mapper.
+   */
+  it("a confirmed proposal card shows the CONFIRMED banner and offers nothing else", async () => {
+    stubFetch(
+      () => json({ messages: [], next_cursor: null }),
+      STATUS_READY,
+      [
+        {
+          ...WIRE_PENDING,
+          payload: {
+            ...WIRE_PENDING.payload,
+            action: "project.create",
+            summary: "Create project home-lab with the repo dbirks/home-lab",
+            reason: "Creates real state.",
+            args: {
+              name: "home-lab",
+              repo_url: "https://github.com/dbirks/home-lab.git",
+              credential: "GITHUB_TOKEN",
+              default_branch: "main",
+            },
+          },
+        },
+      ],
+    );
+    renderPopover();
+    act(() => openAssistantPopover());
+    // The thread's pending row is a project.create: the proposal card, named
+    // for what it creates (finding 5).
+    expect((await screen.findByTestId("assistant-proposal-project")).textContent).toBe(
+      "home-lab (new)",
+    );
+    expect(screen.getByTestId("assistant-approval-confirm").textContent).toBe("Create project");
+    fireEvent.click(screen.getByTestId("assistant-approval-confirm"));
+    await waitFor(() =>
+      expect(screen.getByTestId("assistant-approval-header").textContent).toBe("CONFIRMED"),
+    );
+    expect(screen.getByTestId("assistant-approval").textContent).toContain(
+      "created · can't be undone from here",
+    );
+    expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
+  });
+
+  /**
+   * Finding 4's other half: the transcript is RE-READ with the row already
+   * decided (the store moves `payload.state` in place), and the card renders
+   * that state rather than a fresh gate.
+   */
+  it("a re-read transcript renders the decided row as decided", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }), STATUS_BODY, [WIRE_CONFIRMED]);
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-approval-header");
+    expect(screen.getByTestId("assistant-approval-header").textContent).toBe("· CONFIRMED");
+    expect(screen.getByTestId("assistant-approval").textContent).toContain(
+      "confirmed · the action ran once as you",
+    );
+    expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
+  });
+
+  it("a failed decision leaves the card pending — the retry is still there", async () => {
     stubFetch(() =>
       json(
         {
@@ -285,11 +390,12 @@ describe("approval decision post body (ui-confirm)", () => {
     );
     await openToApproval();
     fireEvent.click(screen.getByTestId("assistant-approval-confirm"));
-    // Handoff §1: no `×` glyph — the line is the API's own sentence, and the
-    // failed style is carried by its border/ground, not a character.
     expect((await screen.findByTestId("assistant-error")).textContent).toBe(
       "approval request is no longer pending",
     );
+    // Nothing ran, so nothing was decided: the card keeps its buttons.
+    expect(screen.getByTestId("assistant-approval-header").textContent).toBe("! NEEDS APPROVAL");
+    expect(screen.getByTestId("assistant-approval-confirm")).toBeTruthy();
   });
 });
 
@@ -629,6 +735,14 @@ describe("the three sizes (handoff §1)", () => {
     // The sidebar's page is not covered up: the conversation lives IN the
     // route's own column, and the floating popover does not also stand.
     expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    // Walk-through finding 1: the route's host owns the viewport height and
+    // clips, so the three columns below it can fill it (`flex-1` + `min-h-0`
+    // with a 0% basis was what left them at ~470px in the 1280/1440 shots).
+    const column = screen.getByTestId("assistant-page-column");
+    expect(column.className).toContain("h-[calc(100vh-44px)]");
+    expect(column.className).toContain("md:h-screen");
+    expect(column.className).toContain("overflow-hidden");
+    expect(column.className).not.toContain("flex-1");
     vi.unstubAllGlobals();
   });
 
@@ -1263,4 +1377,38 @@ describe("the typed composer ask still posts (m5 ask path)", () => {
       context: { route: "/", page: { label: "Today" } },
     });
   });
+});
+
+/**
+ * Walk-through finding 2: the header names the THREAD. The page the ask came
+ * from (`today`, `run <id>`) belongs to the page-context button — printing it
+ * as the title invented a title the conversation never had.
+ */
+describe("the header names the thread (walk-through finding 2)", () => {
+  it("adopts the conversation's OWN title, not the page section", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => openAssistantPopover());
+    // conv-1 (the newest) is titled `approvals`; the route behind the popover
+    // is Today, and Today stands nowhere in the header — it is the page-context
+    // button's line, shown in the composer box.
+    await waitFor(() =>
+      expect(screen.getByTestId("assistant-thread-title").textContent).toBe("approvals"),
+    );
+    expect(screen.getByTestId("assistant-panel-header").textContent).not.toContain("today");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
+  });
+
+  it("a thread with no title of its own reads New thread", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-panel");
+    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    // The New thread is cleared: no conversation, no title — and the page's
+    // own label stays on the page-context button, where it belongs.
+    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
+  });
+
 });

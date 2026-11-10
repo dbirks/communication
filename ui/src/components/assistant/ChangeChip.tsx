@@ -68,6 +68,11 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
   // says so on its row even when the store kept an inverse op for it.
   const undoableRow = (change: AssistantChange): boolean =>
     change.kind === "draft_edit" && change.undoable && change.undone_at === null;
+  /** "undo all" is an offer, not a decoration: it stands only while the list
+   * holds at least ONE change that could actually be undone (finding 6 — a
+   * thread whose every change is a run or a project create had a button that
+   * could not do anything). */
+  const anyUndoable = changes.some(undoableRow);
 
   return (
     <div
@@ -95,17 +100,21 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
             )}
           </span>
         </button>
-        <span aria-hidden="true" className="text-line-strong">
-          ·
-        </span>
-        <button
-          type="button"
-          data-testid="assistant-change-undo-all"
-          onClick={onUndoAll}
-          className="cursor-pointer border-none bg-transparent p-0 font-mono text-[10.5px] text-ink"
-        >
-          undo all
-        </button>
+        {anyUndoable ? (
+          <>
+            <span aria-hidden="true" className="text-line-strong">
+              ·
+            </span>
+            <button
+              type="button"
+              data-testid="assistant-change-undo-all"
+              onClick={onUndoAll}
+              className="cursor-pointer border-none bg-transparent p-0 font-mono text-[10.5px] text-ink"
+            >
+              undo all
+            </button>
+          </>
+        ) : null}
       </div>
       {open ? (
         <ul

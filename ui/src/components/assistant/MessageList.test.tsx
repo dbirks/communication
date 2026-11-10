@@ -126,7 +126,7 @@ describe("MessageList", () => {
     expect(onGo).toHaveBeenCalledWith("/p/01J/runs");
   });
 
-  it("collapses the tool calls behind `used N tools` + chevron with the real count", () => {
+  it("collapses the tool calls behind `used <tool>, <tool>` + chevron (A4 §4)", () => {
     render(
       <MessageList
         messages={[assistantMessage()]}
@@ -138,7 +138,11 @@ describe("MessageList", () => {
     );
     const details = screen.getByTestId("assistant-tools") as HTMLDetailsElement;
     expect(details.open).toBe(false);
-    expect(details.textContent).toContain("used 2 tools");
+    // The folded line NAMES the tools; a count is not what the design shows.
+    expect(details.querySelector("summary")?.textContent).toBe(
+      "used run.nodes, palette.search",
+    );
+    expect(details.textContent).not.toContain("used 2 tools");
     expect(details.querySelector("svg")?.getAttribute("class")).toContain(
       "tabler-icon-chevron-right",
     );
@@ -1310,5 +1314,123 @@ describe("MessageList handoff parts (A3–A6)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+/**
+ * Walk-through findings 7 and 8, on the wire rows the server actually sends:
+ * the answer's GFM table renders as a table (not as raw pipes), and the folded
+ * disclosure line NAMES the tools the turn used.
+ */
+describe("the answer's markdown table (walk-through finding 7)", () => {
+  const tableAnswer = [
+    "Three workflows ship with the install:",
+    "",
+    "| Workflow | Revision | Assigned |",
+    "| --- | --- | --- |",
+    "| `feature-delivery` | r7 | no |",
+    "| **hotfix** | r2 | 2 projects |",
+  ].join("\n");
+
+  it("renders the header row, the body rows and the inline markup inside them", () => {
+    renderMessages([answerRow({ answer_markdown: tableAnswer })]);
+    const table = screen.getByTestId("assistant-table") as HTMLElement;
+    expect(table.querySelector("table")).toBeTruthy();
+    const heads = Array.from(table.querySelectorAll("th")).map((th) => th.textContent);
+    expect(heads).toEqual(["Workflow", "Revision", "Assigned"]);
+    const rows = Array.from(table.querySelectorAll("[data-testid='assistant-table-row']"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toBe("feature-deliveryr7no");
+    // The cell's inline code is a code span, not a pair of backticks.
+    expect(rows[0].querySelector("code")?.textContent).toBe("feature-delivery");
+    // …and a bold cell is a strong, not two asterisks.
+    expect(rows[1].querySelector("strong")?.textContent).toBe("hotfix");
+    // The prose around the table is still prose, and the pipes are gone.
+    const answer = screen.getByTestId("assistant-answer");
+    expect(answer.textContent).toContain("Three workflows ship with the install:");
+    expect(answer.textContent).not.toContain("| --- |");
+    expect(answer.textContent).not.toContain("| Workflow |");
+  });
+
+  it("is the compact table the design draws: 12.5px rows, line rules, mono header, its own scroll", () => {
+    renderMessages([answerRow({ answer_markdown: tableAnswer })]);
+    const table = screen.getByTestId("assistant-table");
+    // Horizontal scroll lives INSIDE the bubble, so a wide table never stretches
+    // the transcript column.
+    expect(table.className).toContain("overflow-x-auto");
+    expect(table.className).toContain("max-w-full");
+    const head = table.querySelector("th") as HTMLElement;
+    expect(head.className).toContain("font-mono");
+    expect(head.className).toContain("text-[10.5px]");
+    expect(head.className).toContain("uppercase");
+    expect(head.className).toContain("text-faint");
+    expect(head.className).toContain("border-line");
+    const cell = table.querySelector("td") as HTMLElement;
+    expect(cell.className).toContain("border-line");
+    expect((table.querySelector("table") as HTMLElement).className).toContain("text-[12.5px]");
+  });
+
+  it("leaves a line with one pipe alone — a table needs its separator row", () => {
+    renderMessages([answerRow({ answer_markdown: "Run 4f2a | waiting for you" })]);
+    expect(screen.queryByTestId("assistant-table")).toBeNull();
+    expect(screen.getByTestId("assistant-answer").textContent).toContain(
+      "Run 4f2a | waiting for you",
+    );
+  });
+});
+
+/**
+ * Handoff A4 §4 / finding 8: `used <tool>` for one call, `used <a>, <b> +N` for
+ * several, and the judge's verdict beside the names when one verdict covered
+ * the turn. Expanding still lists every call.
+ */
+describe("the tool disclosure line names the tools (walk-through finding 8)", () => {
+  const call = (name: string, extra: Record<string, unknown> = {}) => ({
+    name,
+    summary: `did ${name}`,
+    ok: true,
+    ...extra,
+  });
+
+  it("names the single tool the turn used — no count, no 'tools'", () => {
+    renderMessages([answerRow({ tool_calls: [call("system.status")] })]);
+    const summary = (screen.getByTestId("assistant-tools") as HTMLElement).querySelector(
+      "summary",
+    ) as HTMLElement;
+    expect(summary.textContent).toBe("used system.status");
+    expect(summary.textContent).not.toContain("1 tool");
+  });
+
+  it("names the judge's verdict on a turn the decision model let through", () => {
+    renderMessages([answerRow({ tool_calls: [call("system.status", { judge: "allowed" })] })]);
+    const summary = (screen.getByTestId("assistant-tools") as HTMLElement).querySelector(
+      "summary",
+    ) as HTMLElement;
+    expect(summary.textContent).toBe("used system.status · judge allowed");
+  });
+
+  it("lists two tools and counts the rest, with every call still on its own row", () => {
+    renderMessages([
+      answerRow({
+        tool_calls: [
+          call("workflow.list"),
+          call("credential.list"),
+          call("project.list"),
+          call("run.list"),
+        ],
+      }),
+    ]);
+    const details = screen.getByTestId("assistant-tools") as HTMLElement;
+    expect(details.querySelector("summary")?.textContent).toBe("used workflow.list, credential.list +2");
+    // Expanding still lists each call — the folded line is a summary, not a
+    // replacement for the rows.
+    expect(within(details).getAllByTestId("assistant-tool-row")).toHaveLength(4);
+  });
+
+  it("names a tool called twice once, and keeps both calls", () => {
+    renderMessages([answerRow({ tool_calls: [call("run.list"), call("run.list")] })]);
+    const details = screen.getByTestId("assistant-tools") as HTMLElement;
+    expect(details.querySelector("summary")?.textContent).toBe("used run.list");
+    expect(within(details).getAllByTestId("assistant-tool-row")).toHaveLength(2);
   });
 });

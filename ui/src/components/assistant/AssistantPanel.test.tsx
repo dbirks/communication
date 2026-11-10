@@ -10,6 +10,9 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement, ReactNode } from "react";
 import AssistantPanel, {
+  AssistantPageFrame,
+  AssistantPageSideColumn,
+  AssistantThreadColumn,
   type AssistantPanelProps,
   type RecentConversation,
 } from "./AssistantPanel";
@@ -407,13 +410,18 @@ describe("AssistantPanel (page and dock)", () => {
     );
     const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
     expect(panel.dataset.variant).toBe("dock");
-    // No centred column: the dock's own width is the conversation's.
+    // No centred column: the dock's own width is the conversation's. And it
+    // FILLS the column it is handed (finding 1) — its own scroll is the body,
+    // the composer sits at the bottom of the 450px sheet.
     expect(panel.className).toContain("w-full");
+    expect(panel.className).toContain("h-full");
+    expect(panel.className).toContain("min-h-0");
     const header = screen.getByTestId("assistant-panel-header");
-    // Handoff §1: the word `ASSISTANT` is the popover's title line; the side
-    // panel and the full page name the THREAD (the mock's `notPopover`).
-    expect(header.textContent).not.toContain("ASSISTANT");
-    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("threads");
+    // Finding 2: the side panel carries the popover's `ASSISTANT` word AND the
+    // thread's title. An untitled thread is "New thread" — the page section
+    // (`threads`, `today`) belongs to the page-context button, not the header.
+    expect(header.textContent).toContain("ASSISTANT");
+    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
     const dock = screen.getByTestId("assistant-dock") as HTMLButtonElement;
     expect(dock.title).toBe("Back to popover");
     expect(dock.getAttribute("aria-label")).toBe("Back to popover");
@@ -904,5 +912,168 @@ describe("Retry under a failed ask (issue #63)", () => {
     renderPanel({ onSend, busy: true, messages: [failedAsk("again")] });
     fireEvent.click(screen.getByTestId("assistant-send-retry"));
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Handoff §1 / the lab walk-through finding 1: the full page's three columns
+ * FILL the host the route hands the engine — the thread list scrolls inside
+ * its own 240px rail, the conversation scrolls with the composer pinned at the
+ * bottom of the centre column, and the context rail scrolls inside its 260px.
+ * `h-full` + `min-h-0` is the chain; a `min-h-full` frame is what stopped all
+ * three at the height of their content (~470px) on the 1280/1440 shots.
+ */
+describe("the full page's height chain (walk-through finding 1)", () => {
+  it("the frame fills its host, the centre column scrolls, the composer stays pinned", () => {
+    const { container } = render(
+      withQuery(
+        <AssistantPageFrame
+          threadColumn={
+            <AssistantThreadColumn
+              conversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+              activeId="c1"
+              onSwitch={() => {}}
+              onNewConversation={() => {}}
+            />
+          }
+          sideColumn={
+            <AssistantPageSideColumn
+              pageContextOn
+              pageLabel="Today"
+              pageRoute="/"
+              changes={[]}
+              trustLevel="ask_risky"
+            />
+          }
+        >
+          <AssistantPanel variant="page" {...panelProps} messages={[userMessage("hi")]} />
+        </AssistantPageFrame>,
+      ),
+    );
+    const frame = container.querySelector('[data-testid="assistant-page"]') as HTMLElement;
+    // The frame takes the host's full height and clips: no page-level scroll.
+    expect(frame.className).toContain("h-full");
+    expect(frame.className).toContain("min-h-0");
+    expect(frame.className).toContain("flex-1");
+    expect(frame.className).toContain("overflow-hidden");
+
+    // The left and right rails keep a 1px line to the centre and own scroll.
+    const threads = screen.getByTestId("assistant-page-threads");
+    expect(threads.className).toContain("border-r");
+    expect(threads.className).toContain("border-line");
+    expect(threads.className).toContain("h-full");
+    const side = screen.getByTestId("assistant-page-side");
+    expect(side.className).toContain("border-l");
+    expect(side.className).toContain("border-line");
+    expect(side.className).toContain("h-full");
+    expect(side.className).toContain("overflow-y-auto");
+
+    // The conversation panel fills its column; the body is the scroll box and
+    // the composer frame is pinned below it (never inside the scroll).
+    const panel = screen.getByTestId("assistant-panel");
+    expect(panel.className).toContain("h-full");
+    expect(panel.className).toContain("flex-1");
+    const body = screen.getByTestId("assistant-body");
+    expect(body.className).toContain("flex-1");
+    expect(body.className).toContain("min-h-0");
+    expect(body.className).toContain("overflow-y-auto");
+    const composer = screen.getByTestId("assistant-composer-frame");
+    expect(composer.className).toContain("shrink-0");
+    expect(body.contains(composer)).toBe(false);
+    // The rail's own thread list — not the whole rail — is what scrolls.
+    const list = threads.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(list).toBeTruthy();
+    expect(list.className).toContain("min-h-0");
+  });
+});
+
+/**
+ * Handoff §1 / the prototype's `componentDidUpdate`: the body follows the
+ * transcript while the reader is AT the newest row, and holds their place when
+ * they have climbed away to read (> ~80px off the bottom, the chat transcript's
+ * own pin band).
+ */
+describe("the transcript's auto-scroll (walk-through finding 3)", () => {
+  /** A body with a real scroll geometry (jsdom measures nothing at all). */
+  function scrollableBody(scrollTop = 0): { body: HTMLElement; model: { scrollTop: number } } {
+    const body = screen.getByTestId("assistant-body") as HTMLElement;
+    const model = { scrollTop };
+    Object.defineProperty(body, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(body, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(body, "scrollTop", {
+      configurable: true,
+      get: () => model.scrollTop,
+      set: (value: number) => {
+        model.scrollTop = Math.min(Math.max(0, value), body.scrollHeight - body.clientHeight);
+      },
+    });
+    return { body, model };
+  }
+
+  it("appending a row scrolls the body to its bottom", () => {
+    const first = [userMessage("one")];
+    const { rerender } = renderPanel({ messages: first });
+    // The reader sits 600px above the newest row's bottom edge — 200px away.
+    const { model } = scrollableBody(400);
+    const next = [...first, userMessage("two")];
+    rerender(<AssistantPanel variant="popover" {...panelProps} messages={next} />);
+    // 1000 - 400: the newest row sits at the visible bottom.
+    expect(model.scrollTop).toBe(600);
+  });
+
+  it("the thinking row alone still pulls the pinned reader to the bottom", () => {
+    const messages = [userMessage("one")];
+    const { rerender } = renderPanel({ messages });
+    const { model } = scrollableBody(0);
+    rerender(<AssistantPanel variant="popover" {...panelProps} messages={messages} busy />);
+    expect(model.scrollTop).toBe(600);
+  });
+
+  it("a reader who climbed away from the newest row is not yanked", () => {
+    const first = [userMessage("one")];
+    const { rerender } = renderPanel({ messages: first });
+    const { body, model } = scrollableBody(0);
+    // Reading history: 200px up from the bottom of a 1000/400 scroll box.
+    model.scrollTop = 400;
+    fireEvent.scroll(body);
+    rerender(<AssistantPanel variant="popover" {...panelProps} messages={[...first, userMessage("two")]} />);
+    expect(model.scrollTop).toBe(400);
+  });
+
+  it("a re-render with nothing new leaves the reader's place alone", () => {
+    const messages = [userMessage("one")];
+    const { rerender } = renderPanel({ messages });
+    const { body, model } = scrollableBody(0);
+    model.scrollTop = 300;
+    fireEvent.scroll(body);
+    rerender(<AssistantPanel variant="popover" {...panelProps} messages={messages} />);
+    expect(model.scrollTop).toBe(300);
+  });
+
+  it("an approval card deciding in place pulls a reader who is at the bottom", () => {
+    const pending: AssistantMessage = {
+      id: "m-ap",
+      kind: "approval_request",
+      payload: {
+        kind: "approval_request",
+        action: "run.retry",
+        summary: "Retry node `test` on run 9c1e",
+        state: "pending",
+      },
+      created_at: "2026-10-20T10:00:00Z",
+    };
+    const { rerender } = renderPanel({ messages: [pending] });
+    const { model } = scrollableBody(520);
+    const decided: AssistantMessage = {
+      ...pending,
+      payload: {
+        kind: "approval_request",
+        action: "run.retry",
+        summary: "Retry node `test` on run 9c1e",
+        state: "confirmed",
+      },
+    };
+    rerender(<AssistantPanel variant="popover" {...panelProps} messages={[decided]} />);
+    expect(model.scrollTop).toBe(600);
   });
 });
