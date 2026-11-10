@@ -1,41 +1,53 @@
 /**
- * Assistant v2 container (ADR-0050; "Six Directions" 2a/2c/3d/4d, phase 7).
+ * Assistant v2 container (ADR-0050; handoff §1 "three sizes, one conversation").
  *
- * Owns what the presentational AssistantPanel does not: the ⌘K open state
- * and the popover/expanded variants, the persisted conversation (the
- * caller's newest, or a new one — state lives HERE, mounted at the Shell, so
- * a page change never loses the transcript), the transcript and change-log
- * reads, and every mutation round-trip (send, answer, confirm/dismiss, undo).
+ * Owns what the presentational AssistantPanel does not: the ⌘J open state and
+ * the three frame sizes — `popover` (400px, bottom-right), `dock` (the 450px
+ * side panel the page narrows beside) and `page` (the real `/assistant` route:
+ * thread list left, conversation centre, context right) — the persisted
+ * conversation (the caller's newest, or a new one; state lives HERE, mounted at
+ * the Shell, so a page change never loses the transcript), the transcript,
+ * threads and change-log reads, and every mutation round-trip (send, answer,
+ * confirm/dismiss, undo).
  *
- * The ask surface opens three ways (redesign finding 08, which supersedes
- * ADR-0050's ⌘K toggle): the floating `Ask` button and the ⌘J chord — both
- * through `askControl.ts`'s explicit `openAsk()` — and the command palette's Ask
- * row (`openAssistantPopover` below, which also carries the question it was
- * typed with). ⌘K is no longer listened for here at all: it belongs to the jump
- * palette (`components/CommandPalette.tsx`), and `Ask` has its own chord.
+ * The ask surface opens three ways (redesign finding 08): the floating `Ask`
+ * button and the ⌘J chord — both through `askControl.ts`'s explicit `openAsk()`
+ * — and the command palette's Ask row (`openAssistantPopover` below, which also
+ * carries the question it was typed with). ⌘K belongs to the jump palette.
+ *
+ * The `page` size is the route, not an overlay: opening the full page
+ * navigates to `/assistant` and remembers the route the ask came FROM (that
+ * page is what the full page's "Looking at" column names, and where Exit full
+ * page returns to — as the POPOVER, never the side panel). The route page
+ * (`pages/AssistantPage.tsx`) hands this container a host element through the
+ * module-scope registration below, and the conversation is PORTALLED into it,
+ * so switching sizes never re-mounts the transcript, the draft or a turn in
+ * flight.
  *
  * Failures are honest lines, not modals: a 503 `assistant_not_configured`
  * says so in one sentence, and nothing the server did not answer is shown.
  * Because a failed turn stores nothing (ADR-0034), the line also says the
- * question was not sent, and the person's words come back into the composer
- * — the popover, the expanded view and the palette's carried-over question
- * all behave the same way (assistant-lost-ask).
+ * question was not sent, and the person's words come back into the composer —
+ * all three sizes and the palette's carried-over question behave the same way
+ * (assistant-lost-ask).
  *
- * Issue #63 changes where an ask lives while its turn is in flight: every
- * send (composer, suggestion chip, question option, palette carry-over)
- * lands in the transcript IMMEDIATELY as the person's own user bubble — the
- * empty-state suggestions disappear on the click, `thinking…` follows the
- * bubble, and the server's rows replace the local one when the turn
- * settles. A failed turn keeps the bubble and answers it in place: the
- * honest error line under the person's words, with a `Retry` that sends
- * them again (the row is retired by the next round-trip — it was never
- * stored, ADR-0034).
+ * Issue #63 changes where an ask lives while its turn is in flight: every send
+ * (composer, checklist starter, question option, palette carry-over) lands in
+ * the transcript IMMEDIATELY as the person's own user bubble — `thinking…`
+ * follows the bubble, and the server's rows replace the local one when the turn
+ * settles. A failed turn keeps the bubble and answers it in place: the honest
+ * error line under the person's words, with a `Retry` that sends them again.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
-import AssistantPanel from "./AssistantPanel";
+import AssistantPanel, {
+  AssistantPageFrame,
+  AssistantPageSideColumn,
+  AssistantThreadColumn,
+} from "./AssistantPanel";
 import { openAsk, useAskOpen, type AskOpenContext } from "./askControl";
-import { sectionOf } from "../Shell";
+import { sectionOf, useMediaQuery } from "../Shell";
 import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
 import { assistantTransientErrorLine, problemOf } from "../../api/client";
@@ -58,33 +70,51 @@ import type {
   AssistantMessageContext,
   TrustLevel,
 } from "./types";
+import { pageContextFor, pageContextPayload, readPageContextOn } from "./pageContext";
 import type { ComposerRestore } from "./AssistantPanel";
 import type { ComposerSendOptions } from "./Composer";
 
 /** The palette's Ask row opens the popover (and carries its question). */
 export const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
 
-/** The docked panel's width (design 2f): the 450px right-hand column. */
+/** The side panel's width (handoff §1): the 450px right-hand column. */
 const DOCK_WIDTH_PX = 450;
 
 /**
+ * The full page's breakpoints (handoff §1): below ~1240px the context column
+ * hides; below ~1000px the thread list hides too and the thread buttons return
+ * to the header. `matchMedia` is the same question the CSS asks (Shell's
+ * `useMediaQuery`), so the columns that MOUNT follow the viewport rather than
+ * a stylesheet hiding them after the fact.
+ */
+const PAGE_THREADS_QUERY = "(min-width: 1000px)";
+const PAGE_CONTEXT_QUERY = "(min-width: 1240px)";
+
+/** The `/assistant` route's path — the full page IS this route. */
+export const ASSISTANT_PAGE_ROUTE = "/assistant";
+
+/**
+ * The threads read's two sizes: the header's title lookup needs the newest
+ * conversation; the Threads menu and the full page's list show 30.
+ */
+const THREADS_LIMIT = 5;
+const THREADS_MENU_LIMIT = 30;
+
+/**
  * rcn-2f round 7: while the dock stands, the SHELL's content column reserves
- * the dock's width instead of letting the 450px sheet cover it — at 1280 the
- * old fixed-right sheet sat ON TOP of the chat ("Return control" cut off, the
- * composer's picker truncated, user bubbles clipped). Design 2f docks the
- * panel BESIDE the chat: the column narrows, nothing is covered.
+ * the dock's width instead of letting the 450px sheet cover it. Design §1 docks
+ * the panel BESIDE the chat: the column narrows, nothing is covered.
  *
- * The reservation is a CSS variable's worth of width on the app shell's
- * `main` (the one element every page renders under), applied only while
- * `html[data-assistant-dock="on"]` is set and only at the desktop width where
- * the dock is a column — below 1024 the sheet is full-screen and reserves
- * nothing. `main` is width-capped and centred (`mx-auto max-w-5xl`), so a bare
- * `margin-right` has no room to push at 1280 (probed live: the column still
- * painted under the sheet); the reservation therefore also takes the cap off
- * and narrows the column to the space that remains beside the dock. On the
- * thread page the two fixed rails (the 320px thread list and the 280px
- * context panel) step aside while the dock is open, so the transcript — the
- * thing the draft is read from — keeps a real column instead of a sliver.
+ * The reservation is applied only while `html[data-assistant-dock="on"]` is set
+ * and only at the desktop width where the dock is a column — below 1024 the
+ * sheet is full-screen and reserves nothing. On the thread page the two fixed
+ * rails step aside while the dock is open, so the transcript keeps a real
+ * column instead of a sliver.
+ *
+ * The second rule is handoff §1's other half: the full page owns the content
+ * column too, and the floating `Ask` button is hidden while the surface is
+ * open — the page has its own thread list and composer, so a floating button
+ * over it would be a second, contradictory door.
  */
 const DOCK_RESERVATION_CSS = `@media (min-width: 1024px) {
   html[data-assistant-dock=on] main {
@@ -96,6 +126,9 @@ const DOCK_RESERVATION_CSS = `@media (min-width: 1024px) {
   html[data-assistant-dock=on] [data-testid="thread-side-panel-aside"] {
     display: none;
   }
+}
+html[data-assistant-open=on] [data-testid="ask-fab"] {
+  display: none;
 }
 `;
 
@@ -117,39 +150,40 @@ export function openAssistantPopover(text?: string): void {
 
 /**
  * The structured form of an `ASSISTANT_OPEN_EVENT` detail (a bare string is
- * still the simple ask). `expanded` opens the full AssistantPanel instead of
- * the bottom-right popover; `entity` rides along as the ask's structured
- * context so ids travel as data, not as visible prose.
+ * still the simple ask). `expanded` opens the FULL PAGE (the `/assistant`
+ * route); `docked` opens the side panel beside the page it was asked from.
+ * `entity` rides along as the ask's structured context so ids travel as data,
+ * not as visible prose.
  */
 export interface AssistantOpenRequest {
   text: string;
   /**
-   * Open the full AssistantPanel instead of the bottom-right popover. A
-   * ⌘K ask that wants the whole content area leaves `docked` unset; the
-   * thread → workflow ask sets it, because design 2f is done in a panel
-   * BESIDE the chat (rcn-2f review item 1) and a full-page takeover hides the
-   * very transcript the draft is read from.
+   * Open the conversation at its largest size — the full page. A ⌘K ask that
+   * wants the whole content area leaves `docked` unset; the thread → workflow
+   * ask sets it, because design 2f is done in a panel BESIDE the chat (rcn-2f
+   * review item 1) and a full-page takeover hides the very transcript the draft
+   * is read from.
    */
   expanded?: boolean;
   docked?: boolean;
   entity?: NonNullable<AssistantMessageContext["entity"]>;
   /**
    * The chat's title, when the ask is drafted FROM a specific chat (the 2f
-   * thread → workflow path). It is what the panel's header chip names — the
-   * person reads `from “<title>”`, not the bare section name `threads`
-   * (rcn-6 review). Never the id, which rides `entity`.
+   * thread → workflow path). It is what the panel's header names — the person
+   * reads `“<title>”`, not the bare section name `threads` (rcn-6 review).
+   * Never the id, which rides `entity`.
    */
   entityTitle?: string;
 }
 
 /**
- * Thread → workflow (design 2f): `Make a workflow…` opens the assistant
- * PANEL (the full-size AssistantPanel, never the floating popover) DOCKED
- * RIGHT of the chat it drafts from, with that chat as context. The ask is one
- * human sentence — `Turn the chat “title” into a workflow` — and the
- * conversation id travels as the message's structured context entity, never
- * in the visible text (the assistant reads the transcript through its
- * caller-checked `chat.transcript` tool; the id alone authorizes nothing).
+ * Thread → workflow (design 2f): `Make a workflow…` opens the assistant as the
+ * side panel DOCKED RIGHT of the chat it drafts from, with that chat as
+ * context. The ask is one human sentence — `Turn the chat “title” into a
+ * workflow` — and the conversation id travels as the message's structured
+ * context entity, never in the visible text (the assistant reads the transcript
+ * through its caller-checked `chat.transcript` tool; the id alone authorizes
+ * nothing).
  */
 export function openAssistantWorkflowDraft(chat: { id: string; title?: string | null }): void {
   const title = chat.title?.trim();
@@ -160,7 +194,7 @@ export function openAssistantWorkflowDraft(chat: { id: string; title?: string | 
     expanded: true,
     docked: true,
     entity: { kind: "conversation", id: chat.id },
-    // The header chip names the chat it was opened from, not `threads`.
+    // The header names the chat it was opened from, not `threads`.
     entityTitle: title ?? undefined,
   };
   window.dispatchEvent(
@@ -170,75 +204,45 @@ export function openAssistantWorkflowDraft(chat: { id: string; title?: string | 
   );
 }
 
-/** The "FOR THIS PAGE" suggestions, keyed by the page section. Every one is
- * something the assistant really can do today (a read or a navigation). */
-const SUGGESTIONS: Record<string, string[]> = {
-  // `sectionOf('/')` says "today" (the nav label) — the table used to key the
-  // same page "home", so the Today page never found its suggestions and fell
-  // back to the generic list (handoff A3 §2).
-  today: [
-    "What needs me right now?",
-    "Which of my runs are running or failed?",
-    "Show the pending approvals.",
-  ],
-  inbox: [
-    "Summarize my inbox.",
-    "Which items need an approval from me?",
-    "What failed most recently?",
-  ],
-  board: ["Which runs are stuck on me?", "Show the failed runs.", "What is running right now?"],
-  threads: [
-    "What is open in my threads?",
-    "Which runs are running or failed?",
-    "Show the pending approvals.",
-  ],
-  projects: [
-    "Which projects have failed runs?",
-    "Where do I have pending approvals?",
-    "What is running right now?",
-  ],
-  runs: [
-    "Why is this run stuck?",
-    "Which steps failed on this run?",
-    "What does the run's next step wait on?",
-  ],
-  pipelines: [
-    "What revisions does this pipeline have?",
-    "Which runs use this pipeline?",
-    "What needs me in this project?",
-  ],
-  workflows: [
-    "What revisions does this workflow have?",
-    "Which runs use this workflow?",
-    "What needs me right now?",
-  ],
-  artifacts: [
-    "What artifacts does this project have?",
-    "Which runs produced them?",
-    "What needs me right now?",
-  ],
-  conversations: [
-    "What is open in this project's threads?",
-    "Which runs are running or failed?",
-    "What needs me right now?",
-  ],
-  settings: [
-    "What needs me right now?",
-    "Which of my runs are running or failed?",
-    "Show the pending approvals.",
-  ],
-  ops: [
-    "What is running on the workers right now?",
-    "Which runs are failed or waiting?",
-    "What needs me right now?",
-  ],
-};
+/* ------------------------------------------------------------------ full-page
+ * host handoff. The route page registers its content element here; the engine
+ * (mounted once at the Shell) portals the page-mode conversation into it. A
+ * module-scope registry, not a prop: the two halves of the frame mount in
+ * different places of the tree (the Shell's chrome vs. the route chunk), and a
+ * ref callback reports the element the moment the route commits — including
+ * when the route chunk arrives late behind `Suspense`.
+ */
+let pageHost: HTMLElement | null = null;
+const pageHostListeners = new Set<() => void>();
 
-const GENERIC_SUGGESTIONS = [
-  "What needs me right now?",
-  "Which of my runs are running or failed?",
-  "Show the pending approvals.",
-];
+/** `pages/AssistantPage.tsx` calls this with its host element (null on unmount). */
+export function setAssistantPageHost(host: HTMLElement | null): void {
+  if (pageHost === host) return;
+  pageHost = host;
+  for (const notify of pageHostListeners) notify();
+}
+
+function subscribePageHost(notify: () => void): () => void {
+  pageHostListeners.add(notify);
+  return () => {
+    pageHostListeners.delete(notify);
+  };
+}
+
+/** The full-page host element, or `null` while the `/assistant` route is away. */
+function useAssistantPageHost(): HTMLElement | null {
+  return useSyncExternalStore(
+    subscribePageHost,
+    () => pageHost,
+    () => null,
+  );
+}
+
+/** The route's own page context (the label + route the full page names). */
+function pageLabelRouteOf(pathname: string): { label: string; route: string } {
+  const page = pageContextFor(pathname);
+  return { label: page.label, route: page.route };
+}
 
 /** The composer chip label: the page section, or the entity when the page is
  * about one (`run <short id>`, `draft <short id>` — the shots' wording). */
@@ -288,10 +292,10 @@ function failureLine(error: unknown, failed: "question" | "decision" = "question
  * ui-convfix: the popover session's conversation choice, kept in
  * sessionStorage. The state is plain component state, so a remount (or a
  * page reload) would reset it and the adopt-newest effect below would
- * re-adopt the caller's newest conversation — over a `New conversation`
- * the user already started (the follow-up would land in the wrong
- * history). The choice — including a pending New — therefore survives a
- * remount until `New conversation` is pressed again.
+ * re-adopt the caller's newest conversation — over a `New thread` the user
+ * already started (the follow-up would land in the wrong history). The choice
+ * — including a pending New — therefore survives a remount until
+ * `New thread` is pressed again.
  */
 const SESSION_KEY = "communication.assistant.popover";
 
@@ -319,7 +323,7 @@ function writeChoice(choice: SessionChoice): void {
   try {
     window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(choice));
   } catch {
-    // storage unavailable (private mode): the choice stays in memory only.
+    // storage unavailable (private mode): the choice lives in memory only.
   }
 }
 
@@ -354,20 +358,28 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   const [choice] = useState(readChoice);
   const [open, setOpen] = useState(false);
   /**
-   * Which size the surface stands in: the 400px popover, the 2c expanded
-   * view over the content area, or the 2f panel docked right of the chat.
-   * Only one at a time; `shrink` and `expand` move it back to the popover and
-   * the expanded view.
+   * Which of the three sizes (handoff §1) the surface stands in. Only one at a
+   * time; `page` is the `/assistant` route itself — see `onAssistantRoute`
+   * below, which keeps this state and the URL in step in both directions.
    */
-  const [mode, setMode] = useState<"popover" | "expanded" | "docked">("popover");
+  const [mode, setMode] = useState<"popover" | "dock" | "page">("popover");
   /**
    * What the surface was opened ABOUT, in words: the chat the 2f draft ask was
    * drafted from, or the thing a page that mounts the surface itself has on
-   * screen (the tour player names the current stop's piece). The header chip
-   * reads `from “<this>”`; every other open carries nothing and the chip falls
+   * screen (the tour player names the current stop's piece). The header names
+   * the thread with it; every other open carries nothing and the header falls
    * back to the page section.
    */
   const [dockedChatTitle, setDockedChatTitle] = useState<string | null>(null);
+  /** The Threads menu (handoff §1: a sibling box, one open at a time). */
+  const [threadsMenuOpen, setThreadsMenuOpen] = useState(false);
+  /**
+   * The route the full page was opened FROM — what its "Looking at" column
+   * names and where Exit full page returns. `/assistant` visited directly has
+   * no such route, and the column then says what the composer's page context
+   * says about `/assistant` itself.
+   */
+  const [pageReturnRoute, setPageReturnRoute] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(
     choice?.conversationId ?? null,
   );
@@ -386,7 +398,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     setComposerRestore({ token: restoreSeq.current, text });
   }, []);
   /**
-   * ui-newconv: the user pressed New conversation — the newest conversation
+   * ui-newconv: the user pressed New thread — the newest conversation
    * must NOT be re-adopted; the next send creates a fresh one and clears
    * the flag. The change chip resets automatically: it reads the
    * conversation's changes, and a fresh conversation has none.
@@ -399,7 +411,35 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     writeChoice({ conversationId, awaitingNew });
   }, [conversationId, awaitingNew]);
 
-  const conversations = useAssistantConversations(5, open);
+  /** The full page is the route: the URL says it, whatever set the state. */
+  const onAssistantRoute = location.pathname === ASSISTANT_PAGE_ROUTE;
+  const pageHost = useAssistantPageHost();
+  const showThreadColumn = useMediaQuery(PAGE_THREADS_QUERY);
+  const showContextColumn = useMediaQuery(PAGE_CONTEXT_QUERY);
+
+  // The route and the size agree in both directions: arriving at /assistant
+  // (a link, a reload, the Back button) opens the full page; leaving it — by
+  // Exit full page or by any navigation the person makes while the surface is
+  // open — drops back to the popover, which is what handoff §1 requires
+  // ("Leaving full page returns to the popover, not the side panel").
+  useEffect(() => {
+    if (onAssistantRoute) {
+      setOpen(true);
+      setMode("page");
+    } else {
+      setMode((current) => (current === "page" ? "popover" : current));
+    }
+  }, [onAssistantRoute]);
+
+  // The threads read is as wide as the list on screen (handoff §1): the header
+  // needs the newest conversation for its title alone, while the Threads menu
+  // and the full page's thread column show 30. The two reads are separate keys
+  // and the WIDE one is asked only while its list stands — and the menu keeps
+  // drawing the narrow page while that one is in flight, so opening it never
+  // flashes an empty list.
+  const threadsWide = mode === "page" || threadsMenuOpen;
+  const conversations = useAssistantConversations(THREADS_LIMIT, open);
+  const threads = useAssistantConversations(THREADS_MENU_LIMIT, open && threadsWide);
   const createConversation = useCreateAssistantConversation();
   const messagesQuery = useAssistantMessages(conversationId);
   const post = usePostAssistantMessage();
@@ -409,7 +449,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
 
   // The server's transcript is the source of truth; adopted while there is
   // nothing on screen for the current conversation (first open, a New
-  // conversation, a Recent-menu switch — the switch handlers clear the
+  // thread, a Threads-menu switch — the switch handlers clear the
   // transcript state first). Once rows are on screen, a post appends its own
   // rows and a later refetch must not clobber them.
   useEffect(() => {
@@ -419,7 +459,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   }, [conversationId, messagesQuery.data, messages.length]);
 
   /**
-   * One plain-text turn (composer, suggestion chip, a question's option
+   * One plain-text turn (composer, checklist starter, a question's option
    * label, or the palette's carried-over question). Resolves `true` when the
    * server took the turn and `false` when it did not — the panel puts a
    * rejected composer ask back in the composer (assistant-lost-ask).
@@ -427,19 +467,27 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * `carriedOver` marks the palette's question, which never lived in the
    * composer: on failure this container hands it back through `composerRestore`.
    *
-  /**
    * Issue #63: the ask shows as the person's own bubble the moment it is
    * sent — an optimistic local row appended BEFORE the round-trip (so the
-   * empty-state suggestions disappear on a chip click and `thinking…`
-   * follows the words). On success the server's echoed rows replace the
-   * local row; on failure the bubble stays, carries the honest line under
-   * it, and offers `Retry` (see MessageList).
+   * starter's question disappears on the click and `thinking…` follows the
+   * words). On success the server's echoed rows replace the local row; on
+   * failure the bubble stays, carries the honest line under it, and offers
+   * `Retry` (see MessageList).
    *
-   * 2f: `entity` names the ask's subject as STRUCTURED context (the chat a
+   * `entity` names the ask's subject as STRUCTURED context (the chat a
    * workflow draft is about) — it rides the post body's context, never the
    * visible text.
    */
   const localSeq = useRef(0);
+
+  /**
+   * The route the ask is ABOUT: the page the full page was opened from. On the
+   * `/assistant` route the browser's location names the assistant itself, but
+   * the ask is about the thing the person was looking at — so the remembered
+   * route is what the page context (and the header's chip) names, exactly as
+   * the full page's "Looking at" column shows it.
+   */
+  const askRoute = pageReturnRoute ?? location.pathname;
 
   /** Issue #63: drop failed optimistic rows from an earlier attempt — they
    * are not server rows (a failed turn stores nothing), and a fresh
@@ -476,18 +524,21 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       // The composer owns what rides with the ask: its page context (with the
       // handoff §3 `page` block) is the turn's context, and a turn sent with
       // "Send with my messages" unchecked carries NONE at all (CONTRACT §2).
-      // A send with no options (a question's option label, a retry) names the
-      // route alone, exactly as it always did.
+      // A send with no options (a question's option label, a starter, a retry)
+      // names the route alone, exactly as it always did. On the full page the
+      // route the composer read is `/assistant`; the context the person means
+      // is the page the ask came from, so that route is what travels.
+      const pageRoute = mode === "page" ? askRoute : location.pathname;
       let context: AssistantMessageContext | undefined =
         options === undefined
-          ? assistantContextOf(location.pathname)
+          ? assistantContextOf(pageRoute)
           : options.context
-            ? { ...options.context }
+            ? pageContextPayload(pageContextFor(pageRoute), true) ?? { ...options.context }
             : undefined;
       if (entity) {
         // A draft ask names ITS subject even when page context is off — the
         // conversation ref is structured context, not what is on screen.
-        const base = context ?? { route: location.pathname };
+        const base = context ?? { route: pageRoute };
         base.entity = entity;
         context = base;
       }
@@ -538,28 +589,32 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       })();
     },
     [
+      askRoute,
       conversationId,
       createConversation,
       handBackToComposer,
+      mode,
       post,
       location.pathname,
       retireFailedAsks,
     ],
   );
 
-  /** ui-newconv: `New conversation` — clear the panel; the next send
+  /** ui-newconv: `New thread` — clear the panel; the next send
    * creates the fresh conversation (no transcript, no change chip). */
   const startNew = useCallback(() => {
     setConversationId(null);
     setMessages([]);
     setSendError(null);
     setAwaitingNew(true);
+    setThreadsMenuOpen(false);
   }, []);
 
-  /** ui-newconv: the Recent menu's switch — adopt that conversation's
+  /** ui-newconv: the Threads menu's switch — adopt that conversation's
    * transcript (and its change chip) once its rows load. */
   const switchConversation = useCallback(
     (id: string) => {
+      setThreadsMenuOpen(false);
       if (id === conversationId) return;
       setMessages([]);
       setConversationId(id);
@@ -569,14 +624,47 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     [conversationId],
   );
 
+  /** Handoff §1: popover ⇄ side panel. The side panel toggles back to the
+   * popover; from the full page the same button docks the panel beside the
+   * page the ask came from. */
+  const toggleDock = useCallback(() => {
+    setThreadsMenuOpen(false);
+    if (mode === "dock") {
+      setMode("popover");
+      return;
+    }
+    if (mode === "page" && pageReturnRoute !== null) navigate(pageReturnRoute);
+    setMode("dock");
+  }, [mode, navigate, pageReturnRoute]);
+
+  /**
+   * Handoff §1: the full page is the `/assistant` route. Opening it remembers
+   * the page the ask came from (docked or popover — that page is what the
+   * right-hand "Looking at" column names); leaving it — through the same
+   * button, whose title reads `Exit full page` there — navigates back and
+   * returns the POPOVER, never the side panel.
+   */
+  const togglePage = useCallback(() => {
+    setThreadsMenuOpen(false);
+    if (mode === "page") {
+      // The route effect below drops the size back to the popover the moment
+      // the URL changes — leaving full page returns to the POPOVER, never the
+      // side panel.
+      navigate(pageReturnRoute ?? "/");
+      return;
+    }
+    if (location.pathname !== ASSISTANT_PAGE_ROUTE) setPageReturnRoute(location.pathname);
+    navigate(ASSISTANT_PAGE_ROUTE);
+    setMode("page");
+  }, [location.pathname, mode, navigate, pageReturnRoute]);
+
   // ⌘J is Ask (finding 08, which supersedes ADR-0050's ⌘K toggle: ⌘K belongs to
   // the jump palette and nothing opens the assistant from it). The listener runs
   // in the CAPTURE phase on purpose: the chord must be order-invariant, so a
   // page that mounts a keyboard handler later (the Studio, whose own ⌘S/⌘Z
-  // handlers run in the bubble phase) cannot swallow it — the bug the old ⌘K
-  // toggle had to be worked around with `stopImmediatePropagation`. It calls
-  // `openAsk()` rather than touching its own state, so the button, the chord and
-  // any later claimant all travel the same path.
+  // handlers run in the bubble phase) cannot swallow it. It calls `openAsk()`
+  // rather than touching its own state, so the button, the chord and any later
+  // claimant all travel the same path.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
@@ -589,10 +677,10 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   }, []);
 
   // This component is the Ask surface `openAsk()` reaches — unless a page claims
-  // the chord while it is on screen (the Studio draft footer, whose ⌘J opens its
-  // own ask row instead of this floating box). A request with no question of its
-  // own takes the page's `askContext` (the tour player's current stop), so the
-  // chord and the floating button answer with what the reader is looking at.
+  // the chord while it is on screen (the Studio draft footer). A request with no
+  // question of its own takes the page's `askContext` (the tour player's current
+  // stop), so the chord and the floating button answer with what the reader is
+  // looking at.
   useAskOpen((request) => {
     const context = askContextRef.current?.() ?? {};
     const question = (request.text?.trim() ? request.text : (context.text ?? "")).trim();
@@ -605,11 +693,10 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
 
   // The palette's Ask row (a bare string) and the structured 2f draft ask
   // both open the surface here: the string opens the popover, an
-  // `AssistantOpenRequest` may open the full panel — docked beside the chat
-  // when the request says so — and names its entity as the ask's structured
-  // context. A panel the draft ask opened closes completely on esc (it never
-  // falls back to the floating popover over the chat's composer — the 2f
-  // review).
+  // `AssistantOpenRequest` opens the side panel (docked) or the full page, and
+  // names its entity as the ask's structured context. A panel the draft ask
+  // opened closes completely on esc (it never falls back to the floating
+  // popover over the chat's composer — the 2f review).
   const openedByDraftAsk = useRef(false);
   useEffect(() => {
     const onOpen = (event: Event) => {
@@ -619,10 +706,16 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
         typeof detail === "string" ? { text: detail } : (detail ?? { text: "" });
       if (request.expanded) {
         openedByDraftAsk.current = true;
-        setMode(request.docked ? "docked" : "expanded");
+        if (request.docked) {
+          setMode("dock");
+        } else {
+          if (location.pathname !== ASSISTANT_PAGE_ROUTE) setPageReturnRoute(location.pathname);
+          navigate(ASSISTANT_PAGE_ROUTE);
+          setMode("page");
+        }
       }
-      // Name the chat the panel opened from in the header chip; every other
-      // open (a bare ⌘K ask, the palette) carries no chat title and clears it.
+      // Name the chat the panel opened from in the header; every other open (a
+      // bare ⌘K ask, the palette) carries no chat title and clears it.
       setDockedChatTitle(
         typeof request.entityTitle === "string" && request.entityTitle.trim()
           ? request.entityTitle
@@ -634,7 +727,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     };
     window.addEventListener(ASSISTANT_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(ASSISTANT_OPEN_EVENT, onOpen);
-  }, [send]);
+  }, [location.pathname, navigate, send]);
 
   // The conversation survives page changes: the newest one the caller has,
   // adopted while the popover is open; a fresh one is created on first send.
@@ -649,20 +742,31 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   }, [open, conversationId, awaitingNew, conversations.data]);
 
   /**
-   * rcn-2f round 7: the dock reserves its width on the shell's main area
-   * (the `margin-right` above) by flagging the document element — the
-   * attribute is the only state the injected CSS reads, so shrink/close
-   * (any mode change) releases the column the instant the dock stands down.
+   * rcn-2f round 7 / handoff §1: the dock reserves its width on the shell's
+   * main area (the `margin-right` above) and the floating `Ask` button stands
+   * down while ANY size of the surface is open — the flags on the document
+   * element are the only state the injected CSS reads, so a close releases the
+   * column and the button the instant the surface stands down.
    */
   useEffect(() => {
     const root = document.documentElement;
-    if (open && mode === "docked") {
+    if (open && mode === "dock") {
       root.setAttribute("data-assistant-dock", "on");
     } else {
       root.removeAttribute("data-assistant-dock");
     }
     return () => root.removeAttribute("data-assistant-dock");
   }, [open, mode]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (open) {
+      root.setAttribute("data-assistant-open", "on");
+    } else {
+      root.removeAttribute("data-assistant-open");
+    }
+    return () => root.removeAttribute("data-assistant-open");
+  }, [open]);
 
   /** `Retry` / `Not now` on a pending approval_request (ADR-0050 Decision 4).
    * The decision post carries ONLY the request id — `{confirm: <id>}` or
@@ -695,7 +799,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     })();
   };
 
-  /** The decision-failure line, identical in both sizes (assistant-lost-ask).
+  /** The decision-failure line, identical in all three sizes (assistant-lost-ask).
    * Issue #63 moved a failed QUESTION ask inline — its line now lives under
    * the person's own bubble with the Retry — so this row carries the
    * approval Round-Trip failures, which have no user bubble of their own. */
@@ -704,15 +808,20 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       data-testid="assistant-error"
       className="m-0 max-w-full rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
     >
-      × {sendError}
+      {sendError}
     </p>
   ) : null;
 
-  const close = useCallback(() => setOpen(false), []);
-  const shrink = useCallback(() => setMode("popover"), []);
-  /** esc / close on a panel the draft ask opened: close the whole surface
-   * (the 2f panel never shrinks back into the floating box). */
+  const close = useCallback(() => {
+    setOpen(false);
+    setThreadsMenuOpen(false);
+  }, []);
+
+  /** Handoff §1: the popover ⇄ side panel ⇄ full page moves. `shrink` is what
+   * esc and Close do in the side panel — back to the popover; a panel the
+   * draft ask opened closes completely instead (the 2f review). */
   const closeExpanded = useCallback(() => {
+    setThreadsMenuOpen(false);
     if (openedByDraftAsk.current) {
       openedByDraftAsk.current = false;
       setOpen(false);
@@ -722,16 +831,27 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     }
   }, []);
 
-  /** ui-newconv: the Recent menu's rows, newest first (the API's order). */
-  const recentConversations = (conversations.data?.conversations ?? []).map((c) => ({
+  /** ui-newconv: the Threads menu's rows, newest first (the API's order). */
+  const recentConversations = (threads.data?.conversations ?? conversations.data?.conversations ?? [])
+    .map((c) => ({
     id: c.id,
     title: c.title,
     lastMessageAt: c.last_message_at,
   }));
 
+  /** The full page's "Looking at": the page the ask came from, or the plain
+   * statement that the composer is not sending a page at all. */
+  const lookingAt = readPageContextOn()
+    ? pageLabelRouteOf(askRoute)
+    : { label: "Page context off", route: "" };
+
+  // The route owns the whole content column: while it stands there is no
+  // popover to draw, and the conversation lives in the portalled frame below.
+  const showPopover = open && mode !== "page";
+
   if (!open) return null;
 
-  const contextLabel = contextLabelOf(location.pathname);
+  const contextLabel = contextLabelOf(askRoute);
   const changes: AssistantChange[] = changesQuery.data?.changes ?? [];
 
   // Every size of the surface holds the same conversation, the same trust
@@ -739,7 +859,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   const panelProps = {
     contextLabel,
     // The chat the panel was opened from (2f docked draft ask); names the
-    // header chip `from “<title>”` instead of the section name (rcn-6 review).
+    // header thread `“<title>”` instead of the section name (rcn-6 review).
     chatContext: dockedChatTitle,
     messages,
     trustLevel,
@@ -747,7 +867,6 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     changes,
     onUndoChange: (changeId: string) => undoChange.mutate(changeId),
     onUndoAll: () => conversationId && undoAll.mutate({ conversationId }),
-    suggestions: SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS,
     // The composer's send names what came with the ask: whether the text
     // arrived by dictation, and the page context attached to it (§2/§5).
     onSend: (text: string, options?: ComposerSendOptions) => send(text, false, undefined, options),
@@ -760,64 +879,106 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     recentConversations,
     activeConversationId: conversationId,
     onSwitchConversation: switchConversation,
+    threadsMenuOpen,
+    onThreadsMenuOpenChange: setThreadsMenuOpen,
+    onDock: toggleDock,
+    onExpandPage: togglePage,
     busy: post.isPending || createConversation.isPending,
   };
 
+  /**
+   * The full page (handoff §1, mock L456–480): the thread list at 240px and
+   * the context column at 260px hide on a narrow viewport — and when the
+   * thread list goes, New thread / Threads come back to the conversation's
+   * header (`showThreadControls` below).
+   */
+  const pageFrame = (
+    <AssistantPageFrame
+      threadColumn={
+        showThreadColumn ? (
+          <AssistantThreadColumn
+            conversations={recentConversations}
+            activeId={conversationId}
+            onSwitch={switchConversation}
+            onNewConversation={startNew}
+          />
+        ) : null
+      }
+      sideColumn={
+        showContextColumn ? (
+          <AssistantPageSideColumn
+            pageContextOn={readPageContextOn()}
+            pageLabel={lookingAt.label}
+            pageRoute={lookingAt.route}
+            changes={changes}
+            trustLevel={trustLevel}
+          />
+        ) : null
+      }
+    >
+      <AssistantPanel
+        variant="page"
+        {...panelProps}
+        showThreadControls={!showThreadColumn}
+        onClose={close}
+      />
+    </AssistantPageFrame>
+  );
+
   return (
     <>
-      {mode === "docked" ? (
-        // 2f (rcn-2f round 7): the thread → workflow assistant stands
-        // BESIDE the chat it drafts from — the sheet is the right-hand
-        // column, and the injected reservation (the `data-assistant-dock`
-        // flag + the CSS below) shrinks the shell's content column by that
-        // same width, so the thread, its header and its composer stay on
-        // screen whole instead of clipped under the sheet. Below 1024px —
-        // the Shell's own phone width — a column would leave nothing of the
-        // thread, so the panel takes the screen and reserves no width.
+      <style data-testid="assistant-frame-css">{DOCK_RESERVATION_CSS}</style>
+      {onAssistantRoute && pageHost !== null
+        ? createPortal(
+            <>
+              {sendError ? <div className="px-[16px] pt-[8px]">{errorLine}</div> : null}
+              {pageFrame}
+            </>,
+            pageHost,
+          )
+        : null}
+      {showPopover ? (
+        // ONE element for both floating sizes, with the error slot and the
+        // holder in the same positions: a size change swaps classes, never the
+        // tree, so the panel instance — its draft, a turn in flight — survives
+        // popover ⇄ side panel.
         <div
-          className="fixed inset-0 z-40 flex flex-col bg-surface lg:inset-y-0 lg:left-auto lg:w-[450px] lg:border-l lg:border-line-strong"
+          className={
+            mode === "dock"
+              ? // Handoff §1's side panel (and the 2f thread → workflow draft):
+                // the sheet is the right-hand column, and the injected
+                // reservation shrinks the shell's content column by the same
+                // width, so the page beside it stays on screen whole. Below
+                // 1024px a column would leave nothing of the page, so the panel
+                // takes the screen and reserves no width.
+                "fixed inset-0 z-40 flex flex-col border-l border-ink bg-surface lg:inset-y-0 lg:left-auto lg:w-[450px]"
+              : // Handoff §1's popover: the 400px box anchored 16px off the
+                // bottom-right corner. The holder is the relative anchor the
+                // Threads menu — a SIBLING of the panel, which clips with
+                // `overflow: hidden` — places its box against.
+                "fixed bottom-4 right-4 z-40 flex max-w-[calc(100vw-32px)] flex-col items-end gap-[6px]"
+          }
           data-testid="assistant-popover"
-          data-dock="right"
+          data-dock={mode === "dock" ? "right" : undefined}
         >
-          <style>{DOCK_RESERVATION_CSS}</style>
-          {sendError ? <div className="px-[10px] pt-[8px]">{errorLine}</div> : null}
-          <AssistantPanel
-            variant="docked"
-            {...panelProps}
-            onShrink={shrink}
-            onClose={closeExpanded}
-          />
+          <div className={mode === "dock" ? "px-[10px] pt-[8px]" : "contents"}>
+            {sendError ? errorLine : null}
+          </div>
+          <div
+            className={
+              mode === "dock"
+                ? "relative flex min-h-0 flex-1 flex-col"
+                : "relative flex w-[400px] max-w-full flex-col items-stretch"
+            }
+          >
+            <AssistantPanel
+              variant={mode}
+              {...panelProps}
+              onClose={mode === "dock" ? closeExpanded : close}
+            />
+          </div>
         </div>
-      ) : mode === "expanded" ? (
-        // 2c: the expanded overlay over the content area; the conversation
-        // column is centred at 680px inside the panel itself.
-        <div
-          className="fixed inset-0 z-40 flex flex-col bg-surface"
-          data-testid="assistant-popover"
-        >
-          {sendError ? <div className="px-[10px] pt-[8px]">{errorLine}</div> : null}
-          <AssistantPanel
-            variant="expanded"
-            {...panelProps}
-            onShrink={shrink}
-            onClose={closeExpanded}
-          />
-        </div>
-      ) : (
-        // 2a/3d/4d: the 400px popover anchored at the content's bottom-right.
-        <div
-          className="fixed bottom-4 right-4 z-40 flex w-[min(400px,calc(100vw-32px))] flex-col items-end gap-[6px]"
-          data-testid="assistant-popover"
-        >
-          {sendError ? errorLine : null}
-          <AssistantPanel
-            variant="popover"
-            {...panelProps}
-            onExpand={() => setMode("expanded")}
-            onClose={close}
-          />
-        </div>
-      )}
+      ) : null}
     </>
   );
 }

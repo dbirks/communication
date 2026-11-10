@@ -1,15 +1,61 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render as baseRender, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import AssistantPanel, {
   type AssistantPanelProps,
   type RecentConversation,
 } from "./AssistantPanel";
 import type { AssistantMessage } from "./types";
 
+/**
+ * The empty thread is the setup checklist now (handoff A3 §2), and the
+ * checklist owns its own `GET /assistant/status` read — so every panel render
+ * needs a query client, and a test that has not said anything about the status
+ * route answers 404 (the checklist renders nothing, exactly as it does on a
+ * server without the route).
+ */
+const panelQuery = () =>
+  new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+
+const withQuery = (element: ReactElement, client = panelQuery()) => (
+  <QueryClientProvider client={client}>{element}</QueryClientProvider>
+);
+
+/**
+ * Every render goes through one provider (and the same wrapper survives a
+ * `rerender`), because the panel's empty thread now mounts the checklist with
+ * its own status read.
+ */
+function render(element: ReactElement) {
+  const client = panelQuery();
+  const Wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return baseRender(element, { wrapper: Wrapper });
+}
+
+/** A `GET` answer for any path; the panel tests' default: nothing is set up. */
+function stubStatusNotFound(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({ title: "Not Found", status: 404, detail: "no stub" }),
+        { status: 404, headers: { "content-type": "application/problem+json" } },
+      )
+    ),
+  );
+}
+
+beforeEach(() => {
+  stubStatusNotFound();
+});
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
+  window.sessionStorage.clear();
 });
 
 const panelProps: Omit<AssistantPanelProps, "variant"> = {
@@ -62,15 +108,33 @@ const flush = async () => {
 };
 
 describe("AssistantPanel (popover)", () => {
-  it("is the 400px panel with the ASSISTANT header, trust pill, expand and esc hint", () => {
-    const onExpand = vi.fn();
-    const { container } = renderPanel({ onExpand });
+  it("is the 400px popover whose header is five icon buttons (handoff §1)", () => {
+    const onDock = vi.fn();
+    const onExpandPage = vi.fn();
+    const onClose = vi.fn();
+    const { container } = renderPanel({
+      onDock,
+      onExpandPage,
+      onClose,
+      onNewConversation: () => {},
+      onSwitchConversation: () => {},
+    });
     const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
-    expect(panel.style.width).toBe("400px");
-    expect(panel.style.borderRadius).toBe("4px");
+    expect(panel.dataset.variant).toBe("popover");
+    // Corners: the box clips its own children, and the 400px width, radius 4
+    // and 2px offset ink shadow are the design's frame.
+    expect(panel.className).toContain("overflow-hidden");
+    expect(panel.className).toContain("rounded-[4px]");
+    expect(panel.className).toContain("border-ink");
+    expect(panel.className).toContain("shadow-raised");
+    expect(panel.className).toContain("max-h-[min(72vh,600px)]");
+
     const header = screen.getByTestId("assistant-panel-header");
     expect(header.textContent).toContain("ASSISTANT");
-    expect(header.textContent).toContain("esc");
+    // The old text controls are gone: no ▾ Recent menu, no ⤢, no `esc` hint.
+    expect(header.textContent).not.toContain("esc");
+    expect(header.textContent).not.toContain("▾");
+    expect(header.textContent).not.toContain("Recent");
     // Handoff §1: the trust pill lives in the composer box, not the header.
     expect(screen.getByTestId("assistant-pill").textContent).toContain("ask when risky");
     expect(
@@ -79,8 +143,32 @@ describe("AssistantPanel (popover)", () => {
     expect(
       screen.getByTestId("assistant-composer").contains(screen.getByTestId("assistant-pill")),
     ).toBe(true);
+
+    // Five 26px buttons, each naming itself in `title` + the accessible name,
+    // every glyph an SVG (no Unicode glyph icons).
+    const buttons: Array<[string, string]> = [
+      ["assistant-new-conversation", "New thread"],
+      ["assistant-history", "Threads"],
+      ["assistant-dock", "Open as side panel"],
+      ["assistant-expand", "Open full page"],
+      ["assistant-close", "Close"],
+    ];
+    for (const [testid, title] of buttons) {
+      const button = screen.getByTestId(testid) as HTMLButtonElement;
+      expect(button.title, testid).toBe(title);
+      expect(button.getAttribute("aria-label"), testid).toBe(title);
+      expect(button.querySelector("svg"), testid).toBeTruthy();
+      expect(button.textContent ?? "", testid).toBe("");
+    }
+    expect(header.querySelectorAll("button")).toHaveLength(5);
+    // No New-thread callback (a mount that cannot start a thread) drops its
+    // button and the Threads button with it (nothing to switch to).
+    fireEvent.click(screen.getByTestId("assistant-dock"));
+    expect(onDock).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByTestId("assistant-expand"));
-    expect(onExpand).toHaveBeenCalledTimes(1);
+    expect(onExpandPage).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("assistant-close"));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("esc closes the panel through the window listener", () => {
@@ -93,24 +181,45 @@ describe("AssistantPanel (popover)", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("shows up to three dashed FOR THIS PAGE chips, each sending its text", () => {
-    const onSend = vi.fn();
-    renderPanel({
-      onSend,
-      suggestions: [
-        "Walk me through this workflow",
-        "What changed since r2?",
-        "Why did the last 3 runs loop more than twice?",
-        "A fourth that must not render",
-      ],
-    });
-    const chips = screen.getAllByTestId("assistant-suggest");
-    expect(chips).toHaveLength(3);
-    expect(chips[0].textContent).toBe("Walk me through this workflow");
-    const style = chips[0] as HTMLButtonElement;
-    expect(style.style.borderStyle).toBe("dashed");
-    fireEvent.click(chips[1]);
-    expect(onSend).toHaveBeenCalledWith("What changed since r2?");
+  it("an empty thread is the setup checklist, not a chip table (handoff §1/§2)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            chat_model: { configured: true, model: "qwen3-8-flash-next" },
+            speech_model: { configured: false, model: "" },
+            decision_model: { configured: false, model: "" },
+            workers: { online: 1, sandbox_mode: "required" },
+            execution_mode: "inprocess",
+            github_credentials: [],
+            projects: { count: 0 },
+            workflows: { count: 0, samples: 0, assigned: 0 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )
+      ),
+    );
+    try {
+      const onSend = vi.fn();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <AssistantPanel variant="popover" {...panelProps} onSend={onSend} />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByTestId("assistant-setup")).toBeTruthy();
+      // The retired table's chips are gone (see ui/scripts/retired-testids.json).
+      expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
+      expect(screen.queryByTestId("assistant-empty")).toBeNull();
+      // The checklist's starters send through the normal send path.
+      fireEvent.click(screen.getAllByTestId("assistant-starter")[0]);
+      expect(onSend).toHaveBeenCalledWith("What workflows do I have?");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows the page context chip in the composer", () => {
@@ -205,89 +314,128 @@ describe("the composer placeholder fits the width (rcn-2f review item 2)", () =>
   });
 });
 
-describe("AssistantPanel (expanded)", () => {
-  it("renders the 680px centred column with the opened-from chip and Shrink", () => {
-    const onShrink = vi.fn();
+describe("AssistantPanel (page and dock)", () => {
+  /**
+   * Handoff §1: the full page's centre column is the conversation at ≤720px,
+   * the composer's box at ≤752px, and the header carries the thread title (no
+   * `ASSISTANT` word, no `opened from` chip — the thread list is right there).
+   */
+  it("page: the centred 720px column, the thread title, the Exit-full-page verb", () => {
     const { container } = render(
-      <AssistantPanel
-        variant="expanded"
+      withQuery(<AssistantPanel
+        variant="page"
         {...panelProps}
         contextLabel="Feature Delivery"
-        onShrink={onShrink}
-      />,
+        recentConversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+        activeConversationId="c1"
+        onExpandPage={() => {}}
+        onDock={() => {}}
+        onNewConversation={() => {}}
+        onSwitchConversation={() => {}}
+        showThreadControls={false}
+      />),
     );
     const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
-    expect(panel.dataset.variant).toBe("expanded");
-    const column = panel.querySelector("div");
-    expect((column as HTMLElement).style.maxWidth).toBe("680px");
-    expect(screen.getByTestId("assistant-opened-from").textContent).toBe(
-      "opened from Feature Delivery",
+    expect(panel.dataset.variant).toBe("page");
+    // The conversation column, centred at the design's 720px.
+    const column = panel.querySelector('[data-testid="assistant-body"] > div') as HTMLElement;
+    expect(column.className).toContain("max-w-[720px]");
+    expect(column.className).toContain("mx-auto");
+    // The composer's own box is the 752px column with the page's padding.
+    const composerFrame = screen.getByTestId("assistant-composer-frame");
+    expect(composerFrame.className).toContain("max-w-[752px]");
+    expect(composerFrame.className).toContain("pb-[18px]");
+    // The header names the thread; the popover's word does not appear.
+    const header = screen.getByTestId("assistant-panel-header");
+    expect(header.textContent).not.toContain("ASSISTANT");
+    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("Fix the board");
+    // Below ~1000px the caller hides the thread list and returns the thread
+    // buttons to the header (`showThreadControls`); here they are the page's
+    // left column, so the header draws the other three.
+    expect(screen.queryByTestId("assistant-new-conversation")).toBeNull();
+    expect(screen.queryByTestId("assistant-history")).toBeNull();
+    const expand = screen.getByTestId("assistant-expand") as HTMLButtonElement;
+    expect(expand.title).toBe("Exit full page");
+    expect(expand.getAttribute("aria-label")).toBe("Exit full page");
+    expect(screen.getByTestId("assistant-dock").title).toBe("Open as side panel");
+    expect(screen.getByTestId("assistant-close").title).toBe("Close");
+  });
+
+  it("page on a narrow viewport: New thread and Threads come back to the header", () => {
+    render(
+      <AssistantPanel
+        variant="page"
+        {...panelProps}
+        onNewConversation={() => {}}
+        onSwitchConversation={() => {}}
+        showThreadControls
+      />,
     );
-    const shrink = screen.getByTestId("assistant-shrink");
-    expect(shrink.textContent).toBe("Shrink to popover");
-    fireEvent.click(shrink);
-    expect(onShrink).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("assistant-new-conversation")).toBeTruthy();
+    expect(screen.getByTestId("assistant-history")).toBeTruthy();
   });
 
   /**
-   * rcn-2f review item 1: design 2f is drafted in the assistant panel NEXT TO
-   * the chat, so the `docked` variant is the same full-size surface laid out
-   * for the ~450px column it is handed — it fills that width instead of
-   * centring a 680px conversation inside it, and its header keeps the popover's
-   * icon-only controls (the row is 450px wide whatever the screen's width is,
-   * so viewport-driven wording would run off its right edge).
+   * rcn-2f review item 1 / handoff §1: the side panel is the same conversation
+   * laid out for the 450px column it is handed — it fills that width instead of
+   * centring a column inside it, and its header is the popover's five icon
+   * buttons with the side-panel control reading `Back to popover` (pressed).
    */
-  it("docked: fills the column it is handed, with icon-only header controls", () => {
-    const onShrink = vi.fn();
+  it("dock: fills the column it is handed, with the five icon header buttons", () => {
+    const onDock = vi.fn();
     const { container } = render(
       <AssistantPanel
-        variant="docked"
+        variant="dock"
         {...panelProps}
         contextLabel="threads"
-        onShrink={onShrink}
+        onDock={onDock}
+        onExpandPage={() => {}}
         onNewConversation={() => {}}
+        onSwitchConversation={() => {}}
       />,
     );
     const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
-    expect(panel.dataset.variant).toBe("docked");
-    // No centred 680px column: the dock's own width is the conversation's.
-    expect(panel.style.maxWidth).toBe("");
-    expect(panel.style.width).toBe("100%");
-    expect(screen.getByTestId("assistant-opened-from").textContent).toBe("opened from threads");
-    // The two header controls name themselves to assistive tech and the
-    // tooltip, and print an icon or a ＋ on screen.
-    const shrink = screen.getByTestId("assistant-shrink");
-    expect(shrink.getAttribute("aria-label")).toBe("Shrink to popover");
-    expect(shrink.querySelector(".sr-only")?.textContent).toBe("Shrink to popover");
-    fireEvent.click(shrink);
-    expect(onShrink).toHaveBeenCalledTimes(1);
-    const fresh = screen.getByTestId("assistant-new-conversation");
-    expect(fresh.getAttribute("aria-label")).toBe("New thread");
-    expect(fresh.textContent).toContain("New");
+    expect(panel.dataset.variant).toBe("dock");
+    // No centred column: the dock's own width is the conversation's.
+    expect(panel.className).toContain("w-full");
+    const header = screen.getByTestId("assistant-panel-header");
+    // Handoff §1: the word `ASSISTANT` is the popover's title line; the side
+    // panel and the full page name the THREAD (the mock's `notPopover`).
+    expect(header.textContent).not.toContain("ASSISTANT");
+    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("threads");
+    const dock = screen.getByTestId("assistant-dock") as HTMLButtonElement;
+    expect(dock.title).toBe("Back to popover");
+    expect(dock.getAttribute("aria-label")).toBe("Back to popover");
+    expect(dock.getAttribute("aria-pressed")).toBe("true");
+    // The pressed state is the design's fill-edge ground.
+    expect(dock.className).toContain("bg-fill-edge");
+    expect(screen.getByTestId("assistant-new-conversation").title).toBe("New thread");
+    expect(screen.getByTestId("assistant-history").title).toBe("Threads");
+    expect(screen.getByTestId("assistant-expand").title).toBe("Open full page");
+    expect(screen.getByTestId("assistant-close").title).toBe("Close");
+    fireEvent.click(dock);
+    expect(onDock).toHaveBeenCalledTimes(1);
   });
 
   /**
-   * rcn-6 review: the docked panel opened FROM a chat names THAT chat in the
-   * header chip — `from “<title>”` — not the bare section name `threads`.
+   * rcn-6 review: a surface opened FROM a chat names THAT chat in the header,
+   * not the bare section name — until the thread has a title of its own.
    */
-  it("docked from a chat: the chip names the chat, not the section", () => {
-    const { container } = render(
+  it("dock from a chat: the header names the chat, not the section", () => {
+    render(
       <AssistantPanel
-        variant="docked"
+        variant="dock"
         {...panelProps}
         contextLabel="threads"
         chatContext="Refactor the settings page"
-        onShrink={() => {}}
       />,
     );
-    const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
-    expect(panel.dataset.variant).toBe("docked");
-    const chip = screen.getByTestId("assistant-opened-from");
-    expect(chip.textContent).toBe("from Refactor the settings page");
-    expect(chip.title).toBe("from Refactor the settings page");
+    expect(screen.getByTestId("assistant-thread-title").textContent).toBe(
+      "Refactor the settings page",
+    );
   });
 
-  it("esc closes the expanded view too, and a busy turn shows thinking…", () => {
+it("esc closes the wide surface too, and a busy turn shows thinking…", () => {
     const onClose = vi.fn();
     renderPanel({ onClose, busy: true, messages: [userMessage("hi")] });
     expect(screen.getByTestId("assistant-thinking").textContent).toBe("thinking…");
@@ -317,15 +465,14 @@ describe("AssistantPanel (expanded)", () => {
   it("Open draft: hidden until a turn links the saved draft, then opens it (2f)", () => {
     const onGo = vi.fn();
     const { rerender } = render(
-      <AssistantPanel variant="docked" {...panelProps} onGo={onGo} onShrink={() => {}} />,
+      <AssistantPanel variant="dock" {...panelProps} onGo={onGo} />,
     );
     expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
     rerender(
       <AssistantPanel
-        variant="docked"
+        variant="dock"
         {...panelProps}
         onGo={onGo}
-        onShrink={() => {}}
         messages={[savedDraftMessage("/workflows/01PIPE")]}
       />,
     );
@@ -339,10 +486,9 @@ describe("AssistantPanel (expanded)", () => {
     const onGo = vi.fn();
     render(
       <AssistantPanel
-        variant="docked"
+        variant="dock"
         {...panelProps}
         onGo={onGo}
-        onShrink={() => {}}
         messages={[savedDraftMessage("/workflows/01OLD"), savedDraftMessage("/workflows/01NEW")]}
       />,
     );
@@ -368,10 +514,9 @@ describe("AssistantPanel (expanded)", () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <AssistantPanel
-          variant="docked"
+          variant="dock"
           {...panelProps}
           onGo={onGo}
-          onShrink={() => {}}
           messages={[rawLabelled]}
         />
       </QueryClientProvider>,
@@ -386,10 +531,9 @@ describe("AssistantPanel (expanded)", () => {
     const onGo = vi.fn();
     render(
       <AssistantPanel
-        variant="docked"
+        variant="dock"
         {...panelProps}
         onGo={onGo}
-        onShrink={() => {}}
         messages={[
           {
             id: "m-run",
@@ -441,9 +585,8 @@ describe("AssistantPanel (expanded)", () => {
     const { unmount } = render(
       withQuery(
         <AssistantPanel
-          variant="docked"
+          variant="dock"
           {...panelProps}
-          onShrink={() => {}}
           messages={[draftAndOther]}
         />,
       ),
@@ -465,153 +608,124 @@ describe("AssistantPanel (expanded)", () => {
  * ui-newconv: the header's `New thread` control and the Recent menu
  * (the caller's last 5 threads by title + age, newest first).
  */
-describe("AssistantPanel header controls (ui-newconv)", () => {
+describe("AssistantPanel header controls (handoff §1)", () => {
   const recent: RecentConversation[] = [
     { id: "c1", title: "Fix the board", lastMessageAt: "2026-07-07T09:00:00Z" },
     { id: "c2", title: null, lastMessageAt: null },
   ];
 
-  it("popover: the compact New control is a ghost button and reports the callback", () => {
-    const onNew = vi.fn();
-    renderPanel({ onNewConversation: onNew });
-    const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
-    expect(button.className).toContain("ds-btn--ghost");
-    expect(button.title).toBe("New thread");
-    // The narrow header's glyph is the Tabler plus (an SVG, so it adds no text
-    // to the name); the wording lives in the sr-only span and the tooltip
-    // (rcn-6 review: the old fullwidth ＋ rendered as an unlabelled blue bar).
-    expect(button.querySelector("svg")).toBeTruthy();
-    expect(button.textContent).toBe("New thread");
-    fireEvent.click(button);
-    expect(onNew).toHaveBeenCalledTimes(1);
-    // No Recent menu without the switch callback.
-    expect(screen.queryByTestId("assistant-history")).toBeNull();
-  });
+  const renderWithThreads = (props: Partial<typeof panelProps> = {}) =>
+    render(
+      <AssistantPanel
+        variant="popover"
+        {...panelProps}
+        onNewConversation={() => {}}
+        onSwitchConversation={() => {}}
+        recentConversations={recent}
+        activeConversationId="c1"
+        {...props}
+      />,
+    );
 
-  it("expanded: the full New thread wording", () => {
-    const onNew = vi.fn();
-    render(<AssistantPanel variant="expanded" {...panelProps} onNewConversation={onNew} />);
-    const button = screen.getByTestId("assistant-new-conversation");
-    expect(button.textContent).toBe("New thread");
-    fireEvent.click(button);
-    expect(onNew).toHaveBeenCalledTimes(1);
+  it("the Threads button toggles the menu through the caller's state", () => {
+    const onOpenChange = vi.fn();
+    renderWithThreads({ onThreadsMenuOpenChange: onOpenChange, threadsMenuOpen: false });
+    expect(screen.queryByTestId("assistant-history-menu")).toBeNull();
+    const trigger = screen.getByTestId("assistant-history") as HTMLButtonElement;
+    expect(trigger.getAttribute("aria-pressed")).toBeNull();
+    fireEvent.click(trigger);
+    expect(onOpenChange).toHaveBeenCalledWith(true);
   });
 
   /**
-   * Review 2f, item 6: at 390 the expanded header ran off the right edge —
-   * `Shrink to popover` clipped to `S`/`po` and the `opened from …` chip
-   * wrapped onto three lines. Both header controls are now icon-plus-label:
-   * below 640px only the glyph is on screen, and the wording stays in the
-   * accessible name and the tooltip. jsdom applies no media query, so the
-   * contract asserted here is the DOM one the CSS switches between.
+   * Handoff §1's corners rule, the part that used to be a bug: the popover
+   * clips (`overflow: hidden`), so a menu inside it is a menu with its rows
+   * cut off. The threads box is rendered as a SIBLING of the panel element.
    */
-  it("expanded: both header controls name themselves, and the chip truncates", () => {
-    render(
-      <AssistantPanel
-        variant="expanded"
-        {...panelProps}
-        contextLabel="threads"
-        onNewConversation={() => {}}
-        onShrink={() => {}}
-      />,
-    );
-    const shrink = screen.getByTestId("assistant-shrink") as HTMLButtonElement;
-    expect(shrink.getAttribute("aria-label")).toBe("Shrink to popover");
-    expect(shrink.title).toBe("Shrink to popover");
-    // The phone's glyph is an SVG (it adds no text to the button's name), and
-    // the wording only shows from 640px up.
-    expect(shrink.querySelector("svg")).toBeTruthy();
-    expect(shrink.querySelector("span")?.className).toContain("min-[640px]:inline");
-
-    const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
-    expect(button.getAttribute("aria-label")).toBe("New thread");
-    expect(button.querySelector("svg")).toBeTruthy();
-
-    const chip = screen.getByTestId("assistant-opened-from");
-    expect(chip.textContent).toBe("opened from threads");
-    expect(chip.className).toContain("truncate");
-    expect(chip.title).toBe("opened from threads");
+  it("the threads menu is a sibling of the overflow-hidden panel, not inside it", () => {
+    renderWithThreads({ threadsMenuOpen: true });
+    const menu = screen.getByTestId("assistant-history-menu");
+    const panel = screen.getByTestId("assistant-panel");
+    expect(panel.className).toContain("overflow-hidden");
+    expect(panel.contains(menu)).toBe(false);
+    // 300px wide, the ds box: white, ink border, radius 4, the 2px shadow.
+    expect(menu.className).toContain("w-[300px]");
+    expect(menu.className).toContain("border-ink");
+    expect(menu.className).toContain("shadow-raised");
+    // The 9px rotated-square arrow rides with the box, centred on the button.
+    const arrow = screen.getByTestId("menu-arrow") as HTMLElement;
+    expect(arrow.style.width).toBe("9px");
+    expect(arrow.style.transform).toContain("rotate(45deg)");
   });
 
-  it("Recent lists the conversations by title + age and switches on click", () => {
+  it("lists the threads by title + age, checks the current one, and switches", () => {
     const onSwitch = vi.fn();
-    renderPanel({
-      onSwitchConversation: onSwitch,
-      recentConversations: recent,
-      activeConversationId: "c1",
-    });
-    fireEvent.click(screen.getByTestId("assistant-history"));
+    renderWithThreads({ threadsMenuOpen: true, onSwitchConversation: onSwitch });
     const items = screen.getAllByTestId("assistant-history-item");
     expect(items).toHaveLength(2);
-    expect(items[0].textContent).toContain("✓");
     expect(items[0].textContent).toContain("Fix the board");
     expect(items[1].textContent).toContain("Untitled");
-    expect(items[1].textContent).not.toContain("✓");
+    expect(items[1].textContent).not.toContain("unknown age");
+    // The current row is the accent wash, a semibold title and the Tabler check.
+    expect(items[0].className).toContain("bg-accent-wash");
+    expect(items[0].firstElementChild?.className).toContain("font-semibold");
+    expect(items[0].querySelector("svg")).toBeTruthy();
+    expect(items[1].querySelector("svg")).toBeNull();
     fireEvent.click(items[1]);
-    expect(onSwitch).toHaveBeenCalledTimes(1);
     expect(onSwitch).toHaveBeenCalledWith("c2");
   });
 
-  it("Recent caps at 5 rows and shows the honest empty line when there are none", () => {
-    const many: RecentConversation[] = Array.from({ length: 7 }, (_, i) => ({
-      id: `c${i}`,
-      title: `conv ${i}`,
-      lastMessageAt: "2026-07-07T00:00:00Z",
-    }));
-    renderPanel({ onSwitchConversation: () => {}, recentConversations: many });
-    fireEvent.click(screen.getByTestId("assistant-history"));
-    expect(screen.getAllByTestId("assistant-history-item")).toHaveLength(5);
-    cleanup();
-    renderPanel({ onSwitchConversation: () => {}, recentConversations: [] });
-    fireEvent.click(screen.getByTestId("assistant-history"));
-    expect(screen.getByTestId("assistant-history-menu").textContent).toContain("No threads yet");
-  });
-
-  it("the Recent menu carries the shared pointer arrow (handoff 3c)", () => {
-    renderPanel({ onSwitchConversation: () => {}, recentConversations: recent });
-    expect(screen.queryByTestId("menu-arrow")).toBeNull();
-    const trigger = screen.getByTestId("assistant-history");
-    fireEvent.click(trigger);
-    const menu = screen.getByTestId("assistant-history-menu");
-    const arrow = screen.getByTestId("menu-arrow") as HTMLElement;
-    // Handoff 3c's rule, in the hand-rolled Recent menu: the shared arrow,
-    // mounted on the wrapper that hugs the `Recent ▾` trigger rather than
-    // inside the box (the rule centres it on the TRIGGER, not on the box).
-    expect(arrow.getAttribute("aria-hidden")).toBe("true");
-    expect(arrow.style.width).toBe("9px");
-    expect(arrow.style.transform).toContain("rotate(45deg)");
-    expect(arrow.style.left).toBe("50%");
-    expect(menu.contains(arrow)).toBe(false);
-    expect(trigger.parentElement?.contains(arrow)).toBe(true);
-    fireEvent.keyDown(menu, { key: "Escape" });
-    expect(screen.queryByTestId("menu-arrow")).toBeNull();
-  });
-
-  it("esc in the Recent menu closes only the menu, then the panel", () => {
-    const onClose = vi.fn();
-    renderPanel({
-      onClose,
-      onSwitchConversation: () => {},
-      recentConversations: recent,
-      activeConversationId: "c1",
+  it("the search field filters the rows by title", () => {
+    renderWithThreads({ threadsMenuOpen: true });
+    fireEvent.change(screen.getByTestId("assistant-history-search"), {
+      target: { value: "board" },
     });
-    fireEvent.click(screen.getByTestId("assistant-history"));
-    expect(screen.getByTestId("assistant-history-menu")).toBeTruthy();
+    const items = screen.getAllByTestId("assistant-history-item");
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("Fix the board");
+    fireEvent.change(screen.getByTestId("assistant-history-search"), {
+      target: { value: "nothing matches" },
+    });
+    expect(screen.queryAllByTestId("assistant-history-item")).toHaveLength(0);
+    expect(screen.getByTestId("assistant-history-menu").textContent).toContain(
+      "No thread matches that search",
+    );
+  });
+
+  it("the menu's New thread row starts a fresh thread and closes the menu", () => {
+    const onNew = vi.fn();
+    const onClose = vi.fn();
+    renderWithThreads({
+      threadsMenuOpen: true,
+      onNewConversation: onNew,
+      onThreadsMenuOpenChange: onClose,
+    });
+    fireEvent.click(screen.getByTestId("assistant-menu-new-thread"));
+    expect(onNew).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith(false);
+  });
+
+  it("says so honestly when the caller has no threads at all", () => {
+    renderWithThreads({ threadsMenuOpen: true, recentConversations: [] });
+    expect(screen.getByTestId("assistant-history-menu").textContent).toContain(
+      "No threads yet — the next answer starts one.",
+    );
+  });
+
+  it("esc in the threads menu closes only the menu, then the panel", () => {
+    const onClose = vi.fn();
+    const onMenuChange = vi.fn();
+    renderWithThreads({ onClose, onThreadsMenuOpenChange: onMenuChange, threadsMenuOpen: true });
     fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "Escape" });
-    expect(screen.queryByTestId("assistant-history-menu")).toBeNull();
+    expect(onMenuChange).toHaveBeenCalledWith(false);
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("Recent is keyboard reachable: arrows move, Enter picks", () => {
+  it("the threads menu is keyboard reachable: arrows move, Enter picks", () => {
     const onSwitch = vi.fn();
-    renderPanel({
-      onSwitchConversation: onSwitch,
-      recentConversations: recent,
-      activeConversationId: "c1",
-    });
-    fireEvent.click(screen.getByTestId("assistant-history"));
+    renderWithThreads({ threadsMenuOpen: true, onSwitchConversation: onSwitch });
     const items = screen.getAllByTestId("assistant-history-item");
     items[0].focus();
     fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "ArrowDown" });
@@ -621,13 +735,6 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
   });
 });
 
-/**
- * assistant-lost-ask (acceptance 30, journey f): a failed turn stores nothing
- * server-side (ADR-0034), so a send that did not reach the model must put the
- * person's words back where they can be sent again. The caller reports the
- * round-trip by returning `false` (or throwing) from `onSend`/
- * `onAnswerQuestion`; anything else counts as accepted.
- */
 describe("a failed send puts the ask back (assistant-lost-ask)", () => {
   it("restores the typed ask when the send reports failure", async () => {
     const onSend = vi.fn(() => Promise.resolve(false));
@@ -703,10 +810,15 @@ describe("a failed send puts the ask back (assistant-lost-ask)", () => {
     expect(composerValue()).toBe("a different question");
   });
 
-  it("puts a failed suggestion chip's question in the composer", async () => {
+  it("puts a failed starter's question in the composer (the checklist's send path)", async () => {
     const onSend = vi.fn(() => Promise.resolve(false));
-    renderPanel({ onSend, suggestions: ["What needs me right now?"] });
-    fireEvent.click(screen.getByTestId("assistant-suggest"));
+    // The checklist is the empty thread's own message: send its starter and
+    // the failed ask comes back into the composer exactly like a typed one.
+    renderPanel({ onSend, messages: [userMessage("earlier")] });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "What needs me right now?" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-send"));
     await waitFor(() => expect(composerValue()).toBe("What needs me right now?"));
   });
 

@@ -7,7 +7,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import AssistantPopover, {
@@ -15,6 +15,7 @@ import AssistantPopover, {
   openAssistantWorkflowDraft,
 } from "./AssistantPopover";
 import { openAsk } from "./askControl";
+import AssistantPage from "../../pages/AssistantPage";
 import { sectionOf } from "../Shell";
 
 const CONV = "conv-1";
@@ -24,6 +25,8 @@ const OLD_CONV = "conv-old";
 const UNDATED_CONV = "conv-untitled";
 const NEW_CONV = "conv-new";
 const CONVS_PATH = "/api/v1/assistant/conversations?limit=5";
+/** Handoff §1: while the Threads menu or the full page stands, the read is 30. */
+const CONVS_MENU_PATH = "/api/v1/assistant/conversations?limit=30";
 const CREATE_PATH = "/api/v1/assistant/conversations";
 const MSG = "msg-1";
 
@@ -58,6 +61,30 @@ const NEW_ROW = {
   last_message_at: null,
 };
 
+/** CONTRACT §1's configured shape: what makes the empty thread's checklist (and
+ * its three starters) render — the send-path tests click one. */
+const STATUS_READY = {
+  chat_model: { configured: true, model: "qwen3-8-flash-next" },
+  speech_model: { configured: true, model: "qwen3-asr" },
+  decision_model: { configured: false, model: "" },
+  workers: { online: 1, sandbox_mode: "required" },
+  execution_mode: "inprocess",
+  github_credentials: [{ name: "GITHUB_TOKEN", scope: "org", used_by: 0 }],
+  projects: { count: 1 },
+  workflows: { count: 3, samples: 2, assigned: 1 },
+};
+
+/** CONTRACT §1 as this file's server answers it: an unconfigured box. */
+const STATUS_BODY = {
+  chat_model: { configured: false, model: "" },
+  speech_model: { configured: false, model: "" },
+  decision_model: { configured: false, model: "" },
+  workers: { online: 0, sandbox_mode: "off" },
+  execution_mode: "inprocess",
+  github_credentials: [],
+  projects: { count: 0 },
+  workflows: { count: 0, samples: 0, assigned: 0 },
+};
 const WIRE_PENDING = {
   id: MSG,
   kind: "approval_request",
@@ -111,6 +138,7 @@ const WIRE_QUESTION = {
 interface Stub {
   posted: { conversationId: string; body: string }[];
   created: number;
+  fetchMock: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -120,15 +148,19 @@ interface Stub {
  */
 function stubFetch(
   postResponses: (() => Response | Promise<Response>) | Array<() => Response | Promise<Response>>,
+  statusBody: unknown = STATUS_BODY,
 ): Stub {
   const queue = Array.isArray(postResponses) ? postResponses : [postResponses];
-  const stub: Stub = { posted: [], created: 0 };
+  const stub: Stub = { posted: [], created: 0, fetchMock: vi.fn() };
   let postCount = 0;
   const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     if (url === "/api/v1/me/preferences") return json({});
-    if (method === "GET" && url === CONVS_PATH) {
+    // A3's checklist read: the stub server has nothing set up, and the rows
+    // it answers with are MessageList's own test, not this file's subject.
+    if (url === "/api/v1/assistant/status") return json(statusBody);
+    if (method === "GET" && (url === CONVS_PATH || url === CONVS_MENU_PATH)) {
       return json({ conversations: [CONV_ROW, OLD_ROW, UNDATED_ROW], next_cursor: null });
     }
     if (method === "POST" && url === CREATE_PATH) {
@@ -150,7 +182,20 @@ function stubFetch(
     return json({ title: "Not Found", status: 404, detail: `unstubbed ${method} ${url}` }, 404);
   });
   vi.stubGlobal("fetch", fetchMock);
+  stub.fetchMock = fetchMock;
   return stub;
+}
+
+/** Names the current route into `sink` (what the exit-navigation test reads). */
+function LocationNames({ paths }: { paths: string[] }) {
+  const location = useLocation();
+  if (paths[paths.length - 1] !== location.pathname) paths.push(location.pathname);
+  return null;
+}
+
+/** How often the stub fetch saw `url`. */
+function requestCount(fetchMock: ReturnType<typeof stubFetch>["fetchMock"], url: string): number {
+  return fetchMock.mock.calls.filter((call) => String(call[0]) === url).length;
 }
 
 function renderPopover(props: ComponentProps<typeof AssistantPopover> = {}) {
@@ -165,6 +210,30 @@ function renderPopover(props: ComponentProps<typeof AssistantPopover> = {}) {
     </QueryClientProvider>,
   );
   return { ...result, queryClient };
+}
+
+/**
+ * Answer `matchMedia` as a `width`-px viewport would — the full page's two
+ * columns mount on that answer (handoff §1: the right column below ~1240px,
+ * the thread list below ~1000px), and jsdom's own `matchMedia` never matches.
+ */
+function stubViewport(width: number): void {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: (() => {
+      const min = /min-width:\s*([0-9.]+)px/.exec(query);
+      const max = /max-width:\s*([0-9.]+)px/.exec(query);
+      return (
+        (min === null || width >= Number(min[1])) && (max === null || width <= Number(max[1]))
+      );
+    })(),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
 }
 
 /** Open the popover and wait until the pending approval card is actable. */
@@ -216,8 +285,10 @@ describe("approval decision post body (ui-confirm)", () => {
     );
     await openToApproval();
     fireEvent.click(screen.getByTestId("assistant-approval-confirm"));
+    // Handoff §1: no `×` glyph — the line is the API's own sentence, and the
+    // failed style is carried by its border/ground, not a character.
     expect((await screen.findByTestId("assistant-error")).textContent).toBe(
-      "× approval request is no longer pending",
+      "approval request is no longer pending",
     );
   });
 });
@@ -282,7 +353,7 @@ describe("thread → workflow draft ask (2f)", () => {
     );
     act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
     const panel = await screen.findByTestId("assistant-panel");
-    expect(panel.getAttribute("data-variant")).toBe("docked");
+    expect(panel.getAttribute("data-variant")).toBe("dock");
     // The sheet is the right-hand column, and it reserves that width on the
     // shell's main area: the flag on the document element plus the CSS that
     // shrinks the content column and steps the thread page's fixed rails
@@ -292,7 +363,7 @@ describe("thread → workflow draft ask (2f)", () => {
     expect(dock.className).toContain("lg:left-auto");
     expect(dock.className).toContain("lg:w-[450px]");
     expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
-    const style = dock.querySelector("style") as HTMLStyleElement | null;
+    const style = screen.getByTestId("assistant-frame-css") as HTMLStyleElement;
     expect(style?.textContent).toContain("margin-right: 450px");
     expect(style?.textContent).toContain("width: calc(100% - 450px)");
     expect(style?.textContent).toContain("max-width: none");
@@ -302,6 +373,10 @@ describe("thread → workflow draft ask (2f)", () => {
     // The reservation is desktop-only: below the Shell's phone width the
     // sheet takes the screen and reserves no width at all.
     expect(style?.textContent).toContain("@media (min-width: 1024px)");
+    // Finding 10/§1: the floating Ask button stands down while the surface is
+    // open (every size — the popover, the side panel and the full page).
+    expect(style?.textContent).toContain('html[data-assistant-open=on] [data-testid="ask-fab"]');
+    expect(document.documentElement.getAttribute("data-assistant-open")).toBe("on");
     // And the chat it drafts from is still in the tree beside the dock.
     expect(screen.getByTestId("chat-behind")).toBeTruthy();
     await waitFor(() => expect(stub.posted).toHaveLength(1));
@@ -329,18 +404,19 @@ describe("thread → workflow draft ask (2f)", () => {
     act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
     await screen.findByTestId("assistant-panel");
     expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
-    // Shrink: back to the 400px popover; the column is the chat's again.
-    fireEvent.click(screen.getByTestId("assistant-shrink"));
+    // The side-panel button again: back to the 400px popover; the column is
+    // the chat's again (handoff §1's header verbs are a pair, not a ladder).
+    fireEvent.click(screen.getByTestId("assistant-dock"));
     expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
   });
 });
 
 /**
- * ui-newconv: the header's `New conversation` control and the Recent menu
- * (ADR-0050 part 1 stores many conversations per user; the popover used to
- * adopt the caller's newest one and never let go of it).
+ * Handoff §1: the header's five icon buttons. `New thread` clears the panel,
+ * `Threads` opens the sibling menu of the caller's threads, and the box's
+ * corner rule is that the menu is NOT inside the `overflow: hidden` panel.
  */
-describe("new conversation + recent menu (ui-newconv)", () => {
+describe("new thread + threads menu (handoff §1)", () => {
   it("New clears the panel and the next send posts to a FRESH conversation id", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
@@ -361,7 +437,7 @@ describe("new conversation + recent menu (ui-newconv)", () => {
     expect(stub.posted.filter((post) => post.conversationId === CONV)).toHaveLength(0);
   });
 
-  it("Recent lists the caller's last 5 conversations and switches back", async () => {
+  it("Threads lists the caller's conversations and switches back", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
@@ -370,10 +446,10 @@ describe("new conversation + recent menu (ui-newconv)", () => {
     const items = screen.getAllByTestId("assistant-history-item");
     expect(items).toHaveLength(3);
     // Newest first, active one checked, honest age next to each title.
-    expect(items[0].textContent).toContain("✓");
     expect(items[0].textContent).toContain("approvals");
+    expect(items[0].querySelector("svg")).toBeTruthy();
     expect(items[1].textContent).toContain("older thread");
-    expect(items[1].textContent).not.toContain("✓");
+    expect(items[1].querySelector("svg")).toBeNull();
     fireEvent.click(items[1]);
     // The switched conversation's (empty) transcript replaces conv-1's.
     await waitFor(() => expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull());
@@ -388,10 +464,45 @@ describe("new conversation + recent menu (ui-newconv)", () => {
     const items = screen.getAllByTestId("assistant-history-item");
     expect(items).toHaveLength(3);
     expect(items[2].textContent).toContain("Untitled");
-    expect(items[2].textContent).not.toContain("✓");
+    expect(items[2].querySelector("svg")).toBeNull();
   });
 
-  it("esc closes the Recent menu first, the panel second", async () => {
+  /**
+   * The menu holds the conversation list the header's button opens — 30 rows,
+   * the handoff's thread list — not the 5 the header needed for its title.
+   */
+  it("the open menu reads 30 threads; a closed one reads 5", async () => {
+    const fetchMock = stubFetch(() => json({ messages: [], next_cursor: null })).fetchMock;
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-approval-confirm");
+    expect(requestCount(fetchMock, CONVS_PATH)).toBe(1);
+    expect(requestCount(fetchMock, CONVS_MENU_PATH)).toBe(0);
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    await waitFor(() => expect(requestCount(fetchMock, CONVS_MENU_PATH)).toBe(1));
+  });
+
+  /** Handoff §1's corners rule: menus that leave the panel are SIBLINGS of it. */
+  it("the threads menu is a sibling of the overflow-hidden popover panel", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-approval-confirm");
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    const menu = screen.getByTestId("assistant-history-menu");
+    const panel = screen.getByTestId("assistant-panel");
+    expect(panel.className).toContain("overflow-hidden");
+    expect(panel.contains(menu)).toBe(false);
+    // The search field filters it without a round-trip.
+    fireEvent.change(screen.getByTestId("assistant-history-search"), {
+      target: { value: "older" },
+    });
+    const items = screen.getAllByTestId("assistant-history-item");
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("older thread");
+  });
+
+  it("esc closes the Threads menu first, the panel second", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
@@ -403,6 +514,182 @@ describe("new conversation + recent menu (ui-newconv)", () => {
     expect(screen.getByTestId("assistant-popover")).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByTestId("assistant-popover")).toBeNull();
+  });
+});
+
+/**
+ * Handoff §1: three sizes, one conversation. The popover's side-panel button
+ * docks the SAME conversation beside the page and the page narrows; the button
+ * again returns it to the popover. The full-page button navigates to
+ * `/assistant` — and Exit full page navigates back and comes home as the
+ * POPOVER, never the side panel.
+ */
+describe("the three sizes (handoff §1)", () => {
+  it("popover → side panel → popover keeps the draft and releases the column", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: "a typed draft" } });
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
+    expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("assistant-dock"));
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("dock");
+    expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
+    // Same conversation, same draft: switching size is not a new surface.
+    expect(
+      (screen.getByTestId("assistant-composer-input") as HTMLTextAreaElement).value,
+    ).toBe("a typed draft");
+    // The side-panel button now says how to get back.
+    expect(screen.getByTestId("assistant-dock").title).toBe("Back to popover");
+
+    fireEvent.click(screen.getByTestId("assistant-dock"));
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
+    expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
+  });
+
+  it("popover → full page → exit comes back as the popover on the route it left", async () => {
+    stubViewport(1440);
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const seen: string[] = [];
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/p/feature-delivery"]}>
+          <Routes>
+            <Route
+              path="/assistant"
+              element={
+                <>
+                  <LocationNames paths={seen} />
+                  <AssistantPage />
+                </>
+              }
+            />
+            <Route
+              path="*"
+              element={
+                <>
+                  <LocationNames paths={seen} />
+                  <p data-testid="page-behind">the project page</p>
+                </>
+              }
+            />
+          </Routes>
+          <AssistantPopover />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-composer-input");
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
+
+    // Open full page: the URL is /assistant, the sidebar's page is gone, and
+    // the conversation stands in three columns.
+    fireEvent.click(screen.getByTestId("assistant-expand"));
+    await screen.findByTestId("assistant-page");
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("page");
+    expect(screen.getByTestId("assistant-page-threads")).toBeTruthy();
+    expect(screen.getByTestId("assistant-page-side").textContent).toContain("LOOKING AT");
+    // The floating popover is gone: one surface at a time.
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+
+    // Exit full page: back to the route the ask came from, as the POPOVER.
+    const exit = screen.getByTestId("assistant-expand") as HTMLButtonElement;
+    expect(exit.title).toBe("Exit full page");
+    fireEvent.click(exit);
+    await waitFor(() => expect(screen.queryByTestId("assistant-page")).toBeNull());
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
+    expect(screen.getByTestId("page-behind")).toBeTruthy();
+    expect(seen[seen.length - 1]).toBe("/p/feature-delivery");
+    vi.unstubAllGlobals();
+  });
+
+  it("visiting /assistant directly opens the full page", async () => {
+    stubViewport(1440);
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/assistant"]}>
+          <Routes>
+            <Route path="/assistant" element={<AssistantPage />} />
+          </Routes>
+          <AssistantPopover />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId("assistant-page");
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("page");
+    // The sidebar's page is not covered up: the conversation lives IN the
+    // route's own column, and the floating popover does not also stand.
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Handoff §1's column rule: below ~1240px the right column hides; below
+   * ~1000px the thread list hides too and New thread / Threads come back to the
+   * header. `matchMedia` is what the codebase asks (Shell's `useMediaQuery`).
+   */
+  describe("the full page's columns follow the viewport", () => {
+    /** The page mode at `width`; the matchMedia stub stays live while it is
+     * mounted (a re-render re-asks the question), and the `afterEach` clears. */
+    async function openPageAt(width: number) {
+      stubViewport(width);
+      stubFetch(() => json({ messages: [], next_cursor: null }));
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/assistant"]}>
+            <Routes>
+              <Route path="/assistant" element={<AssistantPage />} />
+            </Routes>
+            <AssistantPopover />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await screen.findByTestId("assistant-page");
+    }
+
+    afterEach(() => {
+      cleanup();
+      vi.unstubAllGlobals();
+    });
+
+    it("1300: thread list, conversation and the context column", async () => {
+      await openPageAt(1300);
+      expect(screen.getByTestId("assistant-page-threads")).toBeTruthy();
+      const side = screen.getByTestId("assistant-page-side");
+      expect(side.textContent).toContain("LOOKING AT");
+      expect(side.textContent).toContain("Nothing changed yet.");
+      expect(side.textContent).toContain("Ask when it looks risky");
+      // The thread list is the column's, so the header does not duplicate it.
+      expect(screen.queryByTestId("assistant-new-conversation")).toBeNull();
+      // Handoff §1: a change row reads what it did and says it stays done.
+      expect(side.querySelector('[data-testid="assistant-page-change"]')).toBeNull();
+    });
+
+    it("1100: the context column is gone, the thread list stays", async () => {
+      await openPageAt(1100);
+      expect(screen.getByTestId("assistant-page-threads")).toBeTruthy();
+      expect(screen.queryByTestId("assistant-page-side")).toBeNull();
+      expect(screen.queryByTestId("assistant-new-conversation")).toBeNull();
+    });
+
+    it("900: the thread list is gone and its buttons are back in the header", async () => {
+      await openPageAt(900);
+      expect(screen.queryByTestId("assistant-page-threads")).toBeNull();
+      expect(screen.getByTestId("assistant-new-conversation")).toBeTruthy();
+      expect(screen.getByTestId("assistant-history")).toBeTruthy();
+    });
   });
 });
 
@@ -656,10 +943,10 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     expect((input as HTMLInputElement).value).toBe("my new draft");
   });
 
-  it("the expanded view shows the failure line and keeps the ask too", async () => {
+  it("the side panel shows the failure line and keeps the ask too", async () => {
     const { input } = await armedComposer(stubFetch([capProblem, okTurn]), ASK);
-    fireEvent.click(screen.getByTestId("assistant-expand"));
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("expanded");
+    fireEvent.click(screen.getByTestId("assistant-dock"));
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("dock");
     fireEvent.click(screen.getByTestId("assistant-send"));
     const line = await screen.findByTestId("assistant-error");
     expect(line.textContent).toContain("hit its step limit before answering");
@@ -697,7 +984,7 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     });
     fireEvent.click(await screen.findByTestId("assistant-approval-confirm"));
     const line = await screen.findByTestId("assistant-error");
-    expect(line.textContent).toBe("× approval request is no longer pending");
+    expect(line.textContent).toBe("approval request is no longer pending");
     // The composer still holds what the person typed — nothing was restored
     // over it, and no sentence claims their question was lost.
     expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).value).toBe(
@@ -746,15 +1033,14 @@ describe("menu-close coordination (issue #62)", () => {
 });
 
 /**
- * Issue #63: clicking a suggested question ("What needs me right now?")
- * showed `thinking…` while the suggestions stayed on screen and the clicked
- * question appeared nowhere. The new contract: the click puts the question
- * into the transcript as the person's OWN message bubble immediately (the
- * suggestions disappear with it), `thinking…` follows, and the reply lands
- * under it. A failed request keeps the person's message on screen with the
- * honest error line UNDER it and a `Retry` that sends the same words again.
+ * Issue #63, re-anchored on handoff §1/§2: the empty thread's questions are the
+ * setup checklist's starters, not a static chip table. Clicking one shows
+ * `thinking…` and the clicked question appears IMMEDIATELY as the person's own
+ * message bubble (the checklist leaves with it); a failed request keeps the
+ * message on screen with the honest error line UNDER it and a `Retry` that
+ * sends the same words again.
  */
-describe("a clicked suggestion becomes the person's message (issue #63)", () => {
+describe("a clicked starter becomes the person's message (issue #63, handoff §2)", () => {
   /** The server echo of the asked text + one plain answer row. */
   const echoTurn = (text: string) =>
     json({
@@ -793,29 +1079,32 @@ describe("a clicked suggestion becomes the person's message (issue #63)", () => 
       503,
     );
 
-  /** Open the popover over a FRESH conversation (empty transcript ⇒ the
-   * "FOR THIS PAGE" chips render) and return the first chip with its text. */
-  async function openToFreshSuggestions() {
+  /** Open the popover over a FRESH conversation (empty transcript ⇒ the setup
+   * checklist renders) and return its first starter with its text. */
+  async function openToFreshStarters(
+    postResponses: () => Response | Promise<Response> = () => json({ messages: [], next_cursor: null }),
+  ) {
+    stubFetch(postResponses, STATUS_READY);
     renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-composer-input");
     fireEvent.click(screen.getByTestId("assistant-new-conversation"));
-    const [chip] = await screen.findAllByTestId("assistant-suggest");
+    const [chip] = await screen.findAllByTestId("assistant-starter");
     return { chip, text: (chip.textContent ?? "").trim() };
   }
 
-  it("the click hides the suggestions and shows the question as the person's bubble while thinking", async () => {
+  it("the click hides the checklist and shows the question as the person's bubble while thinking", async () => {
     let settleTurn: (value: Response) => void = () => {};
     const turn = new Promise<Response>((resolve) => {
       settleTurn = resolve;
     });
-    stubFetch(() => turn);
-    const { chip, text } = await openToFreshSuggestions();
+    const { chip, text } = await openToFreshStarters(() => turn);
+    expect(text.length).toBeGreaterThan(0);
     fireEvent.click(chip);
-    // Same instant: the chips are gone and the clicked question is the
+    // Same instant: the checklist is gone and the clicked question is the
     // person's own transcript row — exactly as if it had been typed+sent.
-    expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
-    expect(screen.queryByTestId("assistant-empty")).toBeNull();
+    expect(screen.queryAllByTestId("assistant-setup")).toHaveLength(0);
+    expect(screen.queryAllByTestId("assistant-starter")).toHaveLength(0);
     expect(screen.getByTestId("assistant-msg-user").textContent).toBe(text);
     // `thinking…` follows the bubble; the composer locks with the turn.
     await screen.findByTestId("assistant-thinking");
@@ -833,14 +1122,19 @@ describe("a clicked suggestion becomes the person's message (issue #63)", () => 
     expect((await screen.findByTestId("assistant-answer")).textContent).toContain(
       "Nothing is blocked on you right now.",
     );
-    // The transcript stays open: on the next empty-state there are no chips
-    // to click over a live conversation.
-    expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
+    // The transcript stays open: the checklist is the EMPTY thread's own
+    // message, so a live conversation shows no starters.
+    expect(screen.queryAllByTestId("assistant-starter")).toHaveLength(0);
   });
 
   it("a failed request keeps the message on screen, lines the error under it, and Retry sends the same words", async () => {
-    const stub = stubFetch([modelTimeout, () => echoTurn("x")]);
-    const { chip, text } = await openToFreshSuggestions();
+    const stub = stubFetch([modelTimeout, () => echoTurn("x")], STATUS_READY);
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-composer-input");
+    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    const [chip] = await screen.findAllByTestId("assistant-starter");
+    const text = (chip.textContent ?? "").trim();
     fireEvent.click(chip);
     const line = await screen.findByTestId("assistant-error");
     // The person's message STAYS, with the line under it — not a banner at
@@ -872,8 +1166,7 @@ describe("a clicked suggestion becomes the person's message (issue #63)", () => 
     const turn = new Promise<Response>((resolve) => {
       settleTurn = resolve;
     });
-    stubFetch(() => turn);
-    const { text } = await openToFreshSuggestions();
+    await openToFreshStarters(() => turn);
     const input = screen.getByTestId("assistant-composer-input");
     fireEvent.change(input, { target: { value: "why is run 4f2a stuck?" } });
     fireEvent.click(screen.getByTestId("assistant-send"));
@@ -882,11 +1175,9 @@ describe("a clicked suggestion becomes the person's message (issue #63)", () => 
       settleTurn(echoTurn("why is run 4f2a stuck?"));
     });
     await waitFor(() => expect(screen.getAllByTestId("assistant-msg-user")).toHaveLength(1));
-    // The untouched suggestion chip is still there for later (the empty
-    // state only ever renders with an empty transcript, so the live
-    // conversation shows none).
-    expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
-    expect(text).not.toBe("");
+    // The checklist the person did not click is gone with the first message:
+    // the empty state only ever renders with an empty transcript.
+    expect(screen.queryAllByTestId("assistant-starter")).toHaveLength(0);
   });
 });
 

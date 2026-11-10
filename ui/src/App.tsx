@@ -61,6 +61,10 @@ const Projects = lazy(() => import("./pages/Projects"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const Steps = lazy(() => import("./pages/Steps"));
 const Threads = lazy(() => import("./pages/Threads"));
+// The assistant's full page (handoff §1): a real route so the URL is shareable
+// and the sidebar stays; the conversation engine is mounted by `Shell` and
+// portals its page-mode frame into this route's host element.
+const AssistantPage = lazy(() => import("./pages/AssistantPage"));
 
 /**
  * The route chunk's loading state is the line every page already prints while
@@ -217,6 +221,19 @@ export default function App() {
             repository Lanes view, and the pages are unmounted. */}
           <Route path="/inbox" element={<Navigate to="/" replace />} />
           <Route path="/board" element={<Navigate to="/" replace />} />
+          {/* The assistant's full page (handoff §1: "the full page is a real
+              route"). Inside the Shell, so the sidebar stays; the conversation
+              engine lives in `Shell` and portals its page-mode frame here. */}
+          <Route
+            path="/assistant"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<RouteFallback label="Loading the assistant" />}>
+                  <AssistantPage />
+                </Suspense>
+              </RequireAuth>
+            }
+          />
           {/* Catch up (design 8a, ADR-0078): the reader's own pile of pieces of
             work. The piece page and the tour player are built separately; only
             this route is mounted here. */}

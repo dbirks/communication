@@ -1,36 +1,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconMinimize, IconPlus } from "@tabler/icons-react";
-import { Button } from "../ds/Button";
+import {
+  IconArrowsDiagonal,
+  IconArrowsDiagonalMinimize2,
+  IconCheck,
+  IconEdit,
+  IconLayoutSidebarRight,
+  IconMessages,
+  IconPlus,
+  IconSearch,
+  IconX,
+} from "@tabler/icons-react";
 import { MenuArrow } from "../ds/Menu";
 import { formatAge } from "../../lib/format";
 import { ChangeChip } from "./ChangeChip";
 import Composer, { type ComposerSendOptions } from "./Composer";
 import { draftLinkOf } from "./draftSteps";
 import MessageList from "./MessageList";
+import { TRUST_LEVELS } from "./types";
 import type { AssistantChange, AssistantMessage, TrustLevel } from "./types";
 
 /**
- * The assistant surface in both sizes (2a/3d/4d popover, 2c expanded) —
- * the "Six Directions" app-shell assistant. Purely presentational: the
- * conversation, changes and trust level flow in as props (the caller owns
- * the ADR-0050 conversation routes), and every action (send, answer,
- * confirm/dismiss, navigation, undo, expand/shrink/close) comes back
- * through a callback.
+ * The assistant surface in its three sizes (handoff §1): the 400px bottom-right
+ * popover, the 450px side panel the page narrows beside, and the full page at
+ * `/assistant`. Purely presentational: the conversation, threads and trust
+ * level flow in as props (the caller owns the ADR-0050 conversation routes),
+ * and every action (send, answer, confirm/dismiss, navigation, undo, dock,
+ * full page, close) comes back through a callback.
  *
- * What this component owns itself: the composer draft, the mic
- * (Web Speech API, via useSpeechToText — hidden where unsupported), the
- * esc-to-close behaviour and the empty-state suggestion chips.
+ * What this component owns itself: the composer draft, the esc-to-close
+ * behaviour, and the header's Threads menu box (whose OPEN state the caller
+ * holds, because the threads read widens to 30 rows while the menu stands).
  *
- * `variant="popover"` is the 400px bottom-right panel (1px ink border,
- * radius 4, hard 2px shadow); `variant="expanded"` is the full content
- * area with the conversation column centred at max 680px.
+ * The three old-structure pieces this replaces:
+ *  - the ▾ Recent menu and the ⤢ / `esc` text controls — the header is five
+ *    26px Tabler icon buttons now (new thread, threads, side panel, full page,
+ *    close), with the wording in `title` and the accessible name;
+ *  - the static "FOR THIS PAGE" suggestion chips — an empty thread is the
+ *    setup checklist's (`MessageList`'s `showSetup`), not a chip table;
+ *  - a menu INSIDE the panel — handoff §1 requires menus that leave the panel
+ *    to render as SIBLINGS of it (the panel clips with `overflow: hidden`), so
+ *    the threads box is a sibling of the panel element, not a descendant.
  *
- * When a turn's answer links the library draft the assistant saved
- * (design 2f: the server's `Open draft → /workflows/…` link rides the
- * answer's `links[]`), the wide variants carry that link back into the
- * footer as the `Open draft` action the design draws beside the composer
- * (rcn-2f round 7). It is hidden until such a turn exists — the panel
- * never offers a door to a draft nobody saved.
+ * When a turn's answer links the library draft the assistant saved (design 2f:
+ * the server's `Open draft → /workflows/…` link rides the answer's `links[]`),
+ * the wide variants carry that link back into the footer as the `Open draft`
+ * action the design draws beside the composer. It is hidden until such a turn
+ * exists — the panel never offers a door to a draft nobody saved.
  */
 /**
  * What an ask round-trip may report back (assistant-lost-ask): a send that
@@ -54,8 +69,9 @@ export interface ComposerRestore {
 }
 
 /**
- * One of the caller's recent conversations for the "Recent" menu — the
- * newest `last_message_at` first (up to 5), straight off the list API.
+ * One of the caller's threads for the header's Threads menu and the full
+ * page's thread column — newest `last_message_at` first, straight off the
+ * list API.
  */
 export interface RecentConversation {
   id: string;
@@ -65,22 +81,22 @@ export interface RecentConversation {
 
 export interface AssistantPanelProps {
   /**
-   * `popover`: the 400px floating box. `expanded`: the ⌘K assistant over the
-   * content area, its conversation centred at 680px. `docked` (design 2f,
-   * rcn-2f review item 1): the SAME full-size panel, laid out for the column
-   * it is handed beside the chat it drafts from.
+   * `popover`: the 400px floating box (ink border, clipped corners).
+   * `dock`: the 450px panel the page narrows beside. `page`: the conversation
+   * column of the full `/assistant` route (its content centred at 720px).
    */
-  variant: "popover" | "expanded" | "docked";
+  variant: "popover" | "dock" | "page";
   /**
-   * Popover: the page-context chip label (`home`, `feature-delivery`,
-   * `run 9c1e`…) shown in the composer; it updates on navigation while
-   * the conversation stays. Expanded: the `opened from …` chip.
+   * The page-context chip label (`today`, `feature-delivery`, `run 9c1e`…):
+   * what the ask is ABOUT when the surface was opened from a page. The header
+   * names the thread; this names the subject to assistive tech (the composer's
+   * `askLabel`) and, on a thread with no title yet, stands in for one.
    */
   contextLabel: string;
   /**
    * The chat the panel was opened FROM (the 2f thread → workflow draft ask).
-   * When set, the header chip reads `from “<title>”` instead of the bare
-   * section name the `contextLabel` would show (`opened from threads`).
+   * A thread that has no title of its own reads as `from “<this>”` rather
+   * than the bare section name (rcn-6 review).
    */
   chatContext?: string | null;
   /** Transcript, oldest first; `change` rows are rendered by the chip. */
@@ -91,12 +107,7 @@ export interface AssistantPanelProps {
   changes?: AssistantChange[];
   onUndoChange?: (changeId: string) => void;
   onUndoAll?: () => void;
-  /**
-   * Empty-state "FOR THIS PAGE" chips — at most 3 are rendered, each
-   * sends its text as a plain question through onSend.
-   */
-  suggestions?: string[];
-  /** Send one plain-text message (composer, free text, suggestion chip).
+  /** Send one plain-text message (composer, free text, checklist starter).
    * `options` rides the composer's own extras: whether the text arrived by
    * dictation, and the page context attached to it (CONTRACT §2). A caller
    * that ignores it still receives the plain ask. */
@@ -114,86 +125,189 @@ export interface AssistantPanelProps {
   onConfirmApproval: (messageId: string) => void;
   /** `Not now` on a pending approval_request (names the message id). */
   onDismissApproval: (messageId: string) => void;
-  /** Navigate to a `Go ›` link row's route. */
+  /** Navigate to a `Go` link row's route. */
   onGo: (route: string) => void;
   /**
-   * `New conversation` header control: clears the panel so the next send
+   * `New thread` header control: clears the panel so the next send
    * starts a fresh conversation (the caller creates it and reports the id
    * back through the normal send round-trip).
    */
   onNewConversation?: () => void;
-  /** Caller's last 5 conversations (newest first) for the Recent menu. */
+  /** Caller's threads (newest first) for the Threads menu. */
   recentConversations?: RecentConversation[];
-  /** The conversation currently displayed, if any (the Recent menu's ✓). */
+  /** The conversation currently displayed, if any (the menu's ✓). */
   activeConversationId?: string | null;
-  /** Switch the panel back to an existing conversation (Recent menu). */
+  /** Switch the panel back to an existing conversation (Threads menu). */
   onSwitchConversation?: (id: string) => void;
-  /** Popover only: grow into the expanded view (⤢). */
-  onExpand?: () => void;
-  /** Expanded only: back to the 400px popover. */
-  onShrink?: () => void;
+  /**
+   * The Threads menu's open state. The CALLER holds it, because the threads
+   * read raises its limit to 30 rows while the menu (or the full page) stands.
+   */
+  threadsMenuOpen?: boolean;
+  onThreadsMenuOpenChange?: (open: boolean) => void;
+  /** Side-panel toggle (popover ⇄ dock). Absent = no button. */
+  onDock?: () => void;
+  /** Full-page toggle (⇄ `/assistant`). Absent = no button. */
+  onExpandPage?: () => void;
+  /** Whether the header draws New thread / Threads at all. */
+  showThreadControls?: boolean;
   /** esc closes whatever the user opened (the panel itself or its page). */
   onClose: () => void;
   /** A turn is in flight: shows `thinking…` and locks the composer. */
   busy?: boolean;
 }
 
-const POPOVER_WIDTH = 400;
+/** The header's height in the popover and the side panel (padding 6/6 + 26 + border). */
+const HEADER_HEIGHT_PX = 39;
+/** The inset the menu box keeps from the panel's own edges. */
+const MENU_INSET_PX = 8;
+/** The Threads button's centre, measured from the header's right edge. */
+const THREADS_BUTTON_CENTRE_PX = 111;
 
-const headerButtonStyle: React.CSSProperties = {
-  fontFamily: "var(--font-mono)",
-  fontSize: 10.5,
-  border: "none",
-  background: "transparent",
-  color: "var(--color-ink-2)",
-  cursor: "pointer",
-  padding: "2px 4px",
-};
+/** A 26px header icon button (handoff §1): wording in `title` + name. */
+function HeaderIconButton({
+  testid,
+  title,
+  pressed = false,
+  onClick,
+  children,
+}: {
+  testid: string;
+  title: string;
+  pressed?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      title={title}
+      aria-label={title}
+      aria-pressed={pressed || undefined}
+      onClick={onClick}
+      className={`grid h-[26px] w-[26px] shrink-0 cursor-pointer place-items-center rounded-[4px] border-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+        pressed ? "bg-fill-edge text-ink" : "bg-transparent text-ink-2 hover:bg-fill"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** One thread row: title + honest age, the current one on the accent wash. */
+function ThreadRow({
+  conversation,
+  active,
+  onSelect,
+  rowRef,
+}: {
+  conversation: RecentConversation;
+  active: boolean;
+  onSelect: (id: string) => void;
+  rowRef?: { current: HTMLButtonElement | null } | ((node: HTMLButtonElement | null) => void);
+}) {
+  return (
+    <button
+      type="button"
+      ref={rowRef}
+      role="menuitem"
+      data-testid="assistant-history-item"
+      data-conversation-id={conversation.id}
+      onClick={() => onSelect(conversation.id)}
+      className={`flex w-full cursor-pointer items-baseline gap-[6px] rounded-[4px] border-none p-[6px_8px] text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+        active ? "bg-accent-wash" : "bg-transparent hover:bg-accent-wash"
+      }`}
+    >
+      <span
+        className={`min-w-0 flex-1 truncate text-[12.5px] text-ink ${active ? "font-semibold" : ""}`}
+      >
+        {conversation.title ?? "Untitled"}
+      </span>
+      <span className="shrink-0 font-mono text-[11px] text-faint">
+        {formatAge(conversation.lastMessageAt)}
+      </span>
+      <span className="grid w-[13px] shrink-0 place-items-center">
+        {active ? <IconCheck size={12} stroke={2} aria-hidden className="shrink-0" /> : null}
+      </span>
+    </button>
+  );
+}
+
+/** The "Search threads" field both thread lists draw. */
+function ThreadSearch({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <span className="flex items-center gap-[6px] rounded-[4px] border border-line-strong px-[8px] py-[5px] text-[12.5px] text-faint">
+      <IconSearch size={13} stroke={2} aria-hidden className="shrink-0" />
+      <input
+        type="search"
+        data-testid="assistant-history-search"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Search threads"
+        aria-label="Search threads"
+        className="min-w-0 flex-1 border-none bg-transparent text-[12.5px] text-ink outline-none placeholder:text-faint"
+      />
+    </span>
+  );
+}
+
+/** Threads filtered by the search box's text (title match, case-insensitive). */
+function filterThreads(rows: RecentConversation[], query: string): RecentConversation[] {
+  const needle = query.trim().toLowerCase();
+  if (needle.length === 0) return rows;
+  return rows.filter((row) => (row.title ?? "untitled").toLowerCase().includes(needle));
+}
 
 /**
- * The header's "Recent" menu (ui-newconv; ADR-0050 part 1): the caller's
- * last 5 conversations by title + age, newest first. Purely presentational
- * — switching reports the id back through onSwitch. Same interaction
- * contract as TrustPill: esc closes only the menu (stopPropagation keeps
- * the panel open), arrows + Enter pick an item, tabbing away closes it.
+ * The header's Threads menu (handoff §1, mock L381–410). A SIBLING of the
+ * panel element — the popover clips with `overflow: hidden`, so a menu that
+ * lives inside it would be cut off. The ds box (white, 1px ink border, radius
+ * 4, 2px ink shadow, 8px padding) with a 9px rotated-square arrow on the
+ * Threads button, the search field, a New thread row and one row per thread.
  */
-function RecentMenu({
+export function ThreadsMenu({
   conversations,
   activeId,
   onSwitch,
-  compact = false,
+  onNewConversation,
+  headerHeightPx = HEADER_HEIGHT_PX,
+  onClose,
 }: {
   conversations: RecentConversation[];
   activeId: string | null;
   onSwitch: (id: string) => void;
-  /** Popover: the word `Recent` is kept for assistive tech and the DOM but
-   * hidden on screen — the 400px header cannot fit it whole (2f review:
-   * the header controls wrapped onto two lines at 390). */
-  compact?: boolean;
+  onNewConversation: () => void;
+  headerHeightPx?: number;
+  onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  const boxRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const rows = filterThreads(conversations, query);
 
-  const close = (refocus: boolean) => {
-    setOpen(false);
-    if (refocus) triggerRef.current?.focus();
-  };
-
-  const handleBlur = (event: React.FocusEvent) => {
-    const next = event.relatedTarget;
-    if (
-      next &&
-      !menuRef.current?.contains(next as Node) &&
-      !triggerRef.current?.contains(next as Node)
-    ) {
-      setOpen(false);
-    }
-  };
+  // Esc closes the menu, not the panel behind it (the panel listens on the
+  // window; stopping here keeps both gestures distinct).
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      onClose();
+    };
+    box.addEventListener("keydown", onKey);
+    return () => box.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const moveFocus = (to: number) => {
-    const count = conversations.length;
+    const count = rows.length;
     if (count === 0) return;
     itemRefs.current[(to + count) % count]?.focus();
   };
@@ -202,11 +316,6 @@ function RecentMenu({
     const items = itemRefs.current;
     const focused = items.findIndex((item) => item === document.activeElement);
     switch (event.key) {
-      case "Escape":
-        // Close the menu, not the panel (same contract as the trust pill).
-        event.stopPropagation();
-        close(true);
-        break;
       case "ArrowDown":
         event.preventDefault();
         moveFocus(focused === -1 ? 0 : focused + 1);
@@ -227,153 +336,219 @@ function RecentMenu({
       case " ":
         if (focused !== -1) {
           event.preventDefault();
-          onSwitch(conversations[focused].id);
-          close(true);
+          onSwitch(items[focused]?.getAttribute("data-conversation-id") ?? "");
         }
         break;
     }
   };
 
   return (
-    <div onBlur={handleBlur} style={{ position: "relative", display: "inline-flex" }}>
-      <button
-        ref={triggerRef}
-        type="button"
-        data-testid="assistant-history"
-        aria-haspopup="true"
-        aria-expanded={open}
-        aria-label="Recent threads"
-        onClick={() => {
-          setOpen((nextOpen) => !nextOpen);
-          if (open) return;
-          requestAnimationFrame(() => itemRefs.current[0]?.focus());
+    <div
+      ref={boxRef}
+      role="menu"
+      aria-label="Threads"
+      data-testid="assistant-history-menu"
+      onKeyDown={onMenuKeyDown}
+      className="absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[4px] border border-ink bg-surface p-2 shadow-raised"
+      style={{ top: headerHeightPx + 5, right: MENU_INSET_PX }}
+    >
+      {/* The ds pointer arrow (9px rotated square) centred on the Threads
+          button: 111px from the header's right edge, less the box's own 8px
+          inset and half the square. `MenuArrow` takes the placement a surface
+          that positions its own box computes (as `ComposerMenu` does). */}
+      <MenuArrow
+        side="bottom"
+        className="z-40"
+        style={{
+          left: "auto",
+          right: THREADS_BUTTON_CENTRE_PX - MENU_INSET_PX - 4.5,
+          top: -5,
+          transform: "rotate(45deg)",
         }}
-        style={{ ...headerButtonStyle, whiteSpace: "nowrap" }}
+      />
+      <ThreadSearch value={query} onChange={setQuery} />
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="assistant-menu-new-thread"
+        onClick={() => {
+          onNewConversation();
+          onClose();
+        }}
+        className="flex w-full cursor-pointer items-center gap-[6px] rounded-[4px] border-none bg-transparent p-[6px_8px] text-left text-[12.5px] font-semibold text-accent-text hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
-        {compact ? <span className="sr-only">Recent </span> : "Recent "}
-        {open ? "▴" : "▾"}
+        <IconPlus size={13} stroke={2} aria-hidden className="shrink-0" />
+        New thread
       </button>
-      {open ? (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="Recent threads"
-          data-testid="assistant-history-menu"
-          onKeyDown={onMenuKeyDown}
-          style={{
-            position: "absolute",
-            right: 0,
-            top: "calc(100% + 4px)",
-            zIndex: 30,
-            width: 300,
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-ink)",
-            borderRadius: 4,
-            boxShadow: "2px 2px 0 var(--color-ink)",
-            padding: 8,
-          }}
-        >
-          {conversations.length === 0 ? (
-            <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
-              No threads yet — the next answer starts one.
-            </p>
-          ) : (
-            conversations.map((conversation, index) => {
-              const active = conversation.id === activeId;
-              return (
-                <button
-                  key={conversation.id}
-                  ref={(node) => {
-                    itemRefs.current[index] = node;
-                  }}
-                  type="button"
-                  role="menuitem"
-                  data-testid="assistant-history-item"
-                  onClick={() => {
-                    onSwitch(conversation.id);
-                    close(true);
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: 6,
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "5px 8px",
-                    borderRadius: 4,
-                    border: "none",
-                    background: active ? "var(--color-accent-wash)" : "transparent",
-                    cursor: "pointer",
-                  }}
-                >
-                  <span
-                    className="min-w-0 flex-1 truncate text-[12.5px] text-ink"
-                    style={{ fontWeight: active ? 600 : 400 }}
-                  >
-                    {active ? "✓ " : ""}
-                    {conversation.title ?? "Untitled"}
-                  </span>
-                  <span className="font-mono text-[9.5px] text-faint">
-                    {formatAge(conversation.lastMessageAt)}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      ) : null}
-      {/* Handoff 3c's rule ("all popovers/menus get a pointer arrow") in this
-          hand-rolled surface: the menu places its own box, so it mounts the
-          shared arrow on the wrapper that hugs its trigger — the same 9px
-          square `Menu`/`Popover` draw, with the same `menu-arrow` hook. */}
-      {open ? <MenuArrow centerOnTrigger /> : null}
+      <span className="my-[4px] block h-px bg-line" aria-hidden="true" />
+      {rows.length === 0 ? (
+        <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
+          {conversations.length === 0
+            ? "No threads yet — the next answer starts one."
+            : "No thread matches that search."}
+        </p>
+      ) : (
+        rows.map((conversation, index) => (
+          <ThreadRow
+            key={conversation.id}
+            conversation={conversation}
+            active={conversation.id === activeId}
+            rowRef={(node) => {
+              itemRefs.current[index] = node;
+            }}
+            onSelect={(id) => {
+              if (id.length === 0) return;
+              onSwitch(id);
+              onClose();
+            }}
+          />
+        ))
+      )}
     </div>
   );
 }
 
-function EmptyState({
-  suggestions,
-  onSuggestion,
+/**
+ * The full page's left thread column (handoff §1, mock L100–125): the Assistant
+ * title with its New thread button, the search field, and the rows.
+ */
+export function AssistantThreadColumn({
+  conversations,
+  activeId,
+  onSwitch,
+  onNewConversation,
 }: {
-  suggestions: string[];
-  onSuggestion: (text: string) => void;
+  conversations: RecentConversation[];
+  activeId: string | null;
+  onSwitch: (id: string) => void;
+  onNewConversation: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const rows = filterThreads(conversations, query);
+  return (
+    <aside
+      data-testid="assistant-page-threads"
+      className="flex w-[240px] shrink-0 flex-col gap-[6px] border-r border-line bg-surface px-[10px] py-3"
+    >
+      <span className="flex items-center gap-[6px] px-1 pb-1">
+        <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink">
+          Assistant
+        </span>
+        <HeaderIconButton testid="assistant-page-new-thread" title="New thread" onClick={onNewConversation}>
+          <IconEdit size={15} stroke={2} aria-hidden className="shrink-0" />
+        </HeaderIconButton>
+      </span>
+      <ThreadSearch value={query} onChange={setQuery} />
+      <span className="px-1 pb-[2px] pt-2 font-mono text-[10px] tracking-[0.06em] text-faint">
+        THREADS
+      </span>
+      <span className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto">
+        {rows.length === 0 ? (
+          <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
+            {conversations.length === 0
+              ? "No threads yet — the next answer starts one."
+              : "No thread matches that search."}
+          </p>
+        ) : (
+          rows.map((conversation) => (
+            <ThreadRow
+              key={conversation.id}
+              conversation={conversation}
+              active={conversation.id === activeId}
+              onSelect={onSwitch}
+            />
+          ))
+        )}
+      </span>
+    </aside>
+  );
+}
+
+/**
+ * The full page's right column (handoff §1, mock L456–480): LOOKING AT, the
+ * thread's changes, and the trust level in one line each.
+ */
+export function AssistantPageSideColumn({
+  pageContextOn,
+  pageLabel,
+  pageRoute,
+  changes,
+  trustLevel,
+}: {
+  pageContextOn: boolean;
+  pageLabel: string;
+  pageRoute: string;
+  changes: AssistantChange[];
+  trustLevel: TrustLevel;
+}) {
+  const trust = TRUST_LEVELS.find((level) => level.value === trustLevel);
+  return (
+    <aside
+      data-testid="assistant-page-side"
+      className="flex w-[260px] shrink-0 flex-col gap-[8px] overflow-y-auto border-l border-line bg-paper px-[12px] py-[14px]"
+    >
+      <span className="font-mono text-[10px] tracking-[0.06em] text-muted">LOOKING AT</span>
+      <span className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2">
+        <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">
+          {pageContextOn ? pageLabel : "Page context off"}
+        </span>
+        {pageContextOn ? (
+          <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{pageRoute}</span>
+        ) : null}
+      </span>
+      <span className="mt-[8px] font-mono text-[10px] tracking-[0.06em] text-muted">
+        CHANGES IN THIS THREAD
+      </span>
+      {changes.length === 0 ? (
+        <p className="m-0 px-[2px] text-[12px] text-faint">Nothing changed yet.</p>
+      ) : (
+        changes.map((change) => (
+          <span
+            key={change.id}
+            data-testid="assistant-page-change"
+            className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2"
+          >
+            <span className="min-w-0 text-[12.5px] text-ink">{change.summary}</span>
+            <span className="min-w-0 font-mono text-[10px] text-faint">
+              {change.undone_at !== null
+                ? "undone"
+                : `you confirmed · ${changeUndoWord(change)}`}
+            </span>
+          </span>
+        ))
+      )}
+      <span className="mt-[8px] font-mono text-[10px] tracking-[0.06em] text-muted">TRUST</span>
+      <p className="m-0 px-[2px] text-[12px] leading-[1.45] text-ink-2">{trust?.label ?? ""}</p>
+    </aside>
+  );
+}
+
+/** What a change row says about being reversible (A5: only draft edits are). */
+function changeUndoWord(change: AssistantChange): string {
+  return change.kind === "draft_edit" && change.undoable ? "can be undone" : "can't be undone here";
+}
+
+/**
+ * The full page's frame (handoff §1): the thread column, the conversation
+ * column in the middle, and the context column on the right. The columns that
+ * the viewport is too narrow for are simply not passed (the caller answers the
+ * media query; handoff: below ~1240px the right column hides, below ~1000px
+ * the thread list hides and the thread buttons return to the header).
+ */
+export function AssistantPageFrame({
+  threadColumn,
+  sideColumn,
+  children,
+}: {
+  threadColumn?: React.ReactNode;
+  sideColumn?: React.ReactNode;
+  children: React.ReactNode;
 }) {
   return (
-    <div data-testid="assistant-empty" style={{ padding: "14px 10px" }}>
-      {suggestions.length > 0 ? (
-        <>
-          <p className="m-0 font-mono text-[10px] tracking-wider text-faint">FOR THIS PAGE</p>
-          <div className="mt-[8px] flex flex-wrap gap-[6px]">
-            {suggestions.map((text) => (
-              <button
-                key={text}
-                type="button"
-                data-testid="assistant-suggest"
-                onClick={() => onSuggestion(text)}
-                style={{
-                  borderWidth: 1,
-                  borderStyle: "dashed",
-                  borderColor: "var(--color-line-strong)",
-                  borderRadius: 4,
-                  background: "transparent",
-                  padding: "6px 9px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: "var(--color-ink-2)",
-                  cursor: "pointer",
-                  textAlign: "left",
-                }}
-              >
-                {text}
-              </button>
-            ))}
-          </div>
-        </>
-      ) : (
-        <p className="m-0 text-[12.5px] leading-[1.45] text-muted">
-          Nothing to suggest on this page yet — ask, or tell it what to change.
-        </p>
-      )}
+    <div data-testid="assistant-page" className="flex min-h-full w-full bg-surface">
+      {threadColumn}
+      <span className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</span>
+      {sideColumn}
     </div>
   );
 }
@@ -388,27 +563,29 @@ export function AssistantPanel({
   changes = [],
   onUndoChange,
   onUndoAll,
-  suggestions = [],
   onSend,
   onAnswerQuestion,
   composerRestore = null,
   onConfirmApproval,
   onDismissApproval,
   onGo,
-  onExpand,
-  onShrink,
-  onClose,
   onNewConversation,
   recentConversations = [],
   activeConversationId = null,
   onSwitchConversation,
+  threadsMenuOpen = false,
+  onThreadsMenuOpenChange,
+  onDock,
+  onExpandPage,
+  showThreadControls = true,
+  onClose,
   busy = false,
 }: AssistantPanelProps) {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // esc closes the panel. The composer's menus handle their own esc and
-  // stop propagation, so they close without taking the panel with them.
+  // esc closes the panel. The Threads menu handles its own esc and stops it,
+  // so it closes without taking the panel with it.
   const handleClose = useCallback(() => onClose(), [onClose]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -440,9 +617,7 @@ export function AssistantPanel({
     [restoreDraft],
   );
 
-  /** The one send path: composer, Enter, and the suggestion chips. The
-   * composer names its own extras (spoken, page context); the chips send a
-   * plain ask and the caller attaches the page context it already holds. */
+  /** The one send path: composer, Enter, and the setup checklist's starters. */
   const submit = useCallback(
     (text: string, options?: ComposerSendOptions) => {
       const trimmed = text.trim();
@@ -456,9 +631,7 @@ export function AssistantPanel({
   /**
    * Issue #63: `Retry` under a failed ask re-sends those SAME words. The
    * composer's duplicate copy (the assistant-lost-ask restore) leaves with
-   * the ask; a draft typed since is never clobbered — it stays put while
-   * the retry travels, and the failed bubble (still holding the words) is
-   * only re-marked `failed` if the retry fails too.
+   * the ask; a draft typed since is never clobbered.
    */
   const retrySend = useCallback(
     (messageId: string) => {
@@ -482,14 +655,10 @@ export function AssistantPanel({
   );
 
   /**
-   * Design 2f (rcn-2f round 7): the `Open draft` action beside the composer.
-   * The saved draft's link rides the creating answer's `links[]` (the server
-   * tags it `Open draft` → workflow.create_draft), and it is recognised by
-   * its TARGET — a route pointing at the library draft page — not by the
-   * label's wording (rcn-review13-2f: a differently-phrased label lost the
-   * whole door). The newest such link is the draft the person is drafting —
-   * a later save supersedes the earlier door. `null` while no turn has
-   * saved one: the button stays hidden, not disabled, until the draft exists.
+   * Design 2f (rcn-2f round 7): the draft route the FOOTER offers as
+   * `Open draft` — the wide variants only, and only once a turn has saved a
+   * draft. Recognised by its TARGET (a route pointing at the library draft
+   * page), not by the label's wording (rcn-review13-2f).
    */
   const draftLink = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -511,190 +680,98 @@ export function AssistantPanel({
   }, [composerRestore, restoreDraft]);
 
   const popover = variant === "popover";
-  // The dock is as narrow as the popover even on a wide screen — it stands
-  // beside the chat, not over it — so its header keeps the popover's
-  // icon-only controls, whose wording rides the accessible name and the
-  // tooltip. The 2c expanded view has the viewport's width to spend.
-  const docked = variant === "docked";
-  const narrowHeader = popover || docked;
+  const docked = variant === "dock";
+  const pageMode = variant === "page";
+  /** The header title: the thread's own title, else what the ask is about. */
+  const threadTitle =
+    recentConversations.find((row) => row.id === activeConversationId)?.title ??
+    chatContext ??
+    contextLabel;
 
   /**
-   * Round-17 (rcn-review17-2f): the draft route the FOOTER offers as
-   * `Open draft` — the wide variants only, and only once a turn has saved a
-   * draft. The transcript's row for that same draft was a second door to one
-   * page sitting straight under its step list, so the transcript hides it;
-   * every other draft row stays, because the popover shows no footer button
-   * and an earlier answer's superseded draft is not where the button points.
+   * Round-17 (rcn-review17-2f): the FOOTER's `Open draft` door — the wide
+   * variants only. The transcript hides its own row for that same draft, so
+   * the door exists once; the popover keeps the transcript row instead.
    */
-  const openDraftHref = !popover && draftLink !== null ? draftLink.route : null;
-
-  // ui-newconv: the header's New conversation / Recent controls. The
-  // popover's 400px header is tight (ASSISTANT + trust pill + expand +
-  // esc hint), so the popover shortens the labels; the expanded header
-  // shows the full wording — until phone width, where the expanded header
-  // has the same problem the popover's has (review 2f: `Shrink to popover`
-  // clipped to `S`/`po` and the chip wrapped onto three lines, so the row
-  // ran off the right edge of the screen). Below 640px both header buttons
-  // are icon-only with their wording in the accessible name and the tooltip.
-  const newConversationButton = onNewConversation ? (
-    <Button
-      variant="ghost"
-      compact
-      data-testid="assistant-new-conversation"
-      title="New thread"
-      aria-label="New thread"
-      className="shrink-0"
-      onClick={onNewConversation}
-    >
-      {/* 2f review: the 400px (or 358px on a phone) popover header cannot fit
-        the full wording next to the trust pill, and the row must never break
-        onto two lines — the popover keeps just the ＋ on screen, with the
-        wording in the accessible name and the tooltip. rcn-6 review: that ＋
-        (a fullwidth character) rendered as an unlabelled blue bar in the
-        lab font, so it is the same Tabler `IconPlus` the wide header uses —
-        the tooltip (`title`) and the accessible name carry the meaning. */}
-      {narrowHeader ? (
-        <>
-          <IconPlus size={13} stroke={2} aria-hidden className="shrink-0" />
-          <span className="sr-only">New thread</span>
-        </>
-      ) : (
-        <>
-          <IconPlus size={13} stroke={2} aria-hidden className="shrink-0 min-[640px]:hidden" />
-          <span className="hidden min-[640px]:inline">New thread</span>
-        </>
-      )}
-    </Button>
-  ) : null;
-
-  const recentButton = onSwitchConversation ? (
-    <RecentMenu
-      conversations={recentConversations.slice(0, 5)}
-      activeId={activeConversationId}
-      onSwitch={onSwitchConversation}
-      compact={narrowHeader}
-    />
-  ) : null;
+  const openDraftHref = popover || draftLink === null ? null : draftLink.route;
 
   const header = (
     <div
       data-testid="assistant-panel-header"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 10px",
-        background: "var(--color-fill)",
-        borderBottom: "1px solid var(--color-line)",
-      }}
+      className={`flex shrink-0 items-center gap-[4px] border-b border-line ${
+        pageMode ? "px-[16px] py-[10px]" : "pb-[6px] pl-[10px] pr-[8px] pt-[6px]"
+      } ${popover ? "bg-fill" : "bg-surface"}`}
     >
       {popover ? (
+        <span className="shrink-0 whitespace-nowrap font-mono text-[10.5px] font-semibold tracking-wider text-ink">
+          ASSISTANT
+        </span>
+      ) : null}
+      <span
+        className="min-w-0 flex-1 truncate text-[13px] text-ink"
+        data-testid="assistant-thread-title"
+        title={threadTitle}
+      >
+        {threadTitle}
+      </span>
+      {showThreadControls ? (
         <>
-          <span className="shrink-0 font-mono text-[10.5px] font-semibold tracking-wider text-ink whitespace-nowrap">
-            ASSISTANT
-          </span>
-          {/* Handoff §1: the trust pill lives in the composer box now (one box,
-              ctx button · trust pill · spacer · mic · send). A second copy
-              here would give the panel two `assistant-pill`s. */}
-          <span style={{ flex: "1 1 auto" }} />
-          {newConversationButton}
-          {recentButton}
-          {onExpand ? (
-            <button
-              type="button"
-              data-testid="assistant-expand"
-              title="Expand"
-              style={headerButtonStyle}
-              onClick={onExpand}
-            >
-              ⤢
-            </button>
+          {onNewConversation ? (
+            <HeaderIconButton testid="assistant-new-conversation" title="New thread" onClick={onNewConversation}>
+              <IconEdit size={15} stroke={2} aria-hidden className="shrink-0" />
+            </HeaderIconButton>
           ) : null}
-          <span className="font-mono text-[10px] text-faint">esc</span>
+          {onSwitchConversation ? (
+            <HeaderIconButton
+              testid="assistant-history"
+              title="Threads"
+              pressed={threadsMenuOpen}
+              onClick={() => onThreadsMenuOpenChange?.(!threadsMenuOpen)}
+            >
+              <IconMessages size={15} stroke={2} aria-hidden className="shrink-0" />
+            </HeaderIconButton>
+          ) : null}
         </>
-      ) : (
-        <>
-          <span className="text-[14px] text-ink" style={{ fontWeight: 600 }}>
-            Assistant
-          </span>
-          {/* The chip truncates (review 2f: `opened from threads` wrapped
-              onto three lines and pushed the row off the screen). `min-w-0`
-              is what lets a flex item give its width back. When the panel was
-              opened FROM a specific chat (the 2f docked draft ask) it names
-              THAT chat — `from “<title>”` — not the bare section name
-              (rcn-6 review). */}
-          {chatContext ? (
-            <span
-              data-testid="assistant-opened-from"
-              title={`from ${chatContext}`}
-              className="min-w-0 max-w-[42%] truncate"
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 10.5,
-                border: "1px solid var(--color-line-strong)",
-                borderRadius: 4,
-                background: "var(--color-fill)",
-                color: "var(--color-ink-2)",
-                padding: "2px 7px",
-              }}
-            >
-              {`from ${chatContext}`}
-            </span>
-          ) : contextLabel ? (
-            <span
-              data-testid="assistant-opened-from"
-              title={`opened from ${contextLabel}`}
-              className="min-w-0 max-w-[42%] truncate"
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 10.5,
-                border: "1px solid var(--color-line-strong)",
-                borderRadius: 4,
-                background: "var(--color-fill)",
-                color: "var(--color-ink-2)",
-                padding: "2px 7px",
-              }}
-            >
-              {`opened from ${contextLabel}`}
-            </span>
-          ) : null}
-          <span className="min-w-0 basis-0 grow" />
-          {newConversationButton}
-          {recentButton}
-          {onShrink ? (
-            <button
-              type="button"
-              data-testid="assistant-shrink"
-              aria-label="Shrink to popover"
-              title="Shrink to popover"
-              className="inline-flex shrink-0 items-center"
-              style={headerButtonStyle}
-              onClick={onShrink}
-            >
-              <IconMinimize
-                size={13}
-                stroke={2}
-                aria-hidden
-                className={docked ? "shrink-0" : "shrink-0 min-[640px]:hidden"}
-              />
-              {/* The dock is 450px at any screen width, so its label is
-                  icon-only there too (rcn-2f review item 1). */}
-              <span className={docked ? "sr-only" : "hidden min-[640px]:inline"}>
-                Shrink to popover
-              </span>
-            </button>
-          ) : null}
-          <span className="font-mono text-[10px] text-faint">esc</span>
-        </>
-      )}
+      ) : null}
+      {onDock ? (
+        <HeaderIconButton
+          testid="assistant-dock"
+          title={docked ? "Back to popover" : "Open as side panel"}
+          pressed={docked}
+          onClick={onDock}
+        >
+          <IconLayoutSidebarRight size={15} stroke={2} aria-hidden className="shrink-0" />
+        </HeaderIconButton>
+      ) : null}
+      {onExpandPage ? (
+        <HeaderIconButton
+          testid="assistant-expand"
+          title={pageMode ? "Exit full page" : "Open full page"}
+          onClick={onExpandPage}
+        >
+          {pageMode ? (
+            <IconArrowsDiagonalMinimize2 size={14} stroke={2} aria-hidden className="shrink-0" />
+          ) : (
+            <IconArrowsDiagonal size={14} stroke={2} aria-hidden className="shrink-0" />
+          )}
+        </HeaderIconButton>
+      ) : null}
+      <HeaderIconButton testid="assistant-close" title="Close" onClick={onClose}>
+        <IconX size={15} stroke={2} aria-hidden className="shrink-0" />
+      </HeaderIconButton>
     </div>
   );
 
   const body = (
-    <div data-testid="assistant-body" style={{ flex: "1 1 auto", overflowY: "auto", minHeight: 0 }}>
-      {messages.length === 0 ? (
-        <EmptyState suggestions={suggestions.slice(0, 3)} onSuggestion={submit} />
-      ) : (
+    <div
+      data-testid="assistant-body"
+      className="min-h-0 flex-1 overflow-y-auto"
+    >
+      <div
+        className={
+          pageMode ? "mx-auto w-full max-w-[720px] px-[16px] py-[8px]" : "w-full"
+        }
+      >
         <MessageList
           messages={messages}
           onAnswerQuestion={answerQuestion}
@@ -704,23 +781,25 @@ export function AssistantPanel({
           onGo={onGo}
           openDraftHref={openDraftHref}
           onRetrySend={retrySend}
+          showSetup={messages.length === 0}
+          onSendPrompt={(text) => submit(text)}
         />
-      )}
-      {busy ? (
-        <div
-          data-testid="assistant-thinking"
-          className="px-[10px] py-[4px] font-mono text-[10.5px] text-muted"
-        >
-          thinking…
-        </div>
-      ) : null}
+        {busy ? (
+          <div
+            data-testid="assistant-thinking"
+            className="px-[10px] py-[4px] font-mono text-[10.5px] text-muted"
+          >
+            thinking…
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 
   const footer = (
     <>
-      {changes.length > 0 ? (
-        <div style={{ padding: "0 10px 6px" }}>
+      {changes.length > 0 && !pageMode ? (
+        <div className="px-[10px] pb-[6px]">
           <ChangeChip
             changes={changes}
             onUndo={onUndoChange ?? (() => undefined)}
@@ -731,10 +810,15 @@ export function AssistantPanel({
       {/* Handoff §1: the composer is ONE box — textarea on top, then the
           page-context button · trust pill · spacer · mic · Send. The box owns
           dictation and the page-context payload; the draft stays HERE, because
-          a lost ask and a retry both come back into it. */}
+          a lost ask and a retry both come back into it. In the full page the
+          box is the design's 752px column with its own breathing room. */}
       <div
         data-testid="assistant-composer-frame"
-        style={{ padding: "8px 10px", borderTop: "1px solid var(--color-line)" }}
+        className={
+          pageMode
+            ? "mx-auto w-full max-w-[752px] px-[16px] pb-[18px] pt-[10px]"
+            : "border-t border-line px-[10px] py-[8px]"
+        }
       >
         <Composer
           draft={draft}
@@ -744,111 +828,61 @@ export function AssistantPanel({
           trustLevel={trustLevel}
           onTrustLevelChange={onTrustLevelChange}
           inputRef={inputRef}
-          askLabel={popover ? (chatContext ?? contextLabel) : null}
+          askLabel={popover || docked ? (chatContext ?? contextLabel) : null}
         />
         {/* Design 2f: `Open draft` sits beside the composer — the wide
             variants only. The draft door stays reachable in the transcript's
             `Go` link row while the popover has no room for it. */}
         {!popover && draftLink ? (
-          <div style={{ padding: "6px 0 0" }}>
-            <Button
-              variant="ghost"
-              compact
+          <div className="pt-[6px]">
+            <button
+              type="button"
               data-testid="assistant-open-draft"
               title="Open the draft in the library"
-              className="shrink-0"
+              className="cursor-pointer border-none bg-transparent p-0 text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               onClick={() => onGo(draftLink.route)}
             >
               Open draft
-            </Button>
+            </button>
           </div>
         ) : null}
       </div>
     </>
   );
 
-  if (popover) {
-    return (
-      <div
-        data-testid="assistant-panel"
-        data-variant="popover"
-        style={{
-          width: POPOVER_WIDTH,
-          // On a phone the anchor is narrower than 400px — cap to the
-          // container so the panel never clips off-screen (ui-newconv probe).
-          maxWidth: "100%",
-          alignSelf: "flex-end",
-          maxHeight: "min(70vh, 560px)",
-          border: "1px solid var(--color-ink)",
-          borderRadius: 4,
-          boxShadow: "2px 2px 0 var(--color-ink)",
-          background: "var(--color-surface)",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {header}
-        {body}
-        {footer}
-      </div>
-    );
-  }
-
-  // Docked (design 2f, rcn-2f review item 1) and expanded (2c) hold the same
-  // panel; only the column differs. The dock fills the width it is handed —
-  // `AssistantPopover` places it right of the chat, which is never taken off
-  // screen — and never centres a 680px column inside a 450px one.
-  if (docked) {
-    return (
-      <div
-        data-testid="assistant-panel"
-        data-variant="docked"
-        style={{
-          width: "100%",
-          height: "100%",
-          background: "var(--color-surface)",
-          display: "flex",
-          flexDirection: "column",
-          minHeight: 0,
-        }}
-      >
-        {header}
-        {body}
-        {footer}
-      </div>
-    );
-  }
-
-  // Expanded (2c): full content area; the conversation column is centred
-  // at max 680px.
-  return (
+  const panel = (
     <div
       data-testid="assistant-panel"
-      data-variant="expanded"
-      style={{
-        width: "100%",
-        background: "var(--color-surface)",
-        display: "flex",
-        flexDirection: "column",
-        minHeight: 0,
-      }}
+      data-variant={variant}
+      className={
+        popover
+          ? "flex max-h-[min(72vh,600px)] min-w-0 flex-col overflow-hidden rounded-[4px] border border-ink bg-surface shadow-raised"
+          : "flex min-h-0 w-full flex-1 flex-col bg-surface"
+      }
     >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 680,
-          margin: "0 auto",
-          display: "flex",
-          flexDirection: "column",
-          flex: "1 1 auto",
-          minHeight: 0,
-        }}
-      >
-        {header}
-        {body}
-        {footer}
-      </div>
+      {header}
+      {body}
+      {footer}
     </div>
+  );
+
+  if (pageMode) return panel;
+
+  // The menu is a SIBLING of the panel (handoff §1), inside a relative holder
+  // the panel does not clip.
+  return (
+    <>
+      {panel}
+      {threadsMenuOpen && onSwitchConversation && onNewConversation ? (
+        <ThreadsMenu
+          conversations={recentConversations}
+          activeId={activeConversationId}
+          onSwitch={onSwitchConversation}
+          onNewConversation={onNewConversation}
+          onClose={() => onThreadsMenuOpenChange?.(false)}
+        />
+      ) : null}
+    </>
   );
 }
 
