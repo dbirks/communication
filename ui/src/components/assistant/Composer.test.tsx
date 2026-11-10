@@ -184,6 +184,7 @@ beforeEach(() => {
   window.sessionStorage.clear();
   resetAssistantSpeechState();
   recognizers.length = 0;
+  sendCalls.length = 0;
   autoSendPref = false;
   speechConfigured = true;
   transcriptReply = () => ({ status: 200, body: { text: "add a reviewer step" } });
@@ -447,6 +448,28 @@ describe("the mic (handoff §5)", () => {
     expect(calls.some((call) => call.path === TRANSCRIPTIONS_PATH)).toBe(false);
     expect(recognizers.length).toBeGreaterThan(0);
     expect(screen.getByTestId("listening-bar")).toBeTruthy();
+  });
+
+  it("hands the browser fallback's transcript to the box, appended to what was typed", async () => {
+    stubRecorder();
+    vi.stubGlobal("SpeechRecognition", FakeRecognition);
+    speechConfigured = false;
+    render(<Harness initial="ship it," />);
+    await act(async () => {
+      await flushAssistantSpeechReads();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mic-button"));
+    });
+    const rec = recognizers[recognizers.length - 1];
+    await act(async () => {
+      rec.deliver("then tell the reviewer");
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mic-button"));
+    });
+    await waitFor(() => expect(draftValue()).toBe("ship it, then tell the reviewer"));
+    expect(sendCalls).toHaveLength(0);
   });
 
   it("is present with text in the box, and says so in its title", async () => {

@@ -237,6 +237,12 @@ export function useDictation({
   const [usingBrowser, setUsingBrowser] = useState(false);
   const speech = useSpeechToText();
   const speechTextRef = useRef("");
+  // The browser fallback's words so far (final + the live interim tail): the
+  // stop/silence hand-off below reads this ref, so it must track every result.
+  useEffect(() => {
+    if (!browserModeRef.current) return;
+    speechTextRef.current = [speech.final, speech.interim].filter((s) => s && s.trim()).join(" ");
+  }, [speech.final, speech.interim]);
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
