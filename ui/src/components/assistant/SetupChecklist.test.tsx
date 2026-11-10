@@ -158,7 +158,9 @@ describe("SetupChecklist", () => {
     expect(onPrompt.mock.calls.map((call) => call[0])).toEqual([...SETUP_STARTERS]);
     // §4: under the phone floor the starters are full 44px touch targets that
     // never shrink narrower than one either.
-    starters.forEach((button) => expect(button.className).toContain("max-[559px]:[main_&]:min-w-[44px]"));
+    starters.forEach((button) =>
+      expect(button.className).toContain("max-[559px]:[main_&]:min-w-[44px]"),
+    );
   });
 
   /**

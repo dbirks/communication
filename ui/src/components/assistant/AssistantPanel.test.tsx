@@ -1050,9 +1050,11 @@ describe("the full page's THREADS column always lists the open thread", () => {
     expect(items).toHaveLength(1);
     expect(items[0].textContent).toContain("New thread");
     expect(items[0].textContent).toContain("now");
-    // Selected: the accent wash and the check column of the current row.
+    // Selected: the accent wash marks the current row; the page's THREADS
+    // column carries NO check (prototype threadRows: title + age only — the
+    // check belongs to the header's threads menu).
     expect(classes(items[0]).has("bg-accent-wash")).toBe(true);
-    expect(items[0].querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
+    expect(items[0].querySelector(".tabler-icon-check")).toBeNull();
     // “No threads yet” never appears while a thread is on screen.
     expect(screen.queryByText("No threads yet — the next answer starts one.")).toBeNull();
     // It IS the open thread: tapping it switches to nothing.

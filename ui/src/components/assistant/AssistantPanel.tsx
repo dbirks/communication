@@ -200,7 +200,7 @@ function HeaderIconButton({
       aria-label={title}
       aria-pressed={pressed || undefined}
       onClick={onClick}
-      className={`grid h-[26px] w-[26px] shrink-0 cursor-pointer place-items-center rounded-[4px] border-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+      className={`grid h-[26px] w-[26px] shrink-0 cursor-pointer place-items-center rounded-[4px] border-none max-[559px]:[main_&]:min-h-[44px] max-[559px]:[main_&]:min-w-[44px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
         pressed ? "bg-line text-ink" : "bg-transparent text-ink-2 hover:bg-fill"
       }`}
     >
@@ -213,6 +213,7 @@ function HeaderIconButton({
 function ThreadRow({
   conversation,
   active,
+  showCheck = true,
   onSelect,
   rowRef,
 }: {
@@ -220,6 +221,7 @@ function ThreadRow({
   active: boolean;
   onSelect: (id: string) => void;
   rowRef?: { current: HTMLButtonElement | null } | ((node: HTMLButtonElement | null) => void);
+  showCheck?: boolean;
 }) {
   return (
     <button
@@ -242,9 +244,13 @@ function ThreadRow({
         {/* A thread nobody has written in yet is the new one (prototype: "now"). */}
         {conversation.lastMessageAt ? formatAge(conversation.lastMessageAt) : "now"}
       </span>
-      <span className="grid w-[13px] shrink-0 place-items-center">
-        {active ? <IconCheck size={12} stroke={2} aria-hidden className="shrink-0" /> : null}
-      </span>
+      {/* The threads MENU marks the open thread with a check (prototype L401);
+          the full page's THREADS column does not (prototype threadRows). */}
+      {showCheck ? (
+        <span className="grid w-[13px] shrink-0 place-items-center">
+          {active ? <IconCheck size={12} stroke={2} aria-hidden className="shrink-0" /> : null}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -484,6 +490,7 @@ export function AssistantThreadColumn({
           rows.map((conversation) => (
             <ThreadRow
               key={conversation.id.length === 0 ? "current-unsaved" : conversation.id}
+              showCheck={false}
               conversation={conversation}
               active={conversation.id === selectedId}
               onSelect={(id) => {
