@@ -811,7 +811,7 @@ export function AssistantPanel({
       data-testid="assistant-panel-header"
       className={`flex shrink-0 items-center gap-[4px] border-b border-line ${
         pageMode ? "px-[16px] py-[10px]" : "pb-[6px] pl-[10px] pr-[8px] pt-[6px]"
-      } ${popover ? "bg-fill" : "bg-surface"}`}
+      } ${pageMode ? "bg-surface" : "bg-fill"}`}
     >
       {/* Design L131–137: the POPOVER header shows only the mono ASSISTANT
           label; the side panel and the full page show only the thread title
