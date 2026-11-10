@@ -32,6 +32,13 @@ const (
 	// ConsumerIssueRead is the control plane's GitHub issue listing
 	// (ADR-0061 § 5): the repository-issues route and the ADR-0056 poller.
 	ConsumerIssueRead = "issue_read"
+	// ConsumerAssistantRepoCheck is the assistant's `repo.check` (handoff
+	// § 6): it reaches a NAMED credential for a repository the team has not
+	// added yet, so no repository row exists to authorize the resolve.
+	// postgres.SecretStore.ResolveSecretForCheck answers the authorization
+	// question the row would otherwise answer (visibility + the attach-role
+	// question), and the resolve is audited under this consumer.
+	ConsumerAssistantRepoCheck = "assistant_repo_check"
 )
 
 // StoredVersion is what a resolver needs about one secret_versions row: the
@@ -139,7 +146,8 @@ type IntegrationRequest struct {
 	RepositoryName string
 	ProjectID      string
 	OrganizationID string
-	// Consumer must be ConsumerRepoMirror or ConsumerIssueRead.
+	// Consumer must be ConsumerRepoMirror, ConsumerIssueRead or
+	// ConsumerAssistantRepoCheck.
 	Consumer string
 }
 
@@ -147,19 +155,25 @@ type IntegrationRequest struct {
 // empty repository id, a consumer the ADR does not name, or a caller that
 // cannot say which project/org the repository lives in (the scope axis of
 // authorizeAgainst has nothing to compare against then, and a resolver that
-// guessed would be an oracle).
+// guessed would be an oracle). The assistant repo.check consumer is the one
+// request that names no repository — that is the whole reason it exists —
+// but it must still name the organization its authorization was answered in.
 func (a IntegrationRequest) Validate() error {
-	if a.RepositoryID == "" || !isCanonicalUUID(a.RepositoryID) {
-		return fmt.Errorf("%w: integration request names no canonical repository id", ErrNotAuthorized)
-	}
 	switch a.Consumer {
 	case ConsumerRepoMirror, ConsumerIssueRead:
+		if a.RepositoryID == "" || !isCanonicalUUID(a.RepositoryID) {
+			return fmt.Errorf("%w: integration request names no canonical repository id", ErrNotAuthorized)
+		}
+		if a.ProjectID == "" || a.OrganizationID == "" {
+			return fmt.Errorf("%w: integration request for repository %s names no project/organization",
+				ErrNotAuthorized, a.RepositoryID)
+		}
+	case ConsumerAssistantRepoCheck:
+		if a.OrganizationID == "" {
+			return fmt.Errorf("%w: assistant repo.check request names no organization", ErrNotAuthorized)
+		}
 	default:
 		return fmt.Errorf("%w: unknown integration consumer %q", ErrNotAuthorized, a.Consumer)
-	}
-	if a.ProjectID == "" || a.OrganizationID == "" {
-		return fmt.Errorf("%w: integration request for repository %s names no project/organization",
-			ErrNotAuthorized, a.RepositoryID)
 	}
 	return nil
 }

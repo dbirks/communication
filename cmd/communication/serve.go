@@ -1844,12 +1844,36 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			// caller. An unwired service would keep the tool unannounced;
 			// serve always wires it.
 			Status: api.NewAssistantStatusReader(asstStatus),
+			// Handoff §6 read tools (credential.list, workflow.list/inspect,
+			// repo.check, issue.list, profile.list, schedule.list): each one
+			// reads through the caller-scoped store the matching route uses.
+			Setup: api.NewAssistantSetupReader(api.AssistantSetupDeps{
+				Projects:         apiProjects,
+				Secrets:          postgres.APISecretStore{S: secretStore},
+				Pipelines:        postgres.APIPipelineStore{S: pipelineStore},
+				Assignments:      postgres.APIAssignmentStore{S: pipelineStore},
+				Profiles:         apiConversations,
+				Schedules:        postgres.APIScheduleStore{S: &postgres.ScheduleStore{Pool: d.Pool}},
+				Credentials:      secretStore,
+				NamedCredentials: postgres.APISecretStore{S: secretStore},
+				RepoGet:          github.New(),
+				IssueLister:      github.New(),
+			}),
 			Actions: api.NewAssistantActions(api.AssistantActionsDeps{
 				Runs:        postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 				Assignments: postgres.APIAssignmentStore{S: pipelineStore},
 				Approvals:   postgres.APIApprovalStore{R: m4Runtime},
 				Projects:    apiProjects,
 				Trigger:     m4Trigger,
+				// The §6 setup writes: the SAME store adapters the UI routes
+				// are registered with, so an assistant action and the
+				// person's own click run identical SQL as the same caller.
+				ProjectWrites:    apiProjects,
+				Secrets:          postgres.APISecretStore{S: secretStore},
+				Revisions:        postgres.APIPipelineStore{S: pipelineStore},
+				AssignmentWrites: postgres.APIAssignmentStore{S: pipelineStore},
+				Schedules:        postgres.APIScheduleStore{S: &postgres.ScheduleStore{Pool: d.Pool}},
+				RunStop:          postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 			}),
 		})
 		// The draft-edit inverse (ADR-0050 decision 5): delete_node /

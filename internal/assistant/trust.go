@@ -44,25 +44,42 @@ const (
 // six names plus draft.get and the workflow.draft lookup, the navigation
 // tool, the draft-edit tool and the five risky actions.
 var toolClasses = map[string]ToolClass{
-	"project.list":          ClassRead,
-	"run.list":              ClassRead,
-	"run.nodes":             ClassRead,
-	"approval.pending":      ClassRead,
-	"pipeline.revisions":    ClassRead,
-	"palette.search":        ClassRead,
-	"draft.get":             ClassRead,
-	"workflow.draft":        ClassRead,
-	"chat.transcript":       ClassRead,
-	"system.status":         ClassRead,
+	"project.list":       ClassRead,
+	"run.list":           ClassRead,
+	"run.nodes":          ClassRead,
+	"approval.pending":   ClassRead,
+	"pipeline.revisions": ClassRead,
+	"palette.search":     ClassRead,
+	"draft.get":          ClassRead,
+	"workflow.draft":     ClassRead,
+	"chat.transcript":    ClassRead,
+	"system.status":      ClassRead,
+	// Assistant handoff §6 (CONTRACT §5): the setup reads.
+	"credential.list":       ClassRead,
+	"docs.search":           ClassRead,
+	"workflow.list":         ClassRead,
+	"workflow.inspect":      ClassRead,
+	"repo.check":            ClassRead,
+	"issue.list":            ClassRead,
+	"profile.list":          ClassRead,
+	"schedule.list":         ClassRead,
 	"ui.navigate":           ClassNavigate,
 	"ui.question":           ClassNavigate,
 	"draft.apply":           ClassDraftEdit,
 	"workflow.create_draft": ClassDraftEdit,
-	"run.retry":             ClassRisky,
-	"run.start":             ClassRisky,
-	"approval.decide":       ClassRisky,
-	"permission.allow":      ClassRisky,
-	"pipeline.publish":      ClassRisky,
+	// Assistant handoff §6 (CONTRACT §5): the setup writes. Each one runs
+	// through the SAME permission-checked store call the matching UI route
+	// runs, as the caller — the class only decides when a human is asked.
+	"project.create":   ClassRisky,
+	"repo.add":         ClassRisky,
+	"assignment.set":   ClassRisky,
+	"run.cancel":       ClassRisky,
+	"schedule.create":  ClassRisky,
+	"run.retry":        ClassRisky,
+	"run.start":        ClassRisky,
+	"approval.decide":  ClassRisky,
+	"permission.allow": ClassRisky,
+	"pipeline.publish": ClassRisky,
 }
 
 // ClassOf reports the class of a registry tool name; the bool is false for
@@ -122,6 +139,16 @@ func riskText(tool string) string {
 		return "publishes the draft as a new revision of the pipeline"
 	case "workflow.create_draft":
 		return "creates a NEW workflow library draft (it never publishes — publishing stays a separate action you take yourself)"
+	case "project.create":
+		return "creates a real project, and with a repository URL attaches that repository and its credential in the same step"
+	case "repo.add":
+		return "attaches a git repository (and the credential it is cloned with) to an existing project"
+	case "assignment.set":
+		return "pins a workflow's latest published revision to the project, so every NEW run of it uses that revision"
+	case "run.cancel":
+		return "requests a run's cancellation: no further nodes start, work already in flight finishes, and a cancelled run never resumes"
+	case "schedule.create":
+		return "creates a cron schedule that starts new runs of the pinned revision on a timer (UTC)"
 	default:
 		return "performs a state-changing pipeline action"
 	}
@@ -139,13 +166,48 @@ func actionSummary(tool string, args map[string]string) string {
 		"permission.allow":      "Grant permission",
 		"pipeline.publish":      "Publish draft",
 		"workflow.create_draft": "Save library draft",
+		"repo.add":              "Add repository",
+		"run.cancel":            "Cancel run",
+		"schedule.create":       "Create schedule",
 	}[tool]
 	if verb == "" {
 		verb = "Run"
 	}
+	// project.create reads as the proposal card, not as an id dump: the
+	// project's new name, plus the repository it will attach (owner/repo, not
+	// the URL), so the card says what appears where.
+	if tool == "project.create" {
+		s := "Create project"
+		if name := bounded(strings.TrimSpace(args["name"]), 64); name != "" {
+			s += " " + name
+		}
+		if repo := shortRepo(args["repo_url"]); repo != "" {
+			s += " with " + repo
+		}
+		return s
+	}
+	// assignment.set names the revision it will pin (the promotion preview):
+	// the version label the model read from workflow.inspect, or the honest
+	// "latest published" when it read none. The pin itself is resolved
+	// server-side at execution; this line only shows the preview.
+	if tool == "assignment.set" {
+		s := "Assign workflow"
+		if v := bounded(strings.TrimSpace(args["pipeline_id"]), 64); v != "" {
+			s += " " + v
+		}
+		if rev := bounded(strings.TrimSpace(args["revision"]), 64); rev != "" {
+			return s + " · pins " + rev
+		}
+		return s + " · pins the latest published revision"
+	}
 	var bits []string
-	for _, k := range []string{"project_id", "run_id", "node_id", "pipeline_id", "approval_id", "request_id", "draft_id", "decision", "slug"} {
+	for _, k := range []string{"project_id", "run_id", "node_id", "pipeline_id", "approval_id", "request_id", "draft_id", "decision", "slug", "name", "repo_url", "credential", "default_branch", "cron"} {
 		if v := bounded(strings.TrimSpace(args[k]), 64); v != "" {
+			if k == "repo_url" {
+				if v = shortRepo(v); v == "" {
+					continue
+				}
+			}
 			bits = append(bits, v)
 		}
 	}

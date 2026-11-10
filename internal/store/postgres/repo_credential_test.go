@@ -316,3 +316,104 @@ func TestRepositoryCredentialStoreMapsToAPI(t *testing.T) {
 		t.Errorf("cleared view = %v/%q, want nil/none", cleared.CredentialSecretID, cleared.Credential)
 	}
 }
+
+// TestResolveSecretForCheckNamedCredentialWithoutRepository is the handoff
+// § 6 seam: the assistant checks a credential NO repository references yet
+// (fresh install, add-a-repo step 2). Authorization is visibility + purpose +
+// the attach role AddRepository enforces, and the read is audited like every
+// other resolve. Real PostgreSQL throughout.
+func TestResolveSecretForCheckNamedCredentialWithoutRepository(t *testing.T) {
+	f := secSetup(t)
+	ctx := testCtx(t)
+	alice := f.caller(f.alice)
+	orgAdmin := Caller{UserID: f.alice, OrganizationID: f.orgID, IsOrgAdmin: true}
+
+	// An org-scope GitHub token with no repository row anywhere.
+	orgSecret, err := f.store.CreateSecret(ctx, orgAdmin, f.projA, NewSecret{
+		Slug: f.slug("check-org"), Purpose: "github_repo", DeliveryMode: secrets.DeliveryBrokerLiteral,
+		Scope: secrets.ScopeOrg, Profiles: []string{f.profile}, Value: []byte(credValue),
+	})
+	if err != nil {
+		t.Fatalf("create unused org-scope broker secret: %v", err)
+	}
+
+	token, err := f.store.ResolveSecretForCheck(ctx, orgAdmin, orgSecret.ID, secrets.ConsumerAssistantRepoCheck)
+	if err != nil {
+		t.Fatalf("org admin resolving an unused org secret: %v", err)
+	}
+	if token != credValue {
+		t.Errorf("token = %q, want the sealed value", token)
+	}
+	// A maintainer of a project in the secret's organization passes the same
+	// way (they are the role that may add the repository).
+	if token, err = f.store.ResolveSecretForCheck(ctx, alice, orgSecret.ID, secrets.ConsumerAssistantRepoCheck); err != nil || token != credValue {
+		t.Errorf("project maintainer resolving the org secret: token=%q err=%v", token, err)
+	}
+
+	// The audit row: allowed, naming the consumer and the secret — never the
+	// value.
+	var outcome, detail string
+	var projectNull bool
+	if err := f.pool.QueryRow(ctx, `
+		SELECT outcome, detail::text, project_id IS NULL FROM audit_events
+		WHERE action = 'secret.resolved' AND detail->>'consumer' = 'assistant_repo_check'
+		ORDER BY id DESC LIMIT 1`).Scan(&outcome, &detail, &projectNull); err != nil {
+		t.Fatalf("read the check's secret.resolved audit row: %v", err)
+	}
+	if outcome != "allowed" {
+		t.Errorf("audit outcome = %q, want allowed", outcome)
+	}
+	if !strings.Contains(detail, orgSecret.ID) {
+		t.Errorf("audit detail = %s, want the secret id named", detail)
+	}
+	if strings.Contains(detail, credValue) {
+		t.Errorf("the audit detail carried the value: %s", detail)
+	}
+	// The last resolve above was alice's (a maintainer of projA), so the row
+	// names her project — the org-admin one had no project to name.
+	if projectNull {
+		t.Errorf("audit row for the maintainer resolve carries no project_id")
+	}
+
+	// A viewer-only member sees the secret's metadata and may NOT open it:
+	// forbidden, not invisible, because they can already see it listed.
+	projSecret := credBrokerSecret(t, f, f.projA, alice, "check-proj")
+	if _, err := f.store.ResolveSecretForCheck(ctx, f.caller(f.viewer), projSecret.ID,
+		secrets.ConsumerAssistantRepoCheck); !errors.Is(err, ErrSecretForbidden) {
+		t.Errorf("viewer resolving a visible secret: err = %v, want ErrSecretForbidden", err)
+	}
+	// A contributor is refused too.
+	if _, err := f.store.ResolveSecretForCheck(ctx, f.caller(f.carol), projSecret.ID,
+		secrets.ConsumerAssistantRepoCheck); !errors.Is(err, ErrSecretForbidden) {
+		t.Errorf("contributor resolving a visible secret: err = %v, want ErrSecretForbidden", err)
+	}
+
+	// A secret that is not a git/GitHub credential is refused for the very
+	// maintainer who could otherwise attach it.
+	notGit, err := f.store.CreateSecret(ctx, alice, f.projA, NewSecret{
+		Slug: f.slug("check-nongit"), Purpose: "session cookies", DeliveryMode: secrets.DeliveryEnv,
+		Profiles: []string{f.profile}, Value: []byte("v"),
+	})
+	if err != nil {
+		t.Fatalf("create non-git secret: %v", err)
+	}
+	if _, err := f.store.ResolveSecretForCheck(ctx, alice, notGit.ID,
+		secrets.ConsumerAssistantRepoCheck); !errors.Is(err, ErrSecretForbidden) {
+		t.Errorf("non-git purpose: err = %v, want ErrSecretForbidden", err)
+	}
+
+	// Anything the caller cannot see — another organization's project secret,
+	// a secret that does not exist, a non-uuid — is the same not-found answer.
+	if _, err := f.store.ResolveSecretForCheck(ctx, f.daveCaller(), projSecret.ID,
+		secrets.ConsumerAssistantRepoCheck); !errors.Is(err, ErrSecretNotFound) {
+		t.Errorf("cross-org caller: err = %v, want ErrSecretNotFound", err)
+	}
+	if _, err := f.store.ResolveSecretForCheck(ctx, alice,
+		"00000000-0000-4000-8000-0000000000ff", secrets.ConsumerAssistantRepoCheck); !errors.Is(err, ErrSecretNotFound) {
+		t.Error("nonexistent secret: want ErrSecretNotFound")
+	}
+	if _, err := f.store.ResolveSecretForCheck(ctx, alice, "not-a-uuid",
+		secrets.ConsumerAssistantRepoCheck); !errors.Is(err, ErrSecretNotFound) {
+		t.Error("non-uuid id: want ErrSecretNotFound")
+	}
+}

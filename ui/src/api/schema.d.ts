@@ -6057,7 +6057,18 @@ export interface components {
     AssistantChange: {
       id: string;
       /** @enum {string} */
-      kind: "draft_edit" | "navigate" | "run_start" | "run_retry" | "approval_decision" | "publish";
+      kind:
+        | "draft_edit"
+        | "navigate"
+        | "run_start"
+        | "run_retry"
+        | "approval_decision"
+        | "publish"
+        | "project_create"
+        | "repo_add"
+        | "assignment_set"
+        | "run_cancel"
+        | "schedule_create";
       /** @description The changed entity, e.g. `draft:d-1` or `run:r-1`. */
       target_ref: string;
       /** @description The human-readable line shown in the changes list. */

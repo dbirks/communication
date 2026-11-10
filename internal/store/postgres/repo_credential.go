@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/authz"
 	"github.com/dbirks/communication/internal/secrets"
 )
@@ -216,6 +217,149 @@ func (s *SecretStore) openRepositoryCredential(ctx context.Context, secretID str
 	return credentialResult{token: string(res.Value.Bytes()), version: res.Version}, nil
 }
 
+// ResolveSecretForCheck opens the CURRENT plaintext of a named secret to an
+// in-process check (assistant handoff § 6's `repo.check`, consumer
+// secrets.ConsumerAssistantRepoCheck) when no repository row references it
+// yet — the add-a-repo flow checks a fresh org-scope GITHUB_TOKEN before the
+// repository exists, so the ADR-0061 row authority is unavailable by
+// construction. Three facts replace it, all of them rows this store reads
+// itself (never a caller assertion):
+//
+//   - visibility: the caller may see the secret's METADATA — an org-scope
+//     secret of the caller's organization, or a project-scope secret of a
+//     project the caller is a member of (the same two-branch predicate
+//     ListSecrets answers through);
+//   - purpose: the secret is a git/GitHub credential — the same filter
+//     credential.list applies (internal/api's assistantGitHubCredential);
+//   - attach rights: the caller may attach credentials to at least one
+//     project that can see the secret — org admin, or maintainer, exactly
+//     the gate AddRepository enforces (authz.CanManage).
+//
+// Anything else is the existing sentinel set: a secret the caller cannot see
+// (or that does not exist, or is not a uuid) is ErrSecretNotFound — the 404
+// rule, never an existence oracle; a visible secret this caller may not open
+// this way is ErrSecretForbidden. A resolve that passes all three is decrypted
+// and audited exactly like ResolveRepositoryCredential's (same
+// openRepositoryCredential + recordCredentialAudit path, the consumer naming
+// who asked); a resolve that fails is audited denied and returns nothing.
+func (s *SecretStore) ResolveSecretForCheck(ctx context.Context, c Caller, secretID, consumer string) (string, error) {
+	if s == nil || s.Pool == nil {
+		return "", errors.New("postgres: secret store has no pool")
+	}
+	if prjRequireCaller(c) != nil || !prjValidUUID(secretID) {
+		return "", ErrSecretNotFound
+	}
+	secret, err := secFetchSecretWhere(ctx, s.Pool, secSecretSelect+` WHERE sm.id = $1::uuid`, secretID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrSecretNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("postgres: read secret for check: %w", err)
+	}
+
+	// Visibility first, so no refusal below can distinguish "not yours" from
+	// "not there" for a caller who cannot see the row at all.
+	auditProjectID := ""
+	switch secret.Scope {
+	case secrets.ScopeProject:
+		project, perr := prjGetProject(ctx, s.Pool, c, secret.ProjectID)
+		if perr != nil {
+			// Invisible project, another organization, gone: the not-found
+			// answer, whatever prjGetProject distinguished.
+			return "", ErrSecretNotFound
+		}
+		if !authz.CanManage(c.IsOrgAdmin, authz.Role(project.MyRole)) {
+			return "", ErrSecretForbidden
+		}
+		auditProjectID = project.ID
+	case secrets.ScopeOrg:
+		if secret.ProjectID != "" || secret.OrganizationID != c.OrganizationID {
+			return "", ErrSecretNotFound
+		}
+		if !c.IsOrgAdmin {
+			// A non-admin needs a project in this organization they can manage
+			// (the project they would attach the credential through); seeing
+			// an org secret without one is seeing, not attaching.
+			projectID, merr := s.maintainerProjectInOrg(ctx, secret.OrganizationID, c.UserID)
+			if merr != nil {
+				return "", merr
+			}
+			if projectID == "" {
+				return "", ErrSecretForbidden
+			}
+			auditProjectID = projectID
+		}
+	default:
+		return "", ErrSecretNotFound
+	}
+	if !secIsGitCredential(secret) {
+		// The caller sees this secret's metadata anyway — a name that is not
+		// a git credential is a refusal, not an oracle.
+		return "", ErrSecretForbidden
+	}
+
+	audit := credentialAudit{
+		organizationID: secret.OrganizationID, projectID: auditProjectID,
+		secretID: secret.ID, consumer: consumer,
+		// No repository row asks; the audit names the check itself where a
+		// resolve names a repository.
+		repositoryName: "assistant repo.check",
+	}
+	token, resolveErr := s.openRepositoryCredential(ctx, secret.ID, audit)
+	if resolveErr == nil {
+		audit.version = token.version
+	} else {
+		audit.failure = credentialFailureClass(resolveErr)
+	}
+	if aerr := s.recordCredentialAudit(ctx, audit, c.UserID, resolveErr == nil); aerr != nil {
+		if resolveErr == nil {
+			// Fail closed here exactly as it does on the row path: a use that
+			// cannot be audited did not happen.
+			return "", aerr
+		}
+	}
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+	return token.token, nil
+}
+
+// maintainerProjectInOrg returns the id of one project in orgID where user is
+// a maintainer ("" and no error when there is none): the project an
+// org-scope credential would be attached through, and the proof its holder
+// may attach at all.
+func (s *SecretStore) maintainerProjectInOrg(ctx context.Context, orgID, user string) (string, error) {
+	var projectID string
+	err := s.Pool.QueryRow(ctx, `
+		SELECT p.id::text
+		FROM projects p
+		JOIN memberships m ON m.project_id = p.id AND m.user_id = $2::uuid
+		WHERE p.organization_id = $1::uuid AND m.role = $3
+		ORDER BY p.created_at, p.id
+		LIMIT 1`, orgID, user, string(authz.RoleMaintainer)).Scan(&projectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("postgres: find maintainer project: %w", err)
+	}
+	return projectID, nil
+}
+
+// secIsGitCredential is the store-side copy of the purpose filter
+// credential.list uses (assistantGitHubCredential in internal/api): the
+// machine-readable delivery mode, or the free-text purpose naming git.
+// Keeping the two copies is deliberate — api may not import this package and
+// this one may not answer the question through an interface it owns.
+func secIsGitCredential(sec Secret) bool {
+	if strings.EqualFold(strings.TrimSpace(sec.DeliveryMode), secrets.DeliveryBrokerLiteral) {
+		return true
+	}
+	purpose := strings.ToLower(sec.Purpose)
+	return strings.Contains(purpose, "github") || strings.Contains(purpose, "git ") ||
+		strings.Contains(purpose, "git_") || strings.Contains(purpose, "git/")
+}
+
 // credentialFailureClass is the audit detail's honest one-word answer: which
 // sentinel refused, never the refusal's text (the same rule
 // resolveFailureReason follows for materialization events).
@@ -247,10 +391,16 @@ func (s *SecretStore) recordCredentialAudit(ctx context.Context, a credentialAud
 		outcome = "allowed"
 	}
 	detailMap := map[string]any{
-		"secret_id":       a.secretID,
-		"repository_id":   a.repositoryID,
-		"repository_name": a.repositoryName,
-		"consumer":        a.consumer,
+		"secret_id": a.secretID,
+		"consumer":  a.consumer,
+	}
+	// A check resolve names no repository row; do not spend an empty
+	// repository_id on it (the consumer already says who asked).
+	if a.repositoryID != "" {
+		detailMap["repository_id"] = a.repositoryID
+	}
+	if a.repositoryName != "" {
+		detailMap["repository_name"] = a.repositoryName
 	}
 	if allowed {
 		detailMap["version"] = a.version
@@ -266,7 +416,7 @@ func (s *SecretStore) recordCredentialAudit(ctx context.Context, a credentialAud
 	}
 	_, err = s.Pool.Exec(ctx, `
 		INSERT INTO audit_events (organization_id, project_id, actor_kind, actor_id, action, outcome, detail)
-		VALUES ($1::uuid, $2::uuid, 'system', $3, 'secret.resolved', $4, $5::jsonb)`,
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, 'system', $3, 'secret.resolved', $4, $5::jsonb)`,
 		a.organizationID, prjCleanUUID(a.projectID), actorID, outcome, detail)
 	if err != nil {
 		return fmt.Errorf("postgres: record secret.resolved audit: %w", err)
@@ -342,4 +492,21 @@ func (s *ProjectStore) PatchRepositoryCredential(ctx context.Context, c Caller, 
 		return Repository{}, fmt.Errorf("postgres: commit patch repository credential: %w", err)
 	}
 	return repo, nil
+}
+
+// ResolveSecretForCheck exposes SecretStore's check-only named-credential
+// resolve (assistant handoff § 6) through the api adapter: the caller conversion
+// and the sentinel mapping are the ones every other APISecretStore method uses,
+// so "the assistant gets the same answers the routes get" stays true. The token
+// it returns is for exactly one GitHub call; it never becomes a view.
+func (a APISecretStore) ResolveSecretForCheck(ctx context.Context, c api.Caller, secretID, consumer string) (string, error) {
+	s, err := a.store()
+	if err != nil {
+		return "", err
+	}
+	token, err := s.ResolveSecretForCheck(ctx, apiSecretCaller(c), secretID, consumer)
+	if err != nil {
+		return "", apiSecretErr(err)
+	}
+	return token, nil
 }

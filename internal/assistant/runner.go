@@ -161,6 +161,11 @@ type ConversationRunner struct {
 	// the tool unannounced, the same honest-degradation rule as every other
 	// injected service.
 	status StatusReader
+	// setup is the handoff §6 setup-read face (credential.list, workflow.list
+	// and workflow.inspect, repo.check, issue.list, profile.list,
+	// schedule.list); nil keeps those tools unannounced. docs.search needs no
+	// service — its corpus is embedded — so it is announced either way.
+	setup SetupReader
 	// judge is ADR-0079's decision model: consulted only at ask_risky, only
 	// to ADD a confirmation, never to remove one. nil (no
 	// COMMUNICATION_DECISION_* config) leaves ADR-0050's fixed table in
@@ -188,6 +193,10 @@ type ConversationRunnerDeps struct {
 	// Status is the system.status face behind the setup checklist (§2).
 	// Optional; nil keeps the tool unannounced.
 	Status StatusReader
+	// Setup is the §6 setup-read face behind credential.list, workflow.list,
+	// workflow.inspect, repo.check, issue.list, profile.list and
+	// schedule.list. Optional; nil keeps those seven tools unannounced.
+	Setup SetupReader
 	// Judge is ADR-0079's decision model behind the ask_risky level (§4).
 	// Optional and always a floor-raiser: nil, or a judge that errors,
 	// leaves the fixed class table in charge, which asks MORE, never less.
@@ -203,6 +212,7 @@ func NewConversationRunner(d ConversationRunnerDeps) *ConversationRunner {
 		chats:   d.Chats,
 		library: d.Library,
 		status:  d.Status,
+		setup:   d.Setup,
 		judge:   d.Judge,
 	}
 	// The workflow.draft lookup rides on the wired draft service when it
@@ -328,6 +338,10 @@ func (r *ConversationRunner) registerTools() {
 			require: []string{"slug", "display_name", "document"},
 		})
 	}
+	// Assistant handoff §6: the setup reads (docs.search always, the other
+	// seven only over a wired SetupReader).
+	r.registerSetupTools()
+	r.registerActionTools()
 	for _, name := range []string{"run.start", "run.retry", "approval.decide", "permission.allow", "pipeline.publish"} {
 		if r.actions[name] == nil {
 			continue // an absent service means the tool is not announced
@@ -1092,6 +1106,9 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 // runner-owned reads, then the v1 read registry (its own arg parsing, store
 // call with the caller, links and 404 rule — unchanged).
 func (r *ConversationRunner) runReadClass(ctx context.Context, req TurnRequest, name string, call toolCallRequest) execOutcome {
+	if r.isSetupRead(name) {
+		return r.execSetupRead(ctx, req.Caller, name, call)
+	}
 	if name == "draft.get" {
 		return r.execDraftGet(ctx, req.Caller, call, name)
 	}

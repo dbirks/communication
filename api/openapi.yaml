@@ -13392,7 +13392,12 @@ components:
           type: string
         kind:
           type: string
-          enum: [draft_edit, navigate, run_start, run_retry, approval_decision, publish]
+          # Assistant handoff §6: the five setup kinds (project_create,
+          # repo_add, assignment_set, run_cancel, schedule_create) join the
+          # ADR-0050 set; the database CHECK is extended forward-only by
+          # migration 00030 (ADR-0013).
+          enum: [draft_edit, navigate, run_start, run_retry, approval_decision, publish,
+                 project_create, repo_add, assignment_set, run_cancel, schedule_create]
         target_ref:
           type: string
           description: "The changed entity, e.g. `draft:d-1` or `run:r-1`."

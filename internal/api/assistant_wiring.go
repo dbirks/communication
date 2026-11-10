@@ -341,6 +341,18 @@ type AssistantActionsDeps struct {
 	Approvals   assistantApprovalGate
 	Projects    assistantProjectRoles
 	Trigger     M4Trigger
+	// The assistant handoff §6 setup writes (assistant_actions_setup.go).
+	// Each is optional like the four above: a nil face keeps its tool out of
+	// the announced set. ProjectWrites is the project + repository half,
+	// Secrets resolves a credential NAME to the id AddRepository wants,
+	// Revisions reads the promotion preview's revision, AssignmentWrites pins
+	// it, Schedules creates a cron trigger and RunStop cancels a run.
+	ProjectWrites    assistantProjectWrites
+	Secrets          assistantCredentialLister
+	Revisions        assistantRevisionLister
+	AssignmentWrites assistantAssignmentWrites
+	Schedules        assistantScheduleWriter
+	RunStop          assistantRunStopper
 }
 
 // NewAssistantActions builds the runner's write-tool executors. Each one
@@ -480,8 +492,14 @@ func NewAssistantActions(d AssistantActionsDeps) map[string]assistant.ActionExec
 			}, nil
 		}
 	}
+	addSetupActions(out, d)
 	return out
 }
+
+// addSetupActions is declared in assistant_actions_setup.go; the one call line
+// below hands the §6 setup writes (project.create, repo.add, assignment.set,
+// run.cancel, schedule.create) the same deps struct, so serve passes the
+// project, secret, revision, assignment, schedule and run stores ONCE.
 
 // --- the system.status read (assistant handoff §2) ----------------------
 
