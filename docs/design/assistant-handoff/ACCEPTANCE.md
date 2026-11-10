@@ -171,7 +171,7 @@ The final SHA and its CI/Acceptance runs are recorded at the end.
 - **Every round's findings were fixed:** 789a59f, 8317844, 6f4c889, b0b31a3, 0bffcf8, 9442072, d5eae0f, a9aaab6.
 
 ## Final runs
-The final code SHA is **a9aaab6**. This commit, which only changes this file, is the final main SHA, and its CI and Acceptance runs are the final word.
+The final code SHA is **a9aaab6**. The docs-only commit that checks every TASKS.md box (after 3aff7a0) is the final main SHA, and its CI and Acceptance runs are the final word.
 - On the local lab at d5eae0f, `assistant-handoff.spec.ts`, `shell-p789.spec.ts` and `m5-assistant.spec.ts` gave **20 passed**.
 - Acceptance 42793809727 on 6f4c889 passed lab-e2e and every m4 shard, the regrade and github-loop.
 
