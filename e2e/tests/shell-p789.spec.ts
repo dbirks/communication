@@ -3,8 +3,10 @@
 // stream (ADR-0048) with NO timer poll (row: "live flags … NOT COVERED"),
 // a Studio
 // agent node saved "as a reusable step" appears in `GET /node-templates`
-// and on /workflows/steps (row: 3349840), the ⌘J mic drives a fake SpeechRecognition
-// into an editable composer with nothing sent until Send (row: mic), the
+// and on /workflows/steps (row: 3349840), the ⌘J mic falls back to a fake
+// SpeechRecognition when `serve` has no speech model and fills an editable
+// composer with nothing sent until Send (row: mic; ADR-0080 makes the server's
+// own speech endpoint first and Web Speech the fallback), the
 // per-person trust level is enforced in the assistant loop (row: trust),
 // follow-up questions round-trip as the option's plain-text label (row:
 // questions), the approval detail page renders its summary / plan / files /
@@ -722,7 +724,28 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     );
   });
 
-  test("4. mic: fake SpeechRecognition fills the composer, editable, nothing sends until Send", async ({
+  /**
+   * ADR-0080 / CONTRACT §4 changed the mic's contract: dictation is SERVER-side
+   * first — the composer records with MediaRecorder and POSTs the clip to
+   * `/api/v1/assistant/transcriptions`. The browser's Web Speech API is now the
+   * FALLBACK, taken when `serve` reports `speech_model.configured=false` (or
+   * answers the transcription route 503 `speech_not_configured` / 502, and while
+   * the `speech_browser_fallback` pref is on — default on).
+   *
+   * What is kept from the old contract, because the handoff kept it too: the
+   * transcript lands as editable text, it APPENDS to what the person typed
+   * (HANDOFF §5), and nothing is sent until Send. What is excluded from the
+   * "nothing sends" check is ONLY the transcription path — that POST is the new
+   * contract's transcription call, not a send.
+   *
+   * The route mocks pick the fallback deterministically: `status` says "no speech
+   * model", so `useDictation` hands the mic to the browser instead of recording a
+   * clip nobody will read (ui/src/components/assistant/useDictation.ts `start()`),
+   * and the transcription route answers 503 exactly as an unconfigured `serve`
+   * does in case a clip ever is uploaded. The fake recognizer is the only source
+   * of these words, so a transcript in the box proves the fallback ran.
+   */
+  test("4. mic: Web Speech FALLBACK (no server speech model) fills the composer, appends, nothing sends until Send", async ({
     page,
   }) => {
     page.addInitScript(() => {
@@ -742,6 +765,8 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
           this.onend = null;
         }
         start() {
+          // Visible to the test: the Web Speech path is what opened the mic.
+          (window as unknown as Record<string, unknown>).__speechFallbackRan = true;
           window.setTimeout(() => {
             this.onresult?.({
               resultIndex: 0,
@@ -766,44 +791,122 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       (window as unknown as Record<string, unknown>).SpeechRecognition = Fake;
       (window as unknown as Record<string, unknown>).webkitSpeechRecognition = Fake;
     });
+    // CONTRACT §4's route, answered the way an unconfigured `serve` answers it.
+    // Counted separately: it is the transcription call, never a send.
+    const transcriptionPosts: string[] = [];
+    await page.route(/\/api\/v1\/assistant\/transcriptions(\?|$)/, async (route) => {
+      transcriptionPosts.push(`${route.request().method()} ${route.request().url()}`);
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ code: "speech_not_configured" }),
+      });
+    });
+    // Everything else about the status document stays the server's own; only the
+    // speech model's `configured` flag is forced to false.
+    let speechStatusServed = false;
+    await page.route(/\/api\/v1\/assistant\/status(\?|$)/, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      const speechModel = (body?.speech_model ?? {}) as Record<string, unknown>;
+      const headers: Record<string, string> = {
+        ...response.headers(),
+        "content-type": "application/json",
+      };
+      delete headers["content-length"];
+      speechStatusServed = true;
+      await route.fulfill({
+        status: response.status(),
+        headers,
+        body: JSON.stringify({
+          ...(body ?? {}),
+          speech_model: { ...speechModel, configured: false },
+        }),
+      });
+    });
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("sidebar")).toBeVisible();
-    // No assistant write may leave the browser before Send is pressed.
+    // No assistant write may leave the browser before Send is pressed — except
+    // CONTRACT §4's transcription POST, the one non-GET call the new contract
+    // allows. Only that exact path is excluded; everything else is counted.
     const assistantPosts: string[] = [];
     page.on("request", (r) => {
-      if (/\/api\/v1\/assistant\//.test(r.url()) && r.method() !== "GET") {
+      const url = new URL(r.url());
+      if (
+        /\/api\/v1\/assistant\//.test(url.pathname) &&
+        r.method() !== "GET" &&
+        url.pathname !== "/api/v1/assistant/transcriptions"
+      ) {
         assistantPosts.push(`${r.method()} ${r.url()}`);
       }
     });
     await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    const composer = page.getByTestId("assistant-composer-input");
+    await expect(composer).toBeVisible();
+    // The composer reads the speech status when it mounts; the tap must wait for
+    // that read, or it could start a server recording instead of the fallback.
+    await expect
+      .poll(() => speechStatusServed, {
+        message: "the composer read GET /api/v1/assistant/status",
+        timeout: 15_000,
+      })
+      .toBe(true);
+    // Handoff §5: dictation adds to the end, so type something FIRST.
+    await composer.click();
+    await page.keyboard.type("ship the release notes,");
     const mic = page.getByTestId("mic-button");
     await expect(mic, "the fake SpeechRecognition must make the mic render").toBeVisible();
     await mic.click();
     await expect(page.getByTestId("listening-bar")).toBeVisible();
-    // The final transcript is appended to the composer as editable text.
-    const composer = page.getByTestId("assistant-composer-input");
+    // The browser's own recognizer opened the mic — this is the fallback path.
     await expect
-      .poll(async () => (await composer.inputValue()).includes("change the build"), {
-        message: "the final transcript lands in the composer",
-        timeout: 10_000,
-      })
+      .poll(
+        () =>
+          page.evaluate(
+            () => (window as unknown as Record<string, unknown>).__speechFallbackRan === true,
+          ),
+        {
+          message: "the Web Speech fallback is what recorded",
+          timeout: 10_000,
+        },
+      )
+      .toBe(true);
+    // A server that says it cannot transcribe gets no clip: no upload, no send.
+    expect(transcriptionPosts, "with no server speech model the mic must not upload").toEqual([]);
+    // The final transcript is APPENDED to what was typed, as editable text.
+    await expect
+      .poll(
+        async () =>
+          (await composer.inputValue()).includes("ship the release notes, change the build"),
+        {
+          message: "the fallback transcript lands in the composer after the typed text",
+          timeout: 10_000,
+        },
+      )
       .toBe(true);
     await composer.click();
     await page.keyboard.press("End");
     await page.keyboard.type(" and ship it");
     const value = await composer.inputValue();
     expect(value, "the transcript is editable, not a frozen transcript").toContain(
-      "change the build please and ship it",
+      "ship the release notes, change the build please and ship it",
     );
-    expect(assistantPosts, "nothing is sent until Send is pressed").toEqual([]);
+    await expect(
+      page.getByTestId("composer-error"),
+      "the fallback reported no failure",
+    ).toBeHidden();
+    expect(
+      assistantPosts,
+      "nothing is sent until Send is pressed (the transcription POST aside)",
+    ).toEqual([]);
     await checkShellScreen(page, "assistant popover with the dictated text", stopWatching);
     await evidence(
       page,
       "shell-p789-mic",
-      `the fake SpeechRecognition's interim + final results drove the listening bar and landed 'change the build please' in the composer, where ' and ship it' was typed on top — and ZERO non-GET requests reached /api/v1/assistant/ before Send`,
+      `with GET /api/v1/assistant/status reporting speech_model.configured=false (and POST /api/v1/assistant/transcriptions answered 503 speech_not_configured), the fake SpeechRecognition fallback drove the listening bar and APPENDED 'change the build please' to the typed 'ship the release notes,', where ' and ship it' was typed on top — ZERO non-GET requests reached /api/v1/assistant/ before Send and no clip was uploaded to a server that cannot transcribe`,
     );
     await page.keyboard.press("Escape");
   });
@@ -1572,16 +1675,38 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     );
     await page.goto(BASE_URL + "/settings/assistant", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("settings-assistant")).toBeVisible();
+    // Handoff §4 rewrote this copy: the label plus an honest blurb, both read
+    // from TRUST_LEVELS (ui/src/components/assistant/types.ts), and no promise
+    // anywhere that a change can be undone.
     const options = [
-      { value: "ask_all", label: "Ask before everything" },
-      { value: "ask_risky", label: "Ask for risky actions" },
-      { value: "no_ask", label: "Don't ask" },
+      {
+        value: "ask_all",
+        label: "Ask before every change",
+        blurb: "You confirm every change.",
+      },
+      {
+        value: "ask_risky",
+        label: "Ask when it looks risky",
+        blurb: "A decision model checks each call. Flagged ones wait for you.",
+      },
+      {
+        value: "no_ask",
+        label: "Don't ask",
+        blurb: "Everything runs. Each action is listed in the thread.",
+      },
     ];
     for (const option of options) {
       const label = page.getByTestId(`settings-assistant-trust-level-option-${option.value}`);
       await expect(label, `the '${option.label}' line renders`).toBeVisible();
       await expect(label).toContainText(option.label);
+      await expect(label, `the '${option.label}' line carries its blurb`).toContainText(
+        option.blurb,
+      );
     }
+    await expect(
+      page.getByTestId("settings-assistant-trust-level-group"),
+      "handoff §4: the trust levels make no undo promise",
+    ).not.toContainText(/undo/i);
     const stored = (await (await request.get(BASE_URL + "/api/v1/me/preferences")).json()) as {
       assistant?: { trust_level: string };
     };
