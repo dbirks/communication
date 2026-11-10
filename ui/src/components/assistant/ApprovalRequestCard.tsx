@@ -128,19 +128,23 @@ function ProposalRow({
   testid,
   mono = false,
   note,
+  bold = false,
 }: {
   label: string;
   value: string;
   testid: string;
   mono?: boolean;
   note?: string;
+  bold?: boolean;
 }) {
   return (
     <>
       <span className="text-muted">{label}</span>
+      {/* Only the Project value is bold (design L306–340): the mono rows and
+          the plain Workflow / Why-it-asks values stay regular weight. */}
       <span
         data-testid={testid}
-        className={`min-w-0 break-words ${mono ? "font-mono text-[11px] text-ink" : "font-semibold text-ink"}`}
+        className={`min-w-0 break-words ${mono ? "font-mono text-[11px] text-ink" : bold ? "font-semibold text-ink" : "text-ink"}`}
       >
         {value}
         {note ? <span className="font-normal text-muted"> {note}</span> : null}
@@ -181,8 +185,10 @@ function ProposalCard({
       data-proposal={request.action}
       role="group"
       aria-label={`Proposal: ${request.summary}`}
-      className="overflow-hidden rounded-[4px] border border-ink bg-surface px-0 py-0"
-      style={{ display: "inline-block", maxWidth: "100%" }}
+      // Design L306: the card is INSET in the message column (the other
+      // blocks' side margins, the prototype's `margin: 2px 10px`) with a
+      // 4px-rounded ink border — never edge-to-edge across the panel.
+      className="my-[2px] mx-[10px] overflow-hidden rounded-[4px] border border-ink bg-surface px-0 py-0"
     >
       <Banner tone={pending ? "waiting" : request.state === "confirmed" ? "done" : "quiet"}>
         {pending
@@ -197,6 +203,7 @@ function ProposalCard({
           value={project}
           testid="assistant-proposal-project"
           note="(new)"
+          bold
         />
         <ProposalRow
           label="Repository"

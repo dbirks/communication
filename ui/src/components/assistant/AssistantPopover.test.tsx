@@ -1383,12 +1383,20 @@ describe("the header names the thread (walk-through finding 2)", () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
-    // conv-1 (the newest) is titled `approvals`; the route behind the popover
-    // is Today, and Today stands nowhere in the header — it is the page-context
-    // button's line, shown in the composer box.
+    await screen.findByTestId("assistant-panel");
+    // Review fix 3 (design L131–137): the POPOVER header shows only the mono
+    // ASSISTANT label — no thread title at all.
+    expect(screen.getByTestId("assistant-panel-header").textContent).toContain("ASSISTANT");
+    expect(screen.queryByTestId("assistant-thread-title")).toBeNull();
+    // The side panel shows ONLY the thread title. conv-1 (the newest) is
+    // titled `approvals`; the route behind the surface is Today, and Today
+    // stands nowhere in the header — it is the page-context button's line,
+    // shown in the composer box.
+    fireEvent.click(screen.getByTestId("assistant-dock"));
     await waitFor(() =>
       expect(screen.getByTestId("assistant-thread-title").textContent).toBe("approvals"),
     );
+    expect(screen.getByTestId("assistant-panel-header").textContent).not.toContain("ASSISTANT");
     expect(screen.getByTestId("assistant-panel-header").textContent).not.toContain("today");
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
   });
@@ -1400,7 +1408,10 @@ describe("the header names the thread (walk-through finding 2)", () => {
     await screen.findByTestId("assistant-panel");
     fireEvent.click(screen.getByTestId("assistant-new-conversation"));
     // The New thread is cleared: no conversation, no title — and the page's
-    // own label stays on the page-context button, where it belongs.
+    // own label stays on the page-context button, where it belongs. The title
+    // itself reads only in the side panel (review fix 3): the popover header
+    // keeps just the ASSISTANT label.
+    fireEvent.click(screen.getByTestId("assistant-dock"));
     expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
   });

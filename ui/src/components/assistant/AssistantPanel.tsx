@@ -201,7 +201,7 @@ function HeaderIconButton({
       aria-pressed={pressed || undefined}
       onClick={onClick}
       className={`grid h-[26px] w-[26px] shrink-0 cursor-pointer place-items-center rounded-[4px] border-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
-        pressed ? "bg-fill-edge text-ink" : "bg-transparent text-ink-2 hover:bg-fill"
+        pressed ? "bg-line text-ink" : "bg-transparent text-ink-2 hover:bg-fill"
       }`}
     >
       {children}
@@ -783,18 +783,25 @@ export function AssistantPanel({
         pageMode ? "px-[16px] py-[10px]" : "pb-[6px] pl-[10px] pr-[8px] pt-[6px]"
       } ${popover ? "bg-fill" : "bg-surface"}`}
     >
-      {popover || docked ? (
-        <span className="shrink-0 whitespace-nowrap font-mono text-[10.5px] font-semibold tracking-wider text-ink">
-          ASSISTANT
+      {/* Design L131–137: the POPOVER header shows only the mono ASSISTANT
+          label; the side panel and the full page show only the thread title
+          (13.5px/600, ellipsized, "New thread" when empty). */}
+      {popover ? (
+        <>
+          <span className="shrink-0 whitespace-nowrap font-mono text-[10.5px] font-semibold tracking-wider text-ink">
+            ASSISTANT
+          </span>
+          <span className="min-w-0 flex-1" aria-hidden="true" />
+        </>
+      ) : (
+        <span
+          className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-ink"
+          data-testid="assistant-thread-title"
+          title={headerTitle}
+        >
+          {headerTitle}
         </span>
-      ) : null}
-      <span
-        className="min-w-0 flex-1 truncate text-[13px] text-ink"
-        data-testid="assistant-thread-title"
-        title={headerTitle}
-      >
-        {headerTitle}
-      </span>
+      )}
       {showThreadControls ? (
         <>
           {onNewConversation ? (

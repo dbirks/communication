@@ -162,7 +162,7 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
   return (
     <div data-testid="assistant-setup" className="flex flex-col gap-[6px] px-[10px] py-[6px]">
       <p className="m-0 text-[13px] leading-[1.5] text-ink">Checked this server.</p>
-      <div className="rounded-[3px] border border-line p-[4px]">
+      <div data-testid="assistant-setup-card" className="rounded-[3px] border border-line p-[4px]">
         {rows.map((row) => (
           <div
             key={`${row.label}-${row.meta ?? ""}`}
@@ -170,15 +170,17 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
             data-state={row.state}
             className="flex items-center gap-[8px] rounded-[3px] px-[6px] py-[5px]"
           >
+            {/* Design L176–195: a 16px ROUNDED-SQUARE tile with a tinted
+                fill (done / waiting / quiet), never a round circle. */}
             <span
               role="img"
               aria-label={STATE_WORD[row.state]}
-              className={`grid h-[16px] w-[16px] flex-shrink-0 place-items-center rounded-full ${
+              className={`grid h-[16px] w-[16px] shrink-0 place-items-center rounded-[3px] ${
                 row.state === "ok"
                   ? "bg-st-done-tag text-st-done-tag-fg"
                   : row.state === "warn"
                     ? "bg-st-waiting-tag text-st-waiting-tag-fg"
-                    : "text-faint"
+                    : "bg-fill text-faint"
               }`}
             >
               {row.state === "ok" ? (
@@ -189,14 +191,27 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
                 <IconCircle size={10} stroke={2} aria-hidden className="shrink-0" />
               )}
             </span>
-            <span className="min-w-0 flex-1 truncate text-[13px] leading-[1.4] text-ink">
+            {/* The label is WHOLE: it never truncates and never pushes the
+                action out of the card — the mono meta column (min-w-0 +
+                truncate) is what shrinks. The label only wraps when it alone
+                exceeds the row (default min-width: auto floors it at its
+                longest word). */}
+            <span
+              data-testid="assistant-setup-label"
+              className="text-[13px] leading-[1.4] text-ink"
+            >
               {row.label}
             </span>
             {row.meta ? (
-              <span className="flex-shrink-0 whitespace-nowrap font-mono text-[10.5px] text-muted">
+              <span
+                data-testid="assistant-setup-meta"
+                className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-faint"
+              >
                 {row.meta}
               </span>
-            ) : null}
+            ) : (
+              <span className="min-w-0 flex-1" aria-hidden="true" />
+            )}
             {row.action ? (
               <button
                 type="button"

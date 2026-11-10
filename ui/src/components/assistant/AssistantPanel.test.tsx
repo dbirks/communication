@@ -142,6 +142,10 @@ describe("AssistantPanel (popover)", () => {
 
     const header = screen.getByTestId("assistant-panel-header");
     expect(header.textContent).toContain("ASSISTANT");
+    // Design L131–137 (review fix 3): the popover header is ONLY the mono
+    // ASSISTANT label — no thread title. The title lives in the side panel
+    // and the full page, which show ONLY the title.
+    expect(screen.queryByTestId("assistant-thread-title")).toBeNull();
     // The old text controls are gone: no ▾ Recent menu, no ⤢, no `esc` hint.
     expect(header.textContent).not.toContain("esc");
     expect(header.textContent).not.toContain("▾");
@@ -362,7 +366,12 @@ describe("AssistantPanel (page and dock)", () => {
     // The header names the thread; the popover's word does not appear.
     const header = screen.getByTestId("assistant-panel-header");
     expect(header.textContent).not.toContain("ASSISTANT");
-    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("Fix the board");
+    const title = screen.getByTestId("assistant-thread-title");
+    // Design L134: the wide headers' title is 13.5px/600, ellipsized.
+    expect(title.className).toContain("text-[13.5px]");
+    expect(title.className).toContain("font-semibold");
+    expect(title.className).toContain("truncate");
+    expect(title.textContent).toBe("Fix the board");
     // Below ~1000px the caller hides the thread list and returns the thread
     // buttons to the header (`showThreadControls`); here they are the page's
     // left column, so the header draws the other three.
@@ -417,23 +426,54 @@ describe("AssistantPanel (page and dock)", () => {
     expect(panel.className).toContain("h-full");
     expect(panel.className).toContain("min-h-0");
     const header = screen.getByTestId("assistant-panel-header");
-    // Finding 2: the side panel carries the popover's `ASSISTANT` word AND the
-    // thread's title. An untitled thread is "New thread" — the page section
-    // (`threads`, `today`) belongs to the page-context button, not the header.
-    expect(header.textContent).toContain("ASSISTANT");
+    // Review fix 3 (design L131–137): the side panel shows ONLY the thread
+    // title — the popover's `ASSISTANT` label does NOT ride along (reverts
+    // the earlier "dock shows ASSISTANT" change). An untitled thread is
+    // "New thread" — the page section (`threads`, `today`) belongs to the
+    // page-context button, not the header.
+    expect(header.textContent).not.toContain("ASSISTANT");
     expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
+    // Review fix 3: the dock header is ~38px — the popover's 6/8/6/10 padding
+    // around the 26px buttons (the page header's is 10/16).
+    expect(header.className).toContain("pt-[6px]");
+    expect(header.className).toContain("pl-[10px]");
+    expect(header.className).toContain("pr-[8px]");
     const dock = screen.getByTestId("assistant-dock") as HTMLButtonElement;
     expect(dock.title).toBe("Back to popover");
     expect(dock.getAttribute("aria-label")).toBe("Back to popover");
     expect(dock.getAttribute("aria-pressed")).toBe("true");
-    // The pressed state is the design's fill-edge ground.
-    expect(dock.className).toContain("bg-fill-edge");
+    // Review fix 4 (prototype ibOn): the pressed header button is the pale
+    // LINE fill (#e6e2d9), not the darker fill-edge.
+    expect(dock.className).toContain("bg-line");
+    expect(dock.className).not.toContain("bg-fill-edge");
     expect(screen.getByTestId("assistant-new-conversation").title).toBe("New thread");
     expect(screen.getByTestId("assistant-history").title).toBe("Threads");
     expect(screen.getByTestId("assistant-expand").title).toBe("Open full page");
     expect(screen.getByTestId("assistant-close").title).toBe("Close");
     fireEvent.click(dock);
     expect(onDock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Review fix 4 (prototype threadsBtnStyle = ibOn while the menu is open):
+   * the Threads button takes the same pale line fill while its menu stands.
+   */
+  it("threads button takes the pale pressed fill while its menu is open", () => {
+    render(
+      <AssistantPanel
+        variant="dock"
+        {...panelProps}
+        onSwitchConversation={() => {}}
+        onThreadsMenuOpenChange={() => {}}
+        threadsMenuOpen
+        recentConversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+        activeConversationId="c1"
+      />,
+    );
+    const history = screen.getByTestId("assistant-history") as HTMLButtonElement;
+    expect(history.getAttribute("aria-pressed")).toBe("true");
+    expect(history.className).toContain("bg-line");
+    expect(history.className).not.toContain("bg-fill-edge");
   });
 
   /**

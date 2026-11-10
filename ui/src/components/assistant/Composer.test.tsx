@@ -258,9 +258,14 @@ describe("the page-context button and menu (handoff §3)", () => {
     const button = screen.getByTestId("assistant-context-button");
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(button.getAttribute("title")).toBe("Page context: Today");
+    // Closed: the design's quiet line border.
+    expect(button.className).toContain("border-line");
     fireEvent.click(button);
     const menu = screen.getByTestId("assistant-context-menu");
     expect(button.getAttribute("aria-expanded")).toBe("true");
+    // Review fix 4 (prototype ctxBtnStyle): while the menu is open the button
+    // carries the INK border, whatever the on/off fill underneath it.
+    expect(button.className).toContain("border-ink");
     expect(menu.textContent).toContain("PAGE CONTEXT");
     expect(menu.textContent).toContain("Today");
     expect(menu.textContent).toContain("/");
@@ -270,6 +275,10 @@ describe("the page-context button and menu (handoff §3)", () => {
     const arrow = screen.getByTestId("menu-arrow") as HTMLElement;
     expect(arrow.style.width).toBe("9px");
     expect(arrow.style.transform).toContain("rotate(45deg)");
+    // The ink border belongs to the open menu alone: esc drops it back.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByTestId("assistant-context-button").className).not.toContain("border-ink");
+    expect(screen.getByTestId("assistant-context-button").className).toContain("border-line");
   });
 
   it("sends the page context with the ask, and omits it once unchecked", () => {

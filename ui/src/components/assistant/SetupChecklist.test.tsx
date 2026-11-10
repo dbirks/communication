@@ -157,4 +157,74 @@ describe("SetupChecklist", () => {
     starters.forEach((button) => fireEvent.click(button));
     expect(onPrompt.mock.calls.map((call) => call[0])).toEqual([...SETUP_STARTERS]);
   });
+
+  /**
+   * Review fix 1: a long credential name must squeeze the MONO META, never
+   * the label, and the action link stays inside the card's padding (the
+   * 1280/390 screenshots showed the label truncating to "Gi…" and "Check ›"
+   * overflowing the card edge).
+   */
+  it("a 60-char credential name shrinks the meta, never the label, and keeps the action in the card", () => {
+    const longName = "assistant-github-mwah83sb-rotation-scan-eu-west-1-replica-07";
+    expect(longName.length).toBeGreaterThanOrEqual(60);
+    renderChecklist({
+      ...healthy(),
+      github_credentials: [{ name: longName, scope: "org", used_by: 1 }],
+    });
+    const row = rows().find((candidate) => candidate.textContent?.includes("GitHub credential"));
+    if (!row) throw new Error("the credential row is gone");
+    // The label stands whole: full text, no truncation of its own.
+    const label = row.querySelector('[data-testid="assistant-setup-label"]') as HTMLElement;
+    expect(label.textContent).toBe("GitHub credential");
+    expect(label.className).not.toContain("truncate");
+    // The mono meta is what shrinks/ellipsizes.
+    const meta = row.querySelector('[data-testid="assistant-setup-meta"]') as HTMLElement;
+    expect(meta.textContent).toContain(longName);
+    expect(meta.className).toContain("min-w-0");
+    expect(meta.className).toContain("truncate");
+    // The action is the card's own descendant (inside its padding), never an
+    // overflow past the card edge, and it never shrinks itself.
+    const card = screen.getByTestId("assistant-setup-card");
+    const action = screen.getByTestId("assistant-setup-action");
+    expect(card.contains(action)).toBe(true);
+    expect(action.className).toContain("shrink-0");
+  });
+
+  /**
+   * Review fix 2 (design L176–195): the state icons are small ROUNDED-SQUARE
+   * 16px tiles with a tinted fill — ok done, warn waiting, todo the quiet
+   * fill ground — not round circles.
+   */
+  it("status icons are 16px rounded-square tinted tiles, not circles", () => {
+    renderChecklist(bare());
+    const icons = rows().map((row) => [
+      row.getAttribute("data-state"),
+      row.querySelector('[role="img"]') as HTMLElement,
+    ]) as Array<[string, HTMLElement]>;
+    expect(icons.length).toBeGreaterThan(3);
+    for (const [state, icon] of icons) {
+      expect(icon.className).toContain("rounded-[3px]");
+      expect(icon.className).not.toContain("rounded-full");
+      expect(icon.className).toContain("h-[16px]");
+      expect(icon.className).toContain("w-[16px]");
+      expect(icon.className).toContain(
+        state === "ok" ? "bg-st-done-tag" : state === "warn" ? "bg-st-waiting-tag" : "bg-fill",
+      );
+      // The glyph fills the tile in the state's own foreground.
+      expect(
+        state === "ok"
+          ? "text-st-done-tag-fg"
+          : state === "warn"
+            ? "text-st-waiting-tag-fg"
+            : "text-faint",
+      ).toBeTruthy();
+      expect(icon.className).toContain(
+        state === "ok"
+          ? "text-st-done-tag-fg"
+          : state === "warn"
+            ? "text-st-waiting-tag-fg"
+            : "text-faint",
+      );
+    }
+  });
 });

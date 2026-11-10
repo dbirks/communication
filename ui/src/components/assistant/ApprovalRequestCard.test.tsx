@@ -229,6 +229,40 @@ describe("ApprovalRequestCard proposal (A7 §6)", () => {
     expect(screen.getByTestId("assistant-approval-confirm").textContent).toBe("Connect repository");
   });
 
+  /**
+   * Review fix 5 (design L306–340): the proposal card is INSET in the message
+   * column with the prototype's `margin: 2px 10px` and a 4px-rounded ink
+   * border — never edge-to-edge with square sides. And only the Project value
+   * is bold: Repository/Credential (mono) and Workflow / Why it asks stay
+   * regular weight.
+   */
+  it("proposal card is inset with a rounded ink border and only the Project value is bold", () => {
+    renderCard(proposal());
+    const card = screen.getByTestId("assistant-approval") as HTMLElement;
+    expect(card.className).toContain("border-ink");
+    expect(card.className).toContain("rounded-[4px]");
+    // The side margins inset it like the other message blocks; the inline
+    // edge-to-edge `display: inline-block` sizing is gone.
+    expect(card.className).toContain("mx-[10px]");
+    expect(card.className).toContain("my-[2px]");
+    expect(card.style.display).not.toBe("inline-block");
+    expect(card.getAttribute("style")).toBeNull();
+    // Only Project rides bold.
+    expect(screen.getByTestId("assistant-proposal-project").className).toContain("font-semibold");
+    for (const testid of [
+      "assistant-proposal-repository",
+      "assistant-proposal-credential",
+      "assistant-proposal-workflow",
+      "assistant-approval-reason",
+    ]) {
+      const value = screen.getByTestId(testid) as HTMLElement;
+      expect(value.className, testid).not.toContain("font-semibold");
+    }
+    // The mono rows stay mono, the plain rows stay regular.
+    expect(screen.getByTestId("assistant-proposal-credential").className).toContain("font-mono");
+    expect(screen.getByTestId("assistant-proposal-workflow").className).not.toContain("font-mono");
+  });
+
   it("a confirmed proposal says what it did and offers nothing else", () => {
     renderCard(proposal({ state: "confirmed" }));
     expect(screen.getByTestId("assistant-approval-header").textContent).toBe("CONFIRMED");

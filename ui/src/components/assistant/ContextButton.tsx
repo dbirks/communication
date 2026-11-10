@@ -188,8 +188,10 @@ export function ContextButton({ page, on, onToggle, className = "" }: ContextBut
         aria-label={on ? `Page context: ${page.label}` : "Page context off"}
         onClick={() => setOpen((next) => !next)}
         className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[4px] border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
-          on ? "border-line bg-accent-wash text-accent-text" : "border-line bg-surface text-faint"
-        }`}
+          // The menu's pressed state is the INK border (prototype ctxBtnStyle:
+          // border #1e1d1a while the ctx menu is open), over the on/off fill.
+          open ? "border-ink" : "border-line"
+        } ${on ? "bg-accent-wash text-accent-text" : "bg-surface text-faint"}`}
       >
         {on ? (
           <IconCurrentLocation size={14} stroke={2} aria-hidden className="shrink-0" />
