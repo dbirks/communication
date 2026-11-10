@@ -62,6 +62,10 @@ export const DEFAULT_LAYOUT_PREFS: LayoutPrefs = {
 
 export const DEFAULT_TRUST_LEVEL: TrustLevel = "ask_risky";
 
+/** ADR-0080 defaults: dictation waits in the box; the browser may fall back. */
+export const DEFAULT_SPEECH_AUTO_SEND = false;
+export const DEFAULT_SPEECH_BROWSER_FALLBACK = true;
+
 /** Wire shape of `GET /api/v1/me/preferences` (contract C2). */
 interface PreferencesWire {
   layout?: {
@@ -73,7 +77,11 @@ interface PreferencesWire {
     show_workflow_folders?: unknown;
     expanded?: unknown;
   };
-  assistant?: { trust_level?: unknown };
+  assistant?: {
+    trust_level?: unknown;
+    speech_auto_send?: unknown;
+    speech_browser_fallback?: unknown;
+  };
   updated_at?: unknown;
 }
 
@@ -82,7 +90,11 @@ export interface PreferencesPatch {
   layout?: {
     expanded?: Record<string, boolean>;
   };
-  assistant?: { trust_level?: TrustLevel };
+  assistant?: {
+    trust_level?: TrustLevel;
+    speech_auto_send?: boolean;
+    speech_browser_fallback?: boolean;
+  };
 }
 
 /** Cached, camelCase state; a `404` is folded into a cache hit, not an error. */
@@ -91,6 +103,10 @@ interface PreferencesState {
   stored: boolean;
   layout: LayoutPrefs;
   trustLevel: TrustLevel;
+  /** ADR-0080: send a dictation the moment it finishes (default off). */
+  speechAutoSend: boolean;
+  /** ADR-0080: fall back to the browser's Web Speech API (default on). */
+  speechBrowserFallback: boolean;
   updatedAt: string | null;
   /**
    * `Date.now()` of the last optimistic local change, `0` when the cache holds
@@ -133,12 +149,23 @@ function parseTrustLevel(raw: PreferencesWire["assistant"] | undefined): TrustLe
     : DEFAULT_TRUST_LEVEL;
 }
 
+/** Missing or non-boolean values are the contract's defaults (ADR-0080). */
+function parseSpeechAutoSend(raw: PreferencesWire["assistant"] | undefined): boolean {
+  return raw?.speech_auto_send === true ? true : DEFAULT_SPEECH_AUTO_SEND;
+}
+
+function parseSpeechBrowserFallback(raw: PreferencesWire["assistant"] | undefined): boolean {
+  return raw?.speech_browser_fallback === false ? false : DEFAULT_SPEECH_BROWSER_FALLBACK;
+}
+
 /** Map a wire document into the cached state. */
 export function parsePreferences(body: PreferencesWire, stored = true): PreferencesState {
   return {
     stored,
     layout: parseLayout(body.layout),
     trustLevel: parseTrustLevel(body.assistant),
+    speechAutoSend: parseSpeechAutoSend(body.assistant),
+    speechBrowserFallback: parseSpeechBrowserFallback(body.assistant),
     updatedAt: isString(body.updated_at) ? body.updated_at : null,
     localAt: 0,
   };
@@ -189,6 +216,8 @@ const EMPTY_STATE: PreferencesState = {
   stored: true,
   layout: { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
   trustLevel: DEFAULT_TRUST_LEVEL,
+  speechAutoSend: DEFAULT_SPEECH_AUTO_SEND,
+  speechBrowserFallback: DEFAULT_SPEECH_BROWSER_FALLBACK,
   updatedAt: null,
   localAt: 0,
 };
@@ -216,6 +245,9 @@ function usePreferencesCore() {
             stored: false,
             layout: previous?.layout ?? EMPTY_STATE.layout,
             trustLevel: previous?.trustLevel ?? DEFAULT_TRUST_LEVEL,
+            speechAutoSend: previous?.speechAutoSend ?? DEFAULT_SPEECH_AUTO_SEND,
+            speechBrowserFallback:
+              previous?.speechBrowserFallback ?? DEFAULT_SPEECH_BROWSER_FALLBACK,
             updatedAt: null,
             localAt: previous?.localAt ?? 0,
           };
@@ -269,6 +301,8 @@ function usePreferencesCore() {
       stored: prev?.stored ?? true,
       layout: next,
       trustLevel: prev?.trustLevel ?? DEFAULT_TRUST_LEVEL,
+      speechAutoSend: prev?.speechAutoSend ?? DEFAULT_SPEECH_AUTO_SEND,
+      speechBrowserFallback: prev?.speechBrowserFallback ?? DEFAULT_SPEECH_BROWSER_FALLBACK,
       updatedAt: prev?.updatedAt ?? null,
       localAt: Date.now(),
     }));
@@ -280,13 +314,47 @@ function usePreferencesCore() {
       stored: prev?.stored ?? true,
       layout: prev?.layout ?? { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
       trustLevel,
+      speechAutoSend: prev?.speechAutoSend ?? DEFAULT_SPEECH_AUTO_SEND,
+      speechBrowserFallback: prev?.speechBrowserFallback ?? DEFAULT_SPEECH_BROWSER_FALLBACK,
       updatedAt: prev?.updatedAt ?? null,
       localAt: Date.now(),
     }));
     mutation.mutate({ assistant: { trust_level: trustLevel } });
   };
 
-  return { state, query, applyLayout, applyTrust, loaded: query.data !== undefined };
+  /** ADR-0080: the two dictation switches ride the same assistant section and
+   * the same PATCH as the trust level; only CHANGED keys are sent, so an
+   * untouched switch keeps its stored value (the server merges per field). */
+  const applySpeech = (
+    patch: Partial<Pick<PreferencesState, "speechAutoSend" | "speechBrowserFallback">>,
+  ) => {
+    const assistant: NonNullable<PreferencesPatch["assistant"]> = {};
+    if (patch.speechAutoSend !== undefined && patch.speechAutoSend !== state.speechAutoSend) {
+      assistant.speech_auto_send = patch.speechAutoSend;
+    }
+    if (
+      patch.speechBrowserFallback !== undefined &&
+      patch.speechBrowserFallback !== state.speechBrowserFallback
+    ) {
+      assistant.speech_browser_fallback = patch.speechBrowserFallback;
+    }
+    if (Object.keys(assistant).length === 0) return;
+    queryClient.setQueryData<PreferencesState>(preferencesQueryKey, (prev) => ({
+      stored: prev?.stored ?? true,
+      layout: prev?.layout ?? { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
+      trustLevel: prev?.trustLevel ?? DEFAULT_TRUST_LEVEL,
+      speechAutoSend: patch.speechAutoSend ?? prev?.speechAutoSend ?? DEFAULT_SPEECH_AUTO_SEND,
+      speechBrowserFallback:
+        patch.speechBrowserFallback ??
+        prev?.speechBrowserFallback ??
+        DEFAULT_SPEECH_BROWSER_FALLBACK,
+      updatedAt: prev?.updatedAt ?? null,
+      localAt: Date.now(),
+    }));
+    mutation.mutate({ assistant });
+  };
+
+  return { state, query, applyLayout, applyTrust, applySpeech, loaded: query.data !== undefined };
 }
 
 /**
@@ -316,6 +384,27 @@ export function useAssistantPrefs(): {
 } {
   const { state, applyTrust } = usePreferencesCore();
   return { trustLevel: state.trustLevel, setTrustLevel: applyTrust, saved: state.stored };
+}
+
+/** ADR-0080 (handoff A5/A6): the two dictation switches of Settings →
+ * Assistant → Speech, stored in the same `assistant` preference section and
+ * PATCHed through the same mutation as the trust level. Defaults when the
+ * server has never saved them: auto-send off, browser fallback on. */
+export function useAssistantSpeechPrefs(): {
+  speechAutoSend: boolean;
+  setSpeechAutoSend: (value: boolean) => void;
+  speechBrowserFallback: boolean;
+  setSpeechBrowserFallback: (value: boolean) => void;
+  saved: boolean;
+} {
+  const { state, applySpeech } = usePreferencesCore();
+  return {
+    speechAutoSend: state.speechAutoSend,
+    setSpeechAutoSend: (value) => applySpeech({ speechAutoSend: value }),
+    speechBrowserFallback: state.speechBrowserFallback,
+    setSpeechBrowserFallback: (value) => applySpeech({ speechBrowserFallback: value }),
+    saved: state.stored,
+  };
 }
 
 /** The repo page's view choice (design 3a): the mixed List, or the not-yet-

@@ -230,20 +230,23 @@ describe("Settings → Layout", () => {
 });
 
 describe("Settings → Assistant", () => {
-  it("defaults to 'Ask for risky actions' with the one-line explanations", async () => {
+  it("defaults to 'Ask when it looks risky' with the one-line blurbs from TRUST_LEVELS", async () => {
     mount("/settings/assistant"); // no stub → 404
     await waitFor(() => expect(screen.queryByTestId("settings-assistant-not-saved")).toBeTruthy());
-    expect(checked(/Ask for risky actions/)).toBe(true);
+    expect(checked(/Ask when it looks risky/)).toBe(true);
+    // A5: the page reads its copy from `TRUST_LEVELS`; no level promises that a
+    // change can be undone. `settings/Assistant.test.tsx` asserts the full copy.
+    expect(screen.getByText("Ask before every change")).toBeTruthy();
+    expect(screen.getByText("You confirm every change.")).toBeTruthy();
     expect(
-      screen.getByText(
-        "Every tool call that changes state, including navigation, shows a confirm card.",
-      ),
+      screen.getByText("A decision model checks each call. Flagged ones wait for you."),
     ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "It can do everything, with each action logged and undo offered where possible.",
-      ),
-    ).toBeTruthy();
+    // "Don't ask" is also the trust table's column header, so scope to the group.
+    expect(screen.getByTestId("settings-assistant-trust-level-group").textContent).toContain(
+      "Don't ask",
+    );
+    expect(screen.getByText("Everything runs. Each action is listed in the thread.")).toBeTruthy();
+    expect(document.body.textContent?.toLowerCase()).not.toContain("can be undone");
   });
 
   it("applies a trust-level change immediately and PATCHes only the assistant section", async () => {
@@ -256,7 +259,7 @@ describe("Settings → Assistant", () => {
       },
     ]);
     setCsrfToken(CSRF);
-    await waitFor(() => expect(checked(/Ask before everything/)).toBe(true));
+    await waitFor(() => expect(checked(/Ask before every change/)).toBe(true));
 
     fireEvent.click(screen.getByRole("radio", { name: /Don't ask/ }));
     await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "PATCH")).toHaveLength(1));
