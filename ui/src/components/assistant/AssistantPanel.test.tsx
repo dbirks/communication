@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render as baseRender, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as baseRender,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement, ReactNode } from "react";
 import AssistantPanel, {
@@ -39,11 +46,12 @@ function render(element: ReactElement) {
 function stubStatusNotFound(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () =>
-      new Response(
-        JSON.stringify({ title: "Not Found", status: 404, detail: "no stub" }),
-        { status: 404, headers: { "content-type": "application/problem+json" } },
-      )
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ title: "Not Found", status: 404, detail: "no stub" }), {
+          status: 404,
+          headers: { "content-type": "application/problem+json" },
+        }),
     ),
   );
 }
@@ -184,20 +192,21 @@ describe("AssistantPanel (popover)", () => {
   it("an empty thread is the setup checklist, not a chip table (handoff §1/§2)", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            chat_model: { configured: true, model: "qwen3-8-flash-next" },
-            speech_model: { configured: false, model: "" },
-            decision_model: { configured: false, model: "" },
-            workers: { online: 1, sandbox_mode: "required" },
-            execution_mode: "inprocess",
-            github_credentials: [],
-            projects: { count: 0 },
-            workflows: { count: 0, samples: 0, assigned: 0 },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        )
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              chat_model: { configured: true, model: "qwen3-8-flash-next" },
+              speech_model: { configured: false, model: "" },
+              decision_model: { configured: false, model: "" },
+              workers: { online: 1, sandbox_mode: "required" },
+              execution_mode: "inprocess",
+              github_credentials: [],
+              projects: { count: 0 },
+              workflows: { count: 0, samples: 0, assigned: 0 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
       ),
     );
     try {
@@ -322,18 +331,20 @@ describe("AssistantPanel (page and dock)", () => {
    */
   it("page: the centred 720px column, the thread title, the Exit-full-page verb", () => {
     const { container } = render(
-      withQuery(<AssistantPanel
-        variant="page"
-        {...panelProps}
-        contextLabel="Feature Delivery"
-        recentConversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
-        activeConversationId="c1"
-        onExpandPage={() => {}}
-        onDock={() => {}}
-        onNewConversation={() => {}}
-        onSwitchConversation={() => {}}
-        showThreadControls={false}
-      />),
+      withQuery(
+        <AssistantPanel
+          variant="page"
+          {...panelProps}
+          contextLabel="Feature Delivery"
+          recentConversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+          activeConversationId="c1"
+          onExpandPage={() => {}}
+          onDock={() => {}}
+          onNewConversation={() => {}}
+          onSwitchConversation={() => {}}
+          showThreadControls={false}
+        />,
+      ),
     );
     const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
     expect(panel.dataset.variant).toBe("page");
@@ -435,7 +446,7 @@ describe("AssistantPanel (page and dock)", () => {
     );
   });
 
-it("esc closes the wide surface too, and a busy turn shows thinking…", () => {
+  it("esc closes the wide surface too, and a busy turn shows thinking…", () => {
     const onClose = vi.fn();
     renderPanel({ onClose, busy: true, messages: [userMessage("hi")] });
     expect(screen.getByTestId("assistant-thinking").textContent).toBe("thinking…");
@@ -464,9 +475,7 @@ it("esc closes the wide surface too, and a busy turn shows thinking…", () => {
 
   it("Open draft: hidden until a turn links the saved draft, then opens it (2f)", () => {
     const onGo = vi.fn();
-    const { rerender } = render(
-      <AssistantPanel variant="dock" {...panelProps} onGo={onGo} />,
-    );
+    const { rerender } = render(<AssistantPanel variant="dock" {...panelProps} onGo={onGo} />);
     expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
     rerender(
       <AssistantPanel
@@ -513,12 +522,7 @@ it("esc closes the wide surface too, and a busy turn shows thinking…", () => {
     };
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <AssistantPanel
-          variant="dock"
-          {...panelProps}
-          onGo={onGo}
-          messages={[rawLabelled]}
-        />
+        <AssistantPanel variant="dock" {...panelProps} onGo={onGo} messages={[rawLabelled]} />
       </QueryClientProvider>,
     );
     const button = screen.getByTestId("assistant-open-draft");
@@ -583,13 +587,7 @@ it("esc closes the wide surface too, and a busy turn shows thinking…", () => {
       <QueryClientProvider client={new QueryClient()}>{panel}</QueryClientProvider>
     );
     const { unmount } = render(
-      withQuery(
-        <AssistantPanel
-          variant="dock"
-          {...panelProps}
-          messages={[draftAndOther]}
-        />,
-      ),
+      withQuery(<AssistantPanel variant="dock" {...panelProps} messages={[draftAndOther]} />),
     );
     expect(screen.getByTestId("assistant-open-draft").textContent).toBe("Open draft");
     const rows = screen.getAllByTestId("assistant-link");

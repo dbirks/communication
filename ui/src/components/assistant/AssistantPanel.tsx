@@ -32,7 +32,7 @@ import type { AssistantChange, AssistantMessage, TrustLevel } from "./types";
  * holds, because the threads read widens to 30 rows while the menu stands).
  *
  * The three old-structure pieces this replaces:
- *  - the ▾ Recent menu and the ⤢ / `esc` text controls — the header is five
+ *  - the old Recent-menu and expand/collapse text controls — the header is five
  *    26px Tabler icon buttons now (new thread, threads, side panel, full page,
  *    close), with the wording in `title` and the accessible name;
  *  - the static "FOR THIS PAGE" suggestion chips — an empty thread is the
@@ -135,7 +135,7 @@ export interface AssistantPanelProps {
   onNewConversation?: () => void;
   /** Caller's threads (newest first) for the Threads menu. */
   recentConversations?: RecentConversation[];
-  /** The conversation currently displayed, if any (the menu's ✓). */
+  /** The conversation currently displayed, if any (the menu's check mark). */
   activeConversationId?: string | null;
   /** Switch the panel back to an existing conversation (Threads menu). */
   onSwitchConversation?: (id: string) => void;
@@ -235,13 +235,7 @@ function ThreadRow({
 }
 
 /** The "Search threads" field both thread lists draw. */
-function ThreadSearch({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (next: string) => void;
-}) {
+function ThreadSearch({ value, onChange }: { value: string; onChange: (next: string) => void }) {
   return (
     <span className="flex items-center gap-[6px] rounded-[4px] border border-line-strong px-[8px] py-[5px] text-[12.5px] text-faint">
       <IconSearch size={13} stroke={2} aria-hidden className="shrink-0" />
@@ -434,7 +428,11 @@ export function AssistantThreadColumn({
         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink">
           Assistant
         </span>
-        <HeaderIconButton testid="assistant-page-new-thread" title="New thread" onClick={onNewConversation}>
+        <HeaderIconButton
+          testid="assistant-page-new-thread"
+          title="New thread"
+          onClick={onNewConversation}
+        >
           <IconEdit size={15} stroke={2} aria-hidden className="shrink-0" />
         </HeaderIconButton>
       </span>
@@ -510,9 +508,7 @@ export function AssistantPageSideColumn({
           >
             <span className="min-w-0 text-[12.5px] text-ink">{change.summary}</span>
             <span className="min-w-0 font-mono text-[10px] text-faint">
-              {change.undone_at !== null
-                ? "undone"
-                : `you confirmed · ${changeUndoWord(change)}`}
+              {change.undone_at !== null ? "undone" : `you confirmed · ${changeUndoWord(change)}`}
             </span>
           </span>
         ))
@@ -717,7 +713,11 @@ export function AssistantPanel({
       {showThreadControls ? (
         <>
           {onNewConversation ? (
-            <HeaderIconButton testid="assistant-new-conversation" title="New thread" onClick={onNewConversation}>
+            <HeaderIconButton
+              testid="assistant-new-conversation"
+              title="New thread"
+              onClick={onNewConversation}
+            >
               <IconEdit size={15} stroke={2} aria-hidden className="shrink-0" />
             </HeaderIconButton>
           ) : null}
@@ -763,15 +763,8 @@ export function AssistantPanel({
   );
 
   const body = (
-    <div
-      data-testid="assistant-body"
-      className="min-h-0 flex-1 overflow-y-auto"
-    >
-      <div
-        className={
-          pageMode ? "mx-auto w-full max-w-[720px] px-[16px] py-[8px]" : "w-full"
-        }
-      >
+    <div data-testid="assistant-body" className="min-h-0 flex-1 overflow-y-auto">
+      <div className={pageMode ? "mx-auto w-full max-w-[720px] px-[16px] py-[8px]" : "w-full"}>
         <MessageList
           messages={messages}
           onAnswerQuestion={answerQuestion}

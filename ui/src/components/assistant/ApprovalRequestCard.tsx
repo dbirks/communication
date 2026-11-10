@@ -1,4 +1,4 @@
-import { IconShieldExclamation } from "@tabler/icons-react";
+import { IconCheck, IconShieldExclamation } from "@tabler/icons-react";
 import { Button } from "../ds/Button";
 import { approvalArgsOf, reasonOf } from "../../api/assistant";
 import type { AssistantApprovalRequestPayload } from "./types";
@@ -237,11 +237,8 @@ function GateCard({
   onConfirm: (messageId: string) => void;
   onDismiss: (messageId: string) => void;
 }) {
-  const headerText = pending
-    ? "! NEEDS APPROVAL"
-    : request.state === "confirmed"
-      ? "✓ APPROVED"
-      : "· NOT NOW — DISMISSED";
+  const headerText = pending ? "! NEEDS APPROVAL" : "· NOT NOW — DISMISSED";
+  const approved = !pending && request.state === "confirmed";
 
   return (
     <div
@@ -267,7 +264,14 @@ function GateCard({
           margin: "-8px -10px 8px",
         }}
       >
-        {headerText}
+        {approved ? (
+          <span className="inline-flex items-center gap-[4px]">
+            <IconCheck size={10} stroke={2} aria-hidden className="shrink-0" />
+            APPROVED
+          </span>
+        ) : (
+          headerText
+        )}
       </p>
       <p className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-ink">
         {request.summary}

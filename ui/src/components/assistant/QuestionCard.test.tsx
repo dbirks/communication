@@ -83,7 +83,9 @@ describe("QuestionCard", () => {
         answeredLabel="Add an OWASP checklist to its instructions"
       />,
     );
-    expect(screen.getByTestId("assistant-question-answered").textContent).toBe("✓ answered");
+    const answered = screen.getByTestId("assistant-question-answered");
+    expect(answered.textContent).toBe("answered");
+    expect(answered.querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
     // 2f: the selected option keeps its place with an ink border and
     // bold — the history reads as the decision it was. Nothing is
     // clickable any more: the answer already travelled as plain text.

@@ -533,7 +533,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
         options === undefined
           ? assistantContextOf(pageRoute)
           : options.context
-            ? pageContextPayload(pageContextFor(pageRoute), true) ?? { ...options.context }
+            ? (pageContextPayload(pageContextFor(pageRoute), true) ?? { ...options.context })
             : undefined;
       if (entity) {
         // A draft ask names ITS subject even when page context is off — the
@@ -832,8 +832,11 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   }, []);
 
   /** ui-newconv: the Threads menu's rows, newest first (the API's order). */
-  const recentConversations = (threads.data?.conversations ?? conversations.data?.conversations ?? [])
-    .map((c) => ({
+  const recentConversations = (
+    threads.data?.conversations ??
+    conversations.data?.conversations ??
+    []
+  ).map((c) => ({
     id: c.id,
     title: c.title,
     lastMessageAt: c.last_message_at,

@@ -9,7 +9,7 @@
  * So: no step glyphs here — the ✓ / ● / · marks belong to the step list and
  * mean done / next / later, which a link cannot be — the group is separated by
  * a hairline, each row is link text in the accent colour with the app's own
- * `Go ›` affordance, and a label never carries a raw id (`draftSteps.ts`
+ * `Go` + chevron affordance, and a label never carries a raw id (`draftSteps.ts`
  * `readableLinkLabel`).
  *
  * The saved draft's row also stands aside when the panel's footer already
@@ -18,6 +18,7 @@
  * the draft's only way in and always renders.
  */
 import type { ReactElement } from "react";
+import { IconChevronRight } from "@tabler/icons-react";
 import { useDraft } from "../../api/pipelines";
 import {
   draftNameOf,
@@ -80,7 +81,7 @@ function linkLabelFor(link: { label: string; route: string }): ReactElement | st
 }
 
 /**
- * One `Go ›` row: the whole row is the button (it is a same-origin jump the
+ * One `Go` + chevron row: the whole row is the button (it is a same-origin jump the
  * caller performs, not an `<a>` — the app keeps the assistant open over the
  * destination).
  */
@@ -109,8 +110,12 @@ function LinkRow({
       >
         {linkLabelFor(link)}
       </span>
-      <span aria-hidden="true" className="flex-shrink-0 font-mono text-[11px]">
-        Go ›
+      <span
+        aria-hidden="true"
+        className="inline-flex flex-shrink-0 items-center gap-[2px] font-mono text-[11px]"
+      >
+        Go
+        <IconChevronRight size={11} stroke={2} className="shrink-0" />
       </span>
     </button>
   );

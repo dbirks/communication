@@ -51,6 +51,8 @@ describe("ChangeChip", () => {
     const rows = screen.getAllByTestId("assistant-change-row");
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("Inserted node `review` after `tests`");
+    // Handoff §1: the kind mark is a Tabler icon, not a Unicode glyph.
+    expect(rows[0].querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-");
   });
 
   it("calls onUndo with the row's id and shows undo per undoable row", () => {
@@ -133,7 +135,9 @@ describe("ChangeChip", () => {
       />,
     );
     expect(screen.queryAllByTestId("assistant-change-undo")).toEqual([]);
-    expect(screen.getByTestId("assistant-change-undone").textContent).toBe("✓ undone");
+    const undone = screen.getByTestId("assistant-change-undone");
+    expect(undone.textContent).toBe("undone");
+    expect(undone.querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
   });
   it("offers Undo on draft edits only: a run or approval row reads can't be undone even when the store kept an inverse op (A5)", () => {
     const onUndo = vi.fn();

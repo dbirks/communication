@@ -1,13 +1,45 @@
 import { useState } from "react";
-import { changeKindGlyph, type AssistantChange } from "./types";
+import {
+  IconAlertCircle,
+  IconArrowRight,
+  IconArrowUp,
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconClock,
+  IconFolderPlus,
+  IconPencil,
+  IconPlayerPlay,
+  IconPlus,
+  IconRefresh,
+  IconSitemap,
+  IconX,
+} from "@tabler/icons-react";
+import { changeKindIconName, type AssistantChange } from "./types";
+
+/** The change-list row's kind icon, keyed by `changeKindIconName` (handoff §1:
+ * no Unicode glyphs as icons). */
+const KIND_ICONS: Record<string, typeof IconCheck> = {
+  pencil: IconPencil,
+  "arrow-right": IconArrowRight,
+  "player-play": IconPlayerPlay,
+  refresh: IconRefresh,
+  "alert-circle": IconAlertCircle,
+  "arrow-up": IconArrowUp,
+  plus: IconPlus,
+  "folder-plus": IconFolderPlus,
+  sitemap: IconSitemap,
+  x: IconX,
+  clock: IconClock,
+};
 
 /**
  * The change chip (4d §3 "THE CHANGE LIST, AS A CHIP"; ADR-0050 Decision 5;
  * 2c decision: drop the "Changes in this conversation" side column and use
  * the chip instead).
  *
- * Collapsed: `N changes ▴ undo all`. Expanded: one row per change with a
- * kind glyph, the server-written summary, and `undo` where the row is
+ * Collapsed: `N changes ▸ undo all`. Expanded: one row per change with a
+ * kind icon, the server-written summary, and `undo` where the row is
  * undoable — runs, approvals and navigations are logged but NOT undoable
  * ("Draft edits are reversible; runs and approvals are not (say so)"), so
  * their rows say so instead of offering a dead button. Handoff A5/A7 §4 makes
@@ -55,7 +87,13 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
           className="flex cursor-pointer items-center gap-[4px] border-none bg-transparent p-0 font-mono text-[10.5px] text-ink"
         >
           {countText}
-          <span aria-hidden="true">{open ? "▴" : "▾"}</span>
+          <span aria-hidden="true" className="inline-flex shrink-0">
+            {open ? (
+              <IconChevronDown size={12} stroke={2} className="shrink-0" />
+            ) : (
+              <IconChevronRight size={12} stroke={2} className="shrink-0" />
+            )}
+          </span>
         </button>
         <span aria-hidden="true" className="text-line-strong">
           ·
@@ -83,7 +121,10 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
               style={{ borderTop: "1px solid var(--color-line-soft)" }}
             >
               <span aria-hidden="true" style={{ width: 10, flexShrink: 0 }}>
-                {changeKindGlyph(change.kind)}
+                {(() => {
+                  const KindIcon = KIND_ICONS[changeKindIconName(change.kind)];
+                  return KindIcon ? <KindIcon size={11} stroke={2} className="shrink-0" /> : null;
+                })()}
               </span>
               <span
                 style={{
@@ -100,9 +141,10 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
               {change.undone_at ? (
                 <span
                   data-testid="assistant-change-undone"
-                  className="flex-shrink-0 text-[10px] text-faint"
+                  className="flex flex-shrink-0 items-center gap-[3px] text-[10px] text-faint"
                 >
-                  ✓ undone
+                  <IconCheck size={10} stroke={2} aria-hidden className="shrink-0" />
+                  undone
                 </span>
               ) : undoableRow(change) ? (
                 <button

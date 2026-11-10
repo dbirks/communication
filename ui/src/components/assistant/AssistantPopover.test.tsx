@@ -222,9 +222,7 @@ function stubViewport(width: number): void {
     matches: (() => {
       const min = /min-width:\s*([0-9.]+)px/.exec(query);
       const max = /max-width:\s*([0-9.]+)px/.exec(query);
-      return (
-        (min === null || width >= Number(min[1])) && (max === null || width <= Number(max[1]))
-      );
+      return (min === null || width >= Number(min[1])) && (max === null || width <= Number(max[1]));
     })(),
     media: query,
     onchange: null,
@@ -259,9 +257,11 @@ describe("approval decision post body (ui-confirm)", () => {
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     expect(JSON.parse(stub.posted[0].body)).toEqual({ confirm: MSG });
     // The decision's ack row lands in the transcript with the outcome
-    // (glyph + text); the stale pending row stays until the next refetch.
-    const headers = screen.getAllByTestId("assistant-approval-header").map((el) => el.textContent);
-    expect(headers).toContain("✓ APPROVED");
+    // (check icon + text); the stale pending row stays until the next refetch.
+    const headers = screen.getAllByTestId("assistant-approval-header");
+    expect(headers.map((el) => el.textContent)).toContain("APPROVED");
+    const approved = headers.find((el) => el.textContent === "APPROVED");
+    expect(approved?.querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
   });
 
   it("Not now posts exactly {dismiss: id} — no text", async () => {
@@ -538,9 +538,9 @@ describe("the three sizes (handoff §1)", () => {
     expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("dock");
     expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
     // Same conversation, same draft: switching size is not a new surface.
-    expect(
-      (screen.getByTestId("assistant-composer-input") as HTMLTextAreaElement).value,
-    ).toBe("a typed draft");
+    expect((screen.getByTestId("assistant-composer-input") as HTMLTextAreaElement).value).toBe(
+      "a typed draft",
+    );
     // The side-panel button now says how to get back.
     expect(screen.getByTestId("assistant-dock").title).toBe("Back to popover");
 
@@ -1082,7 +1082,8 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
   /** Open the popover over a FRESH conversation (empty transcript ⇒ the setup
    * checklist renders) and return its first starter with its text. */
   async function openToFreshStarters(
-    postResponses: () => Response | Promise<Response> = () => json({ messages: [], next_cursor: null }),
+    postResponses: () => Response | Promise<Response> = () =>
+      json({ messages: [], next_cursor: null }),
   ) {
     stubFetch(postResponses, STATUS_READY);
     renderPopover();

@@ -67,7 +67,9 @@ describe("ApprovalRequestCard", () => {
         onDismiss={() => {}}
       />,
     );
-    expect(screen.getByTestId("assistant-approval-header").textContent).toBe("✓ APPROVED");
+    const header = screen.getByTestId("assistant-approval-header");
+    expect(header.textContent).toBe("APPROVED");
+    expect(header.querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
     expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
     expect(screen.queryByTestId("assistant-approval-dismiss")).toBeNull();
   });

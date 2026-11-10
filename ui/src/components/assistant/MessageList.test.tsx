@@ -102,7 +102,7 @@ describe("MessageList", () => {
     expect(code?.textContent).toBe("3");
   });
 
-  it("renders one `Go ›` row per link and navigates on click", () => {
+  it("renders one `Go` + chevron row per link and navigates on click", () => {
     const onGo = vi.fn();
     render(
       <MessageList
@@ -116,14 +116,17 @@ describe("MessageList", () => {
     const links = screen.getAllByTestId("assistant-link");
     expect(links).toHaveLength(2);
     expect(links[0].textContent).toContain("Feature Delivery · run 4f2a");
-    expect(links[0].textContent).toContain("Go ›");
+    expect(links[0].textContent).toContain("Go");
+    expect(links[0].querySelector("svg")?.getAttribute("class")).toContain(
+      "tabler-icon-chevron-right",
+    );
     fireEvent.click(links[0]);
     expect(onGo).toHaveBeenCalledWith("/p/01J/runs/4f2a");
     fireEvent.click(links[1]);
     expect(onGo).toHaveBeenCalledWith("/p/01J/runs");
   });
 
-  it("collapses the tool calls behind `used N tools ▸` with the real count", () => {
+  it("collapses the tool calls behind `used N tools` + chevron with the real count", () => {
     render(
       <MessageList
         messages={[assistantMessage()]}
@@ -135,7 +138,10 @@ describe("MessageList", () => {
     );
     const details = screen.getByTestId("assistant-tools") as HTMLDetailsElement;
     expect(details.open).toBe(false);
-    expect(details.textContent).toContain("used 2 tools ▸");
+    expect(details.textContent).toContain("used 2 tools");
+    expect(details.querySelector("svg")?.getAttribute("class")).toContain(
+      "tabler-icon-chevron-right",
+    );
     details.open = true;
     expect(details.textContent).toContain("run.nodes");
     expect(details.textContent).toContain("palette.search");
@@ -310,6 +316,13 @@ describe("MessageList", () => {
     expect(rows[0].getAttribute("data-state")).toBe("done");
     expect(rows[2].getAttribute("data-state")).toBe("current");
     expect(rows[3].getAttribute("data-state")).toBe("later");
+    // Handoff §1: the mark is a Tabler icon per state, not a ✓ / ● / · glyph.
+    expect(rows.map((row) => row.querySelector("svg")?.getAttribute("class"))).toEqual([
+      expect.stringContaining("tabler-icon-check"),
+      expect.stringContaining("tabler-icon-check"),
+      expect.stringContaining("tabler-icon-point-filled"),
+      expect.stringContaining("tabler-icon-point"),
+    ]);
     // 2f draws the step word on the left and WHO runs it in machine type at
     // the row's end, so the row is two members, not one sentence: the dash
     // the server's rule puts between them is a delimiter, not text (rcn-2f
@@ -1083,7 +1096,7 @@ describe("MessageList link rows (rcn-review17-2f)", () => {
     expect(group.textContent).not.toContain("✓");
     for (const row of rows) {
       expect(within(row).queryAllByTestId("assistant-step-row")).toHaveLength(0);
-      expect(row.textContent).toContain("Go ›");
+      expect(row.textContent).toContain("Go");
     }
     // a rule of its own, so the group does not read as more of the list above
     expect(group.style.borderTop).not.toBe("");
@@ -1224,10 +1237,17 @@ describe("MessageList handoff parts (A3–A6)", () => {
     })();
     const rows = within(details).getAllByTestId("assistant-tool-row");
     expect(rows.map((row) => row.textContent)).toEqual([
-      "✓used workflow.list · judge allowedlisted 3 workflows",
-      "×used run.cancel · judge askedwaits for you",
-      "✓used repo.check · judge unavailablechecked the repo",
-      "✓used issue.listlisted 2 issues",
+      "used workflow.list · judge allowedlisted 3 workflows",
+      "used run.cancel · judge askedwaits for you",
+      "used repo.check · judge unavailablechecked the repo",
+      "used issue.listlisted 2 issues",
+    ]);
+    // Handoff §1: the ok/failed mark is a Tabler icon, not a ✓/× character.
+    expect(rows.map((row) => row.querySelector("svg")?.getAttribute("class"))).toEqual([
+      expect.stringContaining("tabler-icon-check"),
+      expect.stringContaining("tabler-icon-x"),
+      expect.stringContaining("tabler-icon-check"),
+      expect.stringContaining("tabler-icon-check"),
     ]);
   });
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_TRUST_LEVEL,
   TRUST_LEVELS,
-  changeKindGlyph,
+  changeKindIconName,
   changeKindLabel,
   trustPillLabel,
 } from "./types";
@@ -35,7 +35,7 @@ describe("types (ADR-0050 mirror)", () => {
     }
   });
 
-  it("gives every change kind a glyph (none empty)", () => {
+  it("gives every change kind an icon name (none empty)", () => {
     for (const kind of [
       "draft_edit",
       "navigate",
@@ -49,7 +49,7 @@ describe("types (ADR-0050 mirror)", () => {
       "run_cancel",
       "schedule_create",
     ] as const) {
-      expect(changeKindGlyph(kind).length).toBeGreaterThan(0);
+      expect(changeKindIconName(kind)).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
     }
   });
 

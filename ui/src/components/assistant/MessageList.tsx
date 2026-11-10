@@ -1,5 +1,13 @@
 import type { ReactElement } from "react";
-import { IconCurrentLocation, IconMicrophone } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconChevronRight,
+  IconCurrentLocation,
+  IconMicrophone,
+  IconPoint,
+  IconPointFilled,
+  IconX,
+} from "@tabler/icons-react";
 import { Button } from "../ds/Button";
 import { MarkdownBody } from "../../lib/markdown";
 import { useDraft } from "../../api/pipelines";
@@ -25,7 +33,7 @@ export interface MessageListProps {
   onFreeText?: () => void;
   onConfirmApproval: (messageId: string) => void;
   onDismissApproval: (messageId: string) => void;
-  /** Perform the same-origin navigation a `Go ›` row points at. */
+  /** Perform the same-origin navigation a `Go` + chevron row points at. */
   onGo: (route: string) => void;
   /**
    * Round-17 (rcn-review17-2f): the draft route the assistant panel's own
@@ -147,9 +155,10 @@ export function MessageList({
                   <div className="flex flex-col items-end gap-[6px] pt-[6px]">
                     <p
                       data-testid="assistant-error"
-                      className="m-0 max-w-full rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
+                      className="m-0 flex max-w-full items-start gap-[5px] rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
                     >
-                      × {message.local.error ?? "The assistant could not answer."}
+                      <IconX size={11} stroke={2} aria-hidden className="mt-[3px] shrink-0" />
+                      <span>{message.local.error ?? "The assistant could not answer."}</span>
                     </p>
                     <Button
                       variant="primary"
@@ -231,6 +240,8 @@ export function MessageList({
 /**
  * step glyphs the assistant's draft step list is built from (design 2f:
  * ✓ done in the chat, ● the step drafted to run next, · a later step).
+ * These are PARSE tokens for what the model posts — the rows render Tabler
+ * icons (handoff §1: no Unicode glyphs as icons).
  */
 const STEP_GLYPHS = ["✓", "●", "·"] as const;
 
@@ -454,11 +465,17 @@ function StepRowInner({
     >
       <span
         aria-hidden="true"
-        className={`w-[12px] flex-shrink-0 text-center ${
+        className={`inline-flex w-[12px] flex-shrink-0 items-center justify-center ${
           glyph === "✓" ? "text-st-done-pale-fg" : glyph === "●" ? "text-accent" : "text-faint"
         }`}
       >
-        {glyph}
+        {glyph === "✓" ? (
+          <IconCheck size={12} stroke={2} className="shrink-0" />
+        ) : glyph === "●" ? (
+          <IconPointFilled size={12} stroke={2} className="shrink-0" />
+        ) : (
+          <IconPoint size={12} stroke={2} className="shrink-0" />
+        )}
       </span>
       <span data-testid="assistant-step-name" className="min-w-0 flex-1 truncate">
         {step}
@@ -600,7 +617,8 @@ function DraftStepList({
 
 /**
  * Transparency, not a replay log: what the turn looked at, collapsed by
- * default (2a "used 2 tools ▸"). Glyphs: ✓ ok / × failed, with the
+ * default (2a "used 2 tools" + the chevron). Marks: IconCheck ok / IconX
+ * failed, with the
  * server-supplied summary sentence. Handoff A5 §4 appends the judge's own
  * verdict per call when there was one — `used run.retry · judge asked` — so
  * the person can see whether a fixed table or the decision model let a call
@@ -619,8 +637,9 @@ function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"]
       data-testid="assistant-tools"
       style={{ borderTop: "1px solid var(--color-line)", marginTop: 6 }}
     >
-      <summary className="cursor-pointer font-mono text-[10.5px] text-faint">
-        {`used ${calls.length} tool${calls.length === 1 ? "" : "s"} ▸`}
+      <summary className="inline-flex cursor-pointer items-center gap-[4px] font-mono text-[10.5px] text-faint">
+        {`used ${calls.length} tool${calls.length === 1 ? "" : "s"}`}
+        <IconChevronRight size={11} stroke={2} aria-hidden className="shrink-0" />
       </summary>
       <ul className="m-0 mt-[4px] list-none space-y-[2px] p-0">
         {calls.map((call, index) => (
@@ -641,7 +660,13 @@ function ToolRow({ call }: { call: AssistantAnswerPayload["tool_calls"][number] 
       data-testid="assistant-tool-row"
       className="flex items-baseline gap-[6px] font-mono text-[10.5px] text-muted"
     >
-      <span aria-hidden="true">{call.ok ? "✓" : "×"}</span>
+      <span aria-hidden="true" className="inline-flex flex-shrink-0">
+        {call.ok ? (
+          <IconCheck size={11} stroke={2} className="shrink-0" />
+        ) : (
+          <IconX size={11} stroke={2} className="shrink-0" />
+        )}
+      </span>
       <span className="flex-shrink-0 truncate">{`used ${call.name}`}</span>
       {judge ? (
         <span data-testid="assistant-tool-judge" className="flex-shrink-0 text-faint">

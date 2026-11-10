@@ -1,3 +1,4 @@
+import { IconCheck } from "@tabler/icons-react";
 import type { AssistantQuestionPayload } from "./types";
 
 /**
@@ -131,9 +132,10 @@ export function QuestionCard({
         {answered ? (
           <span
             data-testid="assistant-question-answered"
-            className="font-mono text-[10.5px] text-st-done-pale-fg"
+            className="inline-flex items-center gap-[3px] font-mono text-[10.5px] text-st-done-pale-fg"
           >
-            ✓ answered
+            <IconCheck size={11} stroke={2} aria-hidden className="shrink-0" />
+            answered
           </span>
         ) : null}
         {!answered && question.allow_free_text !== false && onFreeText ? (

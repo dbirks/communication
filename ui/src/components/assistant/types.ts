@@ -251,7 +251,7 @@ export const TRUST_LEVELS: ReadonlyArray<{
 /** Default trust level (ADR-0050 Decision 4: `ask_risky` is the default). */
 export const DEFAULT_TRUST_LEVEL: TrustLevel = "ask_risky";
 
-/** Lowercase label shown on the composer pill (`ask when risky ▾`). */
+/** Lowercase label shown on the composer pill (e.g. `ask when risky`). */
 export function trustPillLabel(level: TrustLevel): string {
   switch (level) {
     case "ask_all":
@@ -263,31 +263,36 @@ export function trustPillLabel(level: TrustLevel): string {
   }
 }
 
-/** Short mono glyph per change kind for the change-list rows (4d §3). */
-export function changeKindGlyph(kind: ChangeKind): string {
+/**
+ * The Tabler icon name per change kind for the change-list rows (4d §3).
+ * Handoff §1: no Unicode glyphs as icons — the rendering component maps each
+ * name onto its `@tabler/icons-react` component; this stays a plain string so
+ * the wire table can be tested without React.
+ */
+export function changeKindIconName(kind: ChangeKind): string {
   switch (kind) {
     case "draft_edit":
-      return "~";
+      return "pencil";
     case "navigate":
-      return "→";
+      return "arrow-right";
     case "run_start":
-      return "●";
+      return "player-play";
     case "run_retry":
-      return "↻";
+      return "refresh";
     case "approval_decision":
-      return "!";
+      return "alert-circle";
     case "publish":
-      return "↑";
+      return "arrow-up";
     case "project_create":
-      return "+";
+      return "plus";
     case "repo_add":
-      return "◈";
+      return "folder-plus";
     case "assignment_set":
-      return "=";
+      return "sitemap";
     case "run_cancel":
-      return "×";
+      return "x";
     case "schedule_create":
-      return "◷";
+      return "clock";
   }
 }
 
