@@ -658,3 +658,47 @@ func TestRunnerJudgedArgsAreBoundedAndCarryNoKeys(t *testing.T) {
 		t.Fatal("the judge saw no args at all")
 	}
 }
+
+// CONTRACT §3: the judge is told the caller's role. The route reads the
+// caller's CURRENT role in the project the turn is about and carries it on the
+// request; the store's `contributor` is the contract's `member`, a role it does
+// not name is dropped, and with nothing resolved an org admin still says so
+// while a plain member's "" reads as "not sure, ask".
+func TestDecideGateHandsTheJudgeTheCallersRole(t *testing.T) {
+	cases := []struct {
+		name  string
+		role  string
+		admin bool
+		want  string
+	}{
+		{"maintainer", "maintainer", false, "maintainer"},
+		{"viewer", "viewer", false, "viewer"},
+		{"owner", "owner", false, "owner"},
+		{"member passes through", "member", false, "member"},
+		{"contributor is the contract's member", "contributor", false, "member"},
+		{"trimmed and lower-cased", " Maintainer ", false, "maintainer"},
+		{"no role, org admin", "", true, "owner"},
+		{"no role, plain member", "", false, ""},
+		{"unknown role, plain member", "superuser", false, ""},
+		{"unknown role, org admin falls back to owner", "superuser", true, "owner"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			j := &fakeJudge{verdict: JudgeVerdict{Allow: true}}
+			r := newJudgeRunner(t, j)
+			_, _, _ = r.decideGate(context.Background(), TrustAskRisky, ClassRisky, "run.start",
+				map[string]string{"project_id": "p-1"}, TurnRequest{
+					Caller:      Caller{UserID: "u", OrganizationID: "o", IsOrgAdmin: tc.admin},
+					ProjectRole: tc.role,
+				})
+			j.mu.Lock()
+			defer j.mu.Unlock()
+			if len(j.inputs) != 1 {
+				t.Fatalf("judge inputs = %d, want 1", len(j.inputs))
+			}
+			if got := j.inputs[0].Role; got != tc.want {
+				t.Fatalf("judge role = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

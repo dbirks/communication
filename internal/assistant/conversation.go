@@ -86,6 +86,13 @@ func CleanPageField(s string) string {
 	return out
 }
 
+// CleanPageContext is the exported face of the same cleaning the stored turn
+// context and the prompt block use (CONTRACT §2): every member bounded to
+// MaxPageFieldChars, control characters and `<`/`>` reduced to spaces, nil
+// when nothing survives. The one-shot ask route parses its own optional
+// `context.page` and runs it through here, so both ask paths clean alike.
+func CleanPageContext(p *TurnContextPage) *TurnContextPage { return cleanPageContext(p) }
+
 // cleanPageContext renders a client page in the one form both the stored
 // context and the prompt block use; nil when every member is empty.
 func cleanPageContext(p *TurnContextPage) *TurnContextPage {
@@ -142,6 +149,14 @@ type TurnRequest struct {
 	// turn (ADR-0050 decision 4) and consulted by the tool loop only — it
 	// authorizes nothing. Empty normalizes to the default (ask_risky).
 	TrustLevel TrustLevel
+	// ProjectRole is the caller's CURRENT project role (`my_role` as the
+	// project read reports it: maintainer|contributor|viewer) in the project
+	// this turn is about, read server-side by the route when the turn's
+	// context names a project. It authorizes nothing — the tools re-check the
+	// caller — it only tells the judge whose posture to reason about
+	// (CONTRACT §3). Empty means the route could not resolve one (no project
+	// on the turn, or the lookup failed), which the judge reads as "not sure".
+	ProjectRole string
 }
 
 // TurnRunner runs one assistant turn and reports the rows it appends.

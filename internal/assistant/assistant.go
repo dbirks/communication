@@ -183,6 +183,10 @@ type QuestionContext struct {
 	Route     string
 	ProjectID string
 	Palette   []PaletteEntry
+	// Page is the page on screen (CONTRACT §2's context chip), already cleaned
+	// by the caller. It renders the block's `page:` and `project:` lines; nil
+	// leaves both out, as the one-shot ask did before the chip existed.
+	Page *TurnContextPage
 }
 
 // bounded clips s to n bytes without splitting a rune, so a detail string from

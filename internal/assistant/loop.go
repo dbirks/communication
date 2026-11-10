@@ -67,9 +67,10 @@ func (t *turn) envelope(q string) ([]chatMessage, *Failure) {
 	// that keeps tool output out of the system role (docs/design/assistant-v1.md).
 	user := "Question: " + q
 	// The page on screen travels as the observational block (HANDOFF.md §3),
-	// never as a system instruction: this path knows the allowlisted route and
-	// the project id, and the block drops the lines it has no value for.
-	if block := PageContextBlock(nil, t.qc.ProjectID, t.safeRoute(t.qc.Route)); block != "" {
+	// never as a system instruction: this path knows the allowlisted route,
+	// the project id and the page the chip describes, and the block drops the
+	// lines it has no value for.
+	if block := PageContextBlock(t.qc.Page, t.qc.ProjectID, t.safeRoute(t.qc.Route)); block != "" {
 		user += "\n\n" + block
 	}
 	if idx := t.paletteIndex(); idx != "" {

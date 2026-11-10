@@ -496,11 +496,30 @@ func (r *ConversationRunner) decideGate(ctx context.Context, trust TrustLevel, c
 	return true, verdict.Reason, JudgeAsked
 }
 
-// callerRole names the caller's role for the judge. The runner holds only the
-// identity the route authenticated, so the honest answer for a plain member is
-// "" — which the prompt reads as "not sure, ask". An org admin says so, and
-// the admin's role is the one the judge can act on.
+// judgeRoles is the closed role vocabulary CONTRACT §3 gives the judge. The
+// store spells a project's middle role `contributor`; the judge's prompt names
+// it `member`, so that is the one mapping made here. Any other value is not
+// passed through: an unknown role is the same as no role at all.
+var judgeRoles = map[string]string{
+	"owner":       "owner",
+	"maintainer":  "maintainer",
+	"contributor": "member", // the store's spelling of the middle role
+	"member":      "member",
+	"viewer":      "viewer",
+}
+
+// callerRole names the caller's role for the judge (CONTRACT §3). The route
+// reads the caller's CURRENT role in the project the turn is about and carries
+// it on the request (TurnRequest.ProjectRole); a role outside that vocabulary
+// is dropped rather than forwarded as a guess. With nothing resolved for this turn, an org admin says so — the
+// admin's role is the one the judge can act on — and a plain member whose
+// project was not identified answers "", which the prompt reads as "not sure,
+// ask". A failed look-up lands here too: the turn still runs, it just gets
+// judged without a role.
 func (r *ConversationRunner) callerRole(req TurnRequest) string {
+	if role, ok := judgeRoles[strings.ToLower(strings.TrimSpace(req.ProjectRole))]; ok {
+		return role
+	}
 	if req.Caller.IsOrgAdmin {
 		return "owner"
 	}

@@ -164,6 +164,10 @@ type AssistantAskContext struct {
 	Route        string                  `json:"route,omitempty"`
 	ProjectID    string                  `json:"project_id,omitempty"`
 	PaletteIndex []AssistantPaletteEntry `json:"palette_index,omitempty"`
+	// Page is the composer's context chip (CONTRACT §2), the same shape the
+	// conversation post carries. It is cleaned exactly like that path cleans
+	// it, so a label that closes a tag contributes nothing useful.
+	Page *assistant.TurnContextPage `json:"page,omitempty"`
 }
 
 // AssistantPaletteEntry is one row of the client's jump index.
@@ -211,6 +215,10 @@ func (h *asstHandlers) ask(w http.ResponseWriter, r *http.Request) {
 	qc := assistant.QuestionContext{
 		Route:     strings.TrimSpace(body.Context.Route),
 		ProjectID: strings.TrimSpace(body.Context.ProjectID),
+		// The page block rides through the same cleaning the conversation turn
+		// applies (bounded, no control characters, no angle brackets), so the
+		// chip's label and status can reach the model as data and nothing else.
+		Page: assistant.CleanPageContext(body.Context.Page),
 	}
 	for _, e := range body.Context.PaletteIndex {
 		if len(qc.Palette) >= assistant.MaxItems {

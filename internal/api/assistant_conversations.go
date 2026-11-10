@@ -242,13 +242,27 @@ type AssistantConversationDeps struct {
 	// string; the runner normalizes it). The bool is false when the
 	// preference has never been saved.
 	TrustLevel func(ctx context.Context, c assistant.Caller) (string, bool)
+	// Projects (optional) is the project face the messages route reads the
+	// caller's CURRENT role from for the judge (CONTRACT §3). A nil value —
+	// or a failed read — leaves the turn with no role named, which the judge
+	// reads as "not sure"; it never fails the turn.
+	Projects AssistantProjectRoleReader
+}
+
+// AssistantProjectRoleReader is the one project call the messages route
+// makes: the caller's own GetProject, so `my_role` is the role the project
+// route would show this caller right now (never a role carried in from an
+// earlier request).
+type AssistantProjectRoleReader interface {
+	GetProject(ctx context.Context, c Caller, projectID string) (ProjectView, error)
 }
 
 // RegisterAssistantConversations mounts the ADR-0050 conversation and
 // change routes. Session-authed; the mutations (POST) carry the same
 // CSRF contract as every other mutation (ADR-0014).
 func RegisterAssistantConversations(s *Server, deps AssistantConversationDeps) {
-	h := &assistantConversationHandlers{store: deps.Store, runner: deps.Runner, trust: deps.TrustLevel, srv: s}
+	h := &assistantConversationHandlers{store: deps.Store, runner: deps.Runner, trust: deps.TrustLevel,
+		projects: deps.Projects, srv: s}
 	s.HandleAuthed("POST /api/v1/assistant/conversations", http.HandlerFunc(h.createConversation))
 	s.HandleAuthed("GET /api/v1/assistant/conversations", http.HandlerFunc(h.listConversations))
 	// Messages are assistant turns: billed model work per request, so they
@@ -269,7 +283,10 @@ type assistantConversationHandlers struct {
 	store  AssistantConversationStore
 	runner assistant.TurnRunner
 	trust  func(ctx context.Context, c assistant.Caller) (string, bool)
-	srv    *Server
+	// projects reads the caller's current project role for the judge; nil
+	// when the deployment wires no project face.
+	projects AssistantProjectRoleReader
+	srv      *Server
 }
 
 func (h *assistantConversationHandlers) principal(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
@@ -537,11 +554,12 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 		return
 	}
 	result, bad := h.runner.RunTurn(r.Context(), assistant.TurnRequest{
-		Caller:     h.caller(p),
-		Text:       text,
-		Context:    ctx,
-		History:    history,
-		TrustLevel: h.trustLevel(r.Context(), h.caller(p)),
+		Caller:      h.caller(p),
+		Text:        text,
+		Context:     ctx,
+		History:     history,
+		TrustLevel:  h.trustLevel(r.Context(), h.caller(p)),
+		ProjectRole: h.projectRole(r.Context(), p, ctx),
 	})
 	if bad != nil {
 		// ADR-0034's refusal behaviour: nothing is stored, the problem
@@ -650,6 +668,31 @@ func (h *assistantConversationHandlers) trustLevel(ctx context.Context, c assist
 		return assistant.TrustAskRisky
 	}
 	return assistant.NormalizeTrustLevel(assistant.TrustLevel(s))
+}
+
+// projectRole reads the caller's CURRENT role in the project this turn is
+// about (CONTRACT §3 gives it to the judge): the context's own project id
+// first, the page chip's project second — both client-asserted, so the read is
+// the caller's own GetProject and a value that names no visible project simply
+// fails. Every miss — no project, no project face wired, an error, a project
+// the caller cannot see — answers "": the judge reasons without a role, and the
+// turn is never failed over a role lookup.
+func (h *assistantConversationHandlers) projectRole(ctx context.Context, p *Principal, tc assistant.TurnContext) string {
+	if h.projects == nil {
+		return ""
+	}
+	projectID := tc.ProjectID
+	if projectID == "" && tc.Page != nil {
+		projectID = strings.TrimSpace(tc.Page.Project)
+	}
+	if projectID == "" {
+		return ""
+	}
+	view, err := h.projects.GetProject(ctx, ac(h.caller(p)), projectID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(view.MyRole)
 }
 
 // postMessageApproval is the `confirm`/`dismiss` branch (decision 2): the

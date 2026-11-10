@@ -360,12 +360,16 @@ type fakeAssistantRunner struct {
 	gotText  string
 	gotCtx   as.TurnContext
 	gotTrust as.TrustLevel
+	// gotProjectRole records the caller's project role the route read for the
+	// judge (CONTRACT §3).
+	gotProjectRole string
 }
 
 func (r *fakeAssistantRunner) RunTurn(ctx context.Context, req as.TurnRequest) (*as.TurnResult, *as.Failure) {
 	r.gotText = req.Text
 	r.gotCtx = req.Context
 	r.gotTrust = req.TrustLevel
+	r.gotProjectRole = req.ProjectRole
 	if r.failure != nil {
 		return nil, r.failure
 	}
@@ -417,7 +421,7 @@ func assistantStrPtr(s string) *string { return &s }
 func newAssistantConvTestServer(t *testing.T,
 	store AssistantConversationStore, runner as.TurnRunner, auth Authenticator) *Server {
 	t.Helper()
-	return newAssistantConvTestServerTrusted(t, store, runner, auth, nil)
+	return newAssistantConvTestServerRoles(t, store, runner, auth, nil, nil)
 }
 
 // newAssistantConvTestServerTrusted wires the trust-level read (ADR-0046/
@@ -426,11 +430,21 @@ func newAssistantConvTestServerTrusted(t *testing.T,
 	store AssistantConversationStore, runner as.TurnRunner, auth Authenticator,
 	trust func(ctx context.Context, c as.Caller) (string, bool)) *Server {
 	t.Helper()
+	return newAssistantConvTestServerRoles(t, store, runner, auth, trust, nil)
+}
+
+// newAssistantConvTestServerRoles also wires the project face the messages
+// route reads the caller's CURRENT role from for the judge (CONTRACT §3).
+func newAssistantConvTestServerRoles(t *testing.T,
+	store AssistantConversationStore, runner as.TurnRunner, auth Authenticator,
+	trust func(ctx context.Context, c as.Caller) (string, bool),
+	projects AssistantProjectRoleReader) *Server {
+	t.Helper()
 	s := newTestServerWith(t,
 		Config{ReplicaName: "replica-a", Version: "1.2.3", PublicURL: "http://localhost:8080"},
 		nil, fakeReadiness{expected: 1}, auth)
 	RegisterAssistantConversations(s, AssistantConversationDeps{
-		Store: store, Runner: runner, TrustLevel: trust,
+		Store: store, Runner: runner, TrustLevel: trust, Projects: projects,
 	})
 	return s
 }
@@ -1076,5 +1090,103 @@ func TestAssistantApprovalAcknowledgementCarriesNoAssumed(t *testing.T) {
 	payload := decodeBody(t, rec)["messages"].([]any)[0].(map[string]any)["payload"].(map[string]any)
 	if _, ok := payload["assumed"]; ok {
 		t.Fatalf("the acknowledgement stored an assumed member: %v", payload)
+	}
+}
+
+// fakeConvProjects is the AssistantProjectRoleReader seam: it answers with the
+// seeded role, and a project it does not know fails the way the real store
+// does (the caller may not see it, so it does not exist).
+type fakeConvProjects struct {
+	views map[string]ProjectView
+	calls []string
+}
+
+var _ AssistantProjectRoleReader = (*fakeConvProjects)(nil)
+
+func (f *fakeConvProjects) GetProject(_ context.Context, c Caller, projectID string) (ProjectView, error) {
+	f.calls = append(f.calls, c.UserID+"|"+projectID)
+	v, ok := f.views[projectID]
+	if !ok {
+		return ProjectView{}, ErrProjectNotFound
+	}
+	return v, nil
+}
+
+// TestAssistantMessagesTurnCarriesTheCallersProjectRole (CONTRACT §3): the turn
+// the judge sees names the caller's role in the project the turn is about —
+// read fresh as the caller, from the context's project id or the page chip's
+// project. A lookup that fails, a turn with no project, and a deployment with
+// no project face all leave the role empty and the turn running.
+func TestAssistantMessagesTurnCarriesTheCallersProjectRole(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		body      string
+		views     map[string]ProjectView
+		projects  bool
+		wantRole  string
+		wantCalls []string
+	}{
+		{
+			name:     "context project id",
+			body:     `{"text":"start a run","context":{"route":"/projects/p-1/runs","project_id":"p-1"}}`,
+			views:    map[string]ProjectView{"p-1": {ID: "p-1", MyRole: "maintainer"}},
+			projects: true, wantRole: "maintainer", wantCalls: []string{"u-1|p-1"},
+		},
+		{
+			name:     "page project when the context names none",
+			body:     `{"text":"start a run","context":{"route":"/projects/p-2/runs","page":{"label":"Runs","project":"p-2"}}}`,
+			views:    map[string]ProjectView{"p-2": {ID: "p-2", MyRole: "viewer"}},
+			projects: true, wantRole: "viewer", wantCalls: []string{"u-1|p-2"},
+		},
+		{
+			name:     "context project id wins over the page",
+			body:     `{"text":"start a run","context":{"project_id":"p-1","page":{"project":"p-2"}}}`,
+			views:    map[string]ProjectView{"p-1": {ID: "p-1", MyRole: "contributor"}},
+			projects: true, wantRole: "contributor", wantCalls: []string{"u-1|p-1"},
+		},
+		{
+			name:     "a project the caller may not see leaves the role empty",
+			body:     `{"text":"start a run","context":{"project_id":"p-hidden"}}`,
+			views:    map[string]ProjectView{},
+			projects: true, wantRole: "", wantCalls: []string{"u-1|p-hidden"},
+		},
+		{
+			name:     "no project on the turn asks the store nothing",
+			body:     `{"text":"what needs me?","context":{"route":"/inbox"}}`,
+			views:    map[string]ProjectView{"p-1": {ID: "p-1", MyRole: "maintainer"}},
+			projects: true, wantRole: "", wantCalls: nil,
+		},
+		{
+			name:     "no project face",
+			body:     `{"text":"start a run","context":{"project_id":"p-1"}}`,
+			views:    nil,
+			projects: false, wantRole: "", wantCalls: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeAssistantStore()
+			store.seedConversation("u-1", "conv-1", "t")
+			runner := &fakeAssistantRunner{answer: &as.Answer{
+				AnswerMarkdown: "Done.", Links: []as.Link{}, ToolCalls: []as.ToolCall{}, TurnID: "turn-1",
+			}}
+			var projects AssistantProjectRoleReader
+			if tc.projects {
+				projects = &fakeConvProjects{views: tc.views}
+			}
+			srv := newAssistantConvTestServerRoles(t, store, runner, principalAuth(testPrincipal(), nil), nil, projects)
+			rec := convPost(t, srv,
+				"http://localhost:8080/api/v1/assistant/conversations/conv-1/messages", tc.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+			}
+			if runner.gotProjectRole != tc.wantRole {
+				t.Fatalf("TurnRequest.ProjectRole = %q, want %q", runner.gotProjectRole, tc.wantRole)
+			}
+			if p, ok := projects.(*fakeConvProjects); ok && fmt.Sprint(p.calls) != fmt.Sprint(tc.wantCalls) {
+				t.Fatalf("project reads = %v, want %v", p.calls, tc.wantCalls)
+			}
+		})
 	}
 }

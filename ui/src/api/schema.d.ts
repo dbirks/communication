@@ -5818,7 +5818,7 @@ export interface components {
     EventEnvelope: components["schemas"]["event-envelope.schema"];
     /**
      * AssistantAsk
-     * @description Request body for `askAssistant`. `context` is what the UI knows where the question was asked; every member of it is untrusted input, so an off-allowlist `route` or palette `to` contributes nothing rather than being forwarded to the model.
+     * @description Request body for `askAssistant`. `context` is what the UI knows where the question was asked; every member of it is untrusted input, so an off-allowlist `route` or palette `to` contributes nothing rather than being forwarded to the model. `context.page` is the composer's context chip (CONTRACT §2): the bounded label/status/project lines the server folds into the user turn as an observational `<page_context>` block.
      */
     AssistantAsk: {
       question: string;
@@ -5827,6 +5827,15 @@ export interface components {
         route?: string;
         /** Format: uuid */
         project_id?: string;
+        /** @description The page the person has open (the composer's context chip), the same shape the conversation post carries. Data, never instructions: each member is bounded to 80 characters with control characters and `<`/`>` stripped, and a line whose value comes out empty is left out of the block. */
+        page?: {
+          /** @description What the page calls itself, e.g. `Run 9c1e`. */
+          label?: string;
+          /** @description The page's status line, e.g. `waiting`. */
+          status?: string;
+          /** @description The project the page belongs to; the block's project line, else the on-screen project id. */
+          project?: string;
+        };
         /** @description The client's own jump index (the `palette.search` corpus). */
         palette_index?: components["schemas"]["AssistantPaletteEntry"][];
       };
