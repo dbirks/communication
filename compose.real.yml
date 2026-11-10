@@ -40,6 +40,12 @@
 #   * api-a/api-b: the in-app assistant (ADR-0034) runs against the same
 #     gateway with file-delivered key (serve.go: _API_KEY_FILE is the
 #     preferred form).
+#   * api-a/api-b: the ADR-0079 decision judge and the ADR-0080 server-side
+#     speech endpoint point at the deterministic stub service
+#     assistant-stub (e2e/stubs/assistant_stub.py) instead of any real
+#     model, so the assistant's acceptance proofs see fixed transcripts
+#     and fixed verdicts. The stub key "stub-key" is a lab constant, not a
+#     secret; nothing leaves the compose network.
 #
 # Host variables (with safe defaults where shown):
 #   COMMUNICATION_LLM_BASE_URL        (default https://llm-collective.e-gineering.com/v1)
@@ -134,6 +140,24 @@ services:
       # the tour write is idempotent on the run's claim, so a swept-twice run
       # is told once. See serveCatchUpGenSweep.
       COMMUNICATION_CATCHUP_GEN_SWEEP: 30s
+      # ADR-0079 + ADR-0080 (CONTRACT § 3/§ 4): speech and the decision judge
+      # run against the deterministic stub in assistant-stub, NOT a real
+      # model — the lab's acceptance proofs need one fixed transcript
+      # ("what workflows do I have") and a fixed verdict table, with a
+      # /control/judge switch to watch the degraded "judge is down" path.
+      # "stub-key" is a lab constant, not a secret (names as serve.go reads
+      # them: COMMUNICATION_SPEECH_BASE_URL/_MODEL/_API_KEY and
+      # COMMUNICATION_DECISION_BASE_URL/_MODEL/_API_KEY/_TIMEOUT).
+      COMMUNICATION_SPEECH_BASE_URL: http://assistant-stub:8098/v1
+      COMMUNICATION_SPEECH_MODEL: qwen3-asr-stub
+      COMMUNICATION_SPEECH_API_KEY: stub-key
+      COMMUNICATION_DECISION_BASE_URL: http://assistant-stub:8098/v1
+      COMMUNICATION_DECISION_MODEL: judge-stub
+      COMMUNICATION_DECISION_API_KEY: stub-key
+      COMMUNICATION_DECISION_TIMEOUT: 3s
+    depends_on:
+      assistant-stub:
+        condition: service_started
 
   api-b:
     volumes:
@@ -153,3 +177,41 @@ services:
       COMMUNICATION_CATCHUP_SWEEP_PER_10M: "2"
       # See api-a: the completion sweep's cadence, shortened for the lab.
       COMMUNICATION_CATCHUP_GEN_SWEEP: 30s
+      # ADR-0079 + ADR-0080: same deterministic stub as api-a (the judge
+      # counts every call and both replicas may serve a decision);
+      # "stub-key" is a lab constant, not a secret. See api-a's block.
+      COMMUNICATION_SPEECH_BASE_URL: http://assistant-stub:8098/v1
+      COMMUNICATION_SPEECH_MODEL: qwen3-asr-stub
+      COMMUNICATION_SPEECH_API_KEY: stub-key
+      COMMUNICATION_DECISION_BASE_URL: http://assistant-stub:8098/v1
+      COMMUNICATION_DECISION_MODEL: judge-stub
+      COMMUNICATION_DECISION_API_KEY: stub-key
+      COMMUNICATION_DECISION_TIMEOUT: 3s
+    depends_on:
+      assistant-stub:
+        condition: service_started
+
+  # assistant-stub — the deterministic speech + judge endpoint for the
+  # assistant's lab proofs (ADR-0079/0080, CONTRACT § 3-§ 4). Stdlib-only
+  # Python; answers POST /v1/audio/transcriptions and POST
+  # /v1/chat/completions plus the lab's /control/judge + /control/stats.
+  # It holds no secret ("stub-key" is a fixed lab constant) and no state
+  # worth persisting, so restart "no" and no volumes beyond the read-only
+  # script bind. Host port 18098 exists so lab scripts can flip the judge
+  # and read its counters from outside.
+  assistant-stub:
+    image: python:3.13-alpine
+    command: ["python3", "/stub/assistant_stub.py"]
+    volumes:
+      - ./e2e/stubs:/stub:ro
+    ports:
+      - "18098:8098"
+    healthcheck:
+      # python:3.13-alpine ships no curl — probe with the stdlib.
+      test: ["CMD", "python3", "-c",
+             "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8098/healthz', timeout=2).status == 200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    restart: "no"
