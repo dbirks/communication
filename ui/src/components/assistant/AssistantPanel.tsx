@@ -236,10 +236,11 @@ function ThreadRow({
       <span
         className={`min-w-0 flex-1 truncate text-[12.5px] text-ink ${active ? "font-semibold" : ""}`}
       >
-        {conversation.title ?? "Untitled"}
+        {conversation.title ?? "New thread"}
       </span>
       <span className="shrink-0 font-mono text-[11px] text-faint">
-        {formatAge(conversation.lastMessageAt)}
+        {/* A thread nobody has written in yet is the new one (prototype: "now"). */}
+        {conversation.lastMessageAt ? formatAge(conversation.lastMessageAt) : "now"}
       </span>
       <span className="grid w-[13px] shrink-0 place-items-center">
         {active ? <IconCheck size={12} stroke={2} aria-hidden className="shrink-0" /> : null}

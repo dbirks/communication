@@ -555,7 +555,7 @@ describe("new thread + threads menu (handoff §1)", () => {
     await waitFor(() => expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull());
   });
 
-  it("a null title shows as Untitled in the menu", async () => {
+  it("a null title shows as New thread in the menu", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
@@ -563,7 +563,7 @@ describe("new thread + threads menu (handoff §1)", () => {
     fireEvent.click(screen.getByTestId("assistant-history"));
     const items = screen.getAllByTestId("assistant-history-item");
     expect(items).toHaveLength(3);
-    expect(items[2].textContent).toContain("Untitled");
+    expect(items[2].textContent).toContain("New thread");
     expect(items[2].querySelector("svg")).toBeNull();
   });
 

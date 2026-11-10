@@ -99,7 +99,7 @@ export function setupRowsOf(status: AssistantSystemStatus): SetupRow[] {
     rows.push({
       state: "ok",
       label: "GitHub credential",
-      meta: `${credential.name} · ${credential.used_by === 0 ? "unused" : `${credential.used_by} repos`}`,
+      meta: `${credential.name} · ${credential.used_by === 0 ? "unused" : `${credential.used_by} ${credential.used_by === 1 ? "repo" : "repos"}`}`,
       action: { label: "Check", prompt: "do you have access to any github tokens?" },
     });
   }

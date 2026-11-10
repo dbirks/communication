@@ -113,7 +113,7 @@ describe("SetupChecklist", () => {
     const creds = rows().filter((row) => row.textContent?.includes("GitHub credential"));
     expect(creds.map((row) => row.textContent)).toEqual([
       "GitHub credentialGITHUB_TOKEN · unusedCheck",
-      "GitHub credentialDEPLOY_ROBOT · 1 reposCheck",
+      "GitHub credentialDEPLOY_ROBOT · 1 repoCheck",
     ]);
     expect(screen.getByTestId("assistant-setup").textContent).not.toContain("ghp_");
   });

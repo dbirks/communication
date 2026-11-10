@@ -670,7 +670,7 @@ describe("AssistantPanel header controls (handoff §1)", () => {
     const items = screen.getAllByTestId("assistant-history-item");
     expect(items).toHaveLength(2);
     expect(items[0].textContent).toContain("Fix the board");
-    expect(items[1].textContent).toContain("Untitled");
+    expect(items[1].textContent).toContain("New thread");
     expect(items[1].textContent).not.toContain("unknown age");
     // The current row is the accent wash, a semibold title and the Tabler check.
     expect(items[0].className).toContain("bg-accent-wash");
