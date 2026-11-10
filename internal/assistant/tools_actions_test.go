@@ -55,21 +55,21 @@ func TestSetupActionCardCopy(t *testing.T) {
 	// repository half is `owner/repo`, never a URL with a path in it.
 	got := actionSummary("project.create", map[string]string{
 		"name": "home-lab", "repo_url": "https://github.com/acme/app.git", "credential": "GITHUB_TOKEN",
-	})
+	}, nil)
 	if got != "Create project home-lab with acme/app" {
 		t.Errorf("project.create summary = %q", got)
 	}
-	if got := actionSummary("project.create", map[string]string{"name": "home-lab"}); got != "Create project home-lab" {
+	if got := actionSummary("project.create", map[string]string{"name": "home-lab"}, nil); got != "Create project home-lab" {
 		t.Errorf("project.create without a repository summary = %q", got)
 	}
 	// assignment.set names the revision it will pin (the promotion preview).
 	withRev := actionSummary("assignment.set", map[string]string{
 		"project_id": "p-1", "pipeline_id": "pl-1", "revision": "v2 (r7)",
-	})
+	}, nil)
 	if !strings.Contains(withRev, "pins v2 (r7)") {
 		t.Errorf("assignment.set with a revision read = %q; want the pinned revision named", withRev)
 	}
-	if plain := actionSummary("assignment.set", map[string]string{"project_id": "p-1", "pipeline_id": "pl-1"}); !strings.Contains(plain, "latest published") {
+	if plain := actionSummary("assignment.set", map[string]string{"project_id": "p-1", "pipeline_id": "pl-1"}, nil); !strings.Contains(plain, "latest published") {
 		t.Errorf("assignment.set without one = %q; want the honest latest-published line", plain)
 	}
 	for _, tc := range []struct{ tool, want string }{
@@ -77,7 +77,7 @@ func TestSetupActionCardCopy(t *testing.T) {
 		{"run.cancel", "Cancel run"},
 		{"schedule.create", "Create schedule"},
 	} {
-		s := actionSummary(tc.tool, map[string]string{"project_id": "p-1"})
+		s := actionSummary(tc.tool, map[string]string{"project_id": "p-1"}, nil)
 		if !strings.HasPrefix(s, tc.want) {
 			t.Errorf("%s summary = %q; want it to open with %q", tc.tool, s, tc.want)
 		}

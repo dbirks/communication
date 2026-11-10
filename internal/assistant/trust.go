@@ -8,7 +8,10 @@ package assistant
 // execution still goes through the permission-checked service as the
 // caller's own Caller.
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // ToolClass is one row of the ADR's classification table. Every tool is
 // exactly one class; a name outside the closed table is refused by the
@@ -157,8 +160,11 @@ func riskText(tool string) string {
 // actionSummary renders the short server-supplied sentence that names the
 // proposed action (the approval row's `summary` and the change row's
 // summary for confirmed actions). It names only the args the model
-// supplied, bounded like every other tool arg.
-func actionSummary(tool string, args map[string]string) string {
+// supplied, bounded like every other tool arg. `names` (nullable) maps an
+// entity id to the name one of the turn's earlier read rows gave it; a
+// uuid arg renders through it ("workflow review-flow") and falls back to a
+// short id ("workflow 01a1c47a") — never a 36-char dump on a card.
+func actionSummary(tool string, args map[string]string, names map[string]string) string {
 	verb := map[string]string{
 		"run.start":             "Start a run",
 		"run.retry":             "Retry node",
@@ -192,8 +198,8 @@ func actionSummary(tool string, args map[string]string) string {
 	// server-side at execution; this line only shows the preview.
 	if tool == "assignment.set" {
 		s := "Assign workflow"
-		if v := bounded(strings.TrimSpace(args["pipeline_id"]), 64); v != "" {
-			s += " " + v
+		if v := strings.TrimSpace(args["pipeline_id"]); v != "" {
+			s += " " + bounded(readableID(v, names, false), 64)
 		}
 		if rev := bounded(strings.TrimSpace(args["revision"]), 64); rev != "" {
 			return s + " · pins " + rev
@@ -208,6 +214,16 @@ func actionSummary(tool string, args map[string]string) string {
 					continue
 				}
 			}
+			if v = readableArg(k, v, names); v == "" {
+				continue
+			}
+			// "Cancel run" + "run c599029e" would say the noun twice; the
+			// verb already named the kind, so the bit keeps just the name.
+			if noun := idArgNouns[k]; noun != "" &&
+				strings.HasPrefix(strings.ToLower(v), strings.ToLower(noun)+" ") &&
+				strings.HasSuffix(strings.ToLower(verb), noun) {
+				v = v[len(noun)+1:]
+			}
 			bits = append(bits, v)
 		}
 	}
@@ -215,4 +231,63 @@ func actionSummary(tool string, args map[string]string) string {
 		return verb
 	}
 	return verb + " " + strings.Join(bits, " · ")
+}
+
+// --- readable ids on the approval card ------------------------------------
+
+// uuidID is a stored entity id in its canonical 36-char form — the form
+// that would otherwise dump raw hex into an approval summary.
+var uuidID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// idArgNouns names the entity an id-shaped argument points at. A key the
+// table does not know still renders readably under the noun its own name
+// gives (`team_id` → "team").
+var idArgNouns = map[string]string{
+	"project_id":  "project",
+	"run_id":      "run",
+	"node_id":     "node",
+	"pipeline_id": "workflow",
+	"approval_id": "approval",
+	"draft_id":    "draft",
+	"request_id":  "request",
+}
+
+// readableID renders one id the way the UI labels it: the name an earlier
+// read this turn gave it when there is one, else a short id — the last 8
+// hex chars for a run (the UI's run labels, `names.ts`/`ProjectRuns`), the
+// first 8 for everything else. A value that is not a uuid (a slug, a
+// version label) passes through untouched.
+func readableID(value string, names map[string]string, tail bool) string {
+	value = strings.TrimSpace(value)
+	if !uuidID.MatchString(value) {
+		return value
+	}
+	if name := bounded(strings.TrimSpace(names[value]), 64); name != "" {
+		return name
+	}
+	if tail {
+		hex := strings.ReplaceAll(strings.ToLower(value), "-", "")
+		return hex[len(hex)-8:]
+	}
+	return value[:8]
+}
+
+// readableArg is readableID with the entity noun in front: "project
+// 01a1c47a", "run 029e1a20", "workflow review-flow".
+func readableArg(key, value string, names map[string]string) string {
+	value = strings.TrimSpace(value)
+	if !uuidID.MatchString(value) {
+		return value
+	}
+	noun, known := idArgNouns[key]
+	if !known {
+		if n := strings.TrimSuffix(key, "_id"); n != key {
+			noun = n
+		}
+	}
+	short := readableID(value, names, key == "run_id")
+	if noun == "" {
+		return short
+	}
+	return noun + " " + short
 }

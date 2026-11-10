@@ -412,3 +412,97 @@ func TestSplitAssumedLineBoundsAndCleansTheValue(t *testing.T) {
 		t.Fatalf("angle brackets survived: %q", assumed)
 	}
 }
+
+// --- CONTRACT §2: the deterministic fallback for a missing Assumed line ----
+
+// A uuidv7 whose head-8 is 019e2a04 and whose tail-8 is 029e1a20 (the UI
+// labels runs by the tail, so the page label carries that piece).
+const (
+	fakeRunID     = "019e2a04-7f8c-aac4-b36b-c599029e1a20"
+	fakeProjectID = "01a1c47a-2a04-7f8c-aac4-b36bc599029e"
+)
+
+func TestDeterministicAssumedBranches(t *testing.T) {
+	runPage := TurnContext{
+		Route:     "/runs/029e1a20",
+		ProjectID: fakeProjectID,
+		Entity:    &TurnContextEntity{Kind: "run", ID: fakeRunID},
+		Page:      &TurnContextPage{Label: "Run 029e1a20", Status: "waiting"},
+	}
+	todayPage := TurnContext{Route: "/", Page: &TurnContextPage{Label: "Today"}}
+
+	t.Run("no page context never sets it", func(t *testing.T) {
+		if got := deterministicAssumed(TurnContext{}, "why is it stuck?", nil, "Gate."); got != "" {
+			t.Fatalf("assumed = %q, want empty without a page on screen", got)
+		}
+		noLabel := TurnContext{Page: &TurnContextPage{Status: "waiting"}}
+		if got := deterministicAssumed(noLabel, "why is it stuck?", nil, "Gate."); got != "" {
+			t.Fatalf("assumed = %q, want empty when the page carries no label", got)
+		}
+	})
+
+	t.Run("the model's own line always wins", func(t *testing.T) {
+		got := deterministicAssumed(runPage, "why is it stuck?", nil, "Gate.\nAssumed: run 9c1e")
+		if got != "" {
+			t.Fatalf("assumed = %q, want empty when the answer already signed off", got)
+		}
+	})
+
+	t.Run("a page turn that points at the page names the entity label", func(t *testing.T) {
+		got := deterministicAssumed(runPage, "why is it stuck?", nil, "The gate is waiting on you.")
+		if got != "run 029e1a20" {
+			t.Fatalf("assumed = %q, want the label with a lowercase first letter", got)
+		}
+	})
+
+	t.Run("a section page reads as the page", func(t *testing.T) {
+		got := deterministicAssumed(todayPage, "what needs me here?", nil, "Nothing.")
+		if got != "the Today page" {
+			t.Fatalf("assumed = %q, want \"the Today page\"", got)
+		}
+	})
+
+	t.Run("neither the words nor a call means no fallback", func(t *testing.T) {
+		calls := []ToolCall{{Name: "palette.search", Args: map[string]any{"needle": "profiles"}}}
+		if got := deterministicAssumed(runPage, "open the profiles page", calls, "Done."); got != "" {
+			t.Fatalf("assumed = %q, want empty: no page reference and no page-id arg", got)
+		}
+	})
+
+	t.Run("a call whose arg is the page entity id triggers it", func(t *testing.T) {
+		calls := []ToolCall{{Name: "run.nodes", Args: map[string]any{"run_id": fakeRunID}}}
+		got := deterministicAssumed(runPage, "walk the nodes and tell me", calls, "Step 3 waits.")
+		if got != "run 029e1a20" {
+			t.Fatalf("assumed = %q, want the entity label", got)
+		}
+	})
+
+	t.Run("a call whose arg is the turn project id triggers it", func(t *testing.T) {
+		c := TurnContext{ProjectID: fakeProjectID, Route: "/", Page: &TurnContextPage{Label: "Today"}}
+		calls := []ToolCall{{Name: "run.list", Args: map[string]any{"project_id": fakeProjectID}}}
+		got := deterministicAssumed(c, "list every run please", calls, "Three runs.")
+		if got != "the Today page" {
+			t.Fatalf("assumed = %q, want the section-page form", got)
+		}
+	})
+
+	t.Run("a head-8 in the label also names the entity", func(t *testing.T) {
+		c := TurnContext{
+			Entity: &TurnContextEntity{Kind: "draft", ID: fakeRunID},
+			Page:   &TurnContextPage{Label: "Draft 019e2a04"},
+		}
+		if got := deterministicAssumed(c, "how is this going?", nil, "Fine."); got != "draft 019e2a04" {
+			t.Fatalf("assumed = %q, want the lowercased label", got)
+		}
+	})
+
+	t.Run("an entity whose label carries no id reads as the page", func(t *testing.T) {
+		c := TurnContext{
+			Entity: &TurnContextEntity{Kind: "pipeline", ID: fakeRunID},
+			Page:   &TurnContextPage{Label: "Workflow feature-delivery"},
+		}
+		if got := deterministicAssumed(c, "what is this?", nil, "A workflow."); got != "the Workflow feature-delivery page" {
+			t.Fatalf("assumed = %q", got)
+		}
+	})
+}

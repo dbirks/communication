@@ -232,3 +232,101 @@ func SplitAssumedLine(text string) (answer, assumed string) {
 	}
 	return head, CleanPageField(m[1])
 }
+
+// pageRefWords is the deterministic reading of “the message points at the
+// page”: the closed word set the handoff names (this / that / it / here /
+// stuck, plus the multiword forms whose heads are already covered). A word
+// match is a cheap heuristic, not a parser — its only job is to decide that
+// a fallback sign-off line would be honest on a turn that carried page
+// context, which the model's own line always outranks.
+var pageRefWords = regexp.MustCompile(`(?i)\b(?:this|that|it|here|stuck)\b`)
+
+// deterministicAssumed is CONTRACT §2's fallback for the `Assumed: <item>`
+// line the lab shows the model omitting on a page-context turn (“why is it
+// stuck?” clearly used the page, so no `assumed` was stored). The model's
+// own line always wins: this returns "" whenever SplitAssumedLine already
+// found one. It fires only on a turn that carried a page label (never
+// without page context) AND either points at the page in words or contains
+// a tool call whose arg equals the page's entity id / turn project id — a
+// call that walked to the entity on screen is the model using the page.
+// The value names the page: an entity label that already carries the
+// entity's id reads lowercased-first ("Run 029e1a20" → "run 029e1a20", the
+// handoff's own wording); a section page (a label with no entity id) reads
+// "the <Label> page" ("the Today page"). The caller appends the sign-off
+// line and the shared SplitAssumedLine path stores it, bounded, as
+// payload.assumed.
+func deterministicAssumed(c TurnContext, userText string, calls []ToolCall, answer string) string {
+	if c.Page == nil || c.Page.Label == "" {
+		return "" // no page on screen: nothing was ever assumed
+	}
+	if _, assumed := SplitAssumedLine(answer); assumed != "" {
+		return "" // the model's own line stands
+	}
+	if !pageRefWords.MatchString(userText) && !callsTouchPage(c, calls) {
+		return ""
+	}
+	if c.Entity != nil && labelNamesEntityID(c.Page.Label, c.Entity.ID) {
+		return lowerFirstRune(c.Page.Label)
+	}
+	return "the " + c.Page.Label + " page"
+}
+
+// labelNamesEntityID reports whether a page label already carries the
+// entity's id — the full id, or (for uuid-shaped ids, the form the UI
+// labels use) its first or last 8 hex chars.
+func labelNamesEntityID(label, id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return false
+	}
+	low := strings.ToLower(label)
+	if strings.Contains(low, id) {
+		return true
+	}
+	hex := strings.ReplaceAll(id, "-", "")
+	if len(hex) < 16 {
+		return false // not uuid-shaped: no short form is guessed
+	}
+	return strings.Contains(low, hex[:8]) || strings.Contains(low, hex[len(hex)-8:])
+}
+
+// callsTouchPage reports whether any tool call this turn used an argument
+// equal to the page's entity id or the turn's project id.
+func callsTouchPage(c TurnContext, calls []ToolCall) bool {
+	var ids []string
+	if c.Entity != nil && strings.TrimSpace(c.Entity.ID) != "" {
+		ids = append(ids, c.Entity.ID)
+	}
+	if strings.TrimSpace(c.ProjectID) != "" {
+		ids = append(ids, c.ProjectID)
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		for _, v := range call.Args {
+			s, ok := v.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				continue
+			}
+			for _, id := range ids {
+				if strings.EqualFold(strings.TrimSpace(s), id) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// lowerFirstRune lowercases only the label's first letter: "Run 9c1e" reads
+// as "run 9c1e" in the UI's "assumed you meant …" row, while the short id
+// keeps whatever shape the page gave it.
+func lowerFirstRune(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
+	}
+	r[0] = unicode.ToLower(r[0])
+	return string(r)
+}

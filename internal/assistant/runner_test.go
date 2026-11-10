@@ -823,3 +823,131 @@ func TestStripGuardRemarksKeepsProseAboutDanger(t *testing.T) {
 		t.Fatalf("a guard remark escaped the net: %q", drop)
 	}
 }
+
+// --- CONTRACT §2: the deterministic Assumed line on the finish path ------
+
+// The lab shape: on a run page, “why is it stuck?” was answered from the
+// page context but the model omitted its `Assumed:` sign-off, so no
+// `assumed` reached the payload. The runner appends the deterministic line
+// and the route's SplitAssumedLine takes it back off like the model's own.
+func TestRunTurnAppendsTheDeterministicAssumedLine(t *testing.T) {
+	model := newFakeModel(t, step{text: "The gate is waiting on a human."})
+	r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+	res, bad := r.RunTurn(context.Background(), TurnRequest{
+		Caller: testCaller, Text: "why is it stuck?",
+		Context: TurnContext{
+			Route:     "/runs/029e1a20",
+			ProjectID: "p-1",
+			Entity:    &TurnContextEntity{Kind: "run", ID: fakeRunID},
+			Page:      &TurnContextPage{Label: "Run 029e1a20", Status: "waiting"},
+		},
+	})
+	if bad != nil {
+		t.Fatalf("RunTurn failed: %+v", bad)
+	}
+	if res.Answer == nil {
+		t.Fatalf("no assistant row")
+	}
+	answer, assumed := SplitAssumedLine(res.Answer.AnswerMarkdown)
+	if assumed != "run 029e1a20" {
+		t.Fatalf("assumed = %q, want \"run 029e1a20\" (markdown %q)", assumed, res.Answer.AnswerMarkdown)
+	}
+	if answer != "The gate is waiting on a human." {
+		t.Fatalf("answer = %q, want the sign-off line taken back off", answer)
+	}
+}
+
+// The model's own sign-off stands untouched: one line, its wording.
+func TestRunTurnKeepsTheModelsOwnAssumedLine(t *testing.T) {
+	model := newFakeModel(t, step{text: "The gate is waiting.\nAssumed: run 9c1e"})
+	r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+	res, bad := r.RunTurn(context.Background(), TurnRequest{
+		Caller: testCaller, Text: "why is it stuck?",
+		Context: TurnContext{
+			Entity: &TurnContextEntity{Kind: "run", ID: fakeRunID},
+			Page:   &TurnContextPage{Label: "Run 029e1a20"},
+		},
+	})
+	if bad != nil {
+		t.Fatalf("RunTurn failed: %+v", bad)
+	}
+	if got := strings.Count(res.Answer.AnswerMarkdown, "Assumed:"); got != 1 {
+		t.Fatalf("sign-off lines = %d, want the model's one:\n%s", got, res.Answer.AnswerMarkdown)
+	}
+	_, assumed := SplitAssumedLine(res.Answer.AnswerMarkdown)
+	if assumed != "run 9c1e" {
+		t.Fatalf("assumed = %q, want the model's value", assumed)
+	}
+}
+
+// Without page context nothing is ever assumed, and a page turn that
+// neither points at the page nor calls its ids stays clean.
+func TestRunTurnAddsNoAssumedLineWithoutAPagePointer(t *testing.T) {
+	t.Run("no page on screen", func(t *testing.T) {
+		model := newFakeModel(t, step{text: "Nothing is waiting."})
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, bad := r.RunTurn(context.Background(), TurnRequest{
+			Caller: testCaller, Text: "why is it stuck?",
+		})
+		if bad != nil {
+			t.Fatalf("RunTurn failed: %+v", bad)
+		}
+		if strings.Contains(res.Answer.AnswerMarkdown, "Assumed:") {
+			t.Fatalf("a pageless turn grew a sign-off: %q", res.Answer.AnswerMarkdown)
+		}
+	})
+	t.Run("page on screen but the message does not point at it", func(t *testing.T) {
+		model := newFakeModel(t, step{text: "Three projects: a, b, c."})
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, bad := r.RunTurn(context.Background(), TurnRequest{
+			Caller: testCaller, Text: "how many projects are there?",
+			Context: TurnContext{
+				Entity: &TurnContextEntity{Kind: "run", ID: fakeRunID},
+				Page:   &TurnContextPage{Label: "Run 029e1a20"},
+			},
+		})
+		if bad != nil {
+			t.Fatalf("RunTurn failed: %+v", bad)
+		}
+		if strings.Contains(res.Answer.AnswerMarkdown, "Assumed:") {
+			t.Fatalf("an unrelated message on a page grew a sign-off: %q", res.Answer.AnswerMarkdown)
+		}
+	})
+}
+
+// --- the approval card reads entities, not raw uuids ---------------------
+
+// A read earlier in the turn named the project (project.list rows carry
+// id + name), so the gated run.start card prints the name; the pipeline the
+// turn never read prints its short id. No 36-char uuid reaches the card.
+func TestApprovalCardNamesEntitiesTheTurnRead(t *testing.T) {
+	store := newFakeStore()
+	store.projects = json.RawMessage(
+		`[{"id":"` + sumProjectID + `","slug":"feature-delivery","name":"Feature Delivery","my_role":"maintainer"}]`)
+	model := newFakeModel(t,
+		step{toolCalls: []toolCallRequest{toolCall("project.list", nil)}},
+		step{toolCalls: []toolCallRequest{toolCall("run.start", map[string]any{
+			"project_id": sumProjectID, "pipeline_id": sumPipelineID})}},
+	)
+	actions := map[string]ActionExecutor{
+		"run.start": func(_ context.Context, _ Caller, _ string, _ map[string]string) (string, *ChangeRecord, error) {
+			t.Fatal("a gated action must not execute")
+			return "", nil, nil
+		},
+	}
+	b := newTestBroker(t, model, store)
+	r := NewConversationRunner(ConversationRunnerDeps{Broker: b, Draft: newFakeDraftService(), Actions: actions})
+	res, bad := r.RunTurn(context.Background(), TurnRequest{
+		Caller: testCaller, Text: "kick one off", TrustLevel: TrustAskAll,
+	})
+	if bad != nil {
+		t.Fatalf("RunTurn failed: %+v", bad)
+	}
+	if res.Approval == nil || res.Approval.Tool != "run.start" {
+		t.Fatalf("no run.start card: %+v", res.Approval)
+	}
+	want := "Start a run project Feature Delivery · workflow 01c2d3e4"
+	if res.Approval.Summary != want {
+		t.Fatalf("approval summary = %q, want %q", res.Approval.Summary, want)
+	}
+}

@@ -633,6 +633,10 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 		approval *TurnApproval
 		question *TurnQuestion
 	)
+	// entityNames maps an entity id to the name one of this turn's read
+	// payloads gave it (project.list / workflow.list rows), so a later
+	// approval card prints "workflow review-flow" instead of a bare uuid.
+	entityNames := map[string]string{}
 	for {
 		// Amendment 1 (docs/adr/ADR-0050-assistant-v2.md): the conversation
 		// runner keeps its own bounded caps (MaxRunnerModelCalls / MaxRunnerToolCalls);
@@ -689,7 +693,7 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 					chatMessage{Role: "user", Content: text(editAskFeedback)})
 				continue
 			}
-			return r.finish(&Answer{
+			return r.finish(req, &Answer{
 				AnswerMarkdown: answerText,
 				Links:          dedupedLinks(r.b, links),
 				ToolCalls:      nonNilCalls(calls),
@@ -712,7 +716,8 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 				continue
 			}
 			toolRuns++
-			out := r.execOne(ctx, req, trust, call, &links, &changes)
+			out := r.execOne(ctx, req, trust, call, entityNames, &links, &changes)
+			noteEntityNames(entityNames, out.payload)
 			// ADR-0050: every tool_calls row carries a short server-supplied
 			// summary. The executors set the detail line when they know it;
 			// the guard backfills the rest (refusals, gates) so no row ever
@@ -765,7 +770,7 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 					ansText = question.Prompt
 				}
 			}
-			return r.finish(&Answer{
+			return r.finish(req, &Answer{
 				AnswerMarkdown: r.b.cleanMarkdown(ansText),
 				Links:          dedupedLinks(r.b, links),
 				ToolCalls:      nonNilCalls(calls),
@@ -780,9 +785,15 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 // finish assembles the TurnResult: the assistant row is present only
 // when there is text to carry (a question-only turn appends the question
 // row alone), and at most one question and one approval row (decision 3).
-func (r *ConversationRunner) finish(ans *Answer, q *TurnQuestion, ap *TurnApproval, changes []ChangeRecord) *TurnResult {
+// A page-context turn whose answer carries no `Assumed: <item>` line gets
+// the deterministic fallback sign-off appended (CONTRACT §2): the route's
+// SplitAssumedLine then takes it back off exactly like the model's own.
+func (r *ConversationRunner) finish(req TurnRequest, ans *Answer, q *TurnQuestion, ap *TurnApproval, changes []ChangeRecord) *TurnResult {
 	res := &TurnResult{}
 	if ans.AnswerMarkdown != "" {
+		if assumed := deterministicAssumed(req.Context, req.Text, ans.ToolCalls, ans.AnswerMarkdown); assumed != "" {
+			ans.AnswerMarkdown += "\n\nAssumed: " + assumed
+		}
 		res.Answer = ans
 	}
 	res.Question = q
@@ -932,11 +943,64 @@ func (r *ConversationRunner) rollbackApplied(ctx context.Context, req TurnReques
 	}
 }
 
+// nonNilCalls gives the answer its tool-call rows in a form the wire can
+// encode: an empty turn serializes as `[]`, never `null`.
 func nonNilCalls(calls []ToolCall) []ToolCall {
 	if calls == nil {
 		return []ToolCall{}
 	}
 	return calls
+}
+
+// noteEntityNames harvests id→name pairs from one read payload so a later
+// approval card can print the name instead of a bare uuid: a row counts
+// when it carries "id" plus one of "name"/"display_name"/"slug" (the
+// project.list / workflow.list shape). Anything else contributes nothing,
+// and the first name seen for an id wins — a later page of the same list
+// must not overwrite what the turn already showed the model.
+func noteEntityNames(names map[string]string, payload json.RawMessage) {
+	if names == nil || len(payload) == 0 {
+		return
+	}
+	for _, row := range readPayloadRows(payload) {
+		id := field(row, "id")
+		if id == "" {
+			continue
+		}
+		name := field(row, "name")
+		if name == "" {
+			name = field(row, "display_name")
+		}
+		if name == "" {
+			name = field(row, "slug")
+		}
+		if name == "" {
+			continue
+		}
+		if _, seen := names[id]; !seen {
+			names[id] = bounded(name, 64)
+		}
+	}
+}
+
+// readPayloadRows decodes a read payload's row objects: a top-level array
+// (the list tools' shape), or the array under one of the wrapper keys the
+// services use. A payload with neither shape (a draft document) has no rows.
+func readPayloadRows(raw json.RawMessage) []map[string]any {
+	if rows := rows(raw); rows != nil {
+		return rows
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil
+	}
+	for _, key := range []string{"items", "rows", "results"} {
+		var list []map[string]any
+		if blob, ok := obj[key]; ok && json.Unmarshal(blob, &list) == nil {
+			return list
+		}
+	}
+	return nil
 }
 
 // dedupedLinks keep-allowed, dedupe and cap the turn's links, exactly the
@@ -1031,7 +1095,7 @@ func parseToolArgs(tl runnerTool, raw string) (map[string]string, error) {
 // call is recorded awaiting_approval and stops the turn with its
 // approval row; a question stops the turn with its question row.
 func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust TrustLevel,
-	call toolCallRequest, links *[]Link, changes *[]ChangeRecord) execOutcome {
+	call toolCallRequest, names map[string]string, links *[]Link, changes *[]ChangeRecord) execOutcome {
 	name := r.decodeName(claimedName(nil, call))
 	if name == "" {
 		name = "unnamed"
@@ -1053,7 +1117,7 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 		args := r.callArgsForClass(name, class, call)
 		gate, reason, tag := r.decideGate(ctx, trust, class, name, args, req)
 		if gate {
-			return r.gatedClass(name, class, args, reason, tag)
+			return r.gatedClass(name, class, args, names, reason, tag)
 		}
 		out := r.runReadClass(ctx, req, name, call)
 		out.call.Judge = tag
@@ -1067,7 +1131,7 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 		args := r.callArgsForClass(name, class, call)
 		gate, reason, tag := r.decideGate(ctx, trust, class, name, args, req)
 		if gate {
-			return r.gatedClass(name, class, args, reason, tag)
+			return r.gatedClass(name, class, args, names, reason, tag)
 		}
 		out := r.execNavigate(name, call)
 		out.call.Judge = tag
@@ -1077,14 +1141,14 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 			r.callArgsForClass(name, class, call), req)
 		if name == "workflow.create_draft" {
 			if gate {
-				return r.gatedWorkflowCreate(name, call, reason, tag)
+				return r.gatedWorkflowCreate(name, call, names, reason, tag)
 			}
 			out := r.execWorkflowCreateDraft(ctx, req.Caller, name, call)
 			out.call.Judge = tag
 			return out
 		}
 		if gate {
-			return r.gatedDraftApply(ctx, req.Caller, name, call, reason, tag)
+			return r.gatedDraftApply(ctx, req.Caller, name, call, names, reason, tag)
 		}
 		out := r.runDraftApply(ctx, req.Caller, name, call)
 		out.call.Judge = tag
@@ -1093,7 +1157,7 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 		gate, reason, tag := r.decideGate(ctx, trust, class, name,
 			r.callArgsForClass(name, class, call), req)
 		if gate {
-			return r.gatedClass(name, class, r.stringArgs(name, call), reason, tag)
+			return r.gatedClass(name, class, r.stringArgs(name, call), names, reason, tag)
 		}
 		out := r.runRisky(ctx, req.Caller, name, call)
 		out.call.Judge = tag
@@ -1213,7 +1277,7 @@ func (r *ConversationRunner) harvestRead(t *turn, name string) execOutcome {
 // approval_request row the client renders as the amber card. `reason` is the
 // card's "Why it asks" line and `judgeTag` what the decision model did (if
 // this level consulted it at all).
-func (r *ConversationRunner) gated(name string, call toolCallRequest, reason, judgeTag string) execOutcome {
+func (r *ConversationRunner) gated(name string, call toolCallRequest, names map[string]string, reason, judgeTag string) execOutcome {
 	args := r.stringArgs(name, call)
 	if name == "workflow.create_draft" {
 		// The standard 200-char argument bound would amputate the pipeline
@@ -1226,12 +1290,12 @@ func (r *ConversationRunner) gated(name string, call toolCallRequest, reason, ju
 			}
 		}
 	}
-	return r.gatedClass(name, mustClass(name), args, reason, judgeTag)
+	return r.gatedClass(name, mustClass(name), args, names, reason, judgeTag)
 }
 
 // gatedClass builds the approval row for one gated call of a known class.
-func (r *ConversationRunner) gatedClass(name string, class ToolClass, args map[string]string, reason, judgeTag string) execOutcome {
-	summary := actionSummary(name, args)
+func (r *ConversationRunner) gatedClass(name string, class ToolClass, args map[string]string, names map[string]string, reason, judgeTag string) execOutcome {
+	summary := actionSummary(name, args, names)
 	if class := mustClass(name); class == ClassRead || class == ClassNavigate {
 		// A look-up card must not read like a change card: the write-tool
 		// verb table has no entry for a read, and "Run" alone would make the
@@ -1522,7 +1586,7 @@ func (r *ConversationRunner) draftApplyRefusal(name string, args map[string]stri
 // current version is gated. (Dress rehearsal shell-p789 T5: the invalid op
 // was carded unvalidated and Retry answered the generic "permissions" 409
 // forever.)
-func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name string, call toolCallRequest, reason, judgeTag string) execOutcome {
+func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name string, call toolCallRequest, names map[string]string, reason, judgeTag string) execOutcome {
 	tl, _ := r.localTool(name)
 	args, err := parseToolArgs(tl, call.Function.Arguments)
 	if err != nil {
@@ -1532,7 +1596,7 @@ func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name
 	if _, perr := r.planDraftEdit(ctx, c, args); perr != nil {
 		return r.draftApplyRefusal(name, args, perr)
 	}
-	return r.gated(name, call, reason, judgeTag)
+	return r.gated(name, call, names, reason, judgeTag)
 }
 
 // badArgumentsPayload is the model-facing detail for a call whose argument
@@ -1828,7 +1892,7 @@ func (r *ConversationRunner) ExecuteAction(ctx context.Context, c Caller,
 // gatedDraftApply rule) — a document the compiler would refuse earns a
 // refusal naming the diagnostic, never an approval card the caller can
 // never confirm.
-func (r *ConversationRunner) gatedWorkflowCreate(name string, call toolCallRequest, reason, judgeTag string) execOutcome {
+func (r *ConversationRunner) gatedWorkflowCreate(name string, call toolCallRequest, names map[string]string, reason, judgeTag string) execOutcome {
 	wd, err := parseWorkflowDraftArgs(call.Function.Arguments)
 	if err != nil {
 		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"},
@@ -1842,7 +1906,7 @@ func (r *ConversationRunner) gatedWorkflowCreate(name string, call toolCallReque
 		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "proposal_invalid"},
 			payload: json.RawMessage(bounded(string(blob), maxDraftGetBytes))}
 	}
-	return r.gated(name, call, reason, judgeTag)
+	return r.gated(name, call, names, reason, judgeTag)
 }
 
 // confirmWorkflowCreate re-runs one approved workflow.create_draft exactly
