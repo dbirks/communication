@@ -568,7 +568,9 @@ function tableStartOf(lines: string[]): number | null {
  * Split one prose run into the pieces the answer is made of: prose stays prose,
  * a header row + separator row + the body rows under it become one table.
  */
-function answerPieces(text: string): Array<{ type: "prose"; text: string } | ({ type: "table" } & AnswerTableData)> {
+function answerPieces(
+  text: string,
+): Array<{ type: "prose"; text: string } | ({ type: "table" } & AnswerTableData)> {
   const lines = text.split("\n");
   const pieces: Array<{ type: "prose"; text: string } | ({ type: "table" } & AnswerTableData)> = [];
   let prose: string[] = [];
@@ -577,7 +579,7 @@ function answerPieces(text: string): Array<{ type: "prose"; text: string } | ({ 
     if (joined.trim().length > 0) pieces.push({ type: "prose", text: joined });
     prose = [];
   };
-  for (let i = 0; i < lines.length; ) {
+  for (let i = 0; i < lines.length;) {
     const start = tableStartOf(lines.slice(i));
     if (start === null) {
       prose.push(...lines.slice(i));

@@ -713,7 +713,8 @@ export function AssistantPanel({
    * page's LOOKING AT column — and never stands in for a thread title.
    */
   const headerTitle =
-    threadTitle ?? recentConversations.find((row) => row.id === activeConversationId)?.title ??
+    threadTitle ??
+    recentConversations.find((row) => row.id === activeConversationId)?.title ??
     chatContext ??
     NEW_THREAD_TITLE;
 

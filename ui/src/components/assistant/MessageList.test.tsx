@@ -139,9 +139,7 @@ describe("MessageList", () => {
     const details = screen.getByTestId("assistant-tools") as HTMLDetailsElement;
     expect(details.open).toBe(false);
     // The folded line NAMES the tools; a count is not what the design shows.
-    expect(details.querySelector("summary")?.textContent).toBe(
-      "used run.nodes, palette.search",
-    );
+    expect(details.querySelector("summary")?.textContent).toBe("used run.nodes, palette.search");
     expect(details.textContent).not.toContain("used 2 tools");
     expect(details.querySelector("svg")?.getAttribute("class")).toContain(
       "tabler-icon-chevron-right",
@@ -1421,7 +1419,9 @@ describe("the tool disclosure line names the tools (walk-through finding 8)", ()
       }),
     ]);
     const details = screen.getByTestId("assistant-tools") as HTMLElement;
-    expect(details.querySelector("summary")?.textContent).toBe("used workflow.list, credential.list +2");
+    expect(details.querySelector("summary")?.textContent).toBe(
+      "used workflow.list, credential.list +2",
+    );
     // Expanding still lists each call — the folded line is a summary, not a
     // replacement for the rows.
     expect(within(details).getAllByTestId("assistant-tool-row")).toHaveLength(4);

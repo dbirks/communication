@@ -260,25 +260,23 @@ describe("approval decision post body (ui-confirm)", () => {
     // screen is never clobbered by a refetch — so the decided state has to
     // reach the card from this round-trip (finding 4).
     const stub = stubFetch(() =>
-      json(
-        {
-          messages: [
-            {
-              id: "msg-ack",
+      json({
+        messages: [
+          {
+            id: "msg-ack",
+            kind: "assistant",
+            payload: {
               kind: "assistant",
-              payload: {
-                kind: "assistant",
-                turn_id: "t-1",
-                answer_markdown: "Done — the step is running again.",
-                links: [],
-                tool_calls: [],
-              },
-              created_at: "2026-07-07T00:01:00Z",
+              turn_id: "t-1",
+              answer_markdown: "Done — the step is running again.",
+              links: [],
+              tool_calls: [],
             },
-          ],
-          next_cursor: null,
-        },
-      ),
+            created_at: "2026-07-07T00:01:00Z",
+          },
+        ],
+        next_cursor: null,
+      }),
     );
     await openToApproval();
     fireEvent.click(screen.getByTestId("assistant-approval-confirm"));
@@ -321,27 +319,23 @@ describe("approval decision post body (ui-confirm)", () => {
    * banner and its buttons. The wire row is the server's, through the mapper.
    */
   it("a confirmed proposal card shows the CONFIRMED banner and offers nothing else", async () => {
-    stubFetch(
-      () => json({ messages: [], next_cursor: null }),
-      STATUS_READY,
-      [
-        {
-          ...WIRE_PENDING,
-          payload: {
-            ...WIRE_PENDING.payload,
-            action: "project.create",
-            summary: "Create project home-lab with the repo dbirks/home-lab",
-            reason: "Creates real state.",
-            args: {
-              name: "home-lab",
-              repo_url: "https://github.com/dbirks/home-lab.git",
-              credential: "GITHUB_TOKEN",
-              default_branch: "main",
-            },
+    stubFetch(() => json({ messages: [], next_cursor: null }), STATUS_READY, [
+      {
+        ...WIRE_PENDING,
+        payload: {
+          ...WIRE_PENDING.payload,
+          action: "project.create",
+          summary: "Create project home-lab with the repo dbirks/home-lab",
+          reason: "Creates real state.",
+          args: {
+            name: "home-lab",
+            repo_url: "https://github.com/dbirks/home-lab.git",
+            credential: "GITHUB_TOKEN",
+            default_branch: "main",
           },
         },
-      ],
-    );
+      },
+    ]);
     renderPopover();
     act(() => openAssistantPopover());
     // The thread's pending row is a project.create: the proposal card, named
@@ -1410,5 +1404,4 @@ describe("the header names the thread (walk-through finding 2)", () => {
     expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
   });
-
 });

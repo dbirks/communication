@@ -1036,7 +1036,13 @@ describe("the transcript's auto-scroll (walk-through finding 3)", () => {
     // Reading history: 200px up from the bottom of a 1000/400 scroll box.
     model.scrollTop = 400;
     fireEvent.scroll(body);
-    rerender(<AssistantPanel variant="popover" {...panelProps} messages={[...first, userMessage("two")]} />);
+    rerender(
+      <AssistantPanel
+        variant="popover"
+        {...panelProps}
+        messages={[...first, userMessage("two")]}
+      />,
+    );
     expect(model.scrollTop).toBe(400);
   });
 

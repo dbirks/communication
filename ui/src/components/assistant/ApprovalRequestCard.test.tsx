@@ -207,9 +207,7 @@ describe("ApprovalRequestCard proposal (A7 §6)", () => {
     expect(screen.getByTestId("assistant-proposal-repository").textContent).toBe("dbirks/home-lab");
     expect(screen.getByTestId("assistant-proposal-credential").textContent).toBe("GH");
     // Finding 5: a repo.add proposal is confirmed with its OWN verb.
-    expect(screen.getByTestId("assistant-approval-confirm").textContent).toBe(
-      "Connect repository",
-    );
+    expect(screen.getByTestId("assistant-approval-confirm").textContent).toBe("Connect repository");
   });
 
   it("a confirmed proposal says what it did and offers nothing else", () => {
