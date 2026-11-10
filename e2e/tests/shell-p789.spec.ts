@@ -1021,13 +1021,15 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     // server's draft-edit risk line (runner.go's riskText), so the risk
     // text alone cannot name this run's card (a strict-mode violation on
     // the shared confirm button rejects the wait instantly). The card is
-    // named by its summary: actionSummary for draft.apply is
-    // "Run <draft_id>" (trust.go), and the draft_id is this journey's
-    // editable draft.
+    // named by the draft it targets (its data-approval-ref, below), and the
+    // draft_id is this journey's editable draft.
+    // The summary shows a SHORT id since the handoff's readable cards (never a
+    // raw uuid), so the card is named by the full target id it carries in
+    // data-approval-ref (ApprovalRequestCard), still filtered to the server's
+    // draft-edit risk line.
     const card = page
-      .getByTestId("assistant-approval")
-      .filter({ hasText: "changes the pipeline draft" })
-      .filter({ hasText: `Run ${editable.id}` });
+      .locator(`[data-testid="assistant-approval"][data-approval-ref="${editable.id}"]`)
+      .filter({ hasText: "changes the pipeline draft" });
     // A card stays pending until confirmed or dismissed, and an earlier
     // ATTEMPT of this journey can leave its own pending card for the same
     // draft: confirm the newest one (DOM order = transcript order).

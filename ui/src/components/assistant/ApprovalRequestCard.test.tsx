@@ -42,6 +42,25 @@ describe("ApprovalRequestCard", () => {
     expect(screen.getByTestId("assistant-approval-dismiss").textContent).toBe("Not now");
   });
 
+  it("carries the full target id of its action in data-approval-ref (the summary shows a short one)", () => {
+    const draftId = "01a1c47a-2a04-7f8c-aac4-b36bc599029e";
+    render(
+      <ApprovalRequestCard
+        messageId="msg-9"
+        request={request({
+          action: "draft.apply",
+          summary: "Run draft c599029e",
+          args: { draft_id: draftId },
+        } as Partial<AssistantApprovalRequestPayload>)}
+        onConfirm={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("assistant-approval").getAttribute("data-approval-ref")).toBe(
+      draftId,
+    );
+  });
+
   it("Retry posts confirm with the message id; Not now posts dismiss", () => {
     const onConfirm = vi.fn();
     const onDismiss = vi.fn();

@@ -946,7 +946,7 @@ func TestApprovalCardNamesEntitiesTheTurnRead(t *testing.T) {
 	if res.Approval == nil || res.Approval.Tool != "run.start" {
 		t.Fatalf("no run.start card: %+v", res.Approval)
 	}
-	want := "Start a run project Feature Delivery · workflow 01c2d3e4"
+	want := "Start a run project Feature Delivery · workflow 0000000f"
 	if res.Approval.Summary != want {
 		t.Fatalf("approval summary = %q, want %q", res.Approval.Summary, want)
 	}

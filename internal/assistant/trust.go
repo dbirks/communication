@@ -255,7 +255,7 @@ var idArgNouns = map[string]string{
 // readableID renders one id the way the UI labels it: the name an earlier
 // read this turn gave it when there is one, else a short id — the last 8
 // hex chars for a run (the UI's run labels, `names.ts`/`ProjectRuns`), the
-// first 8 for everything else. A value that is not a uuid (a slug, a
+// same tail for everything else (UUIDv7 heads are timestamps). A value that is not a uuid (a slug, a
 // version label) passes through untouched.
 func readableID(value string, names map[string]string, tail bool) string {
 	value = strings.TrimSpace(value)
@@ -265,15 +265,17 @@ func readableID(value string, names map[string]string, tail bool) string {
 	if name := bounded(strings.TrimSpace(names[value]), 64); name != "" {
 		return name
 	}
-	if tail {
-		hex := strings.ReplaceAll(strings.ToLower(value), "-", "")
-		return hex[len(hex)-8:]
-	}
-	return value[:8]
+	// Every stored id is a UUIDv7: its head is a millisecond timestamp, so
+	// ids minted together share their first 8 hex chars. The tail is the
+	// random half — the only short form that tells two entities apart (and
+	// the one the UI's run labels already use).
+	_ = tail
+	hex := strings.ReplaceAll(strings.ToLower(value), "-", "")
+	return hex[len(hex)-8:]
 }
 
 // readableArg is readableID with the entity noun in front: "project
-// 01a1c47a", "run 029e1a20", "workflow review-flow".
+// c599029e", "run 029e1a20", "workflow review-flow".
 func readableArg(key, value string, names map[string]string) string {
 	value = strings.TrimSpace(value)
 	if !uuidID.MatchString(value) {

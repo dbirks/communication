@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// The ids this file's cards talk about. The project's head-8 is 01a1c47a,
-// the pipeline's is 01c2d3e4, the run's tail-8 (the UI's run label) is
-// 029e1a20.
+// The ids this file's cards talk about. Every short id is the TAIL-8 (UUIDv7
+// heads are timestamps shared by ids minted together): project c599029e,
+// pipeline 0000000f, run 029e1a20.
 const (
 	sumProjectID  = "01a1c47a-2a04-7f8c-aac4-b36bc599029e"
 	sumPipelineID = "01c2d3e4-0000-7000-8000-00000000000f"
@@ -22,7 +22,7 @@ func TestActionSummaryRendersUUIDsAsShortIDs(t *testing.T) {
 	got := actionSummary("run.start", map[string]string{
 		"project_id": sumProjectID, "pipeline_id": sumPipelineID,
 	}, nil)
-	want := "Start a run project 01a1c47a · workflow 01c2d3e4"
+	want := "Start a run project c599029e · workflow 0000000f"
 	if got != want {
 		t.Fatalf("run.start summary = %q, want %q", got, want)
 	}
@@ -85,12 +85,12 @@ func TestActionSummaryPrefersNamesCollectedFromReads(t *testing.T) {
 // noun its own key gives.
 func TestReadableArgUnknownIDKeyDerivesItsNoun(t *testing.T) {
 	got := readableArg("team_id", sumProjectID, nil)
-	if got != "team 01a1c47a" {
+	if got != "team c599029e" {
 		t.Fatalf("readableArg(team_id) = %q", got)
 	}
 	// No noun to be had: the short id alone.
 	got = readableArg("reference", sumProjectID, nil)
-	if got != "01a1c47a" {
+	if got != "c599029e" {
 		t.Fatalf("readableArg(reference) = %q", got)
 	}
 }

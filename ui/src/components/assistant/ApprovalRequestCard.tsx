@@ -262,10 +262,16 @@ function GateCard({
 }) {
   const confirmed = !pending && request.state === "confirmed";
   const headerText = pending ? "! NEEDS APPROVAL" : confirmed ? "· CONFIRMED" : "· DISMISSED";
+  // The full id of the entity the action targets: the summary shows a short
+  // id, so this attribute is how a test names THIS card among older ones.
+  const args = approvalArgsOf(request);
+  const ref =
+    args.draft_id ?? args.run_id ?? args.pipeline_id ?? args.project_id ?? args.approval_id ?? "";
 
   return (
     <div
       data-testid="assistant-approval"
+      data-approval-ref={ref || undefined}
       role="group"
       aria-label={`Needs approval: ${request.summary}`}
       className="overflow-hidden px-[10px] py-[8px]"
