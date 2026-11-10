@@ -135,6 +135,38 @@ describe("mapAssistantMessage", () => {
     });
   });
 
+  it("maps the five setup change kinds of CONTRACT §5", () => {
+    // The server records these kinds for the handoff §6 setup tools; the wire
+    // boundary must name them or the transcript drops the row and the change
+    // chip never shows the write that just happened.
+    for (const kind of [
+      "project_create",
+      "repo_add",
+      "assignment_set",
+      "run_cancel",
+      "schedule_create",
+    ] as const) {
+      const row = mapAssistantMessage(
+        wireRow("change", {
+          kind: "change",
+          change_id: `chg-${kind}`,
+          change_kind: kind,
+          target_ref: `project:p-1`,
+          summary: "Created the project Beluga.",
+          undoable: false,
+        }),
+      );
+      expect(row?.payload).toEqual({
+        kind: "change",
+        change_id: `chg-${kind}`,
+        change_kind: kind,
+        target_ref: "project:p-1",
+        summary: "Created the project Beluga.",
+        undoable: false,
+      });
+    }
+  });
+
   it("maps approval rows and drops anything that is too thin to render", () => {
     const request = mapAssistantMessage(
       wireRow("approval_request", {

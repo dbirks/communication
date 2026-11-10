@@ -16,6 +16,7 @@ import ChangeChip from "../components/assistant/ChangeChip";
 import { draftIdFromTargetRef, useAssistantChanges } from "./assistant";
 import { usePostAssistantMessage, useUndoAssistantChange } from "./assistant";
 import { useDraft } from "./pipelines";
+import { queryKeys } from "./queries";
 
 afterEach(cleanup);
 
@@ -226,5 +227,100 @@ describe("assistant mutation invalidation (e2e-p789b)", () => {
     expect(draftIdFromTargetRef("draft:")).toBeNull();
     expect(draftIdFromTargetRef(null)).toBeNull();
     expect(draftIdFromTargetRef(undefined)).toBeNull();
+  });
+});
+
+/** One `change` transcript row of the given kind, as the server writes it. */
+function changeRow(kind: string, targetRef: string) {
+  return {
+    id: `m-${kind}`,
+    kind: "change",
+    payload: {
+      kind: "change",
+      change_id: `chg-${kind}`,
+      change_kind: kind,
+      target_ref: targetRef,
+      summary: "Created the project Beluga.",
+      undoable: false,
+    },
+    created_at: "2026-07-07T00:00:02Z",
+  };
+}
+
+/**
+ * Render a post against the real mutation and answer the POST with
+ * `messages`, then hand back the query keys the success path invalidated.
+ * Handoff §6 step 4 is about what OTHER caches forget after a turn, so the
+ * assertion belongs on `invalidateQueries`, not on the rendered DOM.
+ */
+async function invalidatedKeys(messages: unknown[], body: Record<string, unknown> = {}) {
+  stubFetch({
+    postMessages: { messages, next_cursor: null },
+    changesBody: () => ({ changes: [] }),
+    draftBody: () => ({ id: DRAFT_ID, pipeline_id: "pl-1", version: 1 }),
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const spy = vi.spyOn(queryClient, "invalidateQueries");
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+
+  // `mutateAsync` settles AFTER the mutation's onSuccess handlers run, so
+  // awaiting it means every key the success path invalidated is recorded.
+  let settled: Promise<unknown> = Promise.resolve();
+  function PostHarness() {
+    const post = usePostAssistantMessage();
+    return (
+      <button
+        data-testid="post-btn"
+        onClick={() => {
+          settled = post
+            .mutateAsync({ conversationId: CONVERSATION_ID, body })
+            .catch(() => undefined);
+        }}
+      >
+        post
+      </button>
+    );
+  }
+
+  render(<PostHarness />, { wrapper });
+  fireEvent.click(screen.getByTestId("post-btn"));
+  await settled;
+  return spy.mock.calls
+    .map((args) => (args[0] as { queryKey?: readonly unknown[] })?.queryKey)
+    .filter((key): key is readonly unknown[] => Array.isArray(key));
+}
+
+describe("assistant mutation refreshes the sidebar (handoff §6 step 4)", () => {
+  it("a turn carrying a project_create change invalidates the projects list", async () => {
+    const keys = await invalidatedKeys([changeRow("project_create", "project:p-new")]);
+    expect(keys).toContainEqual(queryKeys.projectList);
+    // The new project's own subtree (repos, assignments, runs) too — its
+    // `target_ref` names the project directly.
+    expect(keys).toContainEqual(queryKeys.project("p-new"));
+  });
+
+  it("a repo_add change refreshes the project the turn was asked on", async () => {
+    const keys = await invalidatedKeys([changeRow("repo_add", "repo:r-9")], {
+      text: "connect the repo",
+      context: { route: "/p/p-7", project_id: "p-7" },
+    });
+    expect(keys).toContainEqual(queryKeys.projectList);
+    expect(keys).toContainEqual(queryKeys.project("p-7"));
+  });
+
+  it("a run_cancel change refreshes the run the change names", async () => {
+    const keys = await invalidatedKeys([changeRow("run_cancel", "run:r-3")]);
+    expect(keys).toContainEqual(queryKeys.projectList);
+    expect(keys).toContainEqual(queryKeys.run("r-3"));
+  });
+
+  it("a draft-only turn touches the draft and leaves the project list alone", async () => {
+    const keys = await invalidatedKeys([changeRow("draft_edit", `draft:${DRAFT_ID}`)]);
+    expect(keys).toContainEqual(queryKeys.draft(DRAFT_ID));
+    expect(keys).not.toContainEqual(queryKeys.projectList);
   });
 });

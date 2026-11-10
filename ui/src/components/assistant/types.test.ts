@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_TRUST_LEVEL, TRUST_LEVELS, changeKindGlyph, trustPillLabel } from "./types";
+import {
+  DEFAULT_TRUST_LEVEL,
+  TRUST_LEVELS,
+  changeKindGlyph,
+  changeKindLabel,
+  trustPillLabel,
+} from "./types";
 
 describe("types (ADR-0050 mirror)", () => {
   it("lists exactly the three trust levels, with ask_risky first-class", () => {
@@ -37,8 +43,38 @@ describe("types (ADR-0050 mirror)", () => {
       "run_retry",
       "approval_decision",
       "publish",
+      "project_create",
+      "repo_add",
+      "assignment_set",
+      "run_cancel",
+      "schedule_create",
     ] as const) {
       expect(changeKindGlyph(kind).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("names the five setup change kinds with the short labels of CONTRACT §5", () => {
+    expect(changeKindLabel("project_create")).toBe("Created project");
+    expect(changeKindLabel("repo_add")).toBe("Connected repository");
+    expect(changeKindLabel("assignment_set")).toBe("Assigned workflow");
+    expect(changeKindLabel("run_cancel")).toBe("Cancelled run");
+    expect(changeKindLabel("schedule_create")).toBe("Created schedule");
+    // The ADR-0050 set keeps its own words.
+    expect(changeKindLabel("draft_edit")).toBe("Edited draft");
+    for (const kind of [
+      "draft_edit",
+      "navigate",
+      "run_start",
+      "run_retry",
+      "approval_decision",
+      "publish",
+      "project_create",
+      "repo_add",
+      "assignment_set",
+      "run_cancel",
+      "schedule_create",
+    ] as const) {
+      expect(changeKindLabel(kind).length).toBeGreaterThan(0);
     }
   });
 });

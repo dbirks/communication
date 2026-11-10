@@ -24,9 +24,12 @@ import type {
   AssistantMessagePayload,
   AssistantQuestionOption as LocalOption,
   AssistantToolCall as LocalToolCall,
+  AssistantToolCallJudge,
   AssistantUserPayload,
   ChangeKind,
 } from "../components/assistant/types";
+
+export type { AssistantToolCallJudge } from "../components/assistant/types";
 
 export type AssistantAsk = components["schemas"]["AssistantAsk"];
 export type AssistantAnswer = components["schemas"]["AssistantAnswer"];
@@ -147,65 +150,36 @@ export function useSystemStatus(enabled = true) {
 }
 
 // ---------------------------------------------------------------------------
-// Handoff A3–A7 wire extras. `components/assistant/types.ts` is the ADR-0050
-// transcript shape and is owned by another task of this handoff, so the NEW
-// optional payload fields the handoff adds ride extension interfaces HERE, at
-// the wire boundary: the mapper populates them, and the narrow accessors below
-// are the only place a component reads through them. Fold them into the base
-// interfaces when that file next opens.
-
-/** CONTRACT §3: what the judge made of one call (`absent` = not consulted). */
-export type AssistantToolCallJudge = "allowed" | "asked" | "unavailable";
-
-export interface AssistantToolCallWire extends LocalToolCall {
-  judge?: AssistantToolCallJudge;
-}
-
-/** CONTRACT §2: the item the answer used the page for, already stripped of its `Assumed:` line. */
-export interface AssistantAnswerPayloadWire extends Omit<AssistantAnswerPayload, "tool_calls"> {
-  assumed?: string | null;
-  tool_calls: AssistantToolCallWire[];
-}
-
-/** CONTRACT §4: the turn was dictated, not typed. */
-export interface AssistantUserPayloadWire extends AssistantUserPayload {
-  spoken?: boolean;
-}
-
-/** CONTRACT §3 + §5: why the gate stopped, and the bounded args it names. */
-export interface AssistantApprovalPayloadWire extends AssistantApprovalRequestPayload {
-  reason?: string | null;
-  args?: Record<string, string>;
-}
+// Handoff A3–A7 wire extras. The optional payload fields the handoff adds
+// (CONTRACT §2–§5: `assumed`, `spoken`, `judge`, `reason`, `args`) live on the
+// base interfaces in `components/assistant/types.ts`; the accessors below stay
+// because components read through them, and they keep validating at runtime —
+// a wire row that carries a blank or wrongly-typed member reads as absent.
 
 /** The answer's assumed item (CONTRACT §2), or null when the answer used nothing. */
 export function assumedOf(payload: AssistantAnswerPayload): string | null {
-  const assumed = (payload as AssistantAnswerPayloadWire).assumed;
-  return typeof assumed === "string" && assumed.length > 0 ? assumed : null;
+  return typeof payload.assumed === "string" && payload.assumed.length > 0 ? payload.assumed : null;
 }
 
 /** True when the person dictated this turn (CONTRACT §4). */
 export function spokenOf(payload: AssistantUserPayload): boolean {
-  return (payload as AssistantUserPayloadWire).spoken === true;
+  return payload.spoken === true;
 }
 
 /** What the judge said about one call, or null when it was not consulted. */
-export function judgeOf(
-  call: AssistantToolCallWire | LocalToolCall,
-): AssistantToolCallJudge | null {
-  const judge = (call as AssistantToolCallWire).judge;
+export function judgeOf(call: LocalToolCall): AssistantToolCallJudge | null {
+  const judge = call.judge;
   return judge === "allowed" || judge === "asked" || judge === "unavailable" ? judge : null;
 }
 
 /** The approval's own reason (CONTRACT §3), or null when the row carries none. */
 export function reasonOf(payload: AssistantApprovalRequestPayload): string | null {
-  const reason = (payload as AssistantApprovalPayloadWire).reason;
-  return typeof reason === "string" && reason.length > 0 ? reason : null;
+  return typeof payload.reason === "string" && payload.reason.length > 0 ? payload.reason : null;
 }
 
 /** The bounded string args the gated call named (CONTRACT §5 proposal rows). */
 export function approvalArgsOf(payload: AssistantApprovalRequestPayload): Record<string, string> {
-  const args = (payload as AssistantApprovalPayloadWire).args;
+  const args = payload.args;
   if (!args || typeof args !== "object") return {};
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(args)) {
@@ -224,6 +198,13 @@ export const assistantQueryKeys = {
   changesAll: ["assistant", "changes"] as const,
 };
 
+/** The id a change's `target_ref` names behind one prefix (`project` →
+ * `project:p-1`), or null when it names nothing or names it empty. */
+function targetRefId(targetRef: string | null | undefined, prefix: string): string | null {
+  const match = new RegExp(`^${prefix}:(.+)$`).exec(targetRef ?? "");
+  return match && match[1].length > 0 ? match[1] : null;
+}
+
 /**
  * The draft id a change's `target_ref` names (`draft:d-1`), or null when it
  * names nothing the draft cache is keyed on (`run:r-1`, `pipeline:p-1`). An
@@ -231,8 +212,7 @@ export const assistantQueryKeys = {
  * draft must refetch, not wait for a remount (e2e-p789b).
  */
 export function draftIdFromTargetRef(targetRef: string | null | undefined): string | null {
-  const match = /^draft:(.+)$/.exec(targetRef ?? "");
-  return match && match[1].length > 0 ? match[1] : null;
+  return targetRefId(targetRef, "draft");
 }
 
 /** One page of the caller's conversations, newest `last_message_at` first. */
@@ -301,14 +281,39 @@ export function usePostAssistantMessage() {
     // confirmed approval (Retry), a no_ask / ask_risky draft edit on a plain
     // post. The change log must not wait for a remount, and a draft edit
     // must refetch the draft it wrote (e2e-p789b).
-    onSuccess: (rows, { conversationId }) => {
+    onSuccess: (rows, { conversationId, body }) => {
       void queryClient.invalidateQueries({
         queryKey: assistantQueryKeys.changes(conversationId),
       });
+      // Handoff §6 step 4 — "the project appears in the sidebar": a setup
+      // change (project_create, repo_add, assignment_set, run_cancel,
+      // schedule_create — CONTRACT §5) wrote something the sidebar and the
+      // project pages read, so those caches forget here rather than on the
+      // next navigation. The change row names a project in its `target_ref`
+      // only for `project_create`; the turn's own page context names the
+      // project the other four acted on.
+      const contextProjectId = strOrNone(body?.context?.project_id);
+      let refreshProjectList = false;
       for (const row of rows) {
         if (row.payload.kind !== "change") continue;
-        const draftId = draftIdFromTargetRef(row.payload.target_ref);
+        const changeKind = row.payload.change_kind;
+        const targetRef = row.payload.target_ref;
+        const draftId = draftIdFromTargetRef(targetRef);
         if (draftId) void queryClient.invalidateQueries({ queryKey: queryKeys.draft(draftId) });
+        if (!PROJECT_REFRESH_CHANGE_KINDS.includes(changeKind)) continue;
+        refreshProjectList = true;
+        // `["project", id]` is the prefix every project-scoped read lives
+        // under: repos, assignments, runs, members (queries.ts "Cache-key
+        // map"), so the one call covers the project page and its tabs.
+        const projectId = targetRefId(targetRef, "project") ?? contextProjectId;
+        if (projectId) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+        }
+        const runId = targetRefId(targetRef, "run");
+        if (runId) void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
+      }
+      if (refreshProjectList) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.projectList });
       }
     },
   });
@@ -373,9 +378,28 @@ const CHANGE_KINDS: readonly string[] = [
   "run_retry",
   "approval_decision",
   "publish",
+  // Handoff §6 / CONTRACT §5: the setup writes. None of them is undoable.
+  "project_create",
+  "repo_add",
+  "assignment_set",
+  "run_cancel",
+  "schedule_create",
 ];
 
 const APPROVAL_STATES: readonly string[] = ["pending", "confirmed", "dismissed"];
+
+/**
+ * The change kinds that wrote outside the conversation — the five setup tools
+ * of handoff §6 (CONTRACT §5). Their rows are the signal to forget the
+ * sidebar's project list and the project pages (repos, assignments, runs).
+ */
+const PROJECT_REFRESH_CHANGE_KINDS: readonly ChangeKind[] = [
+  "project_create",
+  "repo_add",
+  "assignment_set",
+  "run_cancel",
+  "schedule_create",
+];
 
 const CONTEXT_ENTITY_KINDS: readonly string[] = [
   "pipeline",
@@ -408,9 +432,9 @@ function linksOf(value: unknown): LocalLink[] {
   return links;
 }
 
-function toolCallsOf(value: unknown): AssistantToolCallWire[] {
+function toolCallsOf(value: unknown): LocalToolCall[] {
   if (!Array.isArray(value)) return [];
-  const calls: AssistantToolCallWire[] = [];
+  const calls: LocalToolCall[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as Record<string, unknown>;
@@ -419,7 +443,7 @@ function toolCallsOf(value: unknown): AssistantToolCallWire[] {
     // ADR-0050: the server supplies the summary; tolerate a call that
     // lacks one (older turns) by falling back to the tool name so the
     // "used N tools" disclosure never drops a real call.
-    const call: AssistantToolCallWire = {
+    const call: LocalToolCall = {
       name,
       summary: strOrNone(entry.summary) ?? name,
       ok: entry.ok,
@@ -495,7 +519,7 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
     case "user": {
       const text = strOrNone(raw.text);
       if (text === null) return null;
-      const row: AssistantUserPayloadWire = {
+      const row: AssistantUserPayload = {
         kind: "user",
         text,
         context: contextOf(raw.context),
@@ -508,7 +532,7 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
     case "assistant": {
       const answer = strOrNone(raw.answer_markdown);
       if (answer === null) return null;
-      const row: AssistantAnswerPayloadWire = {
+      const row: AssistantAnswerPayload = {
         kind: "assistant",
         turn_id: strOrNone(raw.turn_id),
         answer_markdown: answer,
@@ -566,7 +590,7 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
       const state = strOrNone(raw.state);
       if (action === null || summary === null || state === null || !APPROVAL_STATES.includes(state))
         return null;
-      const row: AssistantApprovalPayloadWire = {
+      const row: AssistantApprovalRequestPayload = {
         kind: "approval_request",
         turn_id: strOrNone(raw.turn_id),
         action,

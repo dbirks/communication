@@ -624,26 +624,35 @@ function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"]
       </summary>
       <ul className="m-0 mt-[4px] list-none space-y-[2px] p-0">
         {calls.map((call, index) => (
-          <li
-            key={`${call.name}-${index}`}
-            data-testid="assistant-tool-row"
-            className="flex items-baseline gap-[6px] font-mono text-[10.5px] text-muted"
-          >
-            <span aria-hidden="true">{call.ok ? "✓" : "×"}</span>
-            <span className="flex-shrink-0 truncate">{`used ${call.name}`}</span>
-            {judgeOf(call) ? (
-              <span data-testid="assistant-tool-judge" className="flex-shrink-0 text-faint">
-                {` · ${JUDGE_WORD[judgeOf(call) as "allowed" | "asked" | "unavailable"]}`}
-              </span>
-            ) : null}
-            <span style={{ flex: "1 1 auto", minWidth: 0 }}>{call.summary}</span>
-            {!call.ok && call.reason ? (
-              <span className="flex-shrink-0 text-st-failed-tag-fg">{call.reason}</span>
-            ) : null}
-          </li>
+          <ToolRow key={`${call.name}-${index}`} call={call} />
         ))}
       </ul>
     </details>
+  );
+}
+
+/** One line of the disclosure — the judge's verdict rides the folded
+ * `AssistantToolCall.judge` field (CONTRACT §3), read through the accessor so
+ * a wire row carrying anything else reads as no verdict. */
+function ToolRow({ call }: { call: AssistantAnswerPayload["tool_calls"][number] }) {
+  const judge = judgeOf(call);
+  return (
+    <li
+      data-testid="assistant-tool-row"
+      className="flex items-baseline gap-[6px] font-mono text-[10.5px] text-muted"
+    >
+      <span aria-hidden="true">{call.ok ? "✓" : "×"}</span>
+      <span className="flex-shrink-0 truncate">{`used ${call.name}`}</span>
+      {judge ? (
+        <span data-testid="assistant-tool-judge" className="flex-shrink-0 text-faint">
+          {` · ${JUDGE_WORD[judge]}`}
+        </span>
+      ) : null}
+      <span style={{ flex: "1 1 auto", minWidth: 0 }}>{call.summary}</span>
+      {!call.ok && call.reason ? (
+        <span className="flex-shrink-0 text-st-failed-tag-fg">{call.reason}</span>
+      ) : null}
+    </li>
   );
 }
 
