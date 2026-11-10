@@ -195,12 +195,19 @@ describe("SetupChecklist", () => {
     const action = screen.getByTestId("assistant-setup-action");
     expect(card.contains(action)).toBe(true);
     expect(action.className).toContain("shrink-0");
-    // Every row is the same single-line box: one shared padding class, no
-    // per-row height, nothing that could grow one row past the others.
+    // Every row is the same single-line box: one shared padding class and the
+    // SAME class list on every row — no per-row height, nothing that could
+    // grow one row past the others (the only height rule is the shared
+    // in-<main> phone floor every row carries alike).
+    const classLists = new Set(rows().map((candidate) => candidate.className));
+    expect(classLists.size, [...classLists].join(" | ")).toBe(1);
     for (const candidate of rows()) {
       expect(candidate.className, candidate.textContent).toContain("items-center");
       expect(candidate.className, candidate.textContent).toContain("py-[5px]");
-      expect(candidate.className, candidate.textContent).not.toMatch(/h-\[/);
+      expect(
+        candidate.className.replace("max-[559px]:[main_&]:min-h-[44px]", ""),
+        candidate.textContent,
+      ).not.toMatch(/h-\[/);
     }
   });
 

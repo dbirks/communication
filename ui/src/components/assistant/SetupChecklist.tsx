@@ -196,7 +196,11 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
             key={`${row.label}-${row.meta ?? ""}`}
             data-testid="assistant-setup-row"
             data-state={row.state}
-            className="flex items-center gap-[8px] rounded-[3px] px-[6px] py-[5px]"
+            // Inside <main> (the full page) at phone width a row's action is a
+            // 44px touch target (the APP-SHELL-PHONE floor), so EVERY row takes
+            // that height there and the card stays even; the popover and side
+            // panel (outside <main>) keep the design's ~28px rows.
+            className="flex items-center gap-[8px] rounded-[3px] px-[6px] py-[5px] max-[559px]:[main_&]:min-h-[44px]"
           >
             {/* Design L176–195: a 16px ROUNDED-SQUARE tile with a tinted
                 fill (done / waiting / quiet), never a round circle. */}
