@@ -18,29 +18,36 @@ Rules:
 Finding (2026-11-10): the assistant returns 502 `malformed_completion`. The
 model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 `communication-worker-secrets`).
-- [ ] Set COMMUNICATION_ASSISTANT_MODEL and COMMUNICATION_MODEL_CHAT_MODELS to
+- [x] Set COMMUNICATION_ASSISTANT_MODEL and COMMUNICATION_MODEL_CHAT_MODELS to
       `qwen3-8-flash-next` (online) in `apps/communication/communication.yaml`.
-- [ ] Verify that the worker key authenticates. If it doesn't, re-encrypt
+      Evidence: home-k8s d0fcb5d, applied by Flux (apps kustomization at d0fcb5d).
+- [x] Verify that the worker key authenticates. If it doesn't, re-encrypt
       LLMC_API_KEY (from ~/.bashrc) into `communication-worker-secrets` without
-      printing it.
-- [ ] An assistant turn succeeds in the deployed app (screenshot).
-- [ ] Note for the user: the ASR model is `david-birks/qwen3-asr-1-7b` (alias
-      `qwen3-asr-1-7b`).
+      printing it. Evidence: 2026-11-11, the cluster key returned HTTP 200 on
+      chat/completions for qwen3-8-flash-next (key read into a shell var, never printed).
+- [x] An assistant turn succeeds in the deployed app (screenshot).
+      Evidence: "How many workers are online right now?" → "1 worker is online right now",
+      screenshot /tmp/claude-1000/-home-david-dev-eg-llm-collective/03ca2e2d-7f08-4df0-8426-d927c41b5773/scratchpad/side.png.
+- [x] Note for the user: the ASR model is `david-birks/qwen3-asr-1-7b` (alias
+      `qwen3-asr-1-7b`). Also wired as COMMUNICATION_SPEECH_MODEL, with a decision model
+      (qwen3-8-flash-next): home-k8s eaa77a2.
 - [ ] Make the assistant's failure mode clearer: an offline model should
       surface as "model unavailable", not `malformed_completion`.
 
 ## 2. Assistant UI
 - [ ] When a thread opens in the sidebar, its top bar is flush with the top.
-- [ ] No-decision-model state: remove "fixed table decides" and write copy
-      that makes sense.
-- [ ] "don't ask" uses the same capitalization as its sibling controls.
+- [x] No-decision-model state: remove "fixed table decides" and write copy
+      that makes sense. Evidence: f0a14e3 ("built-in rules flag risky changes"), SetupChecklist.test.tsx.
+- [x] "don't ask" uses the same capitalization as its sibling controls. Evidence: f0a14e3
+      (pills read "Ask every change / Ask when risky / Don't ask"), types.test.ts.
 - [ ] Full screen collapses the far-left nav by default, and leaving full
       screen restores it.
 
 ## 3. Search (CommandPalette)
-- [ ] The box is vertically centered.
-- [ ] Clicking outside the box closes it.
-- [ ] Escape closes it wherever focus is.
+- [x] The box is vertically centered. Evidence: e9624ea.
+- [x] Clicking outside the box closes it. Evidence: e9624ea, CommandPalette.test.tsx
+      "closes on a press on the dimmed backdrop…".
+- [x] Escape closes it wherever focus is. Evidence: e9624ea, same test (Esc on body).
 
 ## 4. Catch-up
 - [ ] Interrogate the prompt and the tool set, then rewrite them so the output
@@ -60,10 +67,10 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 ## 6. Workflows page and templates
 - [ ] Give the Workflows page a visual and UX pass.
 - [ ] Template: Matt Pocock's skills preloaded (github.com/mattpocock/skills).
-- [ ] Template: poteto's skills packaged through APM ("P stack" means
-      github.com/poteto, e.g. noodle, brainmaxxing, how and
-      verification-skill-example). Not gstack. Confirm which repo with the
-      user if this is unclear.
+- [ ] Template: poteto's **pstack** packaged through APM. Upstream:
+      github.com/cursor/plugins/tree/main/pstack (Lauren Tan / @poteto,
+      Cursor). Open Pstack (github.com/ericlitman/open-pstack) is the
+      Claude Code/Codex translation to borrow from. Not gstack.
 - [ ] Template: implement, then review with Codex.
 - [ ] Wire the Claude subscription through the existing OAuth token
       (ADR-0040).
