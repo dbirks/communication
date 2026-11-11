@@ -434,3 +434,24 @@ Talos v1.13.6):
 
 Honest status: the home-cluster click-through now passes **6/6** — steps 1–4 and step 5
 (claude `agent.acp`) all pass; no open GAP.
+
+## Codex login (one time)
+
+The worker mounts a persistent `CODEX_HOME` at `/harness/codex` (home-k8s PVC
+`communication-codex-home`). It starts empty, so the `codex` launcher fails
+closed until someone logs in once with the device flow. Codex then writes its
+refreshed `auth.json` back to that volume.
+
+```
+kubectl -n default exec -it deploy/communication-worker -c worker -- \
+  env CODEX_HOME=/harness/codex \
+  node /usr/local/lib/node_modules/@agentclientprotocol/codex-acp/node_modules/@openai/codex/bin/codex.js \
+  login --device-auth
+```
+
+Open the printed URL, enter the code, and approve it with the ChatGPT account
+whose subscription the agents should use. Don't copy a laptop's `auth.json` in.
+ChatGPT refresh tokens are single-use, so two copies of one login burn each
+other (docs/research/2026-11-apm-collections-and-harnesses.md §4). The agent
+egress allowlist already admits `chatgpt.com`, `api.openai.com` and
+`auth.openai.com`.
