@@ -15,7 +15,16 @@ import (
 
 // DefaultTimeout arms a request when the caller's context carries no deadline.
 // A palette keystroke must not hang a browser forever.
-const DefaultTimeout = 30 * time.Second
+//
+// Deployed finding F-4 (docs/testing/assistant-exercise-2026-11-11.md): the
+// deadline arms ONE completion, not the turn, and a fan-out turn (project.list
+// → run.list → approval.pending → workflow.list …) can spend more than half a
+// minute on the last call — prompt 5 died at 33 s while the same ask retried in
+// 13 s. 60 s is the doubled floor the exercise asked for; an operator who runs a
+// slower model sets COMMUNICATION_ASSISTANT_TIMEOUT (cmd/communication/serve.go)
+// and the lab already ships 180s. There is no turn-level deadline above this
+// one, so a turn is bounded by timeout x model calls.
+const DefaultTimeout = 60 * time.Second
 
 // BodyLimit caps the endpoint response this broker will buffer (a completion
 // is one JSON object, not a stream) — the same reasoning as the worker's

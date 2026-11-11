@@ -481,6 +481,94 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
     fireEvent.click(within(line).getByTestId("assistant-error-link"));
     await waitFor(() => expect(seen[seen.length - 1]).toBe("/settings/operations"));
   });
+
+  /**
+   * F-5 (docs/testing/assistant-exercise-2026-11-11.md): a mid-turn refusal read
+   * `assistant: request body carries secret-shaped material. … Your question was
+   * not sent — send it again.` — the server's own Go error string, with a clause
+   * that was untrue of a turn whose earlier tools had already run. Every stable
+   * cause now answers with ITS one sentence (`ASSISTANT_FAILURE_LINES` in
+   * api/client.ts), and no raw `assistant: …` string reaches the thread.
+   */
+  it.each([
+    [
+      "secret_in_request",
+      "assistant: request body carries secret-shaped material",
+      "That request carried something that looks like a secret, so it wasn't sent. " +
+        "Rephrase without credentials and try again.",
+    ],
+    [
+      "secret_in_response",
+      "assistant: answer carries secret-shaped material",
+      "The answer looked like it contained a secret, so it was withheld.",
+    ],
+    [
+      "malformed_completion",
+      "assistant: the model answered something broken",
+      "The model's answer didn't make sense, so it wasn't shown. Try again.",
+    ],
+    [
+      "bad_model_response",
+      "assistant: the model answered something broken",
+      "The model's answer didn't make sense, so it wasn't shown. Try again.",
+    ],
+    [
+      "model_timeout",
+      "no completion from llm-collective.e-gineering.com within 1m0s",
+      "The model took too long to answer. Try again.",
+    ],
+    [
+      // A cause the map has never heard of still reads as one sentence.
+      "recap_block_unencodable",
+      "assistant: the recap block cannot be encoded",
+      "The assistant could not answer. Try again.",
+    ],
+  ])(
+    "the %s cause answers with its own sentence, never the raw error",
+    async (cause, detail, line) => {
+      stubFetch(() =>
+        json(
+          {
+            type: "https://communication.dev/errors/assistant-degraded",
+            title: "Assistant unavailable",
+            status: 400,
+            detail,
+            degraded: cause,
+          },
+          400,
+        ),
+      );
+      renderPopover();
+      act(() => openAssistantPopover());
+      const input = await screen.findByTestId("assistant-composer-input");
+      fireEvent.change(input, { target: { value: "how do I add a github token?" } });
+      fireEvent.click(screen.getByTestId("assistant-send"));
+      const drawn = await screen.findByTestId("assistant-error");
+      // The whole line is the sentence: no `assistant:` prefix, no clause
+      // appended over it.
+      expect(drawn.textContent).toBe(line);
+      expect(drawn.textContent).not.toMatch(/assistant[:：]/i);
+    },
+  );
+
+  it("a refusal whose raw detail is the whole problem says the plain default, not the Go string", async () => {
+    // No `degraded` at all (an older replica, or a proxy that rewrote the body):
+    // the detail is the server's error string, and it is still not shown.
+    stubFetch(() =>
+      json(
+        { type: "about:blank", title: "Bad Request", status: 400, detail: "assistant: oops" },
+        400,
+      ),
+    );
+    renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: "what is failing?" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    const drawn = await screen.findByTestId("assistant-error");
+    expect(drawn.textContent).not.toContain("assistant: oops");
+    expect(drawn.textContent).toContain("The assistant could not answer.");
+  });
 });
 
 /** 2f acceptance review: `Make a workflow…` opens the assistant PANEL at its
@@ -1111,7 +1199,13 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     await waitFor(() => expect(input.value).toBe(""));
   });
 
-  it("a transient failure says the question was not sent and keeps the ask", async () => {
+  /**
+   * F-5 (docs/testing/assistant-exercise-2026-11-11.md): the copy for a
+   * per-completion timeout changed from the generic "question was not sent"
+   * line to the cause's own sentence — the ask still comes back into the
+   * composer, which is what this test is really about.
+   */
+  it("a timeout says the model took too long, in one sentence, and keeps the ask", async () => {
     const { input } = await armedComposer(
       stubFetch(() =>
         json(
@@ -1129,8 +1223,9 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     );
     fireEvent.click(screen.getByTestId("assistant-send"));
     const line = await screen.findByTestId("assistant-error");
-    expect(line.textContent).toContain("Your question was not sent");
-    expect(line.textContent).toContain("send it again");
+    expect(line.textContent).toBe("The model took too long to answer. Try again.");
+    // Never the server's own error string.
+    expect(line.textContent).not.toMatch(/assistant:/i);
     await waitFor(() => expect(input.value).toBe(ASK));
   });
 
@@ -1353,7 +1448,8 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     const bubble = screen.getByTestId("assistant-msg-user");
     expect(bubble.textContent).toContain(text);
     expect(bubble.contains(line)).toBe(true);
-    expect(line.textContent).toContain("Your question was not sent — send it again.");
+    // F-5: the timeout cause now says its own sentence under the message.
+    expect(line.textContent).toBe("The model took too long to answer. Try again.");
     expect(screen.queryByTestId("assistant-thinking")).toBeNull();
     // assistant-lost-ask still holds: the composer also holds the words.
     await waitFor(() =>

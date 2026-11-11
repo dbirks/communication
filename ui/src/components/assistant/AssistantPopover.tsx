@@ -57,14 +57,23 @@ import {
 } from "../Shell";
 import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
-import { assistantTransientErrorLine, problemOf } from "../../api/client";
 import {
+  ASSISTANT_FAILURE_DEFAULT_LINE,
+  assistantFailureLine,
+  assistantTransientErrorLine,
+  isRawAssistantErrorText,
+  problemOf,
+} from "../../api/client";
+import {
+  ASSISTANT_NOT_CONFIGURED_LINE,
   failureLineOf,
   failureLineRoute,
   isModelUnavailable,
   MODEL_UNAVAILABLE,
   MODEL_UNAVAILABLE_LINE,
   MODEL_UNAVAILABLE_LINK_LABEL,
+  STEP_CAP_CAUSES,
+  STEP_CAP_LINE,
   type FailureLine,
 } from "./failureCopy";
 import {
@@ -287,9 +296,6 @@ function contextLabelOf(pathname: string): string {
   return sectionOf(pathname);
 }
 
-/** The degraded causes that mean “the turn ran out of its step budget”. */
-const STEP_CAP_CAUSES: readonly string[] = ["model_call_cap_exceeded", "tool_cap_exceeded"];
-
 /**
  * One honest line for a failed turn (no modal; the panel stays usable).
  *
@@ -299,10 +305,18 @@ const STEP_CAP_CAUSES: readonly string[] = ["model_call_cap_exceeded", "tool_cap
  * cause rather than the server's internal cap phrasing. `failed="decision"`
  * is an approval Retry/Not-now round-trip: the pending card stays put, so the
  * line names the API's reason and says nothing about a lost question.
+ *
+ * Deployed finding F-5 (docs/testing/assistant-exercise-2026-11-11.md): a
+ * mid-turn refusal used to print the server's Go error string —
+ * `assistant: request body carries secret-shaped material. … Your question was
+ * not sent — send it again.` — with a clause that was untrue of a turn whose
+ * earlier tools had already run. So a cause the server names in
+ * `ASSISTANT_FAILURE_LINES` is answered with ITS one sentence and nothing is
+ * appended to it, and a raw `assistant: …` detail is never shown at all.
  */
 function failureLine(error: unknown, failed: "question" | "decision" = "question"): string {
   if (assistantNotConfigured(error)) {
-    return "The assistant isn't configured on this server — your question was not sent.";
+    return ASSISTANT_NOT_CONFIGURED_LINE;
   }
   // Deployed finding 2026-11-11: with the model offline the ask used to read as
   // a broken answer. It is not one, and a second ask will not fix it, so this
@@ -311,14 +325,28 @@ function failureLine(error: unknown, failed: "question" | "decision" = "question
     return MODEL_UNAVAILABLE_LINE;
   }
   if (failed === "question" && STEP_CAP_CAUSES.includes(degradedOf(error) ?? "")) {
-    return "The assistant hit its step limit before answering — nothing was saved; send again.";
+    return STEP_CAP_LINE;
+  }
+  // F-5: a stable cause the server names is answered by ITS one sentence, and
+  // nothing is bolted on after it — each of them already says whether the ask
+  // went out and what to do next. A raw `assistant: …` detail never reaches
+  // the screen at all.
+  const causeLine = assistantFailureLine(error);
+  if (causeLine) return causeLine;
+  const transient = assistantTransientErrorLine(error);
+  if (transient) {
+    return failed === "decision"
+      ? transient
+      : `${transient} Your question was not sent — send it again.`;
   }
   const problem = problemOf(error);
-  const base =
-    assistantTransientErrorLine(error) ||
-    problem.detail ||
-    problem.title ||
-    "The assistant could not answer.";
+  // F-5: a raw internal error string (`assistant: …`) is never the person's
+  // sentence. With the detail suppressed there is nothing left to quote, so the
+  // plain default stands in its place.
+  if (isRawAssistantErrorText(problem.detail ?? "")) {
+    return ASSISTANT_FAILURE_DEFAULT_LINE;
+  }
+  const base = problem.detail || problem.title || "The assistant could not answer.";
   if (failed === "decision") return base;
   // A failed turn stores nothing (ADR-0034): say so plainly, and that the ask
   // can go again — the composer holds it (assistant-lost-ask).

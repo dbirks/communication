@@ -7,6 +7,8 @@
  * - `X-CSRF-Token` (the token from `GET /api/v1/me`) on every mutation.
  * - `application/problem+json` bodies become a typed `ApiError`.
  * - The `X-Communication-Replica` response header is recorded for the UI badge.
+ * - An assistant failure is read by its stable `degraded` cause (F-5): a raw
+ *   `assistant: …` error string is never the words on screen.
  */
 import type { components } from "./schema";
 import { setReplicaName } from "./replica";
@@ -99,8 +101,87 @@ export function assistantTransientErrorLine(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null;
   const degraded = error.degraded;
   if (degraded !== "model_unreachable" && degraded !== "model_timeout") return null;
-  const detail = error.detail ? ` ${error.detail}` : "";
+  // F-5: the server's own detail is quoted only when it reads as a sentence.
+  // A raw Go error string (`assistant: …`) is never put in front of a person.
+  const detail = error.detail && !isRawAssistantErrorText(error.detail) ? ` ${error.detail}` : "";
   return `The assistant's model is unavailable right now — try again.${detail}`;
+}
+
+/**
+ * One plain sentence per stable assistant failure cause (deployed finding F-5,
+ * docs/testing/assistant-exercise-2026-11-11.md).
+ *
+ * A mid-turn refusal used to reach the thread as the server's own Go error
+ * string — `assistant: request body carries secret-shaped material. … Your
+ * question was not sent — send it again.` — which said nothing a person could
+ * act on and, for a turn whose earlier tools had already run, said something
+ * untrue. The `degraded` code is the stable contract (`assistant.Failed*` /
+ * api/openapi.yaml's `AssistantProblem.degraded`), so the words are keyed off
+ * the code and the raw detail never renders.
+ *
+ * `model_unavailable`, `assistant_not_configured` and the step caps keep their
+ * existing lines (`failureCopy.ts`, `STEP_CAP_CAUSES`): those are the causes
+ * whose fix lives somewhere other than the next ask.
+ */
+export const ASSISTANT_FAILURE_LINES: Record<string, string> = {
+  secret_in_request:
+    "That request carried something that looks like a secret, so it wasn't sent. Rephrase without credentials and try again.",
+  secret_in_response: "The answer looked like it contained a secret, so it was withheld.",
+  malformed_completion: "The model's answer didn't make sense, so it wasn't shown. Try again.",
+  // The pre-rename spelling of the same cause, kept so an older replica's
+  // answer still reads as a sentence.
+  bad_model_response: "The model's answer didn't make sense, so it wasn't shown. Try again.",
+  model_timeout: "The model took too long to answer. Try again.",
+  // Same sentence for the two other spellings of "it did not answer in time".
+  timeout: "The model took too long to answer. Try again.",
+  upstream_timeout: "The model took too long to answer. Try again.",
+};
+
+/** The line for a failed assistant turn that named no cause the map knows. */
+export const ASSISTANT_FAILURE_DEFAULT_LINE = "The assistant could not answer. Try again.";
+
+/**
+ * The causes another surface already says in its own words, because their fix
+ * is not a second ask: `assistant_not_configured` and `model_unavailable` name
+ * the Operations page, the two step caps say nothing was saved, and
+ * `model_unreachable` is the retry line of `assistantTransientErrorLine`. They
+ * are excluded from the default above so a caller keeps those sentences.
+ */
+const ASSISTANT_CAUSES_SAID_ELSEWHERE = new Set([
+  "assistant_not_configured",
+  "model_unavailable",
+  "model_call_cap_exceeded",
+  "tool_cap_exceeded",
+  "model_unreachable",
+  // The person's own words broke a stated rule (empty, over the length cap);
+  // the server's detail IS the actionable sentence, so it is not hidden behind
+  // a generic one.
+  "question_invalid",
+]);
+
+/**
+ * The sentence this error's stable cause earns: a mapped one where the map has
+ * it, the plain default for any other cause the server named, and null when the
+ * failure named no cause (a conflict on an approval card is not an assistant
+ * breakdown) or named one said better elsewhere.
+ */
+export function assistantFailureLine(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const cause = error.degraded;
+  if (!cause) return null;
+  const mapped = ASSISTANT_FAILURE_LINES[cause];
+  if (mapped) return mapped;
+  return ASSISTANT_CAUSES_SAID_ELSEWHERE.has(cause) ? null : ASSISTANT_FAILURE_DEFAULT_LINE;
+}
+
+/**
+ * True when a problem `detail` is a raw internal error string — the `assistant:
+ * …` prefix a Go error carries (`assistant.Error()`, `ErrSecretInPrompt`) —
+ * rather than a sentence written for a person. Such a string is never shown;
+ * the copy above is what the person reads instead.
+ */
+export function isRawAssistantErrorText(text: string): boolean {
+  return /^\s*(\[[^\]]*\]\s*)?assistant:/i.test(text);
 }
 
 let csrfToken: string | null = null;

@@ -34,6 +34,26 @@ export const MODEL_UNAVAILABLE_ROUTE = routes.ops();
 export const MODEL_UNAVAILABLE_LINE =
   "The assistant's model isn't available right now. An admin can check Settings → Operations → Models.";
 
+/**
+ * The cause the ask route answers with when the deployment set no
+ * `COMMUNICATION_ASSISTANT_*` triple at all (`assistantNotConfigured`'s code):
+ * the feature is absent, and the question never left the browser
+ * (ADR-0034's honest absence).
+ */
+export const ASSISTANT_NOT_CONFIGURED_LINE =
+  "The assistant isn't configured on this server — your question was not sent.";
+
+/** The degraded causes that mean “the turn ran out of its step budget”
+ * (`assistant.FailCallCap` / `FailToolCap`). */
+export const STEP_CAP_CAUSES: readonly string[] = ["model_call_cap_exceeded", "tool_cap_exceeded"];
+
+/** The line for a step-cap turn: nothing was saved (ADR-0034 stores a failed
+ * turn nowhere), and the ask can go again. The server's own cap phrasing —
+ * "the turn reached the 12 completion cap" — is an internal number, not a
+ * sentence, so it is not shown. */
+export const STEP_CAP_LINE =
+  "The assistant hit its step limit before answering — nothing was saved; send again.";
+
 /** The label of the jump under the line — the nav's own words, not a route. */
 export const MODEL_UNAVAILABLE_LINK_LABEL = "Settings → Operations → Models";
 

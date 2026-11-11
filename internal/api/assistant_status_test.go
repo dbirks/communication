@@ -163,6 +163,10 @@ func statusFixture(t *testing.T, store *statusStore, workers assistantStatusWork
 		Secrets:     store,
 		Pipelines:   store,
 		Assignments: store,
+		// The fixture is a `communication serve` replica (F-6): the API process
+		// and the worker are separate, so the status object must not claim the
+		// work ran here. The dev reading is its own test below.
+		ProcessArgs: []string{"/usr/bin/communication", "serve"},
 	})
 	s := newTestServerWith(t,
 		Config{ReplicaName: "replica-a", Version: "1.2.3", PublicURL: "http://localhost:8080"},
@@ -241,8 +245,14 @@ func TestAssistantStatusRouteShape(t *testing.T) {
 	if chat["configured"] != true || chat["model"] != "qwen3-8-flash-next" {
 		t.Errorf("chat_model = %v, want configured qwen3-8-flash-next", chat)
 	}
-	if _, ok := chat["key_set"]; ok {
-		t.Errorf("chat_model carried key_set: %v", chat)
+	// F-6: the chat row carries the same two facts speech and decision do, so
+	// "which models are configured?" can name the endpoint it is talking to
+	// without hedging — a bare host, and a bool about the key.
+	if chat["endpoint_host"] != "chat.internal" {
+		t.Errorf("chat_model.endpoint_host = %v, want chat.internal", chat["endpoint_host"])
+	}
+	if chat["key_set"] != true {
+		t.Errorf("chat_model.key_set = %v, want true (an API key is configured)", chat["key_set"])
 	}
 	speech := view["speech_model"].(map[string]any)
 	if speech["configured"] != true || speech["endpoint_host"] != statusSpeechHost || speech["key_set"] != true {
@@ -258,8 +268,8 @@ func TestAssistantStatusRouteShape(t *testing.T) {
 	if wk["online"] != float64(1) || wk["sandbox_mode"] != "required" {
 		t.Errorf("workers = %v, want 1 online / required", wk)
 	}
-	if view["execution_mode"] != "inprocess" {
-		t.Errorf("execution_mode = %v", view["execution_mode"])
+	if view["execution_mode"] != "worker" {
+		t.Errorf("execution_mode = %v, want worker on a serve-only replica (F-6)", view["execution_mode"])
 	}
 	creds, _ := view["github_credentials"].([]any)
 	if len(creds) != 1 {
@@ -635,6 +645,110 @@ func TestAssistantStatusWeakestSandboxMode(t *testing.T) {
 			}
 			if view.Workers.Online != tc.online || view.Workers.SandboxMode != tc.want {
 				t.Errorf("workers = %+v, want online %d mode %s", view.Workers, tc.online, tc.want)
+			}
+		})
+	}
+}
+
+// --- F-6: the status object tells the truth about this process ---------------
+
+// TestAssistantStatusExecutionMode: `execution_mode` is the honest answer to
+// "does the work run in this process?" (docs/testing/assistant-exercise-2026-11-11.md
+// F-6). A deployed split replica — API in one pod, the runs in a separate worker
+// pod — answered `inprocess`, and prompt 2 told the person "runs execute
+// in-process". `communication dev` (ADR-0082's `single` mode) is the ONE mode
+// that shares the process, so it is the only one that may say `inprocess`;
+// everything else, including a bare `communication serve`, says `worker`.
+func TestAssistantStatusExecutionMode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"serve-only", []string{"/usr/bin/communication", "serve"}, "worker"},
+		{"serve-with-flags", []string{"/usr/bin/communication", "serve", "--foo"}, "worker"},
+		{"worker-mode", []string{"/usr/bin/communication", "worker"}, "worker"},
+		{"dev-shares-the-process", []string{"/usr/bin/communication", "dev"}, "inprocess"},
+		{"dev-is-the-word-not-the-path", []string{"/tmp/dev", "serve"}, "worker"},
+		{"no-arguments-at-all", []string{}, "worker"},
+		// The zero wiring reads THIS process's argv, and a test binary's argv is
+		// flags — never `communication dev` — so the honest answer here is the
+		// split one. serve builds the service without the field and gets this.
+		{"unwired-means-this-process", nil, "worker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewSystemStatus(AssistantStatusDeps{ProcessArgs: tc.args})
+			view, err := svc.Status(context.Background(), Caller{UserID: "u-1", OrganizationID: "o-1"})
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if view.ExecutionMode != tc.want {
+				t.Errorf("execution_mode for %v = %q, want %q", tc.args, view.ExecutionMode, tc.want)
+			}
+		})
+	}
+}
+
+// TestAssistantStatusChatModelCarriesHostAndKeySet is the other half of F-6: the
+// chat row used to name nothing but its model id while speech and decision
+// carried `endpoint_host`/`key_set`, so prompt 7 could only hedge about the one
+// endpoint every answer comes from. The row now says the same two facts, and
+// still no value, URL or key: a base URL that carried credentials in its
+// userinfo contributes the hostname and nothing else.
+func TestAssistantStatusChatModelCarriesHostAndKeySet(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		cfg        AssistantConfig
+		wantHost   any
+		wantKeySet any
+	}{
+		{
+			name:       "endpoint with a key",
+			cfg:        AssistantConfig{BaseURL: "https://llm.example.com/v1", APIKey: "a-key-never-echoed", Model: "m"},
+			wantHost:   "llm.example.com",
+			wantKeySet: true,
+		},
+		{
+			name:       "endpoint with no key",
+			cfg:        AssistantConfig{BaseURL: "http://chat.internal:8000/v1", Model: "m"},
+			wantHost:   "chat.internal",
+			wantKeySet: false,
+		},
+		{
+			name: "credentials in the URL contribute no more than the host",
+			cfg: AssistantConfig{BaseURL: "https://user:pw@collective.example.com/v1",
+				APIKey: "a-key-never-echoed", Model: "m"},
+			wantHost:   "collective.example.com",
+			wantKeySet: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewSystemStatus(AssistantStatusDeps{Chat: tc.cfg})
+			view, err := svc.Status(context.Background(), Caller{UserID: "u-1", OrganizationID: "o-1"})
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			chat := view.ChatModel
+			if !chat.Configured {
+				t.Fatalf("chat_model = %+v, want configured", chat)
+			}
+			if chat.EndpointHost == nil || *chat.EndpointHost != tc.wantHost.(string) {
+				t.Errorf("chat_model.endpoint_host = %v, want %v", chat.EndpointHost, tc.wantHost)
+			}
+			if chat.KeySet == nil || *chat.KeySet != tc.wantKeySet.(bool) {
+				t.Errorf("chat_model.key_set = %v, want %v", chat.KeySet, tc.wantKeySet)
+			}
+			// Nothing that could hold a value, a scheme or userinfo is served.
+			blob, err := json.Marshal(view)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			for _, leak := range []string{"a-key-never-echoed", "user:pw", "://", "https://", "http://"} {
+				if strings.Contains(string(blob), leak) {
+					t.Errorf("status body leaked %q: %s", leak, blob)
+				}
 			}
 		})
 	}

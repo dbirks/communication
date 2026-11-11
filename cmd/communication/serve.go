@@ -249,11 +249,14 @@ environment:
                                         "qwen3-8-27b", ADR-0034).
   COMMUNICATION_ASSISTANT_TIMEOUT       per-model-call deadline for the
                                         assistant (Go duration, e.g. "120s";
-                                        default 30s). The assistant's tool
+                                        default 60s). The assistant's tool
                                         loop calls the model several times
-                                        per turn, and a reasoning model under
-                                        load can take longer than 30s on a
-                                        single call. There is no separate
+                                        per turn, and a fan-out turn or a
+                                        reasoning model under load can take
+                                        longer than 60s on a single call
+                                        (deployed finding F-4: a catch-up turn
+                                        died at 33 s on the old 30s floor).
+                                        There is no separate
                                         turn-level deadline: a turn is bounded
                                         by per-call timeout x model calls, so
                                         raising this lengthens a slow turn

@@ -1,8 +1,8 @@
 # Add a GitHub token
 
-A GitHub token is a **secret reference**, not assistant input. The assistant
-never accepts a token: `credential.create` is not a tool, a value is typed
-only into the secrets form, and nothing in the app ever reads one back.
+A GitHub token is a secret reference, not assistant input. `credential.create`
+is not a tool, no token value ever passes through the assistant, and nothing
+in the app reads one back.
 
 1. Open the project's **Settings** page (`/p/<project>/settings`).
 2. In the **SECRETS** panel, under **Add a secret reference**, set:

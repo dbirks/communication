@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 )
@@ -64,6 +65,12 @@ type AssistantStatusDeps struct {
 	Secrets     assistantStatusSecrets
 	Pipelines   assistantStatusPipelines
 	Assignments assistantStatusAssignments
+	// ProcessArgs is this process's own argv, read only to answer
+	// `execution_mode` (F-6): the mode word is argv[1], because that is the one
+	// argument cmd/communication/main.go dispatches on. nil means os.Args —
+	// serve wires nothing and reports the truth of the process it runs in;
+	// a test pins both readings without touching its own argv.
+	ProcessArgs []string
 }
 
 // The narrow read faces the status object is assembled from — every one is a
@@ -97,9 +104,10 @@ type (
 // AssistantModelStatus is one model row of the status object. `model` is the
 // configured model id or ""; endpoint_host is the bare hostname (never the
 // scheme+path a key could hide in, never userinfo) and key_set is the whole
-// truth about a key. Both are absent on a row that is not configured, and
-// key_set is absent for the chat row: the assistant's own key is not a
-// setup question the checklist asks.
+// truth about a key. All three are absent on a row that is not configured —
+// the chat row included (deployed finding F-6: without the host and the key
+// bool the model could only hedge about the endpoint it was actually talking
+// to). No row ever carries a value, a URL or a key.
 type AssistantModelStatus struct {
 	Configured   bool    `json:"configured"`
 	Model        string  `json:"model"`
@@ -150,11 +158,43 @@ type AssistantSystemStatus struct {
 	Workflows         AssistantWorkflowCounts  `json:"workflows"`
 }
 
-// assistantExecutionMode is the one mode this build runs agents in: the
-// worker launches each attempt as its own sandboxed child process. The
-// handoff's Mode B (Kubernetes pods) is §7 and out of scope, so the field
-// exists as the honest statement of today, not a knob.
-const assistantExecutionMode = "inprocess"
+// The two execution modes the status object names (F-6).
+const (
+	// assistantExecutionModeWorker is the split deployment — the normal one:
+	// this process answers the API and NOTHING else; a separate worker process
+	// (often another pod on another host) leases the runs and launches each
+	// attempt as its own sandboxed child. This is the honest default, because a
+	// `communication serve` replica that could not say otherwise must never
+	// claim its work ran in-process.
+	assistantExecutionModeWorker = "worker"
+	// assistantExecutionModeInProcess is `communication dev` (ADR-0082's
+	// `single` run mode): runServe and runWorker share this one process, so the
+	// attempt really is a child of the process answering the ask.
+	assistantExecutionModeInProcess = "inprocess"
+	// devModeArg is the mode word cmd/communication/main.go dispatches on for
+	// that shared process (`communication dev`).
+	devModeArg = "dev"
+)
+
+// assistantExecutionModeFor answers the field from a process's own argv:
+// "inprocess" only for `communication dev`, "worker" for everything else,
+// including a test binary or a serve replica (deployed finding F-6: a split
+// deployment with its runs in a separate worker pod reported `inprocess`, and
+// the assistant told the person "runs execute in-process").
+func assistantExecutionModeFor(args []string) string {
+	if args == nil {
+		// The zero wiring: this process's own argv is the only honest source,
+		// and serve passes nothing (ADR-0082's `single` mode IS `dev`, so the
+		// shared-process claim belongs to the mode the operator typed).
+		args = os.Args
+	}
+	// main.go's own rule: the mode is the first argument after argv[0]; any
+	// leading flag would have printed the usage and exited.
+	if len(args) > 1 && args[1] == devModeArg {
+		return assistantExecutionModeInProcess
+	}
+	return assistantExecutionModeWorker
+}
 
 // sampleWorkflowSlugs is the closed set of library slugs this app SHIPS as
 // samples — docs/samples/home/, the same three the UI's "Start from a
@@ -193,7 +233,7 @@ func (s *SystemStatus) Status(ctx context.Context, c Caller) (AssistantSystemSta
 		ChatModel:         assistantChatModel(s.deps.Chat),
 		SpeechModel:       assistantSpeechModel(s.deps.Models),
 		DecisionModel:     assistantDecisionModel(s.deps.Models),
-		ExecutionMode:     assistantExecutionMode,
+		ExecutionMode:     assistantExecutionModeFor(s.deps.ProcessArgs),
 		GitHubCredentials: []AssistantCredentialRow{},
 	}
 
@@ -244,9 +284,24 @@ func (s *SystemStatus) Status(ctx context.Context, c Caller) (AssistantSystemSta
 // assistantChatModel reports the assistant's own egress: configured means the
 // deployment set COMMUNICATION_ASSISTANT_BASE_URL (ADR-0034's rule that an
 // unset base URL IS the absence), and the model is whatever it sends.
+//
+// Deployed finding F-6: the row used to stop there, while the speech and
+// decision rows carried `endpoint_host` and `key_set`. "Which models are
+// configured?" then had nothing to say about the one endpoint that answers
+// most questions, so the answer hedged. The chat row now reports the same two
+// facts the others do — a bare hostname and a bool — and still no value, URL or
+// key: the key is only ever read to answer "is one set".
 func assistantChatModel(cfg AssistantConfig) AssistantModelStatus {
-	configured := strings.TrimSpace(cfg.BaseURL) != ""
-	return AssistantModelStatus{Configured: configured, Model: strings.TrimSpace(cfg.Model)}
+	row := AssistantModelStatus{Model: strings.TrimSpace(cfg.Model)}
+	host, hostOK := assistantEndpointHost(cfg.BaseURL)
+	row.Configured = hostOK
+	if hostOK {
+		h := host
+		row.EndpointHost = &h
+		ks := strings.TrimSpace(cfg.APIKey) != ""
+		row.KeySet = &ks
+	}
+	return row
 }
 
 // assistantSpeechModel reports the transcription endpoint (§5). Configured

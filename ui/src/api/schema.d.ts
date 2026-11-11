@@ -3000,7 +3000,10 @@ export interface paths {
      *     * `sandbox_mode` is the weakest enforcement the ONLINE workers report
      *       (`required` > `optional` > `off`), so one unenforced worker cannot
      *       be hidden by a green one; `unknown` means the fleet reported nothing
-     *       to fold. `execution_mode` is the handoff's Mode A: `inprocess`.
+     *       to fold. `execution_mode` is the truth about THIS process:
+     *       `worker` (split — a separate worker process runs the work, the
+     *       answer for `communication serve`) or `inprocess`
+     *       (`communication dev` only).
      *     * `workflows.samples` counts the shipped sample workflows
      *       (`issue-to-pr`, `plan-with-approval`, `security-review`) the caller
      *       can see; `assigned` counts workflows with at least one project
@@ -6318,10 +6321,10 @@ export interface components {
         sandbox_mode: "required" | "optional" | "off" | "unknown";
       };
       /**
-       * @description Handoff §7 Mode A today: the worker launches each attempt as its own sandboxed child. Kubernetes pods (Mode B) are out of scope, so this is a statement of fact, not a knob.
+       * @description Where THIS process runs agent work (deployed finding F-6: a split deployment whose runs live in a separate worker pod said `inprocess`, and the assistant repeated it). `worker` is the split deployment — the API replica serves requests and a separate worker process leases the runs and launches each attempt as its own sandboxed child (handoff §7 Mode A). `inprocess` is `communication dev` only (ADR-0082's `single` mode), where the API and one worker share the process. A statement of fact about the running process, never a knob.
        * @enum {string}
        */
-      execution_mode: "inprocess";
+      execution_mode: "worker" | "inprocess";
       /** @description The git/GitHub credentials the caller can see, by name only — `name` is the secret's slug, `scope` is `project` or `org`, and `used_by` counts the repositories that name it as their credential (ADR-0061). Values are never included. */
       github_credentials: {
         name: string;
@@ -6343,7 +6346,7 @@ export interface components {
     };
     /**
      * AssistantModelStatus
-     * @description One model endpoint of the setup object: the chat model, the speech model or the decision judge. `configured` is the deployment's answer, and a key is only ever a bool.
+     * @description One model endpoint of the setup object: the chat model, the speech model or the decision judge. `configured` is the deployment's answer, and a key is only ever a bool. All three rows carry the same facts — the chat row is no longer the one that names nothing (F-6) — and none of them carries a value, a URL or a key.
      */
     AssistantModelStatus: {
       configured: boolean;
@@ -6351,7 +6354,7 @@ export interface components {
       model: string;
       /** @description Host only, and absent on a row that is not configured. A URL's scheme, path, port and any userinfo are never served. */
       endpoint_host?: string;
-      /** @description Whether an API key is configured. The value itself is never read by this surface — there is no method on the egress config that could return it to a client. */
+      /** @description Whether an API key is configured. The value itself is never read by this surface — there is no method on the egress config that could return it to a client. Reported for the chat row as well as for speech (F-6). */
       key_set?: boolean;
     };
     /**
