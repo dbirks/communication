@@ -1,0 +1,62 @@
+{{- if eq .Values.mode "split" }}
+{{/*
+The execution worker (ADR-0082 Decision 2/9). strategy Recreate: two pods
+sharing the workspace/mirror roots would fight over single-writer state, and the
+claim is RWO anyway.
+
+`automountServiceAccountToken` is true ONLY with launcher: kubernetes — that is
+the one configuration where the worker talks to the API server at all, and even
+then only through the namespaced Role in rbac.yaml.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-worker" (include "communication.fullname" .) }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "communication.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "communication.componentLabels" (dict "root" . "component" "worker") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: {{ if eq .Values.worker.launcher "kubernetes" }}true{{ else }}false{{ end }}
+      {{- if eq .Values.worker.launcher "kubernetes" }}
+      serviceAccountName: {{ include "communication.workerSA" . }}
+      {{- end }}
+      # Heartbeat 10s + the worker's 15s drain deadline; under M2 the same room
+      # covers writing an honest interrupted state for an in-flight turn.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "communication.keyringInitContainer" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "communication.workerImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # No args needed (the image's CMD is `worker`); stated for review.
+          args: ["worker"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            {{- include "communication.envWorker" . | nindent 12 }}
+            {{- include "communication.envLauncher" . | nindent 12 }}
+            {{- include "communication.envCommon" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "communication.volumeMountsWorker" . | nindent 12 }}
+      volumes:
+        {{- include "communication.volumesWorker" . | nindent 8 }}
+      {{- with (include "communication.scheduling" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+{{- end }}

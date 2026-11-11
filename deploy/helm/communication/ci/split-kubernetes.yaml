@@ -1,0 +1,38 @@
+# helm lint / helm template CI values: split mode with the pod launcher, the ONE
+# configuration that renders RBAC + NetworkPolicy (ADR-0082 Decision 6/7).
+mode: split
+image:
+  repository: ghcr.io/dbirks/communication-worker
+  tag: kind
+serveImage:
+  repository: ghcr.io/dbirks/communication
+  tag: kind
+serve:
+  replicas: 2
+database:
+  urlSecret:
+    name: communication-database-url
+    key: url
+oidc:
+  issuer: http://oidc:8080/default
+  clientId: communication-dev
+devLogin: true
+publicUrl: http://communication.local
+keyringSecret: communication-keyring
+worker:
+  enforcement: required
+  launcher: kubernetes
+  agentNamespace: communication-agents
+  capacity: 4
+networkPolicy:
+  # Documentation-shaped example: a model endpoint and a git host, in CIDR form
+  # because kind's CNI speaks pod/IP/CIDR and nothing else (research § 2.4).
+  egressCIDRs:
+    - 198.51.100.7/32
+    - 203.0.113.0/24
+ingress:
+  enabled: true
+  host: communication.local
+  className: nginx
+persistence:
+  size: 5Gi

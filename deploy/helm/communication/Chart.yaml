@@ -1,0 +1,10 @@
+apiVersion: v2
+name: communication
+description: >-
+  Communication in one container (mode: single) or as a control plane plus an
+  execution worker (mode: split). ADR-0082.
+type: application
+version: 0.1.0
+# appVersion is the default image tag; images never float (kind load is silently
+# ignored for a floating tag, docs/research/2026-11-k8s-run-modes.md § 3).
+appVersion: "0.1.0"

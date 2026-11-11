@@ -1,0 +1,185 @@
+# compose.single.yml — the single-container run mode (ADR-0082 Decision 1).
+#
+#     docker compose -f compose.single.yml up --build
+#     # then open http://localhost:18190 and sign in as `admin`
+#
+# One `communication` container: the WORKER image (worker/Dockerfile — the only
+# image carrying nono, the ACP adapters and APM) run as `communication dev`, so
+# the control plane and one execution worker share a process, and agent turns
+# run in nono sandboxes in that same container. Postgres is the only other
+# service that holds state; the mock IdP below is the lab's dev-login path and
+# nothing more (serve refuses to start without an issuer and a client id,
+# ADR-0012 § 2, so a container that "signs in" needs one).
+#
+# Dev-only, like `communication dev` itself: COMMUNICATION_COOKIE_SECURE=false
+# and a seeded bootstrap admin subject (ADR-0012 § 5) plus
+# COMMUNICATION_ALLOW_FILE_GIT_URLS=true, which `dev` defaults on (audit F6).
+# `communication serve`/`worker` on separate images stays the production shape —
+# see compose.yml.
+#
+# Host requirement the image cannot satisfy: Landlock ABI >= V4 and
+# kernel.yama.ptrace_scope <= 1. With `required` enforcement the worker refuses
+# to start, or withholds agent.acp, rather than running an unverified agent
+# (ADR-0019 D6). `docker compose ... logs communication` says which.
+name: communication-single
+
+services:
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: communication
+      POSTGRES_DB: communication
+      # Dev-only trust (same rule as compose.yml): AGENTS.md forbids committed
+      # credentials, and this service publishes NO port, so it is reachable from
+      # this compose network only, never from the host's routable network.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      # Postgres 18 keeps the data directory under the cluster root, so the
+      # mount has to be the parent or the entrypoint refuses the volume.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # TCP only: a socket probe can go Healthy against the temporary initdb
+      # server on a fresh volume, and the one-shot migrate would then get
+      # connection refused (the same trap compose.yml documents).
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U communication -d communication"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot envelope keyring (ADR-0018 D2.2): generated on first start into a
+  # named volume and never printed, so neither the database dump nor a
+  # `docker inspect` yields a usable key. LoadKeyring also refuses a keyring
+  # that group or other can read, hence the 700/600 pair and the chown — named
+  # volumes arrive root-owned 0755. Reuses an image this stack already pulls.
+  keyring-init:
+    image: postgres:18.6
+    environment:
+      KEY_UID: "${KEY_UID:-10001}"
+      KEY_GID: "${KEY_GID:-10001}"
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        umask 077
+        chown -R "$$KEY_UID:$$KEY_GID" /keyring /artifacts /workspaces /repos
+        chmod 700 /keyring /artifacts /workspaces /repos
+        f=/keyring/master-key-v1
+        if [ ! -s "$$f" ]; then
+          head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$f.tmp"
+          mv "$$f.tmp" "$$f"
+          chown "$$KEY_UID:$$KEY_GID" "$$f"
+          echo "keyring: generated master-key-v1"
+        else
+          echo "keyring: master-key-v1 already present"
+        fi
+    volumes:
+      - masterkeys:/keyring
+      - artifacts:/artifacts
+      - workspaces:/workspaces
+      - repos:/repos
+    restart: "no"
+
+  # The dev IdP (ADR-0012): real OIDC discovery/JWKS/PKCE with any-username
+  # login, so there is no password to commit. Published on 127.0.0.1 only.
+  oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:6.0.7
+    environment:
+      JSON_CONFIG_PATH: /config/oidc-dev.json
+    volumes:
+      - ./api/oidc-dev.json:/config/oidc-dev.json:ro
+    ports:
+      - "127.0.0.1:18191:8080"
+
+  # One-shot schema migration. `serve` never migrates itself (ADR-0013) — it
+  # only refuses readiness until the schema is current — and `dev` inherits that
+  # rule, so this stack applies the migrations before the app container starts.
+  migrate:
+    image: communication-worker:single
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    pull_policy: never
+    command: ["migrate", "up"]
+    environment:
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keyring-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  communication:
+    image: communication-worker:single
+    # Built by the `migrate` service above; never pulled.
+    pull_policy: never
+    # The image's ENTRYPOINT is the binary; `dev` = serve + one worker in one
+    # process, one signal context (ADR-0001 option B, ADR-0082 Decision 1).
+    command: ["dev"]
+    environment:
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+      COMMUNICATION_LISTEN_ADDR: ":8080"
+      COMMUNICATION_PUBLIC_URL: http://localhost:18190
+      COMMUNICATION_REPLICA_NAME: single
+      # The split-issuer dev path, same names as compose.yml:186-191: the
+      # container-network issuer for discovery, the host-visible one for the
+      # browser redirect, insecure cookies and a seeded org admin.
+      COMMUNICATION_OIDC_ISSUER: http://oidc:8080/default
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18191/default
+      COMMUNICATION_OIDC_CLIENT_ID: communication-dev
+      COMMUNICATION_COOKIE_SECURE: "false"
+      COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS: admin
+      COMMUNICATION_ARTIFACT_BACKEND: local
+      COMMUNICATION_ARTIFACT_ROOT: /artifacts
+      COMMUNICATION_SECRET_KEYRING: /keyring
+      # Execution plane. `required` refuses to launch anything it cannot verify.
+      COMMUNICATION_WORKSPACE_ROOT: /workspaces
+      COMMUNICATION_REPOS_ROOT: /repos
+      # These three are SIBLINGS of the two storage roots and of nono's HOME on
+      # purpose: nono derives its protected state root from HOME and thereafter
+      # permanently refuses every overlapping grant (probe C-H1), so a launcher
+      # home under /workspaces would poison every workspace this container ever
+      # creates. Same rule as compose.yml's worker.
+      COMMUNICATION_SANDBOX_ENFORCEMENT: required
+      COMMUNICATION_SANDBOX_HOME: /sandbox-home
+      COMMUNICATION_SANDBOX_POLICY_DIR: /sandbox-policy
+      COMMUNICATION_SANDBOX_SELFTEST_DIR: /sandbox-selftest
+      # Required in `required` mode: GIT_CONFIG_NOSYSTEM leaves the agent with
+      # no global config, so an unset identity fails its own `git commit`.
+      COMMUNICATION_AGENT_GIT_NAME: Communication Worker
+      COMMUNICATION_AGENT_GIT_EMAIL: worker@communication.invalid
+    volumes:
+      - masterkeys:/keyring
+      - artifacts:/artifacts
+      - workspaces:/workspaces
+      - repos:/repos
+      # Not named volumes: nothing here must survive a restart. The launcher
+      # home holds nono's state and the policy dir is rewritten from code at
+      # startup, so an anonymous volume would only risk keeping a policy a newer
+      # binary no longer matches.
+      - sandbox-home:/sandbox-home
+      - sandbox-policy:/sandbox-policy
+      - sandbox-selftest:/sandbox-selftest
+    ports:
+      - "127.0.0.1:18190:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      oidc:
+        condition: service_started
+    # Heartbeat is 10s and the worker's own drain deadline is 15s, so give it
+    # room to write `offline` (and an honest interrupted state for an in-flight
+    # turn) before docker sends SIGKILL. No healthcheck: this image carries no
+    # curl, and `depends_on: service_healthy` from nothing would only add a
+    # second way to be wrong.
+    stop_grace_period: 25s
+    restart: "no"
+
+volumes:
+  pgdata:
+  masterkeys:
+  artifacts:
+  workspaces:
+  repos:
+  sandbox-home:
+  sandbox-policy:
+  sandbox-selftest:

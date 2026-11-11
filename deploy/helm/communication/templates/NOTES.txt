@@ -1,0 +1,49 @@
+Communication {{ .Chart.AppVersion }} — mode: {{ .Values.mode }}{{ if eq .Values.mode "single" }}
+
+One container: the worker image runs `communication dev` (serve + one worker in
+one process, ADR-0082 Decision 1). It holds no Kubernetes privileges.
+
+  http://localhost:8080 is inside the pod; from a browser:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "communication.fullname" . }} 8080:80
+
+  Sandbox check inside the running container (Landlock + the agent-turn TCP gate):
+    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "communication.fullname" . }} -- communication doctor
+
+  Host requirement the chart cannot satisfy: Landlock ABI >= V4 and
+  kernel.yama.ptrace_scope <= 1 on the NODE. Otherwise the worker's startup gate
+  withholds agent.acp and fails closed — that is the honest outcome, not a bug
+  (docs/run-modes.md).{{ else }}
+
+Split mode: {{ .Values.serve.replicas }} serve replica(s) + one worker
+  (strategy Recreate, workspace roots are single-writer).
+  Port-forward:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "communication.fullname" . }} 8080:80
+
+  Worker launcher: {{ .Values.worker.launcher }}{{ if eq .Values.worker.launcher "kubernetes" }}
+  RBAC + NetworkPolicy rendered into {{ .Values.worker.agentNamespace | quote }} — the worker may
+  create pods ONLY there (ADR-0082 Decision 6). Check it yourself:
+    kubectl auth can-i create pods          -n {{ .Values.worker.agentNamespace }} --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "communication.workerSA" . }}   # yes
+    kubectl auth can-i create pods          -n {{ .Release.Namespace }}           --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "communication.workerSA" . }}   # no
+    kubectl auth can-i create pods/exec     -n {{ .Values.worker.agentNamespace }} --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "communication.workerSA" . }}   # yes{{ else }}
+  No RBAC was rendered: the local launcher execs in the worker's own pod.{{ end }}{{ end }}
+{{ if .Values.devLogin }}
+WARNING: devLogin=true. COMMUNICATION_COOKIE_SECURE is off and
+{{ .Values.devLoginSubject | quote }} logs in as an org admin through whatever
+IdP you pointed oidc.issuer at. NEVER IN PRODUCTION (ADR-0012 § 5).
+{{ end }}
+{{ if not (and .Values.publicUrl .Values.oidc.issuer) }}
+WARNING: {{ if not .Values.publicUrl }}publicUrl is empty{{ else }}publicUrl is set{{ end }}, {{ if not .Values.oidc.issuer }}oidc.issuer is empty{{ else }}oidc.issuer is set{{ end }}.
+`communication serve` refuses to start without COMMUNICATION_PUBLIC_URL and an
+issuer + client id (ADR-0012 § 2), so this pod will not become Ready until you
+set both:
+  --set publicUrl=https://communication.example --set oidc.issuer=https://idp.example --set oidc.clientId=communication
+{{ end }}
+{{ if not .Values.keyringSecret }}
+No keyringSecret: secret writes refuse and any turn whose profile mounts a secret
+fails loudly (ADR-0018 D2.3). Create the Secret and set keyringSecret to its name:
+  kubectl -n {{ .Release.Namespace }} create secret generic communication-keyring \
+    --from-file=master-key-v1=<your 0600 key file>
+{{ end }}
+Readiness is /api/v1/system/readiness: the schema must be current, which is what
+the `migrate` initContainer does (ADR-0013). If a pod is not ready, read
+`kubectl -n {{ .Release.Namespace }} logs deploy/{{ if eq .Values.mode "split" }}{{ printf "%s-serve" (include "communication.fullname" .) }}{{ else }}{{ include "communication.fullname" . }}{{ end }}`.

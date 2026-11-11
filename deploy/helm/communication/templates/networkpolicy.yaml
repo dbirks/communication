@@ -1,0 +1,36 @@
+{{- if include "communication.podLauncher" . }}
+{{/*
+Default-deny EGRESS for the attempt pods, plus the CIDR allows the operator
+named (ADR-0082 Decision 7). kind's kube-network-policies is a pod/IP/CIDR
+engine — it cannot do FQDN rules — so this is the CIDR layer and nono's
+`network.allow_domain` CONNECT proxy stays the FQDN layer inside the pod
+(research § 2.4). Selector matches the attempt pods by the label the worker puts
+on every one of them (ADR-0082 Decision 2), never by a namespace-wide default.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-agent-egress" (include "communication.fullname" .) }}
+  namespace: {{ required "worker.agentNamespace" .Values.worker.agentNamespace }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: communication.dev/attempt, operator: Exists}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS has to work before any allow_domain proxy rule can, and it is the only
+    # unconditional allow.
+    - ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- with .Values.networkPolicy.egressCIDRs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,16 @@
+{{/*
+One Service in front of whatever answers HTTP: the single container, or the serve
+Deployment. The worker publishes no port (02-system-architecture.md, D-002).
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "communication.fullname" . }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" (ternary "single" "serve" (eq .Values.mode "single"))) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "communication.componentSelectorLabels" (dict "root" . "component" (ternary "single" "serve" (eq .Values.mode "single"))) | nindent 4 }}
+  ports:
+    - {name: http, port: 80, targetPort: http}

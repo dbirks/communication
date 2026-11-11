@@ -1,0 +1,11 @@
+# kind config for scripts/kind/test.sh — one control-plane node, node image
+# pinned by digest exactly as kind v0.33.0's release note insists
+# (https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0, read 2026-11-11).
+# NetworkPolicy enforcement is built into stock kind since v0.24.0 via
+# kube-network-policies, so nothing extra is configured here.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: communication-kind
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5

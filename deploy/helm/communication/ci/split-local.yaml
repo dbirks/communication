@@ -1,0 +1,36 @@
+# helm lint / helm template CI values: split mode, worker execs locally.
+# Renders NO RBAC and NO NetworkPolicy — that is the point of this file.
+mode: split
+image:
+  repository: ghcr.io/dbirks/communication-worker
+  tag: kind
+  pullPolicy: IfNotPresent
+serveImage:
+  repository: ghcr.io/dbirks/communication
+  tag: kind
+  pullPolicy: IfNotPresent
+serve:
+  replicas: 2
+database:
+  urlSecret:
+    name: communication-database-url
+    key: url
+oidc:
+  issuer: http://oidc:8080/default
+  clientId: communication-dev
+devLogin: true
+publicUrl: http://communication.local
+keyringSecret: communication-keyring
+worker:
+  enforcement: required
+  launcher: local
+  capacity: 2
+persistence:
+  size: 5Gi
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi

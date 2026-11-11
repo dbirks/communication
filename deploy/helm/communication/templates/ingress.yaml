@@ -1,0 +1,27 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+The single optional object the chart adds on top of the Service (ADR-0082
+Decision 9: "an optional ingress.yaml"). No TLS block: TLS is the ingress
+class's business (the home cluster terminates it in the Tailscale ingress).
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "communication.fullname" . }}
+  labels:
+    {{- include "communication.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "communication.fullname" . }}
+                port: {name: http}
+{{- end }}

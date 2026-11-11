@@ -1,0 +1,117 @@
+# Communication Helm values (ADR-0082). Deliberately small: every key here is
+# named by the ADR or by docs/research/2026-11-k8s-run-modes.md § 4, and no
+# template renders a secret *value* — secret material arrives as secretRefs the
+# operator created out of band.
+
+# single: one container (the worker image, `communication dev`), no Kubernetes
+# privileges at all. split: a `serve` Deployment plus a worker Deployment.
+mode: single
+
+image:
+  # The worker image (worker/Dockerfile) is the only one carrying nono, the ACP
+  # adapters and APM, so it is the image for single mode and for the worker
+  # Deployment (ADR-0082 Decision 1). Tag empty means Chart.appVersion; never
+  # float a tag you intend to `kind load` (research § 3).
+  repository: ghcr.io/dbirks/communication-worker
+  tag: ""
+  pullPolicy: IfNotPresent
+
+serveImage:
+  # The control-plane image (api/Dockerfile / the release Dockerfile). Used only
+  # by the split-mode serve Deployment: it cannot run agent turns.
+  repository: ghcr.io/dbirks/communication
+  tag: ""
+  pullPolicy: ""
+
+serve:
+  replicas: 1
+
+database:
+  # External Postgres only (ADR-0013: serve never migrates itself, it refuses
+  # readiness until the schema is current, so `migrate up` is an initContainer).
+  # The named Secret holds a full COMMUNICATION_DATABASE_URL; the chart renders
+  # its name and key, never its contents.
+  urlSecret:
+    name: communication-database-url
+    key: url
+
+oidc:
+  issuer: ""
+  clientId: ""
+  clientSecret:
+    # Empty name means a public client with PKCE (the dev/mock-IdP path).
+    name: ""
+    key: client-secret
+
+# devLogin renders the lab's dev-login env instead of a real IdP handshake:
+# COMMUNICATION_COOKIE_SECURE=false plus the seeded bootstrap admin subject
+# (compose.yml:186-191). NEVER IN PRODUCTION — it turns the Secure cookie flag
+# off (ADR-0012 § 5), and NOTES.txt says so.
+devLogin: false
+devLoginSubject: admin
+
+publicUrl: ""
+
+# Name of a Secret holding the envelope-encryption keyring file master-key-v1
+# (ADR-0018 D2.2). It is rendered as a *source* volume only; a one-shot
+# initContainer copies it into a 0700 emptyDir as a 0600 regular file, because
+# LoadKeyring refuses the symlinked, group-readable Secret volume.
+keyringSecret: ""
+
+worker:
+  enforcement: required
+  # local execs the adapter in the worker's own process tree; kubernetes creates
+  # one pod per attempt in agentNamespace. `kubernetes` is the ONLY thing that
+  # makes RBAC and NetworkPolicy render (ADR-0082 Decision 6/7), so single mode
+  # never ships pod-creation privileges.
+  launcher: local
+  agentNamespace: ""
+  capacity: 2
+
+persistence:
+  size: 10Gi
+  storageClass: ""
+
+ingress:
+  enabled: false
+  host: communication.local
+  className: ""
+
+networkPolicy:
+  # Extra CIDRs the attempt pods may egress to on top of DNS (model endpoints,
+  # git hosts). Empty keeps egress default-deny; nono's allow_domain proxy stays
+  # the FQDN layer inside the pod (ADR-0082 Decision 7).
+  egressCIDRs: []
+
+# Rendered verbatim so the RuntimeDefault + drop-ALL + 10001 shape is visible in
+# review (research § 4).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+
+# Extra name/value or name/valueFrom entries appended to every container's env.
+# Never put a secret value here — use a valueFrom secretKeyRef.
+extraEnv: []
+
+# Exposed, never defaulted (research § 4).
+nodeSelector: {}
+tolerations: []
+affinity: {}

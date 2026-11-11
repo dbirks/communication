@@ -1,0 +1,21 @@
+{{/*
+One claim, three subPaths (workspaces / repos / artifacts). RWO on purpose: the
+workspace roots are single-writer state (ADR-0017), and the attempt pod of the
+kubernetes launcher mounts the same claim at the same absolute paths while it is
+pinned to the worker's node (ADR-0082 Decision 4). Multi-node is out of scope.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "communication.pvcName" . }}
+  labels:
+    {{- include "communication.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}

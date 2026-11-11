@@ -1,0 +1,133 @@
+{{- include "communication.validate" . | default "" }}
+{{/*
+mode: single -> ONE Deployment: the worker image run as `communication dev`
+                (ADR-0082 Decision 1). It renders no RBAC and mounts no
+                service-account token.
+mode: split  -> the serve Deployment, the API replicas browsers talk to
+                (ADR-0082 Decision 9). The worker lives in
+                deployment-worker.yaml.
+*/}}
+{{- if eq .Values.mode "single" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "communication.fullname" . }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "single") | nindent 4 }}
+spec:
+  # One container owns the workspace roots and the embedded UI origin; two of
+  # them would fight over the same single-writer tree.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "communication.componentSelectorLabels" (dict "root" . "component" "single") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "communication.componentLabels" (dict "root" . "component" "single") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      # Single mode holds no Kubernetes privileges at all (ADR-0082 Decision 1).
+      automountServiceAccountToken: false
+      # The worker's own drain deadline is 15s; give it room to write `offline`.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "communication.migrateInitContainer" . | nindent 8 }}
+        {{- include "communication.keyringInitContainer" . | nindent 8 }}
+      containers:
+        - name: communication
+          image: {{ include "communication.workerImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The worker image's ENTRYPOINT is the binary and its CMD is `worker`;
+          # `dev` is serve + one worker in one process (ADR-0001 option B).
+          args: ["dev"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            {{- include "communication.envServe" . | nindent 12 }}
+            {{- include "communication.envWorker" . | nindent 12 }}
+            {{- include "communication.envCommon" . | nindent 12 }}
+          # dev serves the API, so it carries serve's probes: readiness is the
+          # schema-current gate (ADR-0013), liveness only the process.
+          readinessProbe:
+            httpGet: {path: /api/v1/system/readiness, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /api/v1/system/health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "communication.volumeMountsWorker" . | nindent 12 }}
+      volumes:
+        {{- include "communication.volumesWorker" . | nindent 8 }}
+      {{- with (include "communication.scheduling" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+{{- else }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-serve" (include "communication.fullname" .) }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "serve") | nindent 4 }}
+spec:
+  replicas: {{ .Values.serve.replicas }}
+  selector:
+    matchLabels:
+      {{- include "communication.componentSelectorLabels" (dict "root" . "component" "serve") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "communication.componentLabels" (dict "root" . "component" "serve") | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "communication.migrateInitContainer" . | nindent 8 }}
+        {{- include "communication.keyringInitContainer" . | nindent 8 }}
+      containers:
+        - name: serve
+          image: {{ include "communication.serveImage" . }}
+          imagePullPolicy: {{ include "communication.serveImagePullPolicy" . }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            {{- include "communication.envServe" . | nindent 12 }}
+            {{- include "communication.envCommon" . | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /api/v1/system/readiness, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /api/v1/system/health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "communication.volumeMountsServe" . | nindent 12 }}
+      volumes:
+        {{- include "communication.volumesCommon" . | nindent 8 }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "communication.pvcName" . }}
+      {{- with (include "communication.scheduling" .) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,65 @@
+{{- if include "communication.podLauncher" . }}
+{{/*
+Rendered ONLY with mode: split + worker.launcher: kubernetes. Single mode and
+split + local render no RBAC at all, so a simple deployment never ships
+pod-creation privileges (ADR-0082 Decision 6/9).
+
+Namespaced Role, no cluster-scope, in worker.agentNamespace — separate from the
+platform namespace so "can create pods" cannot touch the control plane's. The
+verb set is exactly ADR-0082 Decision 6; nothing here is invented, and nothing
+extra (pods/attach, pods/portforward, pods/proxy, secrets list, anything on
+nodes/namespaces) is granted — see research § 2.4's "never give" list.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "communication.workerSA" . }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "communication.workerSA" . }}
+  namespace: {{ required "worker.agentNamespace" .Values.worker.agentNamespace }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+rules:
+  # One pod per agent attempt.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # ACP rides the exec's stdin/stdout (research § 2.2 shape A).
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # The stderr tail on a launch failure.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Per-attempt credential payloads, owner-referenced to the attempt pod.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "delete"]
+  # Scheduling failures, read-only.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "communication.workerSA" . }}
+  namespace: {{ required "worker.agentNamespace" .Values.worker.agentNamespace }}
+  labels:
+    {{- include "communication.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "communication.workerSA" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "communication.workerSA" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
