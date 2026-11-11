@@ -1,0 +1,450 @@
+# docs/samples/home/pstack-feature.yaml — Lauren Tan's pstack working style as a
+# pipeline: survey the checkout, plan the feature through the `poteto-mode`
+# router, hold the plan behind a maintainer approval, implement it, then have the
+# SAME agent interrogate its own diff before the run reports.
+#
+# It is agent-driven: four agent.acp nodes on one Claude Code profile —
+#
+#   • `claude-pstack`: the `claude` launcher (ADR-0040's OAuth token or the
+#     ambient claude CLI login) with the seeded "pstack (Claude Code)" APM
+#     collection attached (ADR-0084). That collection is the per-skill pstack
+#     tree: the router `poteto-mode`, its 24 `principle-*` skills, and the core
+#     working set this pipeline names — `interrogate`, `tdd`, `blast-radius`.
+#     Skills are staged, not isolation (ADR-0008): everything the agent does
+#     still runs inside the nono sandbox under the profile's permission mode.
+#   • the `survey` node is process.exec, not an agent: a file list and a README
+#     head need no model, and the plan node reads the digest the shell produced.
+#
+#   • nothing here pushes: there is no token in `secretRefs` and no `gh` call, so
+#     the change stays a tested commit on a workspace branch and the deliverable
+#     is `feature.md`. Push and PR are the issue-to-pr sample's shape
+#     (docs/samples/home/issue-to-pr.yaml, ADR-0045).
+#
+# Paste into Library → New pipeline → New draft, Validate, Publish, then assign
+# to a project and start a run. Scheduling hangs off the assignment (ADR-0032).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: pstack-feature
+  description: >-
+    Survey a repository checkout, plan the feature through pstack's poteto-mode playbook, hold it behind a maintainer approval, implement and test it, interrogate the diff and fix what the interrogation finds, and publish the feature report.
+spec:
+  inputs:
+    type: object
+    required:
+      - goal
+      - repository
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: The feature to build, in the requester's own words.
+      repository:
+        type: string
+        minLength: 1
+        description: Project repository binding name, e.g. app.
+  outputs:
+    type: object
+    required:
+      - branch
+      - verdict
+    properties:
+      branch:
+        type: string
+      verdict:
+        type: string
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 10800
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+    # 1. The survey. Deterministic and credential-free: the file list, the README
+    #    head and the test entry points the plan has to respect. `git ls-files` is
+    #    tried first and `find` is the fallback, not decoration — in a linked
+    #    worktree the objects live outside the sandbox grant (same finding as
+    #    docs/samples/home/plan-with-approval.yaml).
+    - id: survey
+      kind: process.exec
+      timeoutSeconds: 300
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 5
+          multiplier: 2
+          maxSeconds: 60
+          jitter: false
+        retriableErrors:
+          - infra
+          - interrupted
+      config:
+        executable: sh
+        args:
+          - -c
+          - |
+            # The checkout lands at repos/<binding name>; the attempt's default cwd
+            # is work/scratch/, so probe both depths — cwd is a schema-literal path
+            # and cannot carry the input.
+            for d in "repos/$REPO" "../repos/$REPO"; do
+              test -d "$d" && { REPO_DIR="$d"; break; }
+            done
+            test -n "$REPO_DIR" || { echo "no checkout for $REPO in the run workspace" >&2; exit 1; }
+            cd "$REPO_DIR" || exit 1
+            echo "== files =="
+            LIST=$(git ls-files 2>/dev/null)
+            test -n "$LIST" || LIST=$(find . -path './.git' -prune -o -type f -print | head -300)
+            printf '%s\n' "$LIST" | head -300
+            echo
+            echo "== README.md =="
+            head -80 README.md 2>/dev/null || echo '(no README.md)'
+            echo
+            echo "== test entry points =="
+            for f in package.json Makefile go.mod pyproject.toml; do
+              test -f "$f" && { echo "-- $f"; head -40 "$f"; }
+            done
+        env:
+          REPO: ${{ inputs.repository }}
+        workspace:
+          mode: read_only
+          repositories:
+            - '${{ inputs.repository }}'
+        outputExtraction:
+          mode: none
+      outputs:
+        type: object
+        required:
+          - exit_code
+          - stdout_preview
+        properties:
+          exit_code:
+            type: integer
+          stdout_preview:
+            type: string
+    # 2. The plan, written through the collection's router. `poteto-mode` is the
+    #    entry skill for any multi-step task and picks the feature playbook; the
+    #    node only names the skill and the limits its own `outputs` schema
+    #    enforces, because a plan the approval gate cannot read is not a plan
+    #    (issue-to-pr's finding: run 42495774259 died at /plan three times with
+    #    limits the model was never told).
+    - id: plan
+      kind: agent.acp
+      dependsOn:
+        - survey
+      timeoutSeconds: 900
+      retry:
+        maxAttempts: 3
+        backoff:
+          baseSeconds: 5
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-pstack
+        sessionMode: new
+        workspace:
+          mode: read_only
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Feature to plan (the requester's own words):
+          ${{ inputs.goal }}
+
+          Repository checkout (read-only): ${{ inputs.repository }}
+          Survey produced by the survey node (file list, README head, test entry
+          points):
+          ${{ nodes.survey.outputs.stdout_preview }}
+
+          Use poteto-mode with the feature playbook: let the router take this task,
+          read the repository behind the survey, and settle the shape of the change
+          before you write a step down. Your reply is machine-checked against the
+          JSON schema below, so reply with JSON of exactly this shape:
+          {"plan": {"summary": "<the plan as a human reads it>",
+                    "steps": [{"file": "<repo path>", "action": "<the change to make>"}],
+                    "test_plan": "<what the implementer must run to prove it>"}}
+          Field meanings and EVERY limit that schema enforces — breaking one fails
+          the node even when the plan is good:
+            plan — REQUIRED object, and the only top-level property. A `summary` at
+              the top level, or plan sent as a string, fails as "missing property
+              'plan'". Never wrap plan in a string.
+            plan.summary — string, non-empty and AT MOST 600 CHARACTERS (maxLength:
+              600 is a hard ceiling, not a target). It is the ONLY plan text a human
+              sees at the approval gate: 2-6 short lines, plain text or simple "- "
+              bullets, one planned change per line in order — aim for ~450 characters
+              so there is margin under the 600 the reply is checked against.
+            plan.steps — array with AT LEAST 1 item (minItems: 1). Each item carries
+              BOTH `file` (a repository path, non-empty string) and `action` (the
+              change to make, non-empty string).
+            plan.test_plan — string, non-empty (minLength 1): names the test
+              command(s) the implementer must get green.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence; a final message that is not the object
+          fails the node even when the plan is good.
+      outputs:
+        type: object
+        required:
+          - plan
+        properties:
+          plan:
+            type: object
+            required:
+              - summary
+              - steps
+              - test_plan
+            properties:
+              summary:
+                type: string
+                minLength: 1
+                maxLength: 600
+              steps:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required:
+                    - file
+                    - action
+                  properties:
+                    file:
+                      type: string
+                      minLength: 1
+                    action:
+                      type: string
+                      minLength: 1
+              test_plan:
+                type: string
+                minLength: 1
+    # 3. A maintainer decides. The plan's own words, the test plan, and nothing
+    #    invented — the steps stay in the node outputs the approver can open.
+    - id: approve
+      kind: human.approval
+      dependsOn:
+        - plan
+      retry:
+        maxAttempts: 1
+      config:
+        summary: |
+          Feature for repository ${{ inputs.repository }}:
+          ${{ inputs.goal }}
+
+          Plan (pstack poteto-mode feature playbook):
+          ${{ nodes.plan.outputs.plan.summary }}
+
+          Test plan:
+          ${{ nodes.plan.outputs.plan.test_plan }}
+        approverRoles:
+          - maintainer
+        deadlineSeconds: 86400
+        onTimeout: fail
+    # 4. The change, written the same way: poteto-mode's `tdd` first, so the test
+    #    that fails comes before the code that passes it. It commits on a branch in
+    #    the run workspace and pushes nothing.
+    - id: implement
+      kind: agent.acp
+      dependsOn:
+        - approve
+      timeoutSeconds: 3600
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-pstack
+        sessionMode: new
+        workspace:
+          mode: run_workspace
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Implement the approved plan in repository ${{ inputs.repository }}.
+          Feature: ${{ inputs.goal }}
+          Approved plan (JSON): ${{ nodes.plan.outputs.plan }}
+          Approved test plan: ${{ nodes.plan.outputs.plan.test_plan }}
+
+          Use poteto-mode with the feature playbook, and let `tdd` set the order of
+          the work: write the failing test first, then the change that satisfies it.
+          1. Branch FIRST — this attempt may be a RETRY and the workspace carries
+             what earlier attempts did: look for an existing
+             `comm/pstack-feature-*` branch locally (git branch --list) and keep
+             working on it; only when none exists, create
+             `comm/pstack-feature-<short-slug>` from the current checkout.
+          2. Implement the plan step by step; add or adjust the tests the plan's
+             test_plan names.
+          3. Find the project's test command (README first, then package.json
+             scripts, Makefile, or `go test ./...`) and run it; fix and re-run until
+             the whole suite is green.
+          4. Commit the work on that branch (this sample pushes NOTHING: no token,
+             no remote). When an earlier attempt already committed and the tree is
+             clean, there is nothing to commit.
+          5. Reply with JSON of exactly this shape — your reply is machine-checked
+             against the JSON schema below:
+          {"implementation": {"summary": "<what you changed and why, in prose>",
+                              "branch": "<the branch you committed on>",
+                              "tests_passed": true,
+                              "test_output_tail": "<the last lines of the green run>"}}
+          Field meanings and EVERY limit that schema enforces:
+            implementation — REQUIRED object, the only top-level property.
+            implementation.summary — string, non-empty (minLength 1), AT MOST 600
+              CHARACTERS (maxLength: 600): the report line a human reads.
+            implementation.branch — string, non-empty (minLength 1): the exact
+              branch name you committed to. No remote, so no prefix beyond `comm/`.
+            implementation.tests_passed — REQUIRED JSON boolean (true/false, never
+              "true"), true only when the last full test run was green.
+            implementation.test_output_tail — string, non-empty (minLength 1), AT
+              MOST 1200 CHARACTERS: the tail of that green run's output as evidence.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence.
+      outputs:
+        type: object
+        required:
+          - implementation
+        properties:
+          implementation:
+            type: object
+            required:
+              - summary
+              - branch
+              - tests_passed
+              - test_output_tail
+            properties:
+              summary:
+                type: string
+                minLength: 1
+                maxLength: 600
+              branch:
+                type: string
+                minLength: 1
+              tests_passed:
+                type: boolean
+              test_output_tail:
+                type: string
+                minLength: 1
+                maxLength: 1200
+    # 5. The self-review. `interrogate` is the collection's break-my-diff skill;
+    #    it runs on the SAME workspace, so the fixing happens before a human ever
+    #    sees the branch. The reply carries both what the interrogation found and
+    #    what changed after it — a clean verdict with no evidence of the second
+    #    pass is not a verdict.
+    - id: review
+      kind: agent.acp
+      dependsOn:
+        - implement
+      timeoutSeconds: 1800
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-pstack
+        sessionMode: new
+        workspace:
+          mode: run_workspace
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Run interrogate on your own diff and fix what it finds.
+          Repository: ${{ inputs.repository }}
+          Branch under review: ${{ nodes.implement.outputs.implementation.branch }}
+          What the implement step believes it did: ${{ nodes.implement.outputs.implementation.summary }}
+          Its test evidence: ${{ nodes.implement.outputs.implementation.test_output_tail }}
+
+          1. Get the diff of that branch against the commit it started from
+             (`git log --oneline`, `git diff <base>..<branch>` or `git show` per
+             commit) and interrogate it: what breaks, what is untested, what is
+             wider blast-radius than the plan said.
+          2. FIX every finding you can fix in the same attempt, then re-run the
+             project's test command until the suite is green again.
+          3. Commit the fixes on the same branch — never a new branch, never a
+             push.
+          4. Reply with JSON of exactly this shape:
+          {"review": {"findings": ["<what interrogate raised>"],
+                      "fixed": ["<what you changed in response>"],
+                      "verdict": "<ship | needs-work>",
+                      "summary": "<the review in one line a maintainer reads>"}}
+          Field meanings and EVERY limit that schema enforces:
+            review — REQUIRED object, the only top-level property.
+            review.findings — array (may be EMPTY: an interrogation that found
+              nothing is reported as []). Each item is a non-empty string.
+            review.fixed — array (may be EMPTY). Each item is a non-empty string.
+            review.verdict — string, EXACTLY one of `ship` or `needs-work`, lowercase.
+              `needs-work` is the honest answer when a finding you cannot fix
+              remains.
+            review.summary — string, non-empty (minLength 1), AT MOST 600 CHARACTERS:
+              the line the approval trail and the report carry.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence.
+      outputs:
+        type: object
+        required:
+          - review
+        properties:
+          review:
+            type: object
+            required:
+              - findings
+              - fixed
+              - verdict
+              - summary
+            properties:
+              findings:
+                type: array
+                items:
+                  type: string
+                  minLength: 1
+              fixed:
+                type: array
+                items:
+                  type: string
+                  minLength: 1
+              verdict:
+                type: string
+                enum:
+                  - ship
+                  - needs-work
+              summary:
+                type: string
+                minLength: 1
+                maxLength: 600
+    # 6. The artifact a reviewer finds after the run closes: the implement and
+    #    review replies together — what changed, what interrogate said, what the
+    #    branch is.
+    - id: report
+      kind: artifact.publish
+      dependsOn:
+        - review
+      config:
+        name: feature.md
+        kind: markdown
+        mediaType: text/markdown
+        sensitivity: standard
+        from:
+          mode: output_json
+          value: ${{ nodes.review.outputs.review }}
+  resultBindings:
+    branch: ${{ nodes.implement.outputs.implementation.branch }}
+    verdict: ${{ nodes.review.outputs.review.verdict }}

@@ -1,0 +1,380 @@
+# docs/samples/home/matt-pocock-spec-to-pr.yaml — Matt Pocock's working loop as a
+# pipeline: turn the ask into a SPEC, hold the spec behind a human, cut the spec
+# into TICKETS, implement the tickets, and publish the result as a draft pull
+# request the team reviews.
+#
+# It is agent-driven, and every agent.acp node runs on ONE profile:
+#
+#   • `claude-matt` — the `claude` launcher (the `claude-agent-acp` adapter,
+#     probed at protocolVersion 1 in docs/compatibility/ACP.md) with the seeded
+#     "Matt Pocock skills" APM collection attached (ADR-0084: mattpocock/skills
+#     at a pinned tag, 27 skills, including the two this pipeline calls by name,
+#     `to-spec` and `to-tickets`). The profile is Claude Code, so authentication
+#     rides the operator's COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE (ADR-0040: the
+#     token is read at each launch and delivered as CLAUDE_CODE_OAUTH_TOKEN, never
+#     argv) or the ambient claude CLI login under $CLAUDE_CONFIG_DIR.
+#   • APM staging is not isolation (ADR-0008): the skills run inside the nono
+#     sandbox like any other workspace content, and the profile's permission mode
+#     still governs what the agent may do.
+#   • the last agent node pushes and opens a DRAFT PR, so it holds the project
+#     secret `github-push-token` (env GH_TOKEN) allowlisted to `claude-matt` ONLY
+#     — ADR-0045 — and the worker's agent egress must cover github.com +
+#     api.github.com (COMMUNICATION_AGENT_EGRESS_ALLOW, ADR-0035). For a PRIVATE
+#     repository also the repository row's GitHub credential (ADR-0061). The
+#     spec/tickets nodes get a read_only checkout and never see the token.
+#
+# `repository` is the project's repository BINDING name (07), not a URL; the
+# checkout lands at repos/<binding name> in the run workspace.
+#
+# Paste into Library → New pipeline → New draft, Validate, Publish, then assign to
+# a project and start a run. Nothing here publishes to main: the deliverable is a
+# DRAFT PR a maintainer reviews and a human merges.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: matt-pocock-spec-to-pr
+  description: >-
+    Turn a goal into a spec with Matt Pocock's to-spec skill, hold the spec behind a maintainer approval, cut it into tickets with to-tickets, implement them on the same Claude Code profile, and publish a draft pull request.
+spec:
+  inputs:
+    type: object
+    required:
+      - goal
+      - repository
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: What somebody wants, in their own words — the raw ask to-spec starts from.
+      repository:
+        type: string
+        minLength: 1
+        description: Project repository binding name, e.g. app.
+      branch_prefix:
+        type: string
+        minLength: 1
+        default: comm/spec-
+        description: >-
+          Branch prefix; the branch the implement node pushes is
+          <prefix>run-<slug>.
+  outputs:
+    type: object
+    required:
+      - pr_url
+      - branch
+    properties:
+      pr_url:
+        type: string
+      branch:
+        type: string
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 10800
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+    # 1. The spec. `to-spec` is the collection's conversation-to-spec skill; the
+    #    node gives it the ask and the read-only checkout, and asks for the spec
+    #    back as ONE markdown document. It is the only text the approval gate
+    #    renders, so the cap is written where the model can read it — the finding
+    #    recorded in docs/samples/home/issue-to-pr.yaml's /plan comment (run
+    #    42495774259 died three times over a limit nobody stated). 12000 characters
+    #    is a spec, not a summary; still, it is a ceiling the reply is checked
+    #    against, so the prompt says so.
+    - id: spec
+      kind: agent.acp
+      timeoutSeconds: 1200
+      retry:
+        maxAttempts: 3
+        backoff:
+          baseSeconds: 5
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-matt
+        sessionMode: new
+        workspace:
+          mode: read_only
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Use the to-spec skill on this ask:
+
+          ${{ inputs.goal }}
+
+          Repository checkout (read-only): ${{ inputs.repository }}
+          Read the repository behind the ask — layout, the files it touches, how it
+          is tested — and write the SPEC: what changes, what the finished behaviour
+          is, what is explicitly out of scope, and how each piece is verified. Write
+          it as a document a person who has not read this conversation can act on,
+          in the shape to-spec writes. Your reply is machine-checked against the JSON
+          schema below, so reply with JSON of exactly this shape:
+          {"spec": {"title": "<the spec's one-line name>",
+                    "markdown": "<the whole spec as one markdown document>"}}
+          Field meanings and EVERY limit that schema enforces — breaking one fails
+          the node even when the spec is good:
+            spec — REQUIRED object, and the only top-level property. A `markdown` at
+              the top level, or spec sent as a string, fails as "missing property
+              'spec'". Never wrap spec in a string.
+            spec.title — string, non-empty (minLength 1), AT MOST 120 CHARACTERS
+              (maxLength: 120): a line, not a paragraph.
+            spec.markdown — string, non-empty (minLength 1), AT MOST 12000 CHARACTERS
+              (maxLength: 12000 is a hard ceiling, not a target): the whole spec. It
+              is what a human reads at the approval gate and what to-tickets is cut
+              from downstream, so write the real document here — no placeholder, no
+              "see the conversation".
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence; a final message that is not the object fails
+          the node even when the spec is written.
+      outputs:
+        type: object
+        required:
+          - spec
+        properties:
+          spec:
+            type: object
+            required:
+              - title
+              - markdown
+            properties:
+              title:
+                type: string
+                minLength: 1
+                maxLength: 120
+              markdown:
+                type: string
+                minLength: 1
+                maxLength: 12000
+    # 2. A maintainer decides before the work is cut. The gate shows the spec in
+    #    full: approving a summary of a spec is not approving a spec.
+    - id: approve
+      kind: human.approval
+      dependsOn:
+        - spec
+      retry:
+        maxAttempts: 1
+      config:
+        summary: |
+          Spec for repository ${{ inputs.repository }}: ${{ nodes.spec.outputs.spec.title }}
+
+          Asked for:
+          ${{ inputs.goal }}
+
+          The spec (approve to cut it into tickets):
+          ${{ nodes.spec.outputs.spec.markdown }}
+        approverRoles:
+          - maintainer
+        deadlineSeconds: 86400
+        onTimeout: fail
+    # 3. The tickets. `to-tickets` reads the approved spec and cuts it into
+    #    tracer-bullet tickets; the node keeps them as data so the implement step
+    #    works the list rather than re-reading prose, and so the run's artifacts
+    #    carry the ticket list beside the PR.
+    - id: tickets
+      kind: agent.acp
+      dependsOn:
+        - approve
+      timeoutSeconds: 1200
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-matt
+        sessionMode: new
+        workspace:
+          mode: read_only
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Use the to-tickets skill on the approved spec below.
+
+          Spec title: ${{ nodes.spec.outputs.spec.title }}
+          Repository (read-only): ${{ inputs.repository }}
+
+          ${{ nodes.spec.outputs.spec.markdown }}
+
+          Cut the spec into the smallest set of tickets that delivers it, in the
+          order they should be implemented, in the shape to-tickets writes. Do not
+          invent work the spec did not ask for. Your reply is machine-checked
+          against the JSON schema below, so reply with JSON of exactly this shape:
+          {"tickets": [{"title": "<one-line ticket title>",
+                        "body": "<what this ticket delivers, and how it is verified>"}]}
+          Field meanings and EVERY limit that schema enforces:
+            tickets — REQUIRED array with AT LEAST 1 item (minItems: 1), and the only
+              top-level property. Each item is an object carrying BOTH `title` (a
+              non-empty string, AT MOST 160 CHARACTERS) and `body` (a non-empty
+              string, AT MOST 4000 CHARACTERS) — a ticket with no body fails.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence.
+      outputs:
+        type: object
+        required:
+          - tickets
+        properties:
+          tickets:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required:
+                - title
+                - body
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 160
+                body:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+    # 4. The change. The same profile, now in the run workspace holding the
+    #    allowlisted push token (secretRefs: project/github-push-token, env
+    #    GH_TOKEN — ADR-0045; the spec and tickets nodes never saw it). It works
+    #    the ticket list, gets the suite green, pushes ONE branch and opens ONE
+    #    DRAFT PR; the token never lands in argv or any file (ADR-0040). The retry
+    #    is idempotent because workspacePolicy defaults to continue_workspace
+    #    (ADR-0023 § 6) and the prompt makes the agent reuse the existing branch
+    #    and PR — the duplicate-PR failure written up in issue-to-pr.
+    - id: implement
+      kind: agent.acp
+      dependsOn:
+        - tickets
+      timeoutSeconds: 3600
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-matt
+        sessionMode: new
+        workspace:
+          mode: run_workspace
+          repositories:
+            - '${{ inputs.repository }}'
+        secretRefs:
+          - project/github-push-token
+        prompt: |
+          Implement the approved tickets in repository ${{ inputs.repository }}.
+          Spec: ${{ nodes.spec.outputs.spec.title }}
+          Tickets (JSON, in the order to work them): ${{ nodes.tickets.outputs.tickets }}
+          Branch prefix: ${{ inputs.branch_prefix }}
+
+          This attempt may be a RETRY: the workspace carries what earlier attempts
+          did, and the branch may already be pushed with a draft PR open. Finish that
+          work — never create a second branch or a second pull request for this spec.
+          1. Look FIRST for an existing branch on the prefix, locally
+             (git branch --list "<branch prefix>run-*") and on origin
+             (git ls-remote --heads origin "<branch prefix>run-*"); if one exists,
+             check it out and work on it. Only when none exists, create
+             <branch_prefix>run-<short-slug> — a short slug of a few lowercase words
+             from the spec title.
+          2. Work the tickets in order; for each, make the change and add or adjust
+             the tests that prove it.
+          3. Find the project's test command (README first, then package.json
+             scripts — for this sample's repo it is `npm test`) and run it; fix and
+             re-run until the whole suite is green.
+          4. Commit with one message per ticket (or one commit for the set), each
+             naming the ticket title.
+          5. Push: git push -u origin <branch>.
+          6. Publish the DRAFT pull request for that branch, titled with the spec
+             title. Check for an existing PR first (gh pr view on the branch): if one
+             exists, update it with gh pr edit and report its URL; NEVER open a
+             duplicate. Only when no PR exists yet, run gh pr create --draft --title
+             "<spec title>" --body "<the ticket list as checkboxes, then the tail of
+             the final test output>". Use the GH_TOKEN environment for authentication.
+          7. Reply with JSON of exactly this shape — your reply is machine-checked
+             against the JSON schema below:
+          {"summary": "<what you changed, ticket by ticket, in prose>",
+           "branch": "<the branch you pushed, exactly as pushed>",
+           "pr_url": "<the draft PR URL gh reported>",
+           "tests_passed": true,
+           "tickets_done": ["<ticket title you implemented>"]}
+          Field meanings and EVERY limit that schema enforces — breaking one fails
+          the node even when the draft PR is already open:
+            summary — REQUIRED string, non-empty (minLength 1), AT MOST 1200
+              CHARACTERS: one plain-text string.
+            branch — REQUIRED string, non-empty (minLength 1): the exact ref you
+              pushed.
+            pr_url — REQUIRED string that must match the pattern
+              ^https://github.com/.+/pull/[0-9]+$ — the exact URL gh printed: no
+              trailing slash, no query string, no surrounding words, not a compare or
+              tree URL.
+            tests_passed — REQUIRED JSON boolean (true/false, never "true"), true
+              only if the last full test run was green.
+            tickets_done — OPTIONAL array of non-empty ticket-title strings ([] when
+              nothing landed); no maximum length.
+          There is no wrapper object: these fields are the whole top-level object.
+          Write nothing outside it. Your FINAL message must be ONLY the JSON object —
+          no tool-call markup, no narration, no markdown fence; a final message that
+          is not the object fails the node even when the work is done.
+      outputs:
+        type: object
+        required:
+          - summary
+          - branch
+          - pr_url
+          - tests_passed
+        properties:
+          summary:
+            type: string
+            minLength: 1
+            maxLength: 1200
+          branch:
+            type: string
+            minLength: 1
+          pr_url:
+            type: string
+            pattern: ^https://github.com/.+/pull/[0-9]+$
+          tests_passed:
+            type: boolean
+          tickets_done:
+            type: array
+            items:
+              type: string
+              minLength: 1
+    # 5. The artifact a reviewer finds after the run closes: the PR the implement
+    #    node opened, with the ticket list and the test evidence beside it.
+    - id: report
+      kind: artifact.publish
+      dependsOn:
+        - implement
+      config:
+        name: delivery.md
+        kind: markdown
+        mediaType: text/markdown
+        sensitivity: standard
+        from:
+          mode: output_json
+          value: ${{ nodes.implement.outputs }}
+  resultBindings:
+    pr_url: ${{ nodes.implement.outputs.pr_url }}
+    branch: ${{ nodes.implement.outputs.branch }}

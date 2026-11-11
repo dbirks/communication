@@ -17,7 +17,8 @@ package samples_test
 // typed {role, content} in the shipped schema asset, content is a bindingText
 // slot — the same shape agent.acp's prompt is — and the claim-time resolver
 // (ADR-0027) interpolates it before the config reaches a worker. TestSample-
-// ModelChatMessageContentBinds proves it for both samples: `${{ inputs.goal }}`
+// ModelChatMessageContentBinds proves it for both credential-free samples:
+// `${{ inputs.goal }}`
 // and `${{ nodes.<id>.outputs.<name> }}` inside a prompt become compiled
 // expressions, not text the model reads verbatim.
 
@@ -66,6 +67,28 @@ var samples = []sample{
 		},
 		agentDriven: true,
 	},
+	{
+		path: "../../docs/samples/home/matt-pocock-spec-to-pr.yaml",
+		kinds: []string{
+			"agent.acp", "human.approval", "agent.acp", "agent.acp", "artifact.publish",
+		},
+		agentDriven: true,
+	},
+	{
+		path: "../../docs/samples/home/pstack-feature.yaml",
+		kinds: []string{
+			"process.exec", "agent.acp", "human.approval", "agent.acp", "agent.acp",
+			"artifact.publish",
+		},
+		agentDriven: true,
+	},
+	{
+		path: "../../docs/samples/home/implement-then-codex-review.yaml",
+		kinds: []string{
+			"agent.acp", "agent.acp", "human.approval", "artifact.publish",
+		},
+		agentDriven: true,
+	},
 }
 
 // compileSample runs the publish path's three steps and fails the test listing
@@ -101,7 +124,7 @@ func report(t *testing.T, step, path string, d diag.List) {
 	}
 }
 
-// TestSamplePipelinesCompileWithZeroDiagnostics is the gate: both documents
+// TestSamplePipelinesCompileWithZeroDiagnostics is the gate: every document
 // parse, validate against the shipped schema asset and compile.
 func TestSamplePipelinesCompileWithZeroDiagnostics(t *testing.T) {
 	for _, s := range samples {
@@ -130,9 +153,9 @@ func TestSamplePipelinesCompileWithZeroDiagnostics(t *testing.T) {
 // TestSamplePipelinesUseNoAgentACPNodes guards the reason the two credential-free
 // samples exist: without the pi launcher (ADR-0059) the home-cluster worker holds
 // no ACP harness credentials, so a sample that leaned on agent.acp could be
-// published and could never run. The agent-driven issue-to-pr sample is excluded
-// because it names pi profiles, whose launcher is API-key delivery, not ACP
-// harness credentials.
+// published and could never run. The agent-driven samples are excluded because
+// they name pi/Claude Code/Codex profiles, whose launchers authenticate with an
+// API key or a harness login, not ACP harness credentials.
 func TestSamplePipelinesUseNoAgentACPNodes(t *testing.T) {
 	for _, s := range samples {
 		if s.agentDriven {

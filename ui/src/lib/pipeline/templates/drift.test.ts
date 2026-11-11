@@ -1,8 +1,11 @@
 /**
- * Drift guard for the three bundled sample documents.
+ * Drift guard for the six bundled sample documents.
  *
  * `ui/src/lib/pipeline/templates/*.yaml.txt` are copies of
- * `docs/samples/home/*.yaml` — they exist only because Vite refuses to import a
+ * `docs/samples/home/*.yaml` — each is one row of the sample list they name,
+ * byte-for-byte, and every one of those files is compiled by the Go test.
+ *
+ * They exist only because Vite refuses to import a
  * file above the `ui/` fs root (`Denied ID: …/plan-with-approval.yaml?raw`) and
  * the build config is not this change's to touch, and they end in `.txt`
  * because `oxfmt` reindents a `.yaml` copy, which is exactly the drift this
@@ -52,7 +55,19 @@ function bundledBytes(slug: string): Uint8Array {
   return new TextEncoder().encode(template?.documentYaml ?? "");
 }
 
-const SAMPLES = ["plan-with-approval", "security-review", "issue-to-pr"] as const;
+function bundledDescription(slug: string): string {
+  const template = PIPELINE_TEMPLATES.find((candidate) => candidate.id === slug);
+  return template?.description ?? "";
+}
+
+const SAMPLES = [
+  "plan-with-approval",
+  "security-review",
+  "issue-to-pr",
+  "matt-pocock-spec-to-pr",
+  "pstack-feature",
+  "implement-then-codex-review",
+] as const;
 
 describe("bundled pipeline templates", () => {
   it.each(SAMPLES)("is byte-identical to docs/samples/home/%s.yaml", async (slug) => {
@@ -63,22 +78,107 @@ describe("bundled pipeline templates", () => {
     expect(Array.from(bundledBytes(slug))).toEqual(Array.from(original));
   });
 
-  it("ships the three samples plus Blank, and only Blank is the skeleton", () => {
+  it.each(SAMPLES)("quotes a card line its README row carries: %s", async (slug) => {
+    // The gallery's one-line description is NOT a second copy writers maintain:
+    // `docs/samples/home/README.md` owns it, and this reads the docs file so a
+    // reworded row that the card never picked up goes red here.
+    const fs = await nodeFs();
+    const readme = new TextDecoder().decode(
+      fs.readFileSync(join(docsDir(fs, process.cwd()), "README.md")),
+    );
+    expect(readme).toContain(bundledDescription(slug));
+  });
+
+  it("ships the six samples plus Blank, and only Blank is the skeleton", () => {
     expect(PIPELINE_TEMPLATES.map((template) => template.id)).toEqual([
       "blank",
       "plan-with-approval",
       "security-review",
       "issue-to-pr",
+      "matt-pocock-spec-to-pr",
+      "pstack-feature",
+      "implement-then-codex-review",
     ]);
     // Blank seeds its first draft from the inlined skeleton, not from a
-    // sample; the three samples stay byte-identical to `docs/samples/home/`.
+    // sample; the six samples stay byte-identical to `docs/samples/home/`.
     expect(PIPELINE_TEMPLATES.map((template) => template.source)).toEqual([
       "skeleton",
       "docs/samples/home",
       "docs/samples/home",
       "docs/samples/home",
+      "docs/samples/home",
+      "docs/samples/home",
+      "docs/samples/home",
     ]);
     expect(PIPELINE_TEMPLATES[0]?.documentYaml).toContain("kind: Pipeline");
+  });
+});
+
+describe("template card facts", () => {
+  // The Workflows card grid reads these four lists, so they are the card's
+  // contract: a description long enough to need a third line, an agent word that
+  // names a launcher instead of a product, or an icon that is not a Tabler name
+  // all show up as a card that lies about the pipeline behind it.
+  const AGENTS = ["Claude Code", "Codex", "Pi"];
+
+  it("keeps every description one short line", () => {
+    for (const template of PIPELINE_TEMPLATES) {
+      expect(template.description, `${template.id} has a description`).not.toBe("");
+      expect(template.description).not.toMatch(/\n/);
+      expect(template.description.length, `${template.id}'s description`).toBeLessThanOrEqual(110);
+    }
+  });
+
+  it("names agents from the product vocabulary only", () => {
+    for (const template of PIPELINE_TEMPLATES) {
+      for (const agent of template.agents) {
+        expect(AGENTS, `${template.id} names ${agent}`).toContain(agent);
+      }
+      // An agent list is only ever non-empty when the document actually carries
+      // an `agent.acp` node — the credential-free samples say so on the card.
+      const namesAgentNode = /kind: agent\.acp/.test(template.documentYaml);
+      expect(template.agents.length > 0, `${template.id}'s agent chips`).toBe(namesAgentNode);
+    }
+  });
+
+  it("carries a Tabler icon name and the needs a run has", () => {
+    for (const template of PIPELINE_TEMPLATES) {
+      expect(template.icon).toMatch(/^Icon[A-Z]/);
+      for (const need of template.needs) {
+        expect(need).not.toBe("");
+        // Needs read as the card's dashed `needs …` chip, so they are words for a
+        // person, not an env var name.
+        expect(need, `${template.id} needs ${need}`).not.toMatch(/[A-Z_]{4,}|\$\{\{/);
+      }
+      expect(template.collections.every((name) => name !== "")).toBe(true);
+    }
+    // The three collection-era templates say which bundle they attach, and the
+    // Codex one says what it fails closed without.
+    expect(
+      PIPELINE_TEMPLATES.find((template) => template.id === "matt-pocock-spec-to-pr")?.collections,
+    ).toEqual(["Matt Pocock skills"]);
+    expect(
+      PIPELINE_TEMPLATES.find((template) => template.id === "pstack-feature")?.collections,
+    ).toEqual(["pstack (Claude Code)"]);
+    expect(
+      PIPELINE_TEMPLATES.find((template) => template.id === "implement-then-codex-review")?.needs,
+    ).toContain("Codex login");
+  });
+
+  it("counts the nodes the cards advertise", () => {
+    // The card's `TEMPLATE · N STEPS` line and the dialog's `N steps` line both
+    // read `stepCount`, so a wrong count is wrong twice. The three new samples
+    // are the chains ADR-0084 names.
+    expect(
+      PIPELINE_TEMPLATES.find((template) => template.id === "matt-pocock-spec-to-pr")?.stepCount,
+    ).toBe(5);
+    expect(PIPELINE_TEMPLATES.find((template) => template.id === "pstack-feature")?.stepCount).toBe(
+      6,
+    );
+    expect(
+      PIPELINE_TEMPLATES.find((template) => template.id === "implement-then-codex-review")
+        ?.stepCount,
+    ).toBe(4);
   });
 });
 

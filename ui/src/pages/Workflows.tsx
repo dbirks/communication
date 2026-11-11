@@ -36,9 +36,18 @@
  *   still see the cards, disabled, with the one-line reason.
  */
 import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
+import {
+  IconClipboardText,
+  IconEyeCheck,
+  IconGitPullRequest,
+  IconNotebook,
+  IconPlus,
+  IconShieldLock,
+  IconStack2,
+} from "@tabler/icons-react";
 import { Button } from "../components/ds/Button";
 import { Input, Select } from "../components/ds/Field";
 import Page from "../components/ds/Page";
@@ -64,7 +73,13 @@ import { WorkflowRow, MoveToFolderDialog } from "../components/workflows/Workflo
 import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
 import { NewWorkflowDialog } from "../components/workflows/NewWorkflowDialog";
 import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../lib/pipeline/authoring";
-import { PIPELINE_TEMPLATES, templateChain, type TemplateId } from "../lib/pipeline/templates";
+import { openAssistantPopover } from "../components/assistant/AssistantPopover";
+import {
+  PIPELINE_TEMPLATES,
+  templateChain,
+  type PipelineTemplate,
+  type TemplateId,
+} from "../lib/pipeline/templates";
 
 /* ------------------------------------------------------------- /workflows */
 
@@ -102,6 +117,144 @@ export function WorkflowsTabs({ active }: { active: "workflows" | "steps" }) {
         </Link>
       ))}
     </nav>
+  );
+}
+
+/** The section label above a block of the page (design: mono 10.5px, uppercase,
+ * letterspaced, the faintest ink on the page — a label, not a heading). */
+function SectionLabel({ children, testid }: { children: ReactNode; testid?: string }) {
+  return (
+    <p
+      className="mb-[8px] font-mono text-[10.5px] uppercase tracking-[.06em] text-faint"
+      data-testid={testid}
+    >
+      {children}
+    </p>
+  );
+}
+
+/**
+ * The card grid's shared shell: 148px tall, 4px corner, a flex column whose last
+ * text row sits at the bottom (`mt-auto` on the chain), and the app's focus ring.
+ * A template card carries an ink hairline that darkens to ink on hover; the Blank
+ * card carries the dashed edge, because it is the absence of a template.
+ */
+const STARTER_CARD_CLASS =
+  "flex min-h-[148px] flex-col rounded-[4px] bg-surface p-[14px] text-left " +
+  // The app shell's phone rule centres every `main button`'s flex children; a
+  // card's copy is left-aligned at every width (reflow-390 item 1), so the card
+  // claims its own cross-axis alignment back below 560px.
+  "max-[559px]:items-start! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent " +
+  "disabled:cursor-not-allowed disabled:opacity-60";
+
+/** The template's own Tabler icon, by the name `templates.ts` carries. An unknown
+ * name draws the notebook rather than nothing: the card always has its tile. */
+const TEMPLATE_ICONS: Record<string, ComponentType<{ size?: number; stroke?: number }>> = {
+  IconPlus,
+  IconNotebook,
+  IconShieldLock,
+  IconGitPullRequest,
+  IconClipboardText,
+  IconStack2,
+  IconEyeCheck,
+};
+
+/** One chip on a card: solid for what the template IS (an agent, a collection),
+ * dashed + `needs ` for what it REQUIRES and this org may not have. */
+function StarterChip({ need = false, children }: { need?: boolean; children: ReactNode }) {
+  return (
+    <span
+      className={
+        need
+          ? "rounded-[3px] border border-dashed border-line px-[5px] py-[1px] font-mono text-[10.5px] text-muted"
+          : "rounded-[3px] border border-line px-[5px] py-[1px] font-mono text-[10.5px] text-ink-2"
+      }
+    >
+      {need ? `needs ${children}` : children}
+    </span>
+  );
+}
+
+/** Blank's own words — the card is a starting point, not a sample, so it does not
+ * quote the skeleton's build note (the same reason `starterHint` refuses it in the
+ * New workflow dialog: a person choosing a start is not being told how the file is
+ * assembled). */
+const BLANK_CARD_TITLE = "Empty canvas";
+const BLANK_CARD_LINE = "One agent step to start from.";
+
+/**
+ * One starter card: the icon tile and the step kicker, the name, what it does, the
+ * document's own chain, and the chips saying which agents and collections it runs
+ * on and what it needs first. Clicking opens the New workflow dialog with this
+ * starter selected; a reader without the library role sees the cards inert, with
+ * the one-line reason below the grid.
+ */
+function StarterCard({
+  template,
+  canAuthor,
+  onPick,
+  testid,
+}: {
+  template: PipelineTemplate;
+  canAuthor: boolean;
+  onPick: () => void;
+  /** The card's test handle: `workflow-starter-blank` written out for Blank, the
+   * template id for a sample. */
+  testid: string;
+}) {
+  const blank = template.id === "blank";
+  const chain = blank ? "" : templateChain(template);
+  const Icon = TEMPLATE_ICONS[template.icon] ?? IconNotebook;
+  const chips = blank ? [] : [...template.agents, ...template.collections];
+  return (
+    <button
+      type="button"
+      disabled={!canAuthor}
+      onClick={onPick}
+      className={`${STARTER_CARD_CLASS} ${
+        blank ? "border border-dashed border-line-strong" : "border border-line hover:border-ink"
+      }`}
+      data-testid={testid}
+    >
+      <span className="flex items-center gap-[8px]">
+        {/* The tile is decoration beside the kicker's words — the kicker names the
+            starter, so the icon is hidden from the accessibility tree. */}
+        <span
+          aria-hidden="true"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] bg-fill text-ink-2"
+        >
+          <Icon size={16} stroke={1.7} />
+        </span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[.06em] text-faint">
+          {blank
+            ? "START BLANK"
+            : template.stepCount === null
+              ? "TEMPLATE"
+              : `TEMPLATE · ${template.stepCount} ${template.stepCount === 1 ? "STEP" : "STEPS"}`}
+        </span>
+      </span>
+      <span className="mt-[8px] text-[14px] font-semibold text-ink">
+        {blank ? BLANK_CARD_TITLE : template.label}
+      </span>
+      <span className="mt-[2px] line-clamp-2 text-[12.5px] leading-[17px] text-muted">
+        {blank ? BLANK_CARD_LINE : template.description}
+      </span>
+      {chain ? (
+        <span className="mt-auto truncate pt-[8px] font-mono text-[11px] text-faint">{chain}</span>
+      ) : null}
+      {chips.length > 0 || template.needs.length > 0 ? (
+        <span className="mt-[8px] flex flex-wrap gap-[4px]">
+          {chips.map((chip) => (
+            <StarterChip key={chip}>{chip}</StarterChip>
+          ))}
+          {template.needs.map((need) => (
+            <StarterChip key={`need:${need}`} need>
+              {need}
+            </StarterChip>
+          ))}
+        </span>
+      ) : null}
+    </button>
   );
 }
 
@@ -353,7 +506,9 @@ export function LibraryPage() {
       testid="library-page"
       title={<span id="library-heading">Workflows</span>}
       subtitle={
-        pipelines.data ? <span data-testid="workflows-count">{items.length}</span> : undefined
+        <span className="font-sans text-[13px]" data-testid="workflows-subtitle">
+          Reusable pipelines. Projects assign them; every run pins a revision.
+        </span>
       }
       band={<WorkflowsTabs active="workflows" />}
       actions={
@@ -382,63 +537,49 @@ export function LibraryPage() {
         {me.isError ? (
           <ProblemBanner error={me.error} fallback="Your identity could not be read." />
         ) : null}
-        {/* The starter cards: the dialog's own three starting points, so a card
-          click preselects what `New workflow` would otherwise start from. */}
-        <div
-          /* The design's three columns (1b: “Starter cards: 3 columns, gap 12”),
-           one honest grid at every width (1b review, 390/1280): one column on
-           the phone, 2×2 between phone and desktop, and three across at 1280 —
-           the card the design has no fourth slot for WRAPS onto the second row
-           rather than squeezing the row into four 237px columns. */
-          className="grid grid-cols-1 gap-3 min-[700px]:grid-cols-2 min-[1150px]:grid-cols-3"
-          data-testid="workflow-starters"
-        >
-          <button
-            type="button"
-            disabled={!canAuthor}
-            onClick={() => setNewWorkflow({ open: true, preset: "blank" })}
-            className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-dashed border-line bg-surface p-3 text-left max-[559px]:items-start! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid="workflow-starter-blank"
+        {/* The START FROM gallery: every vetted starting point the dialog offers,
+          one card each, in the grid the design names — three across on a desk
+          (≥1100px), two from a small laptop (≥640px), one on a phone. Blank leads,
+          because it is the absence of a template, not another one. */}
+        <section aria-labelledby="workflows-start-from-label">
+          <SectionLabel testid="workflows-start-from-label">Start from</SectionLabel>
+          <div
+            className="grid grid-cols-1 gap-[10px] min-[640px]:grid-cols-2 min-[1100px]:grid-cols-3"
+            data-testid="workflow-starters"
           >
-            <span className="font-mono text-[10px] tracking-[.06em] text-faint">START BLANK</span>
-            <span className="text-[13px] font-semibold text-ink">Empty canvas</span>
-            <span className="text-[12px] text-muted">One agent step to start from.</span>
-          </button>
-          {PIPELINE_TEMPLATES.filter((template) => template.id !== "blank").map((template) => (
-            <button
-              key={template.id}
-              type="button"
-              disabled={!canAuthor}
-              onClick={() => setNewWorkflow({ open: true, preset: template.id })}
-              className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-line bg-surface p-3 text-left max-[559px]:items-start! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
-              data-testid={`workflow-starter-${template.id}`}
+            {PIPELINE_TEMPLATES.filter((template) => template.id === "blank").map((template) => (
+              // The blank card leads, and its id is written out: the vitest and
+              // e2e suites both address that one starter by name, and
+              // `scripts/check-testids.mjs` only sees an id written as a literal.
+              <StarterCard
+                key={template.id}
+                template={template}
+                testid="workflow-starter-blank"
+                canAuthor={canAuthor}
+                onPick={() => setNewWorkflow({ open: true, preset: template.id })}
+              />
+            ))}
+            {PIPELINE_TEMPLATES.filter((template) => template.id !== "blank").map((template) => (
+              <StarterCard
+                key={template.id}
+                template={template}
+                testid={`workflow-starter-${template.id}`}
+                canAuthor={canAuthor}
+                onPick={() => setNewWorkflow({ open: true, preset: template.id })}
+              />
+            ))}
+          </div>
+          {/* The reason the cards are inert — only once `me` has been read:
+            loading is not authoring, and an admin is never flashed the refusal. */}
+          {me.isSuccess && !canAuthor ? (
+            <p
+              className="mt-[6px] font-mono text-[10px] text-faint"
+              data-testid="workflow-starters-need-role"
             >
-              <span className="font-mono text-[10px] tracking-[.06em] text-faint">
-                {template.stepCount === null
-                  ? "TEMPLATE"
-                  : `TEMPLATE · ${template.stepCount} ${template.stepCount === 1 ? "STEP" : "STEPS"}`}
-              </span>
-              <span className="text-[13px] font-semibold text-ink">{template.label}</span>
-              {templateChain(template) ? (
-                <span className="font-mono text-[10.5px] text-ink-2">
-                  {templateChain(template)}
-                </span>
-              ) : (
-                <span className="text-[12px] text-muted">{template.description}</span>
-              )}
-            </button>
-          ))}
-        </div>
-        {/* The reason the cards are inert — only once `me` has been read:
-          loading is not authoring, and an admin is never flashed the refusal. */}
-        {me.isSuccess && !canAuthor ? (
-          <p
-            className="-mt-2 font-mono text-[10px] text-faint"
-            data-testid="workflow-starters-need-role"
-          >
-            {`needs ${LIBRARY_ROLE_LABEL} to create`}
-          </p>
-        ) : null}
+              {`needs ${LIBRARY_ROLE_LABEL} to create`}
+            </p>
+          ) : null}
+        </section>
         {pipelines.isPending ? <Spinner label="Loading the workflow library" /> : null}
         {pipelines.isError && !newWorkflow.open ? (
           <ProblemBanner
@@ -472,131 +613,194 @@ export function LibraryPage() {
             fallback="Some rows could not be read in full, so parts of those rows are missing."
           />
         ) : null}
-        {pipelines.data ? (
-          <div className="flex flex-wrap items-center gap-[6px]" data-testid="workflows-filters">
-            <Input
-              id="workflows-search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search workflows"
-              aria-label="Search workflows"
-              /* The design's search field is the toolbar's elastic element: it
-               takes the row's free space at desktop width (chips sit beside it)
-               and the whole line at phone width. */
-              className="min-[600px]:w-auto min-[600px]:min-w-[240px] min-[600px]:flex-1"
-              data-testid="workflows-search"
-            />
-            {/* Finding 10: folders are a filter on this page, not a sidebar
+        {/* The org's own workflows. The count is the list read's own rows (the
+          header no longer prints a lone number), and with nothing to narrow the
+          toolbar is not shown at all — the empty panel below is the page's answer
+          to an org that has not made one yet. */}
+        <section aria-labelledby="workflows-mine-label">
+          <p
+            className="mb-[8px] font-mono text-[10.5px] uppercase tracking-[.06em] text-faint"
+            data-testid="workflows-mine-label"
+          >
+            {pipelines.data ? (
+              <>
+                {`Your workflows · `}
+                <span data-testid="workflows-count">{items.length}</span>
+              </>
+            ) : (
+              "Your workflows"
+            )}
+          </p>
+          {pipelines.data && items.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-[6px]" data-testid="workflows-filters">
+              <Input
+                id="workflows-search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search workflows"
+                aria-label="Search workflows"
+                /* The design's search field shares the toolbar's row with the chips
+               and stops at 360px: a search box across the whole page read as a
+               heading-level control and buried the filters beside it. */
+                className="min-[600px]:w-auto min-[600px]:min-w-[240px] min-[600px]:flex-1 max-w-[360px]"
+                data-testid="workflows-search"
+              />
+              {/* Finding 10: folders are a filter on this page, not a sidebar
               layout. Default `All folders`; the pick writes the same `?folder=`
               param the page already reads, so a filtered list is a shareable
               address. It only appears when the list actually carries folders —
               an all-unfiled library has nothing to filter by. */}
-            {realFolderNames.length > 0 ? (
-              <label className="flex items-center gap-[6px]">
-                <span className="sr-only">Filter by folder</span>
-                <Select
-                  aria-label="Filter by folder"
-                  value={effectiveFolderFilter}
-                  onChange={(event) => {
+              {realFolderNames.length > 0 ? (
+                <label className="flex items-center gap-[6px]">
+                  <span className="sr-only">Filter by folder</span>
+                  <Select
+                    aria-label="Filter by folder"
+                    value={effectiveFolderFilter}
+                    onChange={(event) => {
+                      const next = new URLSearchParams(searchParams);
+                      if (event.target.value) next.set("folder", event.target.value);
+                      else next.delete("folder");
+                      setSearchParams(next, { replace: true });
+                    }}
+                    className="h-[30px] w-auto font-mono text-[11px]"
+                    data-testid="workflows-folder-filter"
+                  >
+                    <option value="">All folders</option>
+                    {folderNames.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              ) : null}
+              <FilterChip
+                active={filter === "all" && usedInProject === "" && search === ""}
+                onClick={() => {
+                  setFilter("all");
+                  setUsedInProject("");
+                  setSearch("");
+                }}
+                testid="workflows-filter-all"
+              >
+                all
+              </FilterChip>
+              <FilterChip
+                active={filter === "has-draft"}
+                onClick={() =>
+                  setFilter((current) => (current === "has-draft" ? "all" : "has-draft"))
+                }
+                testid="workflows-filter-draft"
+              >
+                has open draft
+              </FilterChip>
+              {assignmentsSettled
+                ? usedByProjects.map((project) => (
+                    <FilterChip
+                      key={project.id}
+                      active={usedInProject === project.id}
+                      onClick={() =>
+                        setUsedInProject((current) => (current === project.id ? "" : project.id))
+                      }
+                      testid={`workflows-used-in-${project.id}`}
+                    >
+                      {`used in ${project.name}`}
+                    </FilterChip>
+                  ))
+                : null}
+              {effectiveFolderFilter ? (
+                <FilterChip
+                  active
+                  onClick={() => {
                     const next = new URLSearchParams(searchParams);
-                    if (event.target.value) next.set("folder", event.target.value);
-                    else next.delete("folder");
+                    next.delete("folder");
                     setSearchParams(next, { replace: true });
                   }}
-                  className="h-[30px] w-auto font-mono text-[11px]"
-                  data-testid="workflows-folder-filter"
+                  testid="workflows-filter-folder"
                 >
-                  <option value="">All folders</option>
-                  {folderNames.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-            ) : null}
-            <FilterChip
-              active={filter === "all" && usedInProject === "" && search === ""}
-              onClick={() => {
-                setFilter("all");
-                setUsedInProject("");
-                setSearch("");
-              }}
-              testid="workflows-filter-all"
+                  {`in ${folderLabel(effectiveFolderFilter)}`}
+                </FilterChip>
+              ) : null}
+            </div>
+          ) : null}
+          {/* An org with no workflow at all gets the way in, not a sentence about
+            the absence: the three real doors are a card above, `Import YAML`, and
+            the assistant — so they are HERE, beside the words that name them. The
+            assistant ask opens with its prefix only: a made-up goal would put
+            words in the reader's mouth. */}
+          {pipelines.data && rows.length === 0 ? (
+            <div
+              className="rounded-[4px] border border-dashed border-line-strong p-[24px] text-center"
+              data-testid="workflows-empty-panel"
             >
-              all
-            </FilterChip>
-            <FilterChip
-              active={filter === "has-draft"}
-              onClick={() =>
-                setFilter((current) => (current === "has-draft" ? "all" : "has-draft"))
-              }
-              testid="workflows-filter-draft"
-            >
-              has open draft
-            </FilterChip>
-            {assignmentsSettled
-              ? usedByProjects.map((project) => (
-                  <FilterChip
-                    key={project.id}
-                    active={usedInProject === project.id}
-                    onClick={() =>
-                      setUsedInProject((current) => (current === project.id ? "" : project.id))
-                    }
-                    testid={`workflows-used-in-${project.id}`}
+              <p className="text-[14px] font-semibold text-ink" data-testid="workflows-empty">
+                No workflows yet
+              </p>
+              <p className="mt-[2px] text-[13px] text-muted">
+                Start from a template above, import YAML, or describe one to the assistant.
+              </p>
+              <div className="mt-[12px] flex flex-wrap items-center justify-center gap-[8px]">
+                <Button
+                  variant="primary"
+                  disabled={!canAuthor}
+                  onClick={() => setNewWorkflow({ open: true, preset: null })}
+                  data-testid="workflows-empty-new"
+                >
+                  New workflow
+                </Button>
+                {canAuthor ? (
+                  <Button
+                    variant="secondary"
+                    onClick={() => setImportOpen(true)}
+                    data-testid="workflows-empty-import"
                   >
-                    {`used in ${project.name}`}
-                  </FilterChip>
-                ))
-              : null}
-            {effectiveFolderFilter ? (
-              <FilterChip
-                active
-                onClick={() => {
-                  const next = new URLSearchParams(searchParams);
-                  next.delete("folder");
-                  setSearchParams(next, { replace: true });
-                }}
-                testid="workflows-filter-folder"
-              >
-                {`in ${folderLabel(effectiveFolderFilter)}`}
-              </FilterChip>
-            ) : null}
-          </div>
-        ) : null}
-        {pipelines.data && visible.length === 0 ? (
-          <div className="flex flex-wrap items-center gap-[8px]">
-            <p className="text-[12.5px] text-muted" data-testid="workflows-empty">
-              {rows.length === 0
-                ? "No workflows yet. Start from a card above or New workflow."
-                : "No workflow matches the current filter."}
-            </p>
-            {/* The sentence named the filter; the way out of it is the action
-              beside it (review3 item: “Clear search”). It appears only when a
-              filter is actually narrowing the list — an empty library has
-              nothing to clear — and it clears every filter the row holds, the
-              search box and the chips and the folder alike, because the reader
-              who landed here wants the list back, not one control at a time. */}
-            {rows.length > 0 && filtersActive ? (
-              <Button
-                variant="secondary"
-                compact
-                onClick={clearFilters}
-                data-testid="workflows-clear-search"
-              >
-                Clear search
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-        {pipelines.data && visible.length > 0 ? (
-          <ul
-            className="rounded-[3px] border border-line-strong bg-surface px-3"
-            data-testid="workflows-list"
-          >
-            {visible.map(rowNode)}
-          </ul>
-        ) : null}
+                    Import YAML
+                  </Button>
+                ) : null}
+                <Button
+                  variant="secondary"
+                  onClick={() => openAssistantPopover("Help me design a workflow for ")}
+                  data-testid="workflows-empty-ask"
+                >
+                  Ask the assistant
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {/* The list is not empty, the FILTER is: the sentence names that, and the
+            way out of it is the action beside it (review3 item: “Clear search”). It
+            clears every filter the row holds — the search box, the chips and the
+            folder alike — because the reader who landed here wants the list back,
+            not one control at a time. */}
+          {pipelines.data && rows.length > 0 && visible.length === 0 ? (
+            <div className="flex flex-wrap items-center gap-[8px]">
+              {/* One `workflows-empty` handle for both empty answers — the panel and
+                this line are mutually exclusive branches of the same read, and the
+                e2e pass looks up the no-match case by that id. */}
+              <p className="text-[12.5px] text-muted" data-testid="workflows-empty">
+                No workflow matches the current filter.
+              </p>
+              {filtersActive ? (
+                <Button
+                  variant="secondary"
+                  compact
+                  onClick={clearFilters}
+                  data-testid="workflows-clear-search"
+                >
+                  Clear search
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {pipelines.data && visible.length > 0 ? (
+            <ul
+              className="rounded-[3px] border border-line-strong bg-surface px-3"
+              data-testid="workflows-list"
+            >
+              {visible.map(rowNode)}
+            </ul>
+          ) : null}
+        </section>
         <ImportYamlDialog open={importOpen} onClose={() => setImportOpen(false)} />
         <NewWorkflowDialog
           open={newWorkflow.open}

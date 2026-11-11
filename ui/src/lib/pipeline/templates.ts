@@ -26,6 +26,9 @@ import { parseGraph } from "./graphDoc";
 import planWithApprovalYaml from "./templates/plan-with-approval.yaml.txt?raw";
 import securityReviewYaml from "./templates/security-review.yaml.txt?raw";
 import issueToPrYaml from "./templates/issue-to-pr.yaml.txt?raw";
+import mattPocockSpecToPrYaml from "./templates/matt-pocock-spec-to-pr.yaml.txt?raw";
+import pstackFeatureYaml from "./templates/pstack-feature.yaml.txt?raw";
+import implementThenCodexReviewYaml from "./templates/implement-then-codex-review.yaml.txt?raw";
 
 /**
  * The minimal skeleton every zero-document start posts as its first draft —
@@ -47,18 +50,34 @@ spec:
       kind: process.exec
 `;
 
-export type TemplateId = "blank" | "plan-with-approval" | "security-review" | "issue-to-pr";
+export type TemplateId =
+  | "blank"
+  | "plan-with-approval"
+  | "security-review"
+  | "issue-to-pr"
+  | "matt-pocock-spec-to-pr"
+  | "pstack-feature"
+  | "implement-then-codex-review";
 
+/**
+ * What the Workflows card says about the harnesses a template leans on: the
+ * agent products its `agent.acp` nodes name (never a launcher id — a reader
+ * picks "Claude Code", the profile picks the launcher), the APM collections its
+ * profiles attach (ADR-0084), and the host facts a run needs that this
+ * organization may not have yet. A template with an empty `agents` list runs
+ * with no agent credentials at all; that is a selling point, not a gap, and the
+ * `needs` lines say so in the reader's words.
+ */
 export interface PipelineTemplate {
   id: TemplateId;
   /** Option label in the picker. */
   label: string;
-  /** One line, from `docs/samples/home/README.md`. */
+  /** One line (≤110 chars), from `docs/samples/home/README.md`. */
   description: string;
   /** Where the document comes from: the samples live in `docs/samples/home`, the skeleton is inlined above. */
   source: string;
   /**
-   * The document a "New pipeline" from this template posts as the first
+   * The document a "New pipeline" from this template posts as its first
    * draft — never `null`: even Blank seeds the skeleton so a pipeline can
    * get its first draft through the UI.
    */
@@ -70,6 +89,18 @@ export interface PipelineTemplate {
    * parse; the list never invents a count.
    */
   stepCount: number | null;
+  /** Agent products the document names, in the order a reader meets them; empty when no node is `agent.acp`. */
+  agents: string[];
+  /** APM collection names the profiles attach (ADR-0084); empty when none. */
+  collections: string[];
+  /**
+   * Host facts a run needs that the organization may not have: a login on the
+   * worker, a token allowlisted to the profile. The card renders these dashed
+   * and prefixed `needs ` — they are a prerequisite, not a feature.
+   */
+  needs: string[];
+  /** The card's Tabler icon (the component name, resolved by the page). */
+  icon: string;
 }
 
 export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
@@ -80,33 +111,90 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
     source: "skeleton",
     documentYaml: BLANK_SKELETON_YAML,
     stepCount: stepCountOf(BLANK_SKELETON_YAML),
+    agents: [],
+    collections: [],
+    needs: [],
+    icon: "IconPlus",
   },
   {
     id: "plan-with-approval",
     label: "Plan with approval",
     description:
-      "inputs goal, repository: survey the checkout, plan with a model call, hold behind a maintainer approval, publish plan.md",
+      "survey the checkout, plan with a model call, hold behind a maintainer approval, publish plan.md",
     source: "docs/samples/home",
     documentYaml: planWithApprovalYaml,
     stepCount: stepCountOf(planWithApprovalYaml),
+    // No agent.acp node: the thinking step is one model.chat completion, so the
+    // card names no agent and needs no harness login.
+    agents: [],
+    collections: [],
+    needs: ["model endpoint"],
+    icon: "IconNotebook",
   },
   {
     id: "security-review",
     label: "Security review",
     description:
-      "input repository: sweep the checkout for credential-shaped literals and dangerous exec patterns, grade findings by severity, publish security-review.md",
+      "sweep the checkout for credential-shaped literals and dangerous exec patterns, publish security-review.md",
     source: "docs/samples/home",
     documentYaml: securityReviewYaml,
     stepCount: stepCountOf(securityReviewYaml),
+    agents: [],
+    collections: [],
+    needs: ["model endpoint"],
+    icon: "IconShieldLock",
   },
   {
     id: "issue-to-pr",
     label: "Issue to draft PR",
     description:
-      "inputs goal, repository, issue_number, branch_prefix: plan the issue on the checkout, hold behind a maintainer approval, implement with a pi agent, push the branch and open a draft PR with the allowlisted token, publish delivery.md",
+      "plan a GitHub issue, approve the plan, implement with a pi agent, push and open a draft PR",
     source: "docs/samples/home",
     documentYaml: issueToPrYaml,
     stepCount: stepCountOf(issueToPrYaml),
+    agents: ["Pi"],
+    collections: [],
+    needs: ["Pi agent key", "GitHub token"],
+    icon: "IconGitPullRequest",
+  },
+  {
+    id: "matt-pocock-spec-to-pr",
+    label: "Matt Pocock: spec → tickets → PR",
+    description:
+      "write a spec with Matt Pocock's to-spec, approve it, cut tickets with to-tickets, implement, open a draft PR",
+    source: "docs/samples/home",
+    documentYaml: mattPocockSpecToPrYaml,
+    stepCount: stepCountOf(mattPocockSpecToPrYaml),
+    agents: ["Claude Code"],
+    collections: ["Matt Pocock skills"],
+    needs: ["Claude Code login", "GitHub token"],
+    icon: "IconClipboardText",
+  },
+  {
+    id: "pstack-feature",
+    label: "pstack feature (poteto-mode)",
+    description:
+      "plan the feature on pstack's poteto-mode playbook, approve, implement, interrogate the diff, report",
+    source: "docs/samples/home",
+    documentYaml: pstackFeatureYaml,
+    stepCount: stepCountOf(pstackFeatureYaml),
+    agents: ["Claude Code"],
+    collections: ["pstack (Claude Code)"],
+    needs: ["Claude Code login"],
+    icon: "IconStack2",
+  },
+  {
+    id: "implement-then-codex-review",
+    label: "Implement, then Codex review",
+    description:
+      "implement on Claude Code, review the diff on a read-only Codex profile, approve, publish review.md",
+    source: "docs/samples/home",
+    documentYaml: implementThenCodexReviewYaml,
+    stepCount: stepCountOf(implementThenCodexReviewYaml),
+    agents: ["Claude Code", "Codex"],
+    collections: [],
+    needs: ["Claude Code login", "Codex login"],
+    icon: "IconEyeCheck",
   },
 ];
 

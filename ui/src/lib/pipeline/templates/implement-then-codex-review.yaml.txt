@@ -1,0 +1,306 @@
+# docs/samples/home/implement-then-codex-review.yaml — two harnesses, one run: a
+# Claude Code profile writes the change and a Codex profile reviews it before a
+# human signs the result off. It is the smallest sample that shows the point of
+# agent profiles: the WORK is provider-independent, the HANDS are not.
+#
+# It is agent-driven, and it needs BOTH harnesses on the worker:
+#
+#   • `claude-implementer` — the `claude` launcher (docs/compatibility/ACP.md,
+#     probed at protocolVersion 1), authenticated by the operator's
+#     COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE (ADR-0040: the token is read at each
+#     launch and handed over as CLAUDE_CODE_OAUTH_TOKEN, never argv) or the
+#     ambient claude CLI login under $CLAUDE_CONFIG_DIR. No APM package is
+#     required: the instructions live in the prompt.
+#   • `codex-reviewer` — the `codex` launcher in its `read-only` prompting mode.
+#     THE STEP FAILS CLOSED WITHOUT A CODEX LOGIN: the launcher declares
+#     CODEX_HOME as its credential directory, and a directory that is not
+#     readable is an infra failure before the session opens (ADR-0019's "the
+#     credential directory is one of these two" check, internal/worker/unit.go) —
+#     there is no anonymous fallback and no skip. Give the worker a login, e.g.
+#     run `codex login --device-auth` as the user whose CODEX_HOME the worker
+#     mounts (compose.harness.yml mounts /harness/codex), and restart nothing:
+#     the check runs per launch.
+#
+#   • nothing here pushes: no `secretRefs`, no `gh`. The deliverable is the
+#     review, and the branch stays in the run workspace. Pushing and opening a
+#     draft PR is the issue-to-pr sample's shape (ADR-0045).
+#
+# Paste into Library → New pipeline → New draft, Validate, Publish, then assign
+# to a project and start a run. Scheduling hangs off the assignment (ADR-0032).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: implement-then-codex-review
+  description: >-
+    Implement a goal on a Claude Code profile, review the branch's diff on a read-only Codex profile that lists blocking issues first, hold the result behind a maintainer approval, and publish review.md.
+spec:
+  inputs:
+    type: object
+    required:
+      - goal
+      - repository
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: The change to implement, in the requester's own words.
+      repository:
+        type: string
+        minLength: 1
+        description: Project repository binding name, e.g. app.
+  outputs:
+    type: object
+    required:
+      - branch
+      - verdict
+    properties:
+      branch:
+        type: string
+      verdict:
+        type: string
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 7200
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+    # 1. The change, on Claude Code. It works in the run workspace and commits on
+    #    a branch there — the reviewer reads the SAME tree, so the branch must not
+    #    be pushed and forgotten. invalid_output is retriable and the retry is
+    #    idempotent because workspacePolicy defaults to continue_workspace
+    #    (ADR-0023 § 6) and the prompt tells the agent to finish the existing
+    #    branch rather than start a second one (the finding written up in
+    #    docs/samples/home/issue-to-pr.yaml's /implement comment).
+    - id: implement
+      kind: agent.acp
+      timeoutSeconds: 3600
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: claude-implementer
+        sessionMode: new
+        workspace:
+          mode: run_workspace
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Implement this goal in repository ${{ inputs.repository }}.
+          Goal: ${{ inputs.goal }}
+
+          This attempt may be a RETRY: the workspace carries what earlier attempts
+          did. Look FIRST for an existing `comm/implement-*` branch (git branch
+          --list); if one exists, check it out and finish that work — never start a
+          second branch for the same goal. Only when none exists, create
+          `comm/implement-<short-slug>` from the current checkout.
+          1. Read the repository enough to place the change (layout, how the code
+             the goal touches is tested).
+          2. Implement it step by step; add or adjust tests for the change.
+          3. Find the project's test command (README first, then package.json
+             scripts, Makefile, or `go test ./...`) and run it; fix and re-run until
+             the whole suite is green.
+          4. Commit the work on that branch. This sample pushes NOTHING: no token is
+             materialized for this node, so do not attempt a push or a pull request.
+             When an earlier attempt already committed and the tree is clean, there
+             is nothing to commit — say so in the reply rather than amending.
+          5. Reply with JSON of exactly this shape — your reply is machine-checked
+             against the JSON schema below:
+          {"implementation": {"summary": "<what you changed and why, in prose>",
+                              "branch": "<the branch you committed on>",
+                              "tests_passed": true,
+                              "test_output_tail": "<the last lines of the green run>"}}
+          Field meanings and EVERY limit that schema enforces:
+            implementation — REQUIRED object, the only top-level property. A `branch`
+              at the top level, or implementation sent as a string, fails as
+              "missing property 'implementation'".
+            implementation.summary — string, non-empty (minLength 1), AT MOST 600
+              CHARACTERS (maxLength: 600 is a ceiling, not a target): the line the
+              approver reads.
+            implementation.branch — string, non-empty (minLength 1): the exact branch
+              you committed to.
+            implementation.tests_passed — REQUIRED JSON boolean (true/false, never
+              "true"), true only when the last full test run was green.
+            implementation.test_output_tail — string, non-empty (minLength 1), AT MOST
+              1200 CHARACTERS: that run's output tail, as evidence.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence; a final message that is not the object fails
+          the node even when the work is done.
+      outputs:
+        type: object
+        required:
+          - implementation
+        properties:
+          implementation:
+            type: object
+            required:
+              - summary
+              - branch
+              - tests_passed
+              - test_output_tail
+            properties:
+              summary:
+                type: string
+                minLength: 1
+                maxLength: 600
+              branch:
+                type: string
+                minLength: 1
+              tests_passed:
+                type: boolean
+              test_output_tail:
+                type: string
+                minLength: 1
+                maxLength: 1200
+    # 2. The review, on the OTHER harness. `run_workspace`, not `read_only`: the
+    #    reviewer must read the branch the implement step just committed, and a
+    #    read_only workspace is a fresh checkout of the binding, which does not
+    #    carry an unpushed local branch. The read-only promise is the PROFILE's
+    #    (the codex launcher's `read-only` prompting mode, ADR-0019 D6), not the
+    #    workspace's — the reviewer changes no file, and the review reaches the run
+    #    as its reply, which is why the next nodes publish `review.md` rather than
+    #    reading one.
+    - id: review
+      kind: agent.acp
+      dependsOn:
+        - implement
+      timeoutSeconds: 1800
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: codex-reviewer
+        sessionMode: new
+        workspace:
+          mode: run_workspace
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Review the diff on this branch; write review.md with blocking issues first.
+          Repository: ${{ inputs.repository }}
+          Branch under review: ${{ nodes.implement.outputs.implementation.branch }}
+          What the implement step claims it did: ${{ nodes.implement.outputs.implementation.summary }}
+          Its test evidence: ${{ nodes.implement.outputs.implementation.test_output_tail }}
+
+          You are the REVIEWER. Do not change or commit any file: read the diff
+          (`git log --oneline`, `git diff <base>..<branch>`, or `git show` per
+          commit), read the files it touches, and judge it. The review you write is
+          your reply — the report node publishes it as review.md, so a review that
+          only exists in your working notes is a review nobody reads.
+          Order it the way a reviewer needs to read it: BLOCKING issues first (the
+          things that must change before this merges), then non-blocking notes, then
+          one line of overall judgement. Name the file and the symptom for every
+          finding; "consider refactoring this" with no symptom is not a finding.
+          Reply with JSON of exactly this shape — your reply is machine-checked
+          against the JSON schema below:
+          {"review": {"blocking": ["<a finding that must be fixed before merge>"],
+                      "notes": ["<a finding that does not block the merge>"],
+                      "verdict": "<approve | request-changes>",
+                      "summary": "<the whole review in one line>"}}
+          Field meanings and EVERY limit that schema enforces:
+            review — REQUIRED object, the only top-level property.
+            review.blocking — array (MAY BE EMPTY — an empty array is how a clean diff
+              is reported). Each item is a non-empty string naming file + symptom.
+            review.notes — array (may be EMPTY). Each item is a non-empty string.
+            review.verdict — string, EXACTLY one of `approve` or `request-changes`,
+              lowercase. `request-changes` is the honest answer whenever
+              review.blocking is not empty.
+            review.summary — string, non-empty (minLength 1), AT MOST 600 CHARACTERS:
+              the line the approval gate shows.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence.
+      outputs:
+        type: object
+        required:
+          - review
+        properties:
+          review:
+            type: object
+            required:
+              - blocking
+              - notes
+              - verdict
+              - summary
+            properties:
+              blocking:
+                type: array
+                items:
+                  type: string
+                  minLength: 1
+              notes:
+                type: array
+                items:
+                  type: string
+                  minLength: 1
+              verdict:
+                type: string
+                enum:
+                  - approve
+                  - request-changes
+              summary:
+                type: string
+                minLength: 1
+                maxLength: 600
+    # 3. A human signs the result. Both harnesses have spoken by now; the summary
+    #    carries the implementer's line and the reviewer's verdict + blocking
+    #    count, because the approver's job is to read the disagreement, not to
+    #    re-derive it.
+    - id: approve
+      kind: human.approval
+      dependsOn:
+        - review
+      retry:
+        maxAttempts: 1
+      config:
+        summary: |
+          Goal for repository ${{ inputs.repository }}:
+          ${{ inputs.goal }}
+
+          Implemented on branch ${{ nodes.implement.outputs.implementation.branch }}:
+          ${{ nodes.implement.outputs.implementation.summary }}
+
+          Codex review (${{ nodes.review.outputs.review.verdict }}):
+          ${{ nodes.review.outputs.review.summary }}
+          Blocking findings: ${{ nodes.review.outputs.review.blocking }}
+        approverRoles:
+          - maintainer
+        deadlineSeconds: 86400
+        onTimeout: fail
+    # 4. The artifact a reviewer finds after the run closes: the Codex review
+    #    itself (blocking first, notes, verdict, summary) as review.md.
+    - id: report
+      kind: artifact.publish
+      dependsOn:
+        - approve
+      config:
+        name: review.md
+        kind: markdown
+        mediaType: text/markdown
+        sensitivity: standard
+        from:
+          mode: output_json
+          value: ${{ nodes.review.outputs }}
+  resultBindings:
+    branch: ${{ nodes.implement.outputs.implementation.branch }}
+    verdict: ${{ nodes.review.outputs.review.verdict }}

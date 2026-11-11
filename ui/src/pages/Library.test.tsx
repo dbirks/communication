@@ -12,8 +12,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
+import { ASSISTANT_OPEN_EVENT } from "../components/assistant/AssistantPopover";
 import type { Draft, Me, Pipeline, ValidateResponse } from "../api/types";
 import {
   BLANK_SKELETON_YAML,
@@ -617,21 +618,77 @@ describe("/workflows — the index (3a)", () => {
       expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
     });
 
-    it("lays the starter cards in the design's three columns with left-aligned text (390/1280)", async () => {
-      // reflow-390 item 1 wanted an honest grid (no orphan card, no centred
-      // phone text); pass-1 review item 1 named WHICH grid: design 1b writes
-      // “Starter cards: 3 columns, gap 12”, so the desk shows three across and
-      // the fourth card wraps onto the second row instead of squeezing the row
-      // into four narrow columns. 2×2 between phone and desktop, one column on
-      // the phone, `text-left` everywhere.
+    it("lays the starter cards in the design's three columns with left-aligned text (390/1440)", async () => {
+      // The visual pass names the grid: three across from 1100px, two from
+      // 640px, one column below that, `gap-[10px]`, every card `text-left`. An
+      // earlier pass squeezed the phone; a centred phone card is the same bug in
+      // the other direction, so the alignment is asserted per card.
       mount("/library");
       const cards = await screen.findByTestId("workflow-starters");
-      expect(cards.className).toContain("min-[700px]:grid-cols-2");
-      expect(cards.className).toContain("min-[1150px]:grid-cols-3");
+      expect(cards.className).toContain("grid-cols-1");
+      expect(cards.className).toContain("gap-[10px]");
+      expect(cards.className).toContain("min-[640px]:grid-cols-2");
+      expect(cards.className).toContain("min-[1100px]:grid-cols-3");
       expect(cards.className).not.toContain("grid-cols-4");
-      for (const id of ["blank", "plan-with-approval", "security-review", "issue-to-pr"]) {
-        expect(within(cards).getByTestId(`workflow-starter-${id}`).className).toContain(
-          "text-left",
+      for (const template of PIPELINE_TEMPLATES) {
+        const card = within(cards).getByTestId(`workflow-starter-${template.id}`);
+        expect(card.className).toContain("text-left");
+        expect(card.className).toContain("rounded-[4px]");
+        expect(card.className).toContain("p-[14px]");
+        // The app shell centres `main button`'s children below 560px; a card that
+        // does not claim its own cross axis draws centred copy on a phone.
+        expect(card.className).toContain("max-[559px]:items-start!");
+      }
+      // Blank is the dashed card; a template carries the ink hairline.
+      expect(within(cards).getByTestId("workflow-starter-blank").className).toContain(
+        "border-dashed",
+      );
+      expect(
+        within(cards).getByTestId("workflow-starter-plan-with-approval").className,
+      ).not.toContain("border-dashed");
+    });
+
+    it("labels the gallery and the org's own list, and says what the page is", async () => {
+      // A lone `0` under the title answered nothing. The subtitle says what a
+      // workflow IS, the gallery says START FROM, and the count now rides the
+      // section label of the list it counts.
+      mount("/workflows");
+      await screen.findByTestId("workflows-list");
+      expect(screen.getByTestId("workflows-subtitle").textContent).toBe(
+        "Reusable pipelines. Projects assign them; every run pins a revision.",
+      );
+      expect(screen.getByTestId("workflows-start-from-label").textContent).toBe("Start from");
+      expect(screen.getByTestId("workflows-mine-label").textContent).toContain("Your workflows");
+      expect(screen.getByTestId("workflows-count").textContent).toBe("2");
+    });
+
+    it("says on each card what it runs on and what it needs first", async () => {
+      // The honesty the cards exist for: a template that cannot run here says so
+      // on its face. Chips name the agents and the APM collections (ADR-0084)
+      // solid, and the host prerequisites dashed with a `needs ` prefix — never
+      // an agent word on a card that runs none.
+      mount("/library");
+      const cards = await screen.findByTestId("workflow-starters");
+      const matt = within(cards).getByTestId("workflow-starter-matt-pocock-spec-to-pr");
+      expect(matt.textContent).toContain("Matt Pocock: spec → tickets → PR");
+      expect(matt.textContent).toContain("Claude Code");
+      expect(matt.textContent).toContain("Matt Pocock skills");
+      expect(matt.textContent).toContain("needs GitHub token");
+      const codex = within(cards).getByTestId("workflow-starter-implement-then-codex-review");
+      expect(codex.textContent).toContain("Codex");
+      expect(codex.textContent).toContain("needs Codex login");
+      // A credential-free sample carries no agent chip and no login to need.
+      const plan = within(cards).getByTestId("workflow-starter-plan-with-approval");
+      expect(plan.textContent).not.toContain("Claude Code");
+      expect(plan.textContent).not.toContain("needs Codex login");
+      // Blank is the absence of a template: no chips at all.
+      expect(within(cards).getByTestId("workflow-starter-blank").textContent).not.toContain(
+        "needs ",
+      );
+      // Every template card shows its own one-line description.
+      for (const template of PIPELINE_TEMPLATES.filter((option) => option.id !== "blank")) {
+        expect(within(cards).getByTestId(`workflow-starter-${template.id}`).textContent).toContain(
+          template.description,
         );
       }
     });
@@ -663,6 +720,61 @@ describe("/workflows — the index (3a)", () => {
       expect(within(cards).getByTestId("workflow-starter-security-review").textContent).toContain(
         "scan › summarize › publish_report",
       );
+    });
+
+    it("opens the New workflow dialog with the template preselected when a card is clicked", async () => {
+      mount("/library");
+      await clickEnabledCard("workflow-starter-matt-pocock-spec-to-pr");
+      const dialog = await screen.findByTestId("new-workflow-dialog");
+      // A card is the dialog's starter, not a shortcut past it: the name and the
+      // id follow the template, and the radio shows the selection.
+      const nameInput = within(dialog).getByTestId("library-new-name-input") as HTMLInputElement;
+      expect(nameInput.value).toBe("Matt Pocock: spec → tickets → PR");
+      const radio = within(dialog)
+        .getByTestId("new-workflow-template-matt-pocock-spec-to-pr")
+        .querySelector("input");
+      expect((radio as HTMLInputElement).checked).toBe(true);
+      // The dialog's hint line is the same card's own words, so the two surfaces
+      // cannot disagree about what the template does.
+      expect(within(dialog).getByTestId("library-new-template-hint").textContent).toContain(
+        "to-tickets",
+      );
+    });
+
+    it("an empty library offers the three ways in, and no toolbar to narrow nothing", async () => {
+      // The before state showed a search field over an empty list and one line of
+      // prose. With nothing to filter, the toolbar is noise; what belongs there is
+      // the way in.
+      const listener = vi.fn();
+      window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
+      try {
+        mount("/workflows", [{ path: "/api/v1/pipelines", body: { pipelines: [] } }]);
+        const panel = await screen.findByTestId("workflows-empty-panel");
+        expect(panel.textContent).toContain("No workflows yet");
+        expect(panel.textContent).toContain(
+          "Start from a template above, import YAML, or describe one to the assistant.",
+        );
+        expect(within(panel).getByTestId("workflows-empty-new")).toBeTruthy();
+        expect(within(panel).getByTestId("workflows-empty-import")).toBeTruthy();
+        expect(within(panel).getByTestId("workflows-empty-ask")).toBeTruthy();
+        // Nothing to narrow: no search field, no chips, no rows.
+        expect(screen.queryByTestId("workflows-filters")).toBeNull();
+        expect(screen.queryByTestId("workflows-search")).toBeNull();
+        expect(screen.queryByTestId("workflows-list")).toBeNull();
+        // The gallery is the page's first answer, even with nothing listed.
+        for (const template of PIPELINE_TEMPLATES) {
+          expect(screen.getByTestId(`workflow-starter-${template.id}`)).toBeTruthy();
+        }
+        // `Ask the assistant` opens the popover with the ask's prefix only — no
+        // invented goal in the reader's mouth.
+        fireEvent.click(within(panel).getByTestId("workflows-empty-ask"));
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect((listener.mock.calls[0] as [CustomEvent<string>])[0].detail).toBe(
+          "Help me design a workflow for ",
+        );
+      } finally {
+        window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
+      }
     });
 
     it("clicking a card opens the New workflow dialog with the template preselected", async () => {
