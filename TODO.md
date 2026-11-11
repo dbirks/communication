@@ -92,10 +92,9 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       workflows-390x844.png, Library.test.tsx.
 - [x] Template: Matt Pocock's skills preloaded (github.com/mattpocock/skills). Evidence:
       docs/samples/home/matt-pocock-spec-to-pr.yaml (compiles, samples_test.go); collection seeded per ADR-0084.
-- [ ] Template: poteto's **pstack** packaged through APM (template docs/samples/home/pstack-feature.yaml is in a31da6a; the APM packaging lands with the collections backend). Upstream:
-      github.com/cursor/plugins/tree/main/pstack (Lauren Tan / @poteto,
-      Cursor). Open Pstack (github.com/ericlitman/open-pstack) is the
-      Claude Code/Codex translation to borrow from. Not gstack.
+- [x] Template: poteto's **pstack** packaged through APM. Evidence: 1d69498 (migration 00033 seeds "pstack (Claude
+      Code)": per-skill refs into cursor/plugins harness/pstack/claude-code at 63912a91; apm_collections_test.go,
+      flatten_test.go) plus the template docs/samples/home/pstack-feature.yaml (a31da6a). Not gstack.
 - [x] Template: implement, then review with Codex. Evidence: docs/samples/home/implement-then-codex-review.yaml
       (fails closed without a Codex login).
 - [ ] Wire the Claude subscription through the existing OAuth token
@@ -190,6 +189,7 @@ that can be attached to different ACP agent setups. Today the spec
       item. A profile references one or more collections; the worker resolves
       them into one APM manifest and lock per attempt and records the digest.
       Cover ordering and conflict rules and per-launcher targeting. Evidence: ADR-0084, 62c7d48.
+- [ ] (Backend done: 1d69498, apm_collections_test.go, apmcollections_test.go, flatten_test.go; the UI is queued as apm-coll-ui)
 - [ ] Implement it: a collections CRUD API, the UI in Library or Agents for
       attaching collections to an agent profile, and worker resolution with
       tests (spec test 7: two different skill sets, isolated between sessions).
