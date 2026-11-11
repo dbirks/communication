@@ -112,7 +112,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       claims (picture, name), falling back to initials. Evidence: 1a3fc5b (tsidp serves
       picture only at /userinfo, so there is a UserInfo fallback), UserAvatar.test.tsx,
       UserMenu.test.tsx.
-- [ ] Confirm the deployed avatar and name after 1a3fc5b deploys (screenshot).
+- [x] Confirm the deployed avatar and name after 1a3fc5b deploys (screenshot). Evidence: deployed 3d564fb,
+      ~/.cache/pi-orch/communication/evidence/deployed/deployed-profile.png (Tailscale photo, name, issuer, role).
 - [x] Add a simple Profile page. Evidence: 1a3fc5b, /profile, Profile.test.tsx.
 - [x] Write an ADR for an extensible multi-provider OIDC layer (Tailscale
       tsidp plus Azure Entra). Evidence: ADR-0083, 4985dee.
@@ -126,7 +127,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       and settings page: health, workers, queue, models, secrets status and
       integrations. Evidence: 8e9d604 (overview plus probe API, system_overview_test.go), 2faa0a0 (UI,
       OperationsBody.test.tsx: 35 offline workers collapsed, tiles ok/warn/bad), ~/.cache/pi-orch/communication/evidence/ops-ui/ops-1440-full.png,
-      ops-390-full.png. Deployed screenshot still pending.
+      ops-390-full.png. Deployed: ~/.cache/pi-orch/communication/evidence/deployed/deployed-ops.png (3d564fb).
 - [x] If the visual language needs it, file a `claude-design-needed` issue per
       the design-heavy rule. Not needed: the orchestrator designed it inside the existing panel, chip and
       token language (spec in ~/.cache/pi-orch/communication/tasks/ops-ui.md).
@@ -189,6 +190,13 @@ that can be attached to different ACP agent setups. Today the spec
       attaching collections to an agent profile, and worker resolution with
       tests (spec test 7: two different skill sets, isolated between sessions).
 - [ ] Rebase the section 6 templates (Matt Pocock, poteto) on collections.
+
+- [x] Deployed check at 3d564fb (2026-11-11): palette centered over the full-page assistant, nav collapsed to the
+      rail, 48px heads, "Don't ask" pill, speech and decision models configured. Evidence:
+      ~/.cache/pi-orch/communication/evidence/deployed/deployed-palette.png, deployed-assistant-full.png.
+- [ ] Finding (deployed): the Operations "Workflow model steps" row reads "no model id · not set up" because serve
+      doesn't carry COMMUNICATION_MODEL_CHAT_*. Either give serve those env vars in home-k8s or have the worker
+      report its models in its heartbeat.
 
 ## CI and Acceptance notes
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
