@@ -30,10 +30,12 @@ func wireName(name string) string {
 // toolWireMap maps each encoded wire name back to its registry name and fails
 // loudly if two registry names collide on one wire name or a wire name exceeds
 // the 64-char limit. It must be built at registry construction so a bad
-// process never reaches the wire.
-func toolWireMap() (map[string]string, error) {
-	byWire := make(map[string]string, len(toolOrder))
-	for _, name := range toolOrder {
+// process never reaches the wire — and it is built from the ONE order this
+// broker announces, so a tool the deployment cannot serve has no wire name
+// that could ever decode back to it.
+func toolWireMap(order []string) (map[string]string, error) {
+	byWire := make(map[string]string, len(order))
+	for _, name := range order {
 		w := wireName(name)
 		if len(w) > 64 {
 			return nil, fmt.Errorf("assistant: wire tool name %q exceeds 64 chars", w)

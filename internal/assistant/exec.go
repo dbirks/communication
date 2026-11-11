@@ -82,6 +82,15 @@ func (t *turn) exec(call toolCallRequest) {
 		b.logger().Info("assistant tool refused", slog.String("tool", name), slog.String("reason", reason))
 		return
 	}
+	if !b.announced(name) {
+		// A tool this deployment does not announce is a tool it cannot answer:
+		// the honest refusal is the same one an unknown name gets, and it makes
+		// zero store calls, so an optional read that was never wired cannot be
+		// reached by a model that invented its wire name.
+		t.refused(name, nil, "unknown_tool")
+		b.logger().Info("assistant tool refused", slog.String("tool", name), slog.String("reason", "unknown_tool"))
+		return
+	}
 	args, err := parseArgs(tl, call.Function.Arguments)
 	if err != nil {
 		t.refused(name, nil, "bad_arguments")
@@ -104,21 +113,31 @@ func (t *turn) exec(call toolCallRequest) {
 		b.logger().Info("assistant tool denied", slog.String("tool", name), slog.String("reason", reason))
 		return
 	}
-	payload, _ := capPayload(raw)
+	payload, _ := capPayloadTo(raw, tl.resultCap())
 	ok := ToolCall{Name: name, Args: args, OK: true, Summary: execSummary(name, args, raw)}
 	t.record(ok, payload)
-	if tl.links != nil {
-		for _, l := range tl.links(t, args, rows(payload)) {
-			if href, allowed := b.allowedHref(l.Href); allowed {
-				l.Href = href
-				t.links = append(t.links, l)
-			} else {
-				// The design's "records the drop": counted and logged, never
-				// rendered. The rejected href itself is not logged either, so a
-				// probe cannot use the answer surface to enumerate routes.
-				t.dropped++
-			}
+	// Two payload shapes, two link derivations: a tool whose rows come back as
+	// an array derives them from the rows; the one tool whose payload is a
+	// single assembled object (the catch-up brief) reads its own sections.
+	// Both then pass the same allowlist, and a rejected href is counted rather
+	// than rendered — the design's "records the drop" — so a probe cannot use
+	// the answer surface to enumerate routes. The rejected href itself is not
+	// logged either, for the same reason.
+	var links []Link
+	switch {
+	case tl.linksRaw != nil:
+		links = tl.linksRaw(t, args, payload)
+	case tl.links != nil:
+		links = tl.links(t, args, rows(payload))
+	}
+	for _, l := range links {
+		href, allowed := b.allowedHref(l.Href)
+		if !allowed {
+			t.dropped++
+			continue
 		}
+		l.Href = href
+		t.links = append(t.links, l)
 	}
 }
 
@@ -144,19 +163,51 @@ func execSummary(name string, args map[string]any, raw json.RawMessage) string {
 	case "project.list":
 		s = fmt.Sprintf("Listed %d projects", n)
 	case "run.list":
-		s = fmt.Sprintf("Listed %d runs for project %s", n, short(strArg(args, "project_id")))
+		if project := strArg(args, "project_id"); project != "" {
+			s = fmt.Sprintf("Listed %d runs for project %s", n, short(project))
+		} else {
+			s = fmt.Sprintf("Listed %d runs across the caller's projects", n)
+		}
 	case "run.nodes":
 		s = fmt.Sprintf("Read %d node executions for run %s", n, short(strArg(args, "run_id")))
 	case "approval.pending":
-		s = fmt.Sprintf("Listed %d pending approvals for project %s", n, short(strArg(args, "project_id")))
+		if project := strArg(args, "project_id"); project != "" {
+			s = fmt.Sprintf("Listed %d pending approvals for project %s", n, short(project))
+		} else {
+			s = fmt.Sprintf("Listed %d pending approvals across the caller's projects", n)
+		}
 	case "pipeline.revisions":
 		s = fmt.Sprintf("Listed %d published revisions for pipeline %s", n, short(strArg(args, "pipeline_id")))
 	case "palette.search":
 		s = fmt.Sprintf("Found %d matches for %q", n, bounded(strArg(args, "needle"), 60))
+	case "catchup.brief":
+		// The brief is one object, not a row count: the line names the window
+		// the answer is about, which is the fact a reader of the transcript
+		// needs ("the 24h brief", not "1 result").
+		s = fmt.Sprintf("Read the %s catch-up brief", catchUpBriefWindowLabel(args, raw))
 	default:
 		s = fmt.Sprintf("Read %d results from %s", n, name)
 	}
 	return bounded(s, 200)
+}
+
+// catchUpBriefWindowLabel names the window the brief answered: the assembler's
+// own `window.key` when the payload carries it (the window the interval was
+// resolved for, which for `unseen` is what the reader actually got), else the
+// window the model asked for, else the default the tool applies.
+func catchUpBriefWindowLabel(args map[string]any, raw json.RawMessage) string {
+	var body struct {
+		Window struct {
+			Key string `json:"key"`
+		} `json:"window"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil && strings.TrimSpace(body.Window.Key) != "" {
+		return bounded(body.Window.Key, 16)
+	}
+	if window := strArg(args, "window"); window != "" {
+		return bounded(window, 16)
+	}
+	return "unseen"
 }
 
 // strArg is one validated string argument of a call (bounded like parseArgs
@@ -166,18 +217,30 @@ func strArg(args map[string]any, key string) string {
 	return bounded(strings.TrimSpace(s), 200)
 }
 
+// truncatedMarker is the cut's receipt on an array payload.
 var truncatedMarker = json.RawMessage(
 	`{"truncated":true,"note":"rows beyond the 64 item / 2 KiB cap are not shown; the list is not complete"}`)
 
 // capPayload enforces the ≤64 items / ≤2 KB per result rule and reports the
 // cut instead of hiding it.
 func capPayload(raw json.RawMessage) (json.RawMessage, bool) {
+	return capPayloadTo(raw, MaxResultBytes)
+}
+
+// capPayloadTo is capPayload with one tool's own byte budget. The registry
+// default is MaxResultBytes; the tool that names a larger one justifies it at
+// its own definition (maxCatchUpBriefBytes), so the budget is still a constant
+// the code owns rather than a thing a response can widen.
+func capPayloadTo(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
+	if maxBytes <= 0 {
+		maxBytes = MaxResultBytes
+	}
 	if len(raw) == 0 {
 		return json.RawMessage(`[]`), false
 	}
 	var arr []json.RawMessage
 	if err := json.Unmarshal(raw, &arr); err != nil {
-		return boundedJSON(raw), false
+		return boundedJSONTo(raw, maxBytes), len(raw) > maxBytes
 	}
 	truncated := false
 	if len(arr) > MaxItems {
@@ -187,13 +250,13 @@ func capPayload(raw json.RawMessage) (json.RawMessage, bool) {
 	if err != nil {
 		return json.RawMessage(`[]`), truncated
 	}
-	if len(out) <= MaxResultBytes && !truncated {
+	if len(out) <= maxBytes && !truncated {
 		return out, false
 	}
 	truncated = true
 	for len(arr) >= 0 {
 		trimmed, err := json.Marshal(append(append([]json.RawMessage{}, arr...), truncatedMarker))
-		if err == nil && len(trimmed) <= MaxResultBytes {
+		if err == nil && len(trimmed) <= maxBytes {
 			return trimmed, true
 		}
 		if len(arr) == 0 {
@@ -206,8 +269,13 @@ func capPayload(raw json.RawMessage) (json.RawMessage, bool) {
 
 // boundedJSON clips a non-array payload to the per-result byte cap.
 func boundedJSON(raw json.RawMessage) json.RawMessage {
-	if len(raw) <= MaxResultBytes {
+	return boundedJSONTo(raw, MaxResultBytes)
+}
+
+// boundedJSONTo is boundedJSON at one tool's own budget.
+func boundedJSONTo(raw json.RawMessage, maxBytes int) json.RawMessage {
+	if len(raw) <= maxBytes {
 		return raw
 	}
-	return json.RawMessage(fmt.Sprintf(`{"truncated":true,"data":%q}`, string(bounded(string(raw), MaxResultBytes-64))))
+	return json.RawMessage(fmt.Sprintf(`{"truncated":true,"data":%q}`, string(bounded(string(raw), maxBytes-64))))
 }

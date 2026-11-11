@@ -141,11 +141,33 @@ func New(cfg Config, store Store) (*Broker, error) {
 		cfg.Model = DefaultModel
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	byWire, err := toolWireMap()
+	// The announced set is per-broker, not per-process: an optional read
+	// (announcedToolOrder) joins it only when this store can answer it, and the
+	// wire map is built from the SAME order so a tool that was never announced
+	// has no wire name to decode back to.
+	order := announcedToolOrder(store)
+	byWire, err := toolWireMap(order)
 	if err != nil {
 		return nil, err
 	}
-	return &Broker{store: store, cfg: cfg, tools: toolRegistry(), order: toolOrder, wire: byWire}, nil
+	return &Broker{store: store, cfg: cfg, tools: toolRegistry(), order: order, wire: byWire}, nil
+}
+
+// announced reports whether this broker told the model about one registry tool.
+// The honest-degradation rule the optional reads follow is only honest if the
+// unannounced read is also unreachable: a call for a tool this deployment never
+// announced makes zero store calls and records the same `unknown_tool` refusal
+// an invented name does, so no answer can tell the two apart.
+func (b *Broker) announced(name string) bool {
+	if b == nil {
+		return false
+	}
+	for _, one := range b.order {
+		if one == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Configured reports whether egress is wired. The ask route answers 503

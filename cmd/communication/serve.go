@@ -1794,6 +1794,16 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		Approvals: postgres.APIApprovalStore{R: m4Runtime},
 		Pipelines: postgres.APIPipelineStore{S: pipelineStore},
 		Profiles:  apiConversations,
+		// ADR-0081 § Chat tools: the assistant's catchup.brief answers from the
+		// SAME catch-up store the Catch up routes are mounted with (the value is
+		// a handle over the pool, so building it twice builds nothing twice).
+		// One assembler, one membership predicate — the page and the chat model
+		// cannot disagree about what happened. Unwired would be the honest
+		// absence: the tool is then never announced.
+		Brief: postgres.APICatchUpStore{
+			S:       &postgres.CatchUpStore{Pool: d.Pool},
+			Denials: projectStore,
+		},
 		Config: api.AssistantConfig{
 			BaseURL: d.Assistant.BaseURL,
 			APIKey:  d.Assistant.APIKey,

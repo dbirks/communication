@@ -48,7 +48,13 @@ type AssistantDeps struct {
 	Approvals assistantApprovalReader
 	Pipelines assistantPipelineReader
 	Profiles  assistantProfileReader
-	Config    AssistantConfig
+	// Brief is the ADR-0081 catch-up brief store: the same
+	// postgres.APICatchUpStore the Catch up routes are mounted with. The
+	// assistant's catchup.brief tool answers from it, so the page and the chat
+	// model read one assembled fact set. Nil is the honest absence: the tool is
+	// then not announced at all, rather than announced and refused.
+	Brief  CatchUpBriefStore
+	Config AssistantConfig
 }
 
 // The narrow read surfaces ADR-0034's six tools need. Deliberately methods-only
@@ -94,19 +100,28 @@ func BuildAssistantBroker(deps AssistantDeps, logger *slog.Logger) (*assistant.B
 	if strings.TrimSpace(deps.Config.BaseURL) == "" {
 		return nil, nil
 	}
+	store := assistantStore{
+		projects:  deps.Projects,
+		runs:      deps.Runs,
+		approvals: deps.Approvals,
+		pipelines: deps.Pipelines,
+		profiles:  deps.Profiles,
+	}
+	// The brief is the one read the assistant may not have: wrapping the store
+	// only when it IS wired is what keeps the tool off the announced set when
+	// it is not (assistant.announcedToolOrder), so a model is never told to ask
+	// for a brief this deployment cannot assemble.
+	var handle assistant.Store = store
+	if deps.Brief != nil {
+		handle = assistantBriefStore{assistantStore: store, brief: deps.Brief}
+	}
 	return assistant.New(assistant.Config{
 		BaseURL: deps.Config.BaseURL,
 		APIKey:  deps.Config.APIKey,
 		Model:   deps.Config.Model,
 		Timeout: deps.Config.Timeout,
 		Logger:  logger,
-	}, assistantStore{
-		projects:  deps.Projects,
-		runs:      deps.Runs,
-		approvals: deps.Approvals,
-		pipelines: deps.Pipelines,
-		profiles:  deps.Profiles,
-	})
+	}, handle)
 }
 
 // RegisterAssistant mounts POST /api/v1/assistant/ask. With no base URL the
@@ -304,6 +319,35 @@ type assistantStore struct {
 }
 
 var _ assistant.Store = assistantStore{}
+
+// assistantBriefStore is assistantStore plus the ADR-0081 brief read. It is a
+// distinct type on purpose: the assistant decides which optional reads to
+// announce by what its store handle can answer, and a deployment that mounted
+// the assistant without the catch-up store must not announce a brief it cannot
+// assemble (tools.go's announcedToolOrder).
+type assistantBriefStore struct {
+	assistantStore
+	brief CatchUpBriefStore
+}
+
+var _ assistant.CatchUpBriefReader = assistantBriefStore{}
+
+// CatchUpBrief answers the assistant's catchup.brief tool as this caller:
+// the same assembled brief GET /catch-up/brief serves, through the same
+// assembler, so the page and the chat answer cannot disagree about what
+// happened. No headline is attached — that is the route's model-side half
+// (attachHeadline), and the tool documents a payload with no model-written
+// section in it anyway. An unknown window is the tool's mistake, not the
+// caller's: the tool validates the vocabulary before asking.
+func (a assistantBriefStore) CatchUpBrief(ctx context.Context, c assistant.Caller,
+	window string) (json.RawMessage, error) {
+	brief, err := AssembleCatchUpBrief(ctx, a.brief, asstCaller(c),
+		CatchUpBriefScope{Window: strings.TrimSpace(window)}, time.Now())
+	if err != nil {
+		return nil, asstStoreErr(err)
+	}
+	return asstJSON(brief)
+}
 
 func asstCaller(c assistant.Caller) Caller {
 	return Caller{UserID: c.UserID, OrganizationID: c.OrganizationID, IsOrgAdmin: c.IsOrgAdmin}

@@ -2883,7 +2883,17 @@ export interface paths {
     put?: never;
     /**
      * Ask one question of the caller's own read view (read-only tools)
-     * @description ADR-0034's broker. The caller's question plus the UI context is answered in ONE bounded turn: at most 4 completions and 8 tool calls against a closed, hard-coded registry of read-only tools (`project.list`, `run.list`, `run.nodes`, `approval.pending`, `pipeline.revisions`, `palette.search`). Every tool is the store method that already serves the matching route, called with the caller's own identity, so the answer can never contain a row the caller could not read at that route — and a resource outside the caller's memberships is refused with `ok: false` and a stable `reason` and **no name** (the 404 rule of ADR-0014 § 3 applies to the answer text too).
+     * @description ADR-0034's broker. The caller's question plus the UI context is answered in ONE bounded turn: at most 4 completions and 8 tool calls against a closed, hard-coded registry of read-only tools (`project.list`, `run.list`, `run.nodes`, `approval.pending`, `pipeline.revisions`, `palette.search`, and `catchup.brief` where the deployment serves the ADR-0081 catch-up brief). Every tool is the store method that already serves the matching route, called with the caller's own identity, so the answer can never contain a row the caller could not read at that route — and a resource outside the caller's memberships is refused with `ok: false` and a stable `reason` and **no name** (the 404 rule of ADR-0014 § 3 applies to the answer text too). A read that was never wired is never announced, so a model cannot be told to ask for it.
+     *     * ADR-0081 § Chat tools widened the two list reads and added the brief:
+     *       `run.list` takes an optional `project_id` (all the caller's projects
+     *       when omitted), `since` (an RFC 3339 timestamp or a window key) and
+     *       `status`, and answers newest-first with at most 50 rows, each naming
+     *       its project; `approval.pending` takes an optional `project_id`;
+     *       `catchup.brief` returns the same assembled brief the Catch up page
+     *       renders — minus `headline` and `by_project`, which are a model's own
+     *       sentences — so the page and the assistant answer "what did I miss"
+     *       from one fact set.
+     *
      *     * Tool output is untrusted DATA: it returns to the model inside a
      *       user-role envelope, never as a system instruction, and the model has
      *       no capability to write anything.
@@ -6228,7 +6238,7 @@ export interface components {
     /** AssistantToolCall */
     AssistantToolCall: {
       /**
-       * @description One of the registry's six read-only tools. A name the model asked for that is outside the registry is reported under its own record with `ok: false` — see `reason`.
+       * @description One of the registry's read-only tools — the six v1 reads plus `catchup.brief`, which is announced only where the deployment serves the ADR-0081 brief. A name the model asked for that is outside the registry, or inside it but never announced, is reported under its own record with `ok: false` — see `reason`.
        * @enum {string}
        */
       name:
@@ -6238,6 +6248,7 @@ export interface components {
         | "approval.pending"
         | "pipeline.revisions"
         | "palette.search"
+        | "catchup.brief"
         | "unknown_tool"
         | "unnamed";
       /** @description The arguments the call was made with, after validation. */

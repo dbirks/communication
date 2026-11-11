@@ -90,6 +90,8 @@ const TOOL_NAMES = [
   "approval.pending",
   "pipeline.revisions",
   "palette.search",
+  // catchup.brief (ADR-0081 § Chat tools): the read registry's catch-up read.
+  "catchup.brief",
   "draft.get",
   "workflow.draft",
   "chat.transcript",

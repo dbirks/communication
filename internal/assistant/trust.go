@@ -43,9 +43,13 @@ const (
 	TrustNoAsk    TrustLevel = "no_ask"
 )
 
-// toolClasses is the closed table of decision 4. The v1 read registry's
-// six names plus draft.get and the workflow.draft lookup, the navigation
-// tool, the draft-edit tool and the five risky actions.
+// toolClasses is the closed table of decision 4. The v1 read registry's six
+// names plus the ADR-0081 catch-up read, draft.get and the workflow.draft
+// lookup, the navigation tool, the draft-edit tool and the risky actions. An
+// optional read (announcedToolOrder in tools.go) is still a row HERE: the
+// closed table is what refuses a name before the class question is asked, so
+// the announcement rule and this table are pinned against each other by
+// tools_test.go.
 var toolClasses = map[string]ToolClass{
 	"project.list":       ClassRead,
 	"run.list":           ClassRead,
@@ -53,6 +57,7 @@ var toolClasses = map[string]ToolClass{
 	"approval.pending":   ClassRead,
 	"pipeline.revisions": ClassRead,
 	"palette.search":     ClassRead,
+	"catchup.brief":      ClassRead,
 	"draft.get":          ClassRead,
 	"workflow.draft":     ClassRead,
 	"chat.transcript":    ClassRead,
