@@ -58,6 +58,9 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Seed realistic fixtures (runs, conversations, approvals, failures and
       merges) for four windows: a few minutes, an hour, a day and several
       days. Add a 7-day window too.
+- [ ] (Progress) Brief assembler and route: 0cc463f (catch_up_brief_test.go, real-DB
+      catch_up_brief_test.go incl. non-member scoping). The seeder (catchup-seed2), headline
+      (catchup-headline), chat tools (catchup-tools) and page (catchup-ui) are queued.
 - [ ] Add one integration test per window.
 - [ ] Add an LLM-graded or snapshot eval of usefulness.
 - [ ] Keep a single depth for now, with no gauge.
