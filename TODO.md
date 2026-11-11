@@ -267,6 +267,10 @@ that can be attached to different ACP agent setups. Today the spec
       failed) while 4–5 pi workers saturated the Collective (429 "backend at capacity" in worker
       retries). Re-run on the final SHA with no workers running, and investigate if it still fails.
 
+- [ ] Acceptance 43091513041 (ccca111) "failed" without running a job: its first job never got a runner during
+      GitHub's Actions major outage (githubstatus.com, 2026-11-11 ~20:40 UTC). Not a test result. Re-run on the final SHA
+      once Actions recovers. CI 43091513363 on ccca111 was green.
+
 ## Done when
 - [ ] Every box above is checked with evidence.
 - [ ] CI and Acceptance are green on the final SHA.
