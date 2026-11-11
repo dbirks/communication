@@ -63,8 +63,9 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       (catchup-headline), chat tools (catchup-tools) and page (catchup-ui) are queued.
 - [x] Add one integration test per window. Evidence: 576a388 TestCatchUpBriefOverSeeded/{15m,1h,1d,3d,7d} with
       goldens in internal/store/postgres/testdata/catch_up_brief/. It found and fixed heads_up being empty.
-- [ ] Polish (from the 1d golden): running_now step reads "/implement" (leading slash from the instance key), and
+- [x] Polish (from the 1d golden): running_now step reads "/implement" (leading slash from the instance key), and
       a run that opened a PR also appears as a separate commit row in shipped. Fold the commit into its PR row.
+      Done: 1f6d9b9.
 - [ ] Add an LLM-graded or snapshot eval of usefulness.
 - [ ] Keep a single depth for now, with no gauge.
 
