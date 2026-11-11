@@ -175,6 +175,12 @@ that can be attached to different ACP agent setups. Today the spec
       tests (spec test 7: two different skill sets, isolated between sessions).
 - [ ] Rebase the section 6 templates (Matt Pocock, poteto) on collections.
 
+## CI and Acceptance notes
+- [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
+- [ ] Acceptance 42975520340 (7ddec9d) failed m4 core-a (C1c, C9g, C10c) and github-loop (issue #650 run
+      failed) while 4–5 pi workers saturated the Collective (429 "backend at capacity" in worker
+      retries). Re-run on the final SHA with no workers running, and investigate if it still fails.
+
 ## Done when
 - [ ] Every box above is checked with evidence.
 - [ ] CI and Acceptance are green on the final SHA.
