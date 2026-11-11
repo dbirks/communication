@@ -69,7 +69,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       a run that opened a PR also appears as a separate commit row in shipped. Fold the commit into its PR row.
       Done: 1f6d9b9.
 - [ ] Add an LLM-graded or snapshot eval of usefulness.
-- [ ] Keep a single depth for now, with no gauge.
+- [x] Keep a single depth for now, with no gauge. The Catch up page renders the brief: 9d82339,
+      ~/.cache/pi-orch/communication/evidence/catchup-ui/catchup-brief-1440x900.png, CatchUp.test.tsx.
 
 - [x] Finding (deployed): Operations lists 35 dead worker pods above the one live
       worker. Covered by the section 8 redesign (2faa0a0).
