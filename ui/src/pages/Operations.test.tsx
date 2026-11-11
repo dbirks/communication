@@ -63,14 +63,14 @@ describe("/ops scheduler", () => {
     renderApp({ path: "/settings/operations", routes: opsRoutes(loaded) });
 
     for (const [testid, text] of [
-      ["scheduler-attempts-queued", "attempts queued3"],
-      ["scheduler-attempts-leased", "attempts leased2"],
-      ["scheduler-attempts-running", "attempts running5"],
+      ["scheduler-attempts-queued", "queued3"],
+      ["scheduler-attempts-leased", "leased2"],
+      ["scheduler-attempts-running", "running5"],
       ["scheduler-lease-expirations", "lease expirations4"],
-      ["scheduler-max-retry-depth", "max retry loop depth6"],
-      ["scheduler-oldest-queued", "oldest queued age2m"],
+      ["scheduler-max-retry-depth", "retry depth6"],
+      ["scheduler-oldest-queued", "oldest queued2m"],
       ["scheduler-waiting-approvals", "waiting approvals1"],
-      ["scheduler-queued-unbindable", "queued unbindable runs0"],
+      ["scheduler-queued-unbindable", "unbindable runs0"],
     ] as const) {
       expect((await screen.findByTestId(testid)).textContent).toContain(text);
     }
@@ -238,13 +238,16 @@ function ops4hRoutes(overrides: {
 }
 
 describe("/ops 4h surfaces", () => {
-  it("renders the health line: replica, queue depth, oldest queue age", async () => {
+  it("leads with one plain-words line and shows queue depth and oldest age on the queue tile", async () => {
     renderApp({ path: "/settings/operations", routes: ops4hRoutes({}) });
 
+    // The 2026-11-11 redesign: the lead line counts tiles that need attention
+    // (or says all is normal); replica, depth and age moved to tiles/panels.
     const line = await screen.findByTestId("ops-health-line");
-    expect(line.textContent).toContain("replica: api-a");
-    expect(line.textContent).toContain("queue: 3 queued, 2 leased");
-    expect(line.textContent).toContain("oldest queued: 2m");
+    expect(line.textContent).toMatch(/All systems normal\.|needs? attention\./);
+    const strip = await screen.findByTestId("ops-stat-strip");
+    await waitFor(() => expect(strip.textContent).toContain("3 queued"));
+    expect(strip.textContent).toContain("oldest 2m");
   });
 
   it("keeps the workers table testids and adds leases, sandbox and heartbeat age", async () => {

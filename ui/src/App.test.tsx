@@ -113,6 +113,24 @@ describe("auth", () => {
             replica: "replica-b",
           },
           { path: "/api/v1/system/sandbox", body: { workers: [] }, replica: "replica-b" },
+          {
+            path: "/api/v1/system/overview",
+            body: {
+              server: {
+                version: "0.1.0-m1",
+                commit: "",
+                replica: "replica-b",
+                schema_version: 1,
+                started_at: "2026-11-11T00:00:00Z",
+              },
+              identity: { provider: "oidc", issuer_host: "idp.example", dev_login: false },
+              storage: { artifact_backend: "local", preview_host: "" },
+              models: [],
+              secrets: { projects: 0, secrets: 0, mounts: 0 },
+              workers: { online: 0, offline: 0, stale_after_seconds: 3600 },
+            },
+            replica: "replica-b",
+          },
         ],
       });
 
@@ -188,7 +206,7 @@ describe("/ops", () => {
     expect(screen.getByTestId("health-card").textContent).toContain("replica-b");
     expect(screen.getByTestId("readiness-card").textContent).toContain("status: ready");
     expect(screen.getByTestId("readiness-card").textContent).toContain("schema version");
-    expect(screen.getByText("No workers registered")).toBeTruthy();
+    expect(screen.getByText(/No workers have registered\./)).toBeTruthy();
   });
 
   it("renders registered workers with their status as text", async () => {
