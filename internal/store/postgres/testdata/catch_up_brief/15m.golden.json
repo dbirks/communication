@@ -1,0 +1,92 @@
+{
+  "window": {
+    "key": "15m",
+    "since": "-15m",
+    "until": "now"
+  },
+  "headline": {
+    "text": "",
+    "state": "unavailable"
+  },
+  "needs_you": [
+    {
+      "kind": "approval",
+      "title": "Rotate the payments webhook secret",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "link": "/approvals/<id2>",
+      "at": "-3m",
+      "detail": "Approve plan: rotate webhook secret"
+    }
+  ],
+  "running_now": [
+    {
+      "run_id": "<id3>",
+      "title": "Fix flaky checkout test",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "started_at": "-6m",
+      "step": "/implement",
+      "link": "/runs/<id3>"
+    }
+  ],
+  "shipped": [
+    {
+      "kind": "pr",
+      "title": "Add idempotency keys to refunds",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 412,
+        "url": "https://github.com/acme/payments-api/pull/412"
+      },
+      "by": "the reader",
+      "at": "-9m",
+      "link": "/runs/<id4>"
+    },
+    {
+      "kind": "commit",
+      "title": "Add idempotency keys to refunds",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "sha": "3649f6f664c442b050fb1d1666aeeb6fe90649d9"
+      },
+      "by": "the reader",
+      "at": "-9m",
+      "link": "/runs/<id4>"
+    }
+  ],
+  "broke": [],
+  "heads_up": [],
+  "changes": [],
+  "numbers": {
+    "runs": {
+      "succeeded": 1,
+      "failed": 0,
+      "cancelled": 0,
+      "running": 1
+    },
+    "approvals": {
+      "decided": 0,
+      "pending": 1
+    },
+    "threads_active": 0,
+    "prs": 1,
+    "commits": 1
+  },
+  "by_project": [],
+  "omitted": {}
+}

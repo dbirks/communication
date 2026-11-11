@@ -534,6 +534,55 @@ func (a APICatchUpStore) CatchUpBriefRunNodes(ctx context.Context, c api.Caller,
 	return out, catchUpQueryErr(rows.Err(), "read catchup brief runs")
 }
 
+// --- the window's work items (the items half of `heads_up`) -------------
+
+// catchUpBriefItemsSQL is the window's work items with the text the must-know
+// rules scan. The window clock is the item's own `updated_at` — the same clock
+// the list read and the tour's grouping use — and the row carries the summary
+// rather than the tour beats: a beat's importance is the model's ranking, and
+// reading it back would make the server's floor a report of the model's opinion.
+// The summary is what the generator was told to keep to the facts it was given,
+// and it is the row that names the file a migration touched.
+const catchUpBriefItemsSQL = `
+	WITH ` + catchUpVisibleSome + `
+	SELECT w.id::text, COALESCE (w.title, ''), COALESCE (w.summary, ''),
+	       p.id::text, p.name, COALESCE (p.color, '')
+	FROM catchup_work_items w
+	JOIN visible v ON v.id = w.project_id
+	JOIN projects p ON p.id = w.project_id
+	WHERE w.updated_at >= $5::timestamptz
+	  AND w.updated_at <  $6::timestamptz
+	ORDER BY w.updated_at DESC, w.id DESC
+	LIMIT 400`
+
+func (a APICatchUpStore) CatchUpBriefWorkItems(ctx context.Context, c api.Caller,
+	f api.CatchUpBriefFilter) ([]api.CatchUpBriefItem, error) {
+	s, err := a.store()
+	if err != nil {
+		return nil, err
+	}
+	sc := prjAPICaller(c)
+	rows, err := s.Pool.Query(ctx, catchUpBriefItemsSQL, sc.UserID, sc.OrganizationID,
+		sc.IsOrgAdmin, catchUpBriefWanted(f), f.Since, f.Until)
+	if err != nil {
+		return nil, catchUpQueryErr(err, "read catchup brief work items")
+	}
+	defer rows.Close()
+	out := []api.CatchUpBriefItem{}
+	for rows.Next() {
+		var itemID, title, text, projectID, projectName, projectColor string
+		if err := rows.Scan(&itemID, &title, &text, &projectID, &projectName,
+			&projectColor); err != nil {
+			return nil, catchUpQueryErr(err, "scan catchup brief work item")
+		}
+		out = append(out, api.CatchUpBriefItem{
+			ItemID: itemID, Title: title, Text: catchUpBriefClip(text, 2000),
+			Project: catchUpBriefChip(projectID, projectName, projectColor),
+		})
+	}
+	return out, catchUpQueryErr(rows.Err(), "read catchup brief work items")
+}
+
 // --- changes ------------------------------------------------------------
 
 // catchUpBriefRevisionsSQL is the workflows that went live in the window. A

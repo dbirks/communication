@@ -254,7 +254,13 @@ func cuContent1d(w *cuWorld) {
 	// was ever in its path (the importance rules in the tour prompt name it).
 	pushed := w.seedRun(cuPayments, "Pin the shared lint config on main", "completed",
 		16*time.Hour+45*time.Minute, 16*time.Hour, "")
+	// The branch it landed on travels in `branch`, which is where the harvest
+	// reads a ref from (audit § 6 item 6: "outputs is where
+	// branch/pr_url/commit_sha/issue_number/pr_number must live to be
+	// harvested"). A run that pushed straight to main and named no branch is a
+	// run whose push nobody, not even the must-know floor, can see.
 	w.seedNode(pushed, "/implement", "succeeded", "", cuOutputs(
+		"branch", "main",
 		"pushed_to", "main",
 		"commit_sha", cuSHA("pin-lint-config"),
 	), 16*time.Hour)

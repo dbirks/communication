@@ -1,0 +1,127 @@
+{
+  "window": {
+    "key": "1h",
+    "since": "-1h",
+    "until": "now"
+  },
+  "headline": {
+    "text": "",
+    "state": "unavailable"
+  },
+  "needs_you": [
+    {
+      "kind": "approval",
+      "title": "Rotate the payments webhook secret",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "link": "/approvals/<id2>",
+      "at": "-3m",
+      "detail": "Approve plan: rotate webhook secret"
+    }
+  ],
+  "running_now": [
+    {
+      "run_id": "<id3>",
+      "title": "Fix flaky checkout test",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "started_at": "-6m",
+      "step": "/implement",
+      "link": "/runs/<id3>"
+    }
+  ],
+  "shipped": [
+    {
+      "kind": "pr",
+      "title": "Add idempotency keys to refunds",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 412,
+        "url": "https://github.com/acme/payments-api/pull/412"
+      },
+      "by": "the reader",
+      "at": "-9m",
+      "link": "/runs/<id4>"
+    },
+    {
+      "kind": "commit",
+      "title": "Add idempotency keys to refunds",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "sha": "3649f6f664c442b050fb1d1666aeeb6fe90649d9"
+      },
+      "by": "the reader",
+      "at": "-9m",
+      "link": "/runs/<id4>"
+    },
+    {
+      "kind": "workflow_revision",
+      "title": "payments-api CI v2.1.0",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {},
+      "by": "a teammate",
+      "at": "-25m",
+      "link": "/workflows/<id5>"
+    }
+  ],
+  "broke": [
+    {
+      "title": "payments-api CI",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "failures": 1,
+      "error_class": "test",
+      "still_failing": false,
+      "fixed_at": "-35m",
+      "link": "/runs/<id6>"
+    }
+  ],
+  "heads_up": [],
+  "changes": [
+    {
+      "kind": "workflow_published",
+      "title": "payments-api CI v2.1.0",
+      "by": "a teammate",
+      "at": "-25m",
+      "link": "/workflows/<id5>"
+    }
+  ],
+  "numbers": {
+    "runs": {
+      "succeeded": 4,
+      "failed": 1,
+      "cancelled": 0,
+      "running": 1
+    },
+    "approvals": {
+      "decided": 0,
+      "pending": 1
+    },
+    "threads_active": 0,
+    "prs": 1,
+    "commits": 1
+  },
+  "by_project": [],
+  "omitted": {}
+}

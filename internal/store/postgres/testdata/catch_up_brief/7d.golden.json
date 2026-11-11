@@ -1,0 +1,334 @@
+{
+  "window": {
+    "key": "7d",
+    "since": "-7d",
+    "until": "now"
+  },
+  "headline": {
+    "text": "",
+    "state": "unavailable"
+  },
+  "needs_you": [
+    {
+      "kind": "question",
+      "title": "Alert routing: one tree or two?",
+      "project": {
+        "id": "<id1>",
+        "name": "infra",
+        "color": "<colour of infra>"
+      },
+      "link": "/catch-up/<id2>?stop=the-work",
+      "at": "-20h",
+      "detail": "Fold paging into the existing alert tree, or split it in two?"
+    },
+    {
+      "kind": "approval",
+      "title": "Rotate the payments webhook secret",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "link": "/approvals/<id4>",
+      "at": "-3m",
+      "detail": "Approve plan: rotate webhook secret"
+    }
+  ],
+  "running_now": [
+    {
+      "run_id": "<id5>",
+      "title": "Fix flaky checkout test",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "started_at": "-6m",
+      "step": "/implement",
+      "link": "/runs/<id5>"
+    }
+  ],
+  "shipped": [
+    {
+      "kind": "pr",
+      "title": "Add idempotency keys to refunds",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 412,
+        "url": "https://github.com/acme/payments-api/pull/412"
+      },
+      "by": "the reader",
+      "at": "-9m",
+      "link": "/runs/<id6>"
+    },
+    {
+      "kind": "commit",
+      "title": "Add idempotency keys to refunds",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "sha": "3649f6f664c442b050fb1d1666aeeb6fe90649d9"
+      },
+      "by": "the reader",
+      "at": "-9m",
+      "link": "/runs/<id6>"
+    },
+    {
+      "kind": "workflow_revision",
+      "title": "payments-api CI v2.1.0",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {},
+      "by": "a teammate",
+      "at": "-25m",
+      "link": "/workflows/<id7>"
+    },
+    {
+      "kind": "commit",
+      "title": "Cut the 2026-11 release branch",
+      "project": {
+        "id": "<id8>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "ref": {
+        "sha": "27fb42914a8f26784a86eb65536192148c80ce1a"
+      },
+      "by": "the reader",
+      "at": "-8h",
+      "link": "/runs/<id9>"
+    },
+    {
+      "kind": "pr",
+      "title": "Backfill the ledger accounts",
+      "project": {
+        "id": "<id8>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "ref": {
+        "number": 418,
+        "url": "https://github.com/acme/web-app/pull/418"
+      },
+      "by": "a teammate",
+      "at": "-14h",
+      "link": "/runs/<id10>"
+    },
+    {
+      "kind": "commit",
+      "title": "Backfill the ledger accounts",
+      "project": {
+        "id": "<id8>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "ref": {
+        "sha": "77780099c80bb4511c0d81e94035d97d640f5bff"
+      },
+      "by": "a teammate",
+      "at": "-14h",
+      "link": "/runs/<id10>"
+    },
+    {
+      "kind": "commit",
+      "title": "Pin the shared lint config on main",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "sha": "48533a2353c1645a9ba474ede361cb031d3a9c98"
+      },
+      "by": "",
+      "at": "-16h",
+      "link": "/runs/<id11>"
+    },
+    {
+      "kind": "pr",
+      "title": "Checkout timeouts under load",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 415,
+        "url": "https://github.com/acme/payments-api/pull/415"
+      },
+      "by": "the reader",
+      "at": "-18h",
+      "link": "/runs/<id12>"
+    },
+    {
+      "kind": "commit",
+      "title": "Checkout timeouts under load",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "sha": "0e895e228b8ce762e9301b214ca7115bf5957874"
+      },
+      "by": "the reader",
+      "at": "-18h",
+      "link": "/runs/<id12>"
+    },
+    {
+      "kind": "pr",
+      "title": "Draft the ledger export",
+      "project": {
+        "id": "<id8>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "ref": {
+        "number": 417,
+        "url": "https://github.com/acme/web-app/pull/417"
+      },
+      "by": "a teammate",
+      "at": "-19h",
+      "link": "/runs/<id13>"
+    }
+  ],
+  "broke": [
+    {
+      "title": "payments-api CI",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "failures": 2,
+      "error_class": "test",
+      "still_failing": false,
+      "fixed_at": "-35m",
+      "link": "/runs/<id14>"
+    },
+    {
+      "title": "web-app CI",
+      "project": {
+        "id": "<id8>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "failures": 1,
+      "error_class": "test",
+      "still_failing": false,
+      "fixed_at": "-12m",
+      "link": "/runs/<id15>"
+    },
+    {
+      "title": "infra CI",
+      "project": {
+        "id": "<id1>",
+        "name": "infra",
+        "color": "<colour of infra>"
+      },
+      "failures": 7,
+      "error_class": "test",
+      "still_failing": false,
+      "fixed_at": "-17h",
+      "link": "/runs/<id16>"
+    }
+  ],
+  "heads_up": [
+    {
+      "signal": "push_to_main",
+      "title": "Pin the shared lint config on main",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "link": "/runs/<id11>"
+    },
+    {
+      "signal": "migration",
+      "title": "Backfill the ledger accounts",
+      "project": {
+        "id": "<id8>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "link": "/catch-up/<id17>"
+    },
+    {
+      "signal": "deps",
+      "title": "Bump pgx to v5.9",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "link": "/catch-up/<id18>"
+    }
+  ],
+  "changes": [
+    {
+      "kind": "workflow_published",
+      "title": "payments-api CI v2.1.0",
+      "by": "a teammate",
+      "at": "-25m",
+      "link": "/workflows/<id7>"
+    },
+    {
+      "kind": "member_added",
+      "title": "a new member joined infra as contributor",
+      "by": "",
+      "at": "-1d6h",
+      "link": "/p/<id1>/members"
+    },
+    {
+      "kind": "workflow_published",
+      "title": "infra CI v1.2.0",
+      "by": "a teammate",
+      "at": "-1d10h",
+      "link": "/workflows/<id19>"
+    },
+    {
+      "kind": "workflow_published",
+      "title": "web-app CI v1.5.0",
+      "by": "the reader",
+      "at": "-1d18h",
+      "link": "/workflows/<id20>"
+    },
+    {
+      "kind": "workflow_published",
+      "title": "payments-api CI v3.0.0",
+      "by": "a teammate",
+      "at": "-3d",
+      "link": "/workflows/<id7>"
+    }
+  ],
+  "numbers": {
+    "runs": {
+      "succeeded": 131,
+      "failed": 10,
+      "cancelled": 2,
+      "running": 1
+    },
+    "approvals": {
+      "decided": 1,
+      "pending": 2
+    },
+    "threads_active": 1,
+    "prs": 22,
+    "commits": 27
+  },
+  "by_project": [],
+  "omitted": {
+    "shipped": 43
+  }
+}

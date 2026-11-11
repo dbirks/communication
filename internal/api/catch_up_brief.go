@@ -187,8 +187,9 @@ type CatchUpBriefBroke struct {
 // CatchUpBriefHeadsUp is one must-know signal on one piece of work: the same
 // rules that raise a tour beat to must_know (auth paths, a migration, a new
 // dependency, a push straight to main, skipped tests, the public API spec),
-// applied to the window's runs. One row per (item, signal) — an auth change on a
-// migration is two rows, because they are two reasons to look.
+// applied to the window's runs AND its work items (ADR-0081 § Decision). One row
+// per (item, signal) — an auth change on a migration is two rows, because they
+// are two reasons to look.
 type CatchUpBriefHeadsUp struct {
 	Signal  string             `json:"signal"`
 	Title   string             `json:"title"`
@@ -357,6 +358,32 @@ type CatchUpBriefStore interface {
 	CatchUpBriefCounts(ctx context.Context, c Caller, f CatchUpBriefFilter) (CatchUpBriefNumbers, error)
 }
 
+// CatchUpBriefItem is one work item the window moved, with the text the must-know
+// rules read. A run is not the only row that can carry a migration or a new
+// dependency: the item that TELLS the work records the file it touched
+// (`db/migrations/00042_add_ledger.sql`), and a window whose runs name no path
+// would otherwise serve an empty `heads_up` over a schema change.
+//
+// `Text` is the item's own stored record (its summary), never a tour beat's
+// importance: the floor is what the deployment's records say, not what the
+// model ranked, so ranking is not read back in as a fact.
+type CatchUpBriefItem struct {
+	ItemID  string
+	Title   string
+	Text    string
+	Project CatchUpProjectChip
+}
+
+// CatchUpBriefItemStore is the optional half of the brief seam that ADR-0081's
+// "runs and items" needs. It is separate rather than a tenth method of
+// CatchUpBriefStore so a deployment that serves only the run reads keeps
+// compiling — and keeps serving `heads_up` from the runs alone — while the
+// reference store answers for the items too.
+type CatchUpBriefItemStore interface {
+	CatchUpBriefWorkItems(ctx context.Context, c Caller,
+		f CatchUpBriefFilter) ([]CatchUpBriefItem, error)
+}
+
 // --- the assembler ----------------------------------------------------
 
 // AssembleCatchUpBrief answers one reader's question with the server's own
@@ -450,6 +477,13 @@ func AssembleCatchUpBrief(ctx context.Context, store CatchUpBriefStore,
 		return shipped[i].Link < shipped[j].Link
 	})
 	brief.Shipped = catchUpBriefCut(&brief, "shipped", shipped, limit)
+	if items, ok := store.(CatchUpBriefItemStore); ok {
+		win, err := items.CatchUpBriefWorkItems(ctx, c, f)
+		if err != nil {
+			return CatchUpBrief{}, err
+		}
+		heads = catchUpBriefItemHeads(heads, win)
+	}
 	brief.HeadsUp = catchUpBriefCut(&brief, "heads_up", heads, limit)
 
 	broke, err := store.CatchUpBriefBroke(ctx, c, f)
@@ -597,6 +631,38 @@ func harvestCatchUpBriefNodes(nodes []CatchUpBriefRunNode) ([]CatchUpBriefShippe
 		}
 	}
 	return shipped, heads
+}
+
+// catchUpBriefItemHeads adds the signals the window's work items carry to the
+// rows its runs already produced, keeping the (title, signal) pair unique across
+// the two sources — the same piece of work usually has a run AND an item, and two
+// rows saying "migration: Backfill the ledger accounts" would be two rows saying
+// one thing.
+//
+// The run rows come first: each names a run the reader can open, and the section
+// is capped, so the row with the harder evidence wins the slot. Item rows follow
+// in the store's own newest-moved order.
+func catchUpBriefItemHeads(heads []CatchUpBriefHeadsUp, items []CatchUpBriefItem) []CatchUpBriefHeadsUp {
+	seen := make(map[string]bool, len(heads))
+	for _, h := range heads {
+		seen[h.Title+"\x00"+h.Signal] = true
+	}
+	for _, it := range items {
+		for _, signal := range assistant.CatchUpHeadUpSignals(assistant.CatchUpRunFacts{
+			Title: it.Title, Goal: it.Text,
+		}) {
+			key := it.Title + "\x00" + signal
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			heads = append(heads, CatchUpBriefHeadsUp{
+				Signal: signal, Title: it.Title,
+				Project: it.Project, Link: "/catch-up/" + it.ItemID,
+			})
+		}
+	}
+	return heads
 }
 
 // countCatchUpBriefShipped is the numbers block's PR and commit count: the
