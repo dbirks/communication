@@ -229,8 +229,15 @@ that can be attached to different ACP agent setups. Today the spec
       attaching collections to an agent profile, and worker resolution with
       tests (spec test 7: two different skill sets, isolated between sessions).
       Evidence: 1d69498 (API, worker flatten and lock), cac3525 (UI), 10503b3 (test 7).
-- [ ] Real lock of a seeded collection on the deployed worker (apm 0.34.0 in the image): lock "Matt Pocock skills"
+- [x] Real lock of a seeded collection on the deployed worker (apm 0.34.0 in the image): lock "Matt Pocock skills"
       on a profile in the deployed app and record the digest.
+      Evidence (deployed ccca111): Claude Code profile with mattpocock/skills#v1.3.2 locked
+      sha256:14bddfb556ae2685a497c4b7b60f67c159c848facf6fc9952e744d3bf6127a41; with the Matt Pocock collection attached it
+      dedupes to the same digest; with pstack (Claude Code) attached as well, 37 deps resolve and lock to
+      sha256:06405c67ad283f3d4f2f566fd3bf1557b725133e119fdcbcdfde2678b93c15a0. That proves pstack per-skill subpath refs
+      work through real apm 0.34.0. Screenshot: ~/.cache/pi-orch/communication/evidence/deployed/deployed-skills.png
+- [x] Finding (deployed): attaching a collection to a profile with no target was refused as a partial pin. Fixed in
+      67cb32d (ProfileDetailSkills.test.tsx); pushed after the final Acceptance run.
 - [x] Rebase the section 6 templates (Matt Pocock, poteto) on collections. Their headers name the seeded collections
       (a31da6a), and 00033 seeds them (1d69498).
 
