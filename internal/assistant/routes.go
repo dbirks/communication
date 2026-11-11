@@ -55,6 +55,7 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/workflows/steps/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/profiles$`),
 	regexp.MustCompile(`^/profiles/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/profile$`),
 	regexp.MustCompile(`^/runs/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/settings$`),
 	regexp.MustCompile(`^/settings/[A-Za-z0-9_-]{1,64}$`),
