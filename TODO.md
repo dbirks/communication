@@ -52,9 +52,11 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [x] Escape closes it wherever focus is. Evidence: e9624ea, same test (Esc on body).
 
 ## 4. Catch-up
-- [ ] Interrogate the prompt and the tool set, then rewrite them so the output
+- [x] Interrogate the prompt and the tool set, then rewrite them so the output
       (Audit: docs/research/2026-11-catch-up-audit.md. Design: ADR-0081 c549320.)
       is what someone needs to get back up to speed.
+      Evidence: audit (docs/research/2026-11-catch-up-audit.md), ADR-0081, brief assembler 0cc463f, headline prompt
+      5f94289 (catchup_brief_test.go), chat tools ab16ee4 (tools_test.go).
 - [x] Seed realistic fixtures (runs, conversations, approvals, failures and
       merges) for four windows: a few minutes, an hour, a day and several
       days. Add a 7-day window too. Evidence: 15ca227 (catch_up_seed*_test.go, TestCatchUpSeed{15m,1h,1d,3d,7d}).
