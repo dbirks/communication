@@ -134,10 +134,12 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 User's vision: named APM collections (bundles of skills, instructions and MCP)
 that can be attached to different ACP agent setups. Today the spec
 (04-agent-runtime.md) gives AgentProfileRevision a single `apm_package_ref`.
-- [ ] Research how upstream APM (microsoft/apm) handles collections and
+- [x] Research how upstream APM (microsoft/apm) handles collections and
       composition: dependencies in apm.yml, collection manifests and lock
-      behavior. Note the sources in `14-research-notes.md` or `docs/`.
-- [ ] Write an ADR with a design for "collections" as a first-class library
+      behavior. Note the sources in `14-research-notes.md` or `docs/`. Evidence:
+      docs/research/2026-11-apm-collections-and-harnesses.md (APM 0.12 dropped .collection.yml;
+      meta-package apm.yml instead).
+- [x] Write an ADR with a design for "collections" as a first-class library
       item. A profile references one or more collections; the worker resolves
       them into one APM manifest and lock per attempt and records the digest.
       Cover ordering and conflict rules and per-launcher targeting.
