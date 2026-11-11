@@ -67,6 +67,12 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Finding: CI audit failed on GO-2026-6859 (net/http). Bumped Go to 1.27.4 in
       ceafd03; confirm CI is green.
 
+- [ ] Finding (deployed): New profile with launcher Pi defaults to permission `ask`, which can
+      never run ("permission mode ask needs a prompting mode for launcher pi"). The UI can't
+      set `autonomous_within_sandbox`; it is operator SQL only (ADR-0069). Fix: a Pi profile is
+      created as autonomous_within_sandbox + required, and the UI explains why.
+- [ ] Finding (deployed): the New profile name suggestion read "Pi · 2" when no Pi profile existed.
+
 ## 5. Assistant end-to-end exercise
 - [ ] Run Playwright against the real model and hunt for errors and visual or
       UX nonsense. Log each finding here as a box.
