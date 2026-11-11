@@ -25,6 +25,8 @@ modes:
   dev       run serve and one worker in one process (dev only, not HA)
   migrate   apply database migrations
   doctor    report on the local environment and supported agent tools
+  pod-wait  (inside an attempt pod) hold the container open for exec sessions
+  pod-verify (inside an attempt pod) print the nono enforcement verdict as JSON
   version   print the binary version
   help      show this help
 `
@@ -61,6 +63,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "dev":
 		ctx := context.Background()
 		return runDev(ctx, args[1:], stdout, stderr)
+	case "pod-wait":
+		return runPodWait(stdout, stderr)
+	case "pod-verify":
+		return runPodVerify(stdout, stderr)
 	}
 
 	fmt.Fprintf(stderr, "unknown mode %q\n", args[0])

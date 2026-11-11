@@ -22,11 +22,14 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/domain"
+	"github.com/dbirks/communication/internal/sandbox/k8s"
 	"github.com/dbirks/communication/internal/sandbox/nono"
 	"github.com/dbirks/communication/internal/secrets"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/internal/worker"
 	wsgit "github.com/dbirks/communication/internal/workspace/git"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 const workerUsage = `usage: communication worker
@@ -170,6 +173,25 @@ environment:
                                  the launch environment as-is.
 
 migrations are applied separately: communication migrate up
+
+kubernetes launcher (ADR-0082 § 8; the default is "local", which execs every
+agent as a child of this process exactly as before):
+  COMMUNICATION_WORKER_LAUNCHER  local (default) | kubernetes. With
+                                 "kubernetes" the worker creates ONE Pod per
+                                 agent attempt in the namespace below and drives
+                                 ACP over that pod's "pods/exec" stdio; the
+                                 worker needs the namespaced Role in
+                                 deploy/helm/communication/templates/rbac.yaml
+                                 and refuses to start without the three
+                                 variables below.
+  COMMUNICATION_AGENT_NAMESPACE  namespace the attempt pods live in
+  COMMUNICATION_AGENT_POD_IMAGE  image for them (the worker image: the only one
+                                 carrying nono, Node and the pinned adapters)
+  COMMUNICATION_AGENT_POD_NODE   node to pin each attempt to (downward API
+                                 spec.nodeName): the workspace claim is RWO
+  COMMUNICATION_AGENT_WORKSPACE_PVC
+                                 the claim those workspace roots live on, mounted
+                                 in the attempt pod at the SAME absolute paths
 `
 
 // defaultWorkspaceRoot is where per-conversation workspaces live; the
@@ -180,6 +202,13 @@ const defaultWorkspaceRoot = "/var/lib/communication/workspaces"
 type workerOptions struct {
 	databaseURL   string
 	workspaceRoot string
+	// agentTransporter is the ADR-0082 § 8 launcher seam: nil in the default
+	// `local` mode, where the ACP runtime execs the verified plan as a child of
+	// this process; a *k8s.PodTransporter when COMMUNICATION_WORKER_LAUNCHER is
+	// `kubernetes`. It is resolved once at startup (launcherTransporter) and set on
+	// the two acp.Runtime constructions, so an attempt can never pick up a
+	// launcher the worker did not report itself as having.
+	agentTransporter acp.Transporter
 	// reposRoot is the second storage root M3 measures (ADR-0017 D5). It is not
 	// derived from workspaceRoot: probe V5b found the lab's workspaces and repos
 	// trees share a device and differ only by inode, so a path-prefix relationship
@@ -477,6 +506,22 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 
+	// ADR-0082 § 8's launcher selection, resolved once, before anything that can
+	// launch an agent. The default (unset, or "local") returns a nil Transporter,
+	// which is exactly what the acp.Runtime has always run with: the plan exec'd
+	// as a child of this process. A worker told to use Kubernetes that cannot
+	// reach the API server refuses to start rather than quietly launching agents
+	// locally — the ADR's migration note keeps the operator's choice explicit, and
+	// a worker whose pods never appear is a far smaller surprise than one whose
+	// agents run locally while it advertises pod mode.
+	transporter, transporterErr := launcherTransporter(opts, os.Getenv, log)
+	if transporterErr != nil {
+		stop()
+		log.Error("invalid launcher configuration", slog.String("error", transporterErr.Error()))
+		return 2
+	}
+	opts.agentTransporter = transporter
+
 	pool, err := openPool(ctx, opts.databaseURL, log)
 	if err != nil {
 		stop()
@@ -530,7 +575,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		worker.TurnConfig{AskModeID: acpAskModeID},
 		&postgres.TurnStore{Pool: pool},
 		&acp.Factory{
-			Runtime: &acp.Runtime{Logger: log},
+			Runtime: &acp.Runtime{Logger: log, Transporter: opts.agentTransporter},
 			// RequirePlan is the enforcement axis: with it set, a session whose
 			// context carries no verified launch plan is refused by the factory
 			// rather than quietly exec'd unsandboxed. There is no path from a
@@ -1101,7 +1146,7 @@ func newAgentTurn(opts workerOptions, pool *pgxpool.Pool, units *worker.UnitServ
 		GitIdentity:   opts.agentGit,
 		LauncherAuth:  launcherCredentialDirs,
 		Spawn: &acp.Factory{
-			Runtime:     &acp.Runtime{Logger: log},
+			Runtime:     &acp.Runtime{Logger: log, Transporter: opts.agentTransporter},
 			RequirePlan: opts.sandboxEnforcement == domain.EnforceRequired,
 		},
 		Profiles:   &postgres.AgentProfiles{Pool: pool},
@@ -1424,6 +1469,82 @@ func nonoPath() string {
 		return "nono"
 	}
 	return path
+}
+
+// launcherTransporter is the ADR-0082 § 8 selection: `local` (the default, and
+// the unset case) returns a nil acp.Transporter, which means ProcTransporter —
+// today's behaviour, unchanged, in every byte of it. `kubernetes` returns the
+// pod-shaped one, built on the worker's in-cluster credentials, so the worker's
+// own ServiceAccount is what the API server authenticates and the RBAC the chart
+// renders (pods, pods/exec, pods/log, secrets, events in the agent namespace)
+// is the whole authority it has over agent pods.
+//
+// A misconfiguration is fatal rather than fallback-shaped: a worker that says it
+// runs pods and cannot reach the API server must not quietly exec the plan as a
+// child process, because the operator would then be reading a deployment that
+// does not describe where the agents actually ran.
+func launcherTransporter(opts workerOptions, getenv func(string) string, log *slog.Logger) (acp.Transporter, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	switch launcher := strings.ToLower(strings.TrimSpace(getenv("COMMUNICATION_WORKER_LAUNCHER"))); launcher {
+	case "", "local":
+		return nil, nil
+	case "kubernetes":
+	default:
+		return nil, fmt.Errorf("COMMUNICATION_WORKER_LAUNCHER %q is not local or kubernetes", launcher)
+	}
+	cfg, err := agentPodConfig(opts, getenv)
+	if err != nil {
+		return nil, err
+	}
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes launcher: in-cluster config (the worker needs a projected service-account token — ADR-0082 Decision 6): %w", err)
+	}
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes launcher: client: %w", err)
+	}
+	log.Info("worker launcher: kubernetes (one pod per agent attempt)",
+		slog.String("namespace", cfg.Namespace),
+		slog.String("image", cfg.Image),
+		slog.String("node", cfg.NodeName),
+		slog.String("workspace_pvc", cfg.Claim),
+	)
+	return &k8s.PodTransporter{
+		Client:    client,
+		Config:    cfg,
+		Executors: &k8s.RESTExecutors{Client: client, RESTConfig: restCfg},
+		Logger:    log,
+	}, nil
+}
+
+// agentPodConfig maps this worker's own storage layout onto the attempt pod's
+// mounts, which is the whole point of ADR-0082 Decision 4: the verified launch
+// plan names absolute paths, and the pod must resolve them the same way. The two
+// roots the plan *writes* through (its worktrees, its mirrors) plus the directory
+// holding its policy file come from the shared claim; nono's HOME and the probe
+// scratch deliberately do not — probe C-H1's state-root refusal is sticky, and an
+// attempt must not be able to poison the worker's launcher home or inherit one.
+func agentPodConfig(opts workerOptions, getenv func(string) string) (k8s.Config, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	cfg := k8s.Config{
+		Namespace:       strings.TrimSpace(getenv("COMMUNICATION_AGENT_NAMESPACE")),
+		Image:           strings.TrimSpace(getenv("COMMUNICATION_AGENT_POD_IMAGE")),
+		NodeName:        strings.TrimSpace(getenv("COMMUNICATION_AGENT_POD_NODE")),
+		Claim:           strings.TrimSpace(getenv("COMMUNICATION_AGENT_WORKSPACE_PVC")),
+		ClaimPaths:      []string{opts.workspaceRoot, opts.reposRoot, opts.policyDir},
+		LocalPaths:      []string{opts.sandboxLauncherHome},
+		SandboxHome:     opts.sandboxLauncherHome,
+		SandboxSelfTest: opts.sandboxSelfTest,
+	}
+	if err := cfg.Validate(); err != nil {
+		return k8s.Config{}, err
+	}
+	return cfg, nil
 }
 
 // pathIsUnderRoot reports whether candidate sits strictly below root. Both
