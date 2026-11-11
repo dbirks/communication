@@ -32,7 +32,7 @@
         "color": "<colour of payments-api>"
       },
       "started_at": "-6m",
-      "step": "/implement",
+      "step": "implement",
       "link": "/runs/<id3>"
     }
   ],
@@ -47,21 +47,7 @@
       },
       "ref": {
         "number": 412,
-        "url": "https://github.com/acme/payments-api/pull/412"
-      },
-      "by": "the reader",
-      "at": "-9m",
-      "link": "/runs/<id4>"
-    },
-    {
-      "kind": "commit",
-      "title": "Add idempotency keys to refunds",
-      "project": {
-        "id": "<id1>",
-        "name": "payments-api",
-        "color": "<colour of payments-api>"
-      },
-      "ref": {
+        "url": "https://github.com/acme/payments-api/pull/412",
         "sha": "3649f6f664c442b050fb1d1666aeeb6fe90649d9"
       },
       "by": "the reader",

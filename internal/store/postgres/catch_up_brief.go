@@ -32,6 +32,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -349,7 +350,7 @@ func (a APICatchUpStore) CatchUpBriefRunning(ctx context.Context, c api.Caller,
 		out = append(out, api.CatchUpBriefRunning{
 			RunID: runID, Title: title,
 			Project:   catchUpBriefChip(projectID, projectName, projectColor),
-			StartedAt: startedAt.UTC(), Step: step, Link: "/runs/" + runID,
+			StartedAt: startedAt.UTC(), Step: strings.TrimLeft(step, "/"), Link: "/runs/" + runID,
 		})
 	}
 	return out, catchUpQueryErr(rows.Err(), "read catchup brief running")

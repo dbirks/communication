@@ -44,7 +44,7 @@
         "color": "<colour of payments-api>"
       },
       "started_at": "-6m",
-      "step": "/implement",
+      "step": "implement",
       "link": "/runs/<id5>"
     }
   ],
@@ -59,21 +59,7 @@
       },
       "ref": {
         "number": 412,
-        "url": "https://github.com/acme/payments-api/pull/412"
-      },
-      "by": "the reader",
-      "at": "-9m",
-      "link": "/runs/<id6>"
-    },
-    {
-      "kind": "commit",
-      "title": "Add idempotency keys to refunds",
-      "project": {
-        "id": "<id3>",
-        "name": "payments-api",
-        "color": "<colour of payments-api>"
-      },
-      "ref": {
+        "url": "https://github.com/acme/payments-api/pull/412",
         "sha": "3649f6f664c442b050fb1d1666aeeb6fe90649d9"
       },
       "by": "the reader",
@@ -118,21 +104,7 @@
       },
       "ref": {
         "number": 418,
-        "url": "https://github.com/acme/web-app/pull/418"
-      },
-      "by": "a teammate",
-      "at": "-14h",
-      "link": "/runs/<id10>"
-    },
-    {
-      "kind": "commit",
-      "title": "Backfill the ledger accounts",
-      "project": {
-        "id": "<id8>",
-        "name": "web-app",
-        "color": "<colour of web-app>"
-      },
-      "ref": {
+        "url": "https://github.com/acme/web-app/pull/418",
         "sha": "77780099c80bb4511c0d81e94035d97d640f5bff"
       },
       "by": "a teammate",
@@ -164,21 +136,7 @@
       },
       "ref": {
         "number": 415,
-        "url": "https://github.com/acme/payments-api/pull/415"
-      },
-      "by": "the reader",
-      "at": "-18h",
-      "link": "/runs/<id12>"
-    },
-    {
-      "kind": "commit",
-      "title": "Checkout timeouts under load",
-      "project": {
-        "id": "<id3>",
-        "name": "payments-api",
-        "color": "<colour of payments-api>"
-      },
-      "ref": {
+        "url": "https://github.com/acme/payments-api/pull/415",
         "sha": "0e895e228b8ce762e9301b214ca7115bf5957874"
       },
       "by": "the reader",
@@ -195,11 +153,59 @@
       },
       "ref": {
         "number": 417,
-        "url": "https://github.com/acme/web-app/pull/417"
+        "url": "https://github.com/acme/web-app/pull/417",
+        "sha": "31e3751c95ea0fea3a0160bf251860c1d5dbbe76"
       },
       "by": "a teammate",
       "at": "-19h",
       "link": "/runs/<id13>"
+    },
+    {
+      "kind": "pr",
+      "title": "Rate limit the refunds API",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 416,
+        "url": "https://github.com/acme/payments-api/pull/416",
+        "sha": "ad44f79161a8409df1bdfb8447b32b760e4f049f"
+      },
+      "by": "the reader",
+      "at": "-21h",
+      "link": "/runs/<id14>"
+    },
+    {
+      "kind": "workflow_revision",
+      "title": "infra CI v1.2.0",
+      "project": {
+        "id": "<id1>",
+        "name": "infra",
+        "color": "<colour of infra>"
+      },
+      "ref": {},
+      "by": "a teammate",
+      "at": "-1d10h",
+      "link": "/workflows/<id15>"
+    },
+    {
+      "kind": "pr",
+      "title": "Cache the provider latency lookups",
+      "project": {
+        "id": "<id3>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 420,
+        "url": "https://github.com/acme/payments-api/pull/420",
+        "sha": "de4219a50cc49bfacf9940cd61180082a1d76286"
+      },
+      "by": "a teammate",
+      "at": "-1d12h",
+      "link": "/runs/<id16>"
     }
   ],
   "broke": [
@@ -214,7 +220,7 @@
       "error_class": "test",
       "still_failing": false,
       "fixed_at": "-35m",
-      "link": "/runs/<id14>"
+      "link": "/runs/<id17>"
     },
     {
       "title": "web-app CI",
@@ -227,7 +233,7 @@
       "error_class": "test",
       "still_failing": false,
       "fixed_at": "-12m",
-      "link": "/runs/<id15>"
+      "link": "/runs/<id18>"
     },
     {
       "title": "infra CI",
@@ -240,7 +246,7 @@
       "error_class": "test",
       "still_failing": false,
       "fixed_at": "-17h",
-      "link": "/runs/<id16>"
+      "link": "/runs/<id19>"
     }
   ],
   "heads_up": [
@@ -262,7 +268,7 @@
         "name": "web-app",
         "color": "<colour of web-app>"
       },
-      "link": "/catch-up/<id17>"
+      "link": "/catch-up/<id20>"
     },
     {
       "signal": "deps",
@@ -272,7 +278,7 @@
         "name": "payments-api",
         "color": "<colour of payments-api>"
       },
-      "link": "/catch-up/<id18>"
+      "link": "/catch-up/<id21>"
     }
   ],
   "changes": [
@@ -295,14 +301,14 @@
       "title": "infra CI v1.2.0",
       "by": "a teammate",
       "at": "-1d10h",
-      "link": "/workflows/<id19>"
+      "link": "/workflows/<id15>"
     },
     {
       "kind": "workflow_published",
       "title": "web-app CI v1.5.0",
       "by": "the reader",
       "at": "-1d18h",
-      "link": "/workflows/<id20>"
+      "link": "/workflows/<id22>"
     },
     {
       "kind": "workflow_published",
@@ -329,6 +335,6 @@
   },
   "by_project": [],
   "omitted": {
-    "shipped": 43
+    "shipped": 21
   }
 }

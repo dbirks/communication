@@ -1778,11 +1778,16 @@ func (c *cuBriefCapture) wantShipped() cuBriefHarvest {
 				out.prs++
 			}
 		}
+		hasPR := url != "" || number > 0
 		for _, sha := range shas {
-			out.rows = append(out.rows, api.CatchUpBriefShipped{
-				Kind: api.CatchUpShippedCommit, Title: title,
-				Ref: api.CatchUpBriefShippedRef{SHA: sha},
-			})
+			// A PR run's commits ride on its PR row; only a run with no PR gets
+			// commit rows of its own.
+			if !hasPR {
+				out.rows = append(out.rows, api.CatchUpBriefShipped{
+					Kind: api.CatchUpShippedCommit, Title: title,
+					Ref: api.CatchUpBriefShippedRef{SHA: sha},
+				})
+			}
 			key := strings.ToLower(sha)
 			if !seenSHA[key] {
 				seenSHA[key] = true

@@ -167,6 +167,9 @@ type CatchUpBriefShipped struct {
 	By      string                 `json:"by"`
 	At      time.Time              `json:"at"`
 	Link    string                 `json:"link"`
+	// moreCommits are a PR row's commits beyond the one on its ref: not a row of
+	// their own, still counted in numbers.commits.
+	moreCommits []string
 }
 
 // CatchUpBriefBroke is one pipeline that failed in the window, grouped per
@@ -604,15 +607,26 @@ func harvestCatchUpBriefNodes(nodes []CatchUpBriefRunNode) ([]CatchUpBriefShippe
 			// harvest the tour's DATA block uses (catch_up_gen.go).
 			catchUpHarvestOutputs(n.Outputs, &facts)
 		}
-		if facts.PRURL != "" || facts.PRNumber > 0 {
+		hasPR := facts.PRURL != "" || facts.PRNumber > 0
+		if hasPR {
+			// A run that opened a PR is one shipped row: its commit rides on the
+			// PR's ref instead of repeating the same title as a second row.
 			ref := CatchUpBriefShippedRef{Number: facts.PRNumber, URL: facts.PRURL}
+			var more []string
+			if len(facts.Commits) > 0 {
+				ref.SHA = facts.Commits[0]
+				more = append(more, facts.Commits[1:]...)
+			}
 			shipped = append(shipped, CatchUpBriefShipped{
 				Kind: CatchUpShippedPR, Title: catchUpBriefRunTitle(first), Project: first.Project,
 				Ref: ref, By: first.By, At: first.FinishedAt.UTC(),
-				Link: "/runs/" + runID,
+				Link: "/runs/" + runID, moreCommits: more,
 			})
 		}
 		for _, sha := range facts.Commits {
+			if hasPR {
+				break
+			}
 			shipped = append(shipped, CatchUpBriefShipped{
 				Kind: CatchUpShippedCommit, Title: catchUpBriefRunTitle(first), Project: first.Project,
 				Ref: CatchUpBriefShippedRef{SHA: sha}, By: first.By, At: first.FinishedAt.UTC(),
@@ -694,15 +708,18 @@ func countCatchUpBriefCommits(shipped []CatchUpBriefShipped) int {
 	seen := map[string]bool{}
 	var n int
 	for _, s := range shipped {
-		if s.Kind != CatchUpShippedCommit {
+		// A commit counts whether it has its own row or rides on its PR's ref.
+		if s.Kind != CatchUpShippedCommit && s.Kind != CatchUpShippedPR {
 			continue
 		}
-		sha := strings.ToLower(s.Ref.SHA)
-		if sha == "" || seen[sha] {
-			continue
+		for _, raw := range append([]string{s.Ref.SHA}, s.moreCommits...) {
+			sha := strings.ToLower(raw)
+			if sha == "" || seen[sha] {
+				continue
+			}
+			seen[sha] = true
+			n++
 		}
-		seen[sha] = true
-		n++
 	}
 	return n
 }

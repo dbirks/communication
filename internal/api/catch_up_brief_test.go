@@ -488,10 +488,11 @@ func TestCatchUpBriefRefsComeFromTheOutputs(t *testing.T) {
 		}
 	}
 	// One PR row per RUN that named one (two nodes of one run naming the same PR
-	// is still one row), and one row per sha. The third run named a commit and no
-	// PR, which is exactly what its row must say.
-	if len(prs) != 1 || len(commits) != 3 {
-		t.Fatalf("shipped = %d rows, want one PR row and three commit rows: %+v",
+	// is still one row); that run's commits ride on the PR row, not rows of their
+	// own. The other run named a commit and no PR, which is exactly what its row
+	// must say.
+	if len(prs) != 1 || len(commits) != 1 || prs[0].Ref.SHA == "" {
+		t.Fatalf("shipped = %d rows, want one PR row carrying its commit and one commit row: %+v",
 			len(brief.Shipped), brief.Shipped)
 	}
 	if prs[0].Ref.Number != 42 || prs[0].Ref.URL == "" {

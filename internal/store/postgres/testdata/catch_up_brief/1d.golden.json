@@ -32,7 +32,7 @@
         "color": "<colour of payments-api>"
       },
       "started_at": "-6m",
-      "step": "/implement",
+      "step": "implement",
       "link": "/runs/<id3>"
     }
   ],
@@ -47,21 +47,7 @@
       },
       "ref": {
         "number": 412,
-        "url": "https://github.com/acme/payments-api/pull/412"
-      },
-      "by": "the reader",
-      "at": "-9m",
-      "link": "/runs/<id4>"
-    },
-    {
-      "kind": "commit",
-      "title": "Add idempotency keys to refunds",
-      "project": {
-        "id": "<id1>",
-        "name": "payments-api",
-        "color": "<colour of payments-api>"
-      },
-      "ref": {
+        "url": "https://github.com/acme/payments-api/pull/412",
         "sha": "3649f6f664c442b050fb1d1666aeeb6fe90649d9"
       },
       "by": "the reader",
@@ -106,21 +92,7 @@
       },
       "ref": {
         "number": 418,
-        "url": "https://github.com/acme/web-app/pull/418"
-      },
-      "by": "a teammate",
-      "at": "-14h",
-      "link": "/runs/<id8>"
-    },
-    {
-      "kind": "commit",
-      "title": "Backfill the ledger accounts",
-      "project": {
-        "id": "<id6>",
-        "name": "web-app",
-        "color": "<colour of web-app>"
-      },
-      "ref": {
+        "url": "https://github.com/acme/web-app/pull/418",
         "sha": "77780099c80bb4511c0d81e94035d97d640f5bff"
       },
       "by": "a teammate",
@@ -152,11 +124,46 @@
       },
       "ref": {
         "number": 415,
-        "url": "https://github.com/acme/payments-api/pull/415"
+        "url": "https://github.com/acme/payments-api/pull/415",
+        "sha": "0e895e228b8ce762e9301b214ca7115bf5957874"
       },
       "by": "the reader",
       "at": "-18h",
       "link": "/runs/<id10>"
+    },
+    {
+      "kind": "pr",
+      "title": "Draft the ledger export",
+      "project": {
+        "id": "<id6>",
+        "name": "web-app",
+        "color": "<colour of web-app>"
+      },
+      "ref": {
+        "number": 417,
+        "url": "https://github.com/acme/web-app/pull/417",
+        "sha": "31e3751c95ea0fea3a0160bf251860c1d5dbbe76"
+      },
+      "by": "a teammate",
+      "at": "-19h",
+      "link": "/runs/<id11>"
+    },
+    {
+      "kind": "pr",
+      "title": "Rate limit the refunds API",
+      "project": {
+        "id": "<id1>",
+        "name": "payments-api",
+        "color": "<colour of payments-api>"
+      },
+      "ref": {
+        "number": 416,
+        "url": "https://github.com/acme/payments-api/pull/416",
+        "sha": "ad44f79161a8409df1bdfb8447b32b760e4f049f"
+      },
+      "by": "the reader",
+      "at": "-21h",
+      "link": "/runs/<id12>"
     }
   ],
   "broke": [
@@ -171,7 +178,7 @@
       "error_class": "test",
       "still_failing": false,
       "fixed_at": "-35m",
-      "link": "/runs/<id11>"
+      "link": "/runs/<id13>"
     },
     {
       "title": "web-app CI",
@@ -184,12 +191,12 @@
       "error_class": "test",
       "still_failing": false,
       "fixed_at": "-12m",
-      "link": "/runs/<id12>"
+      "link": "/runs/<id14>"
     },
     {
       "title": "infra CI",
       "project": {
-        "id": "<id13>",
+        "id": "<id15>",
         "name": "infra",
         "color": "<colour of infra>"
       },
@@ -197,7 +204,7 @@
       "error_class": "test",
       "still_failing": false,
       "fixed_at": "-17h",
-      "link": "/runs/<id14>"
+      "link": "/runs/<id16>"
     }
   ],
   "heads_up": [
@@ -219,7 +226,7 @@
         "name": "web-app",
         "color": "<colour of web-app>"
       },
-      "link": "/catch-up/<id15>"
+      "link": "/catch-up/<id17>"
     }
   ],
   "changes": [
@@ -247,7 +254,5 @@
     "commits": 7
   },
   "by_project": [],
-  "omitted": {
-    "shipped": 5
-  }
+  "omitted": {}
 }
