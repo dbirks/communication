@@ -94,12 +94,15 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       for that step.
 
 ## 7. Identity
-- [ ] The bottom-left user menu shows the avatar and name from the tsidp OIDC
-      claims (picture, name), falling back to initials.
-- [ ] Add a simple Profile page.
-- [ ] Write an ADR for an extensible multi-provider OIDC layer (Tailscale
-      tsidp plus Azure Entra).
-- [ ] Implement the provider abstraction if it's small.
+- [x] The bottom-left user menu shows the avatar and name from the tsidp OIDC
+      claims (picture, name), falling back to initials. Evidence: 1a3fc5b (tsidp serves
+      picture only at /userinfo, so there is a UserInfo fallback), UserAvatar.test.tsx,
+      UserMenu.test.tsx.
+- [ ] Confirm the deployed avatar and name after 1a3fc5b deploys (screenshot).
+- [x] Add a simple Profile page. Evidence: 1a3fc5b, /profile, Profile.test.tsx.
+- [x] Write an ADR for an extensible multi-provider OIDC layer (Tailscale
+      tsidp plus Azure Entra). Evidence: ADR-0083, 4985dee.
+- [ ] Implement the provider abstraction if it's small. (Brief oidc-providers is queued.)
 
 ## 8. Operations
 - [ ] Redesign Operations (currently a 14-line page) into a useful operations
