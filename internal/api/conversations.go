@@ -116,6 +116,14 @@ type AgentProfileView struct {
 	// 00023) — the "gpt-5" half of "Codex · gpt-5". Explicit null means the
 	// profile names no model: the harness default, the honest state.
 	Model *string `json:"model"`
+	// APMCollectionPins is the profile's ORDERED attachment list (ADR-0084):
+	// [{collection_id, revision}] in attach order, [] when the profile attaches
+	// nothing. The order is not decoration — when two attached collections ship
+	// one skill name, APM settles it by INSTALL order, so which entry came first
+	// is which copy runs. `apm_lock_digest` is the digest of the ONE lock that
+	// covers this list plus `apm_package_ref`, so a reader needs the list to know
+	// what the digest is a digest OF.
+	APMCollectionPins []APMCollectionPin `json:"apm_collections"`
 }
 
 // AgentProfileContentsView is the names-only lock summary the API reports
@@ -127,7 +135,24 @@ type AgentProfileContentsView struct {
 	Skills       []string `json:"skills"`
 	Instructions []string `json:"instructions"`
 	MCPServers   []string `json:"mcp_servers"`
-	Truncated    bool     `json:"truncated"`
+	// SkillRefs is ADR-0084's per-skill attribution: which dependency of the
+	// flattened set owns each deployed skill name, [{skill, from_ref}]. Two
+	// attached collections can ship one skill name and APM settles that by INSTALL
+	// order rather than by an error, so the app needs the winner named in the
+	// record to say "overridden by …" beside the losing entry. Empty for a lock
+	// resolved before ADR-0084 and for a single-package pin, where nothing is
+	// overridden — that is a fact about the lock, not a missing read.
+	SkillRefs []AgentProfileSkillRefView `json:"skill_refs"`
+	Truncated bool                       `json:"truncated"`
+}
+
+// AgentProfileSkillRefView is one skill name with the coordinate that deployed
+// it, in the profile's own ref grammar. `from_ref` is "" when the lock named no
+// owning dependency for the skill, which the app renders as unattributed rather
+// than as a guess.
+type AgentProfileSkillRefView struct {
+	Skill   string `json:"skill"`
+	FromRef string `json:"from_ref"`
 }
 
 // AgentProfileVersion is one entry of a profile's version history (ADR-0058):

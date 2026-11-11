@@ -504,7 +504,10 @@ func TestGrantRolesAreTheEventVocabulary(t *testing.T) {
 
 func TestUnitAPMBinaryMissingRefuses(t *testing.T) {
 	fx := newUnitFixture(t)
-	fx.axes.APMPackageRef = "apm:pkg@1"
+	// A pinned ref in ADR-0030 §3's grammar: the unit's flatten validates every
+	// coordinate it renders (a hostile ref would otherwise reach a YAML scalar in a
+	// checkout), so the fixture names a ref the real write path could have produced.
+	fx.axes.APMPackageRef = "mattpocock/skills#v1.3.1"
 	fx.axes.APMTarget = apm.TargetClaude
 	fx.svc.APM = nil
 
@@ -523,7 +526,7 @@ type fakeAPM interface {
 
 func TestUnitAPMDigestMismatchRefuses(t *testing.T) {
 	fx := newUnitFixture(t)
-	fx.axes.APMPackageRef = "apm:pkg@1"
+	fx.axes.APMPackageRef = "mattpocock/skills#v1.3.1"
 	fx.axes.APMTarget = apm.TargetClaude
 	fx.svc.APM = &apmStub{err: &apm.DigestMismatch{Recorded: "sha256:aaaa", OnDisk: "sha256:bbbb", Target: "claude"}}
 

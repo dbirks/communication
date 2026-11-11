@@ -53,6 +53,16 @@ type APMLockClaim struct {
 	RequestID      string
 	ProfileID      string
 	OrganizationID string
+	// Deps is the profile's flattened dependency list as it was when the lock
+	// was queued (ADR-0084): the ordered entries of the attached collection
+	// revisions, then the profile's own ref. It is stored on the request row so
+	// the resolve locks EXACTLY the set the operator looked at, and so a
+	// collection edited between queueing and claiming cannot quietly move the
+	// digest under somebody's feet.
+	Deps []apm.Dep
+	// PackageRef is the profile's own extra ref, carried for the journal row
+	// and the log: "" when the profile attaches collections and no ref of its
+	// own. Deps is what the resolve actually installs.
 	PackageRef     string
 	Target         string
 	WorkerID       string
@@ -337,6 +347,10 @@ func (l *APMLockLoop) run(ctx context.Context, c APMLockClaim) {
 // resolve the loop keeps the plain seam and the result reports Sandboxed=false.
 func (l *APMLockLoop) apmResolve(ctx context.Context, c APMLockClaim, workdir, home string) (*apm.ResolveResult, error) {
 	req := apm.ResolveRequest{
+		Deps: c.Deps,
+		// The single ref rides too: apm.requestDeps prefers Deps, and this is
+		// what keeps a request row queued before ADR-0084 (deps `[]`, the ref
+		// set) resolving the same package it always did.
 		PackageRef: c.PackageRef,
 		Target:     c.Target,
 		WorkDir:    workdir,

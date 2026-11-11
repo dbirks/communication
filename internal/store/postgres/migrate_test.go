@@ -214,7 +214,9 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00032 (ADR-0083 multi-provider
+// version every replica demands. Current head: 00033 (ADR-0084 apm collections:
+// the collection library, the ordered profile attachment list, the flattened
+// dependency list on the lock queue) on top of 00032 (ADR-0083 multi-provider
 // OIDC: the user_avatars table, the same-origin avatar path allowed through
 // users_avatar_url_check, and oidc_login_states.provider_id) on
 // top of 00031 (avatar: users.avatar_url,
@@ -303,7 +305,17 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // Head bump for 00030 (assistant handoff §6: the assistant_changes kind CHECK
 // gains project_create, repo_add, assignment_set, run_cancel and
 // schedule_create — forward-only, no row rewritten).
-const migHeadVersion = 32
+//
+// Head bump for 00033 (ADR-0084: apm collections — apm_collections plus the
+// immutable-once-published apm_collection_revisions, agent_profiles.apm_collections
+// as an ORDERED jsonb attachment list with a CHECK on its shape and a trigger on
+// its scope, apm_lock_requests.deps carrying the flattened dependency list a
+// queued resolve must install, agent-skills admitted as a target on both columns
+// because pi now has one, and the three seeded collections of the ADR in the
+// default organization — Matt Pocock and pstack published at revision 1, Review
+// conventions an empty draft. The three pstack/Matt Pocock refs are pinned to a
+// tag or a 40-character commit, so nothing seeded follows a moving branch).
+const migHeadVersion = 33
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.

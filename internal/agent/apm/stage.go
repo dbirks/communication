@@ -50,21 +50,45 @@ const Binary = "apm"
 // kernel-version-shaped. It is recorded so a mismatch is visible in the log.
 const PinnedVersion = "0.34.0"
 
-// Targets are the two APM install targets M3 knows about. A profile records one
-// digest per target, because apm keeps a single apm.lock.yaml per checkout:
-// probe A3 showed installing the second target into a checkout that already had
-// the first *moves* the digest rather than writing a per-target lock, so one
-// digest per profile is only meaningful when exactly one target is ever
-// installed into a run checkout — which is the case here (a launcher is one
-// harness), and is why Target is part of the identity of a StagedContext rather
-// than a parameter of a digest.
+// Targets are the install targets this package knows how to stage for. A
+// profile records one digest per target, because apm keeps a single
+// apm.lock.yaml per checkout: probe A3 showed installing the second target into
+// a checkout that already had the first *moves* the digest rather than writing
+// a per-target lock, so one digest per profile is only meaningful when exactly
+// one target is ever installed into a run checkout — which is the case here (a
+// launcher is one harness), and is why Target is part of the identity of a
+// StagedContext rather than a parameter of a digest.
+//
+// TargetAgentSkills is ADR-0084's pi target: apm's shared `.agents/skills/`
+// tree, which is the layout the Agent Skills convention puts skills in and the
+// layout pi is documented to read. It is a real apm target (the CLI installs for
+// it, the lock digest covers it), so locking and staging work exactly as they do
+// for claude/codex.
+//
+// What is NOT verified is the other half: no run in this repository has ever
+// observed pi actually reading a skill APM staged there. That is spike A-1, and
+// docs/compatibility/APM.md records the row as UNVERIFIED until it is green —
+// staging is proven here, the harness consuming it is not. stageAPM logs the
+// staging under that name for the same reason: a green turn is not evidence
+// about pi.
 const (
-	TargetClaude = "claude"
-	TargetCodex  = "codex"
+	TargetClaude      = "claude"
+	TargetCodex       = "codex"
+	TargetAgentSkills = "agent-skills"
 )
 
-// ValidTarget reports whether t is an apm target M3 will install for.
-func ValidTarget(t string) bool { return t == TargetClaude || t == TargetCodex }
+// ValidTarget reports whether t is an apm target this package will install for,
+// and therefore a target a lock digest may be recorded against. The two lists
+// are deliberately one list: a target you cannot lock is a target you cannot
+// launch on.
+func ValidTarget(t string) bool {
+	return t == TargetClaude || t == TargetCodex || t == TargetAgentSkills
+}
+
+// Targets is the installable/lockable target list, in the order messages name it.
+func Targets() []string { return []string{TargetClaude, TargetCodex, TargetAgentSkills} }
+
+func targetList() string { return strings.Join(Targets(), "/") }
 
 // ErrNothingStaged reports a profile with no package reference: the turn runs
 // with no packaged context, which is a legitimate configuration (D-020: no
@@ -77,8 +101,15 @@ type StageRequest struct {
 	Checkout string
 	// Target is the launcher family the packages are staged for.
 	Target string
-	// PackageRef is agent_profiles.apm_package_ref. Empty means "no packaged
+	// Deps is the profile's flattened dependency list (ADR-0084): the ordered
+	// entries of every attached collection, then the profile's own ref.
+	// SingleRefDep(apm_package_ref) is the single-package constructor every
+	// pre-ADR-0084 caller keeps using; an empty list means "no packaged
 	// context for this profile" and Stage answers ErrNothingStaged.
+	Deps []Dep
+	// PackageRef is the one-ref form of Deps, kept as the constructor input it
+	// always was: setting it is equivalent to Deps: SingleRefDep(ref). When
+	// both are set, Deps wins.
 	PackageRef string
 	// LockDigest is agent_profiles.apm_lock_digest, "sha256:<hex>", recorded for
 	// this target. It is the launch gate: a moved digest means the packaged
@@ -100,7 +131,12 @@ type StageRequest struct {
 // StagedContext is what staging produced: the paths to exclude from git and from
 // every artifact filter, and the digest that gate passed.
 type StagedContext struct {
-	Target     string
+	Target string
+	// Deps is the flattened list that was installed (ADR-0084).
+	Deps []Dep
+	// PackageRef names what was installed, for the log and the event: the
+	// profile's own ref when there is one, else the flattened list joined by a
+	// comma, which is honest about a multi-package staging.
 	PackageRef string
 	// LockDigest is the digest now on disk, in "sha256:<hex>" form.
 	LockDigest string
@@ -120,6 +156,44 @@ type StagedContext struct {
 	Version string
 	// Skipped records the reason nothing was staged when nothing was staged.
 	Skipped string
+}
+
+// requestDeps resolves the two shapes one request can carry: the flattened
+// list (ADR-0084) or the single ref (ADR-0030). Deps wins when it is set; a
+// caller that names both gets the list, because the list is what the profile's
+// collections flattened to and the single ref is only ever one element of it.
+// Validation happens here rather than at each render site so a bad coordinate
+// is refused before anything touches a filesystem.
+func requestDeps(deps []Dep, packageRef string) ([]Dep, error) {
+	if len(deps) > 0 {
+		out := make([]Dep, 0, len(deps))
+		for _, d := range deps {
+			validated, err := NewDep(d.Ref, d.Skills)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, validated)
+		}
+		return out, nil
+	}
+	if strings.TrimSpace(packageRef) == "" {
+		return nil, nil
+	}
+	dep, err := NewDep(packageRef, nil)
+	if err != nil {
+		return nil, err
+	}
+	return []Dep{dep}, nil
+}
+
+// depList names a dependency set in a message: the coordinates, in install
+// order.
+func depList(deps []Dep) string {
+	refs := RefsOf(deps)
+	if len(refs) == 0 {
+		return "(no packages)"
+	}
+	return bounded(strings.Join(refs, ", "), 400)
 }
 
 // LockFileName is the lockfile apm maintains in the checkout.
@@ -162,9 +236,13 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 		return nil, errors.New("apm: staging needs a checkout and a per-attempt HOME")
 	}
 	if !ValidTarget(req.Target) {
-		return nil, fmt.Errorf("apm: target %q is not one of %s/%s", req.Target, TargetClaude, TargetCodex)
+		return nil, fmt.Errorf("apm: target %q is not one of %s", req.Target, targetList())
 	}
-	if req.PackageRef == "" {
+	deps, err := requestDeps(req.Deps, req.PackageRef)
+	if err != nil {
+		return nil, fmt.Errorf("apm: stage: %w", err)
+	}
+	if len(deps) == 0 {
 		return &StagedContext{Target: req.Target, Skipped: "no_package_ref"}, ErrNothingStaged
 	}
 	// ADR-0030's invariant, restated for an UNLOCKED pin (ADR-0054 amendment 2):
@@ -173,7 +251,7 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	// against, so staging anyway would install unverified content behind a
 	// refusal that never arrives — the failure has to name the remedy.
 	if req.LockDigest == "" {
-		return nil, fmt.Errorf("apm: profile pins %s but the APM pin is not locked yet — Lock it on the profile", req.PackageRef)
+		return nil, fmt.Errorf("apm: profile pins %s but the APM pin is not locked yet — Lock it on the profile", depList(deps))
 	}
 	for _, path := range []string{req.Checkout, req.Home} {
 		if !filepath.IsAbs(path) || strings.Contains(path, "..") {
@@ -199,7 +277,7 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	// F1: nothing else in the system turns apm_package_ref into a manifest, so a
 	// checkout that tracks no apm.yml is materialized here rather than failing
 	// the turn with apm's "No apm.yml found".
-	materialized, err := writeManifest(req.Checkout, req.PackageRef)
+	materialized, err := writeManifest(req.Checkout, deps)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +333,8 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	}
 	staged := &StagedContext{
 		Target:         req.Target,
-		PackageRef:     req.PackageRef,
+		Deps:           deps,
+		PackageRef:     depList(deps),
 		LockDigest:     onDisk,
 		GeneratedPaths: presentGenerated(req.Checkout),
 		HomePaths:      diffNames(homeBefore, homeAfter),

@@ -1742,6 +1742,15 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	}
 	api.RegisterPipelines(handler, postgres.APIPipelineStore{S: pipelineStore}, definitionService)
 	api.RegisterNodeTemplates(handler, postgres.APINodeTemplateStore{Pool: d.Pool})
+	// ADR-0084: the APM collection library — named, versioned bundles of pinned
+	// refs an agent profile attaches in an order of its choosing. Same shape as
+	// the step registry beside it (org-scoped reads for any member, writes behind
+	// the organization's library role, revisions immutable once published). The
+	// worker flattens what is stored here into the one apm.yml whose lock digest
+	// gates a launch; nothing in this surface executes anything.
+	api.RegisterAPMCollections(handler, postgres.APIAPMCollectionStore{
+		S: &postgres.APMCollectionStore{Pool: d.Pool},
+	})
 	api.RegisterRuns(handler,
 		postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 		postgres.APIAssignmentStore{S: pipelineStore},

@@ -524,6 +524,8 @@ func (p *ProfileReader) ProfileFor(ctx context.Context, conversationID string) (
 		out                              worker.ProfileAxes
 		apmRef, apmTarget, apmLockDigest sql.NullString
 		workspaceMode, enforcement       string
+		orgID                            string
+		collections                      []byte
 	)
 	// conversation_id is the only input, and the join is the authority on which
 	// profile applies: a worker that accepted a profile id from its own config
@@ -531,11 +533,12 @@ func (p *ProfileReader) ProfileFor(ctx context.Context, conversationID string) (
 	err := p.Pool.QueryRow(ctx, `
 		SELECT ap.id::text, ap.launcher_id, ap.workspace_mode,
 		       ap.sandbox_enforcement, ap.commit_granted,
-		       ap.apm_package_ref, ap.apm_target, ap.apm_lock_digest
+		       ap.apm_package_ref, ap.apm_target, ap.apm_lock_digest,
+		       ap.organization_id::text, ap.apm_collections
 		FROM conversations c JOIN agent_profiles ap ON ap.id = c.agent_profile_id
 		WHERE c.id = $1::uuid`, conversationID).
 		Scan(&out.AgentProfileID, &out.LauncherID, &workspaceMode,
-			&enforcement, &out.CommitGranted, &apmRef, &apmTarget, &apmLockDigest)
+			&enforcement, &out.CommitGranted, &apmRef, &apmTarget, &apmLockDigest, &orgID, &collections)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return worker.ProfileAxes{}, fmt.Errorf("postgres: conversation %s has no readable agent profile", conversationID)
 	}
@@ -551,15 +554,29 @@ func (p *ProfileReader) ProfileFor(ctx context.Context, conversationID string) (
 	out.APMPackageRef = apmRef.String
 	out.APMTarget = apmTarget.String
 	out.APMLockDigest = apmLockDigest.String
-	if apmRef.String != "" && !apmLockDigest.Valid {
-		// ADR-0030's invariant, restated for an UNLOCKED pin (ADR-0054 amendment 2):
-		// a profile that stages packaged context without a recorded lock digest
-		// cannot be checked against probe A5's finding (an install whose content
-		// moved while --frozen reported success). Staging it anyway would be a
-		// silent "we trust whatever apm put there today". The refusal names the
-		// remedy — the pin is not locked yet — because the next step for such a pin
-		// is for the operator to Lock it.
-		return worker.ProfileAxes{}, fmt.Errorf("postgres: profile %s pins apm_package_ref=%s but the APM pin is not locked yet — Lock it on the profile", out.AgentProfileID, apmRef.String)
+	// ADR-0084: the attachment list is resolved HERE rather than in the worker,
+	// because the worker holds no database and the flatten has to see the entries
+	// of the exact revision the profile froze. A pin whose revision row has gone
+	// refuses the launch rather than staging the smaller set that survives: the
+	// digest would move and the gate would refuse anyway, and a refusal that names
+	// the collection is the one the operator can act on.
+	pins, err := DecodeAPMCollectionPins(collections)
+	if err != nil {
+		return worker.ProfileAxes{}, err
+	}
+	out.APMCollections, err = APMCollectionRevisionsFor(ctx, p.Pool, orgID, pins)
+	if err != nil {
+		return worker.ProfileAxes{}, fmt.Errorf("postgres: resolve the apm collections of profile %s: %w", out.AgentProfileID, err)
+	}
+	if (out.APMPackageRef != "" || len(out.APMCollections) > 0) && !apmLockDigest.Valid {
+		// ADR-0030's invariant, restated for an UNLOCKED pin (ADR-0054 amendment 2)
+		// and for a collection set (ADR-0084): a profile that stages packaged
+		// context with no recorded lock digest cannot be checked against probe A5's
+		// finding (an install whose content moved while --frozen reported success).
+		// Staging it anyway would be a silent "we trust whatever apm put there
+		// today". The refusal names the remedy — the pin is not locked yet — because
+		// the next step for such a pin is for the operator to Lock it.
+		return worker.ProfileAxes{}, fmt.Errorf("postgres: profile %s stages apm packages but the APM pin is not locked yet — Lock it on the profile", out.AgentProfileID)
 	}
 	return out, nil
 }

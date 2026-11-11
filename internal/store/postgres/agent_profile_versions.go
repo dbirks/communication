@@ -65,6 +65,14 @@ type AgentProfileSnapshot struct {
 	// Pre-0068 snapshots have no key at all and decode to nil: restoring one
 	// clears the pin, which is exactly "this version named no model".
 	Model *string `json:"model"`
+	// APMCollectionPins is ADR-0084's ordered attachment list, mirrored into the
+	// frozen snapshot the way apm_package_ref is (the rule at the top of this
+	// file: a version records state, never a delta). It is the same list in the
+	// same order the column carries, because the order is part of the state a
+	// version freezes: it decides which package owns a skill two of them ship.
+	// Pre-0084 snapshots have no key and decode to nil, which restores as "this
+	// version attached no collections" — the truth about that version.
+	APMCollectionPins []APMCollectionPin `json:"apm_collections"`
 }
 
 // Marshal encodes a snapshot into the JSONB column's bytes.
@@ -126,6 +134,17 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 	if w.ExpectedVersion != nil && *w.ExpectedVersion != p.Version {
 		return CnvProfile{}, 0, ErrProfileVersionConflict
 	}
+	// A restore writes the snapshot's attachment list, and the published-only rule
+	// is re-checked rather than trusted: a frozen snapshot is a statement about
+	// 2026, and the rule it must still satisfy today is the one that keeps a draft
+	// from reaching a launch because an old version happened to name it.
+	if err := checkProfileAPMCollections(ctx, q, orgID, w.State.APMCollectionPins); err != nil {
+		return CnvProfile{}, 0, err
+	}
+	collectionsJSON, cerr := ValidateAPMCollectionPins(w.State.APMCollectionPins)
+	if cerr != nil {
+		return CnvProfile{}, 0, cerr
+	}
 	newVersion := p.Version + 1
 	snapshot, err := w.State.Marshal()
 	if err != nil {
@@ -134,12 +153,13 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 	if _, err := q.Exec(ctx, `
 		UPDATE agent_profiles
 		SET version = $1, name = $2, launcher_id = $3, permission_mode = $4,
-		    apm_package_ref = $5, apm_target = $6, apm_lock_digest = $7, model = $8
+		    apm_package_ref = $5, apm_target = $6, apm_lock_digest = $7, model = $8,
+		    apm_collections = $12::jsonb
 		WHERE id = $9::uuid AND organization_id = $10::uuid AND version = $11::int`,
 		newVersion, w.State.Name, w.State.LauncherID, w.State.PermissionMode,
 		apmNullToAny(w.State.APMPackageRef), apmNullToAny(w.State.APMTarget), apmNullToAny(w.State.APMLockDigest),
 		apmNullToAny(w.State.Model),
-		profileID, orgID, p.Version); err != nil {
+		profileID, orgID, p.Version, string(collectionsJSON)); err != nil {
 		return CnvProfile{}, 0, fmt.Errorf("postgres: write agent profile version %d: %w", newVersion, err)
 	}
 	if _, err := q.Exec(ctx, `
@@ -157,6 +177,10 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 	p.APMTarget = apmAnyToStr(w.State.APMTarget)
 	p.APMLockDigest = apmAnyToStr(w.State.APMLockDigest)
 	p.Model = apmAnyToStr(w.State.Model)
+	p.APMCollectionPins = w.State.APMCollectionPins
+	if p.APMCollectionPins == nil {
+		p.APMCollectionPins = []APMCollectionPin{}
+	}
 	return p, newVersion, nil
 }
 

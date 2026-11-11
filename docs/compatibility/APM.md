@@ -44,6 +44,19 @@ The worker image now vendors APM CLI **0.34.0** (`65b3b9f`), release tarball
 |--------|--------------------|-----------------|-------------|-------------------|------------------------|
 | claude | `.claude/skills/alpha-skill/SKILL.md`, `apm_modules/_local/pkg-alpha/**`, `apm.lock.yaml`, `.gitignore` | PASS | PASS | FAIL | PASS (`claude -p` reported `alpha-skill`) |
 | codex | `.agents/skills/alpha-skill/SKILL.md` (shared skills dir), empty `.codex/` dir, `apm_modules/_local/pkg-alpha/**`, `apm.lock.yaml`, `.gitignore` | PASS | PASS | FAIL | PASS (`codex exec` reported `alpha-skill`) |
+| pi agent-skills: UNVERIFIED (spike A-1) | — | — | — | — | — |
+
+**pi `agent-skills`: UNVERIFIED (spike A-1).** `launcherTarget("pi")` maps to
+apm's `agent-skills` target and `agent_profiles.apm_target` admits it
+(ADR-0084, migration 00033), so a Pi profile can pin a collection set, be locked
+against it, and have it staged into the shared `.agents/skills/` tree — and the
+digest gate refuses a launch whose lock disagrees, exactly as it does for the two
+targets above. What has NOT been observed in this repository is the half that
+matters to a user: Pi reading a skill APM staged there. No row here may be read as
+Pi support until spike A-1 runs a real Pi turn over a staged skill and records the
+reply; `internal/worker/unit.go` logs every such staging as
+`pi reading .agents/skills is UNVERIFIED (ADR-0084 spike A-1)` so a green turn
+cannot quietly become a compatibility claim.
 
 T4 detail (identical for both targets, observed inside an isolated fake
 HOME): APM wrote `~/.apm/config.json` (CLI config bootstrap) and

@@ -124,6 +124,13 @@ type CnvProfile struct {
 	// 00023): what "Codex · gpt-5" renders. "" means the profile names no
 	// model — the harness default, the honest state, not a missing read.
 	Model string
+	// APMCollectionPins is the profile's ORDERED attachment list (ADR-0084,
+	// migration 00033): the collections whose entries this profile stages, each
+	// frozen at one revision. The order is data, not display: APM settles a skill
+	// name two packages both ship by INSTALL order, so which entry came first is
+	// which copy runs. Empty means this profile attaches nothing, which is the
+	// pre-ADR-0084 state rather than a missing read.
+	APMCollectionPins []APMCollectionPin
 }
 
 // CnvControl is the one-row-per-conversation controller lock. UserID is "" for
@@ -998,21 +1005,14 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 	out := make([]CnvProfile, 0, 2)
 	for rows.Next() {
 		var p CnvProfile
-		var contents *string
-		if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &contents); err != nil {
+		// One scan function for one column list: the attachment list
+		// (agent_profiles.apm_collections, ADR-0084) joined cnvProfileColumns, and
+		// a fourth reader with its own argument list is where a column would be
+		// silently dropped.
+		if err := scanCnvProfileColumnsWithContents(rows, &p); err != nil {
 			return nil, fmt.Errorf("postgres: scan agent profile: %w", err)
 		}
 		p.CreatedAt = p.CreatedAt.UTC()
-		p.APMLockContents = nil
-		if contents != nil {
-			var lock apmLockContentsJSON
-			if uerr := json.Unmarshal([]byte(*contents), &lock); uerr != nil {
-				return nil, fmt.Errorf("postgres: decode apm lock contents: %w", uerr)
-			}
-			p.APMLockContents = &lock
-		}
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -3732,12 +3732,21 @@ func cnvProfileView(p CnvProfile) api.AgentProfileView {
 		APMTarget:      null(p.APMTarget),
 		APMLockDigest:  null(p.APMLockDigest),
 		Model:          null(p.Model),
+		// ADR-0084: the ordered attachment list is part of the pin view, in the
+		// order stored. [] when the profile attaches nothing — "this profile
+		// stages no collections" is an answer, not a missing field.
+		APMCollectionPins: CollectionPinViews(p.APMCollectionPins),
 	}
 	if p.APMLockContents != nil {
+		refs := make([]api.AgentProfileSkillRefView, 0, len(p.APMLockContents.SkillRefs))
+		for _, r := range p.APMLockContents.SkillRefs {
+			refs = append(refs, api.AgentProfileSkillRefView{Skill: r.Skill, FromRef: r.FromRef})
+		}
 		contents := &api.AgentProfileContentsView{
 			Skills:       p.APMLockContents.Skills,
 			Instructions: p.APMLockContents.Instructions,
 			MCPServers:   p.APMLockContents.MCPServers,
+			SkillRefs:    refs,
 			Truncated:    p.APMLockContents.Truncated,
 		}
 		view.APMContents = contents
@@ -3756,6 +3765,14 @@ func cnvProfileAPIErr(err error) error {
 	var problem *AgentProfileProblem
 	if errors.As(err, &problem) {
 		return &api.AgentProfileProblemError{Code: problem.Code, Detail: problem.Detail}
+	}
+	// ADR-0084: an attachment can be refused by the COLLECTION check, and that
+	// refusal arrives on a PROFILE route. It keeps its code (a client switches on
+	// apm_collection_revision_invalid, not on which file answered it) by riding the
+	// profile surface's own problem type — one 422 shape per route family.
+	var colProblem *APMCollectionProblem
+	if errors.As(err, &colProblem) {
+		return &api.AgentProfileProblemError{Code: colProblem.Code, Detail: colProblem.Detail}
 	}
 	switch {
 	case errors.Is(err, ErrProfileNotFound):
@@ -3779,8 +3796,14 @@ func (a APIConversationStore) CreateAgentProfile(ctx context.Context, c api.Call
 	if err != nil {
 		return api.AgentProfileView{}, err
 	}
-	profile, err := s.CreateAgentProfile(ctx, prjAPICaller(c), in.Name, in.LauncherID, in.Model,
-		in.PermissionMode, in.SandboxEnforcement)
+	// A nil list means "this body named no collections" and stays nil all the way
+	// to the store, whose INSERT then takes the column default.
+	var collections []APMCollectionPin
+	if in.APMCollectionPins != nil {
+		collections = CollectionPinsFromAPI(in.APMCollectionPins)
+	}
+	profile, err := s.CreateAgentProfileAttached(ctx, prjAPICaller(c), in.Name, in.LauncherID, in.Model,
+		in.PermissionMode, in.SandboxEnforcement, collections)
 	if err != nil {
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}
@@ -3793,8 +3816,13 @@ func (a APIConversationStore) PatchAgentProfileAPM(ctx context.Context, c api.Ca
 	if err != nil {
 		return api.AgentProfileView{}, err
 	}
-	profile, err := s.PatchAgentProfileAPM(ctx, prjAPICaller(c), profileID,
-		in.APMPackageRef, in.APMTarget, in.APMLockDigest, in.Version, in.Model)
+	var collections *[]APMCollectionPin
+	if in.APMCollectionPins != nil {
+		pins := CollectionPinsFromAPI(*in.APMCollectionPins)
+		collections = &pins
+	}
+	profile, err := s.PatchAgentProfileAPMPinned(ctx, prjAPICaller(c), profileID,
+		in.APMPackageRef, in.APMTarget, in.APMLockDigest, in.Version, in.Model, collections)
 	if err != nil {
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}
@@ -3890,7 +3918,11 @@ func (a APIConversationStore) RestoreAgentProfileVersion(ctx context.Context, c 
 	}
 	profile, newVersion, err := s.RestoreAgentProfileVersion(ctx, prjAPICaller(c), profileID, version)
 	if err != nil {
-		return api.AgentProfileView{}, 0, err
+		// Mapped like every other profile write: a restore is a write, and a
+		// restore the store refused (ADR-0084: a snapshot naming a draft collection
+		// revision, a half pin, a stale token) must answer with its code rather
+		// than as an unmapped 500.
+		return api.AgentProfileView{}, 0, cnvProfileAPIErr(err)
 	}
 	return cnvProfileView(profile), newVersion, nil
 }

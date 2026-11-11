@@ -294,6 +294,51 @@ const (
 	TypeAgentProfileAPMLocked = "agent.profile.apm_locked"
 )
 
+// APM collections (ADR-0084): the journal rows behind the collection library.
+// Same org-scoped shape as the profile family — a collection has no project —
+// and the same naming rule: the envelope schema's `type` pattern admits
+// underscores only after the first segment, so the names are dotted
+// (`apm.collection.*`) where the Go identifiers are underscored.
+const (
+	// TypeAPMCollectionCreated is a library item appearing: the collection row
+	// and its revision 1 (a draft — creating never makes a bundle attachable).
+	TypeAPMCollectionCreated = "apm.collection.created"
+	// TypeAPMCollectionRevisionDrafted is "save as a new revision": a draft row
+	// beside the published ones it was drafted from, which it does not change.
+	TypeAPMCollectionRevisionDrafted = "apm.collection.revision.drafted"
+	// TypeAPMCollectionRevisionPublished is the one status flip a revision row
+	// ever receives: from now on its entries are frozen and profiles may attach
+	// it (ADR-0084: only published revisions are attachable).
+	TypeAPMCollectionRevisionPublished = "apm.collection.revision.published"
+)
+
+// APMCollectionPayload is the three apm.collection.* rows' shared shape
+// (ADR-0084). It names the bundle, the revision and how many entries it carries
+// — never the entries themselves: a ref list is a coordinate set, and the
+// revision row is the authoritative record of it. The journal's question is
+// "when did this bundle's content change, and who said so", and a count answers
+// it without duplicating the store.
+type APMCollectionPayload struct {
+	CollectionID string `json:"collection_id"`
+	Slug         string `json:"slug"`
+	Name         string `json:"name"`
+	Revision     int    `json:"revision"`
+	EntryCount   int    `json:"entry_count"`
+	// Status is the revision's state at this moment: drafted events say
+	// "draft", publish says "published" — so a reader can tell the two apart
+	// without joining the journal back to the table.
+	Status string `json:"status"`
+}
+
+// APMCollectionPinPayload is one attachment in a profile event's ordered list
+// (ADR-0084): the collection and the exact revision the profile froze. The
+// ordered list is the event's whole point — a reader must be able to tell
+// "which package owns a skill two of these ship" from the journal alone.
+type APMCollectionPinPayload struct {
+	CollectionID string `json:"collection_id"`
+	Revision     int    `json:"revision"`
+}
+
 // Controller kinds for conversation_control.controller_kind and the transfer
 // payload. Run attempts do not exist in M2, but the kind is reserved now so
 // M4 does not rename the wire (01: controller = factory_run | human | none).
@@ -1189,6 +1234,12 @@ type AgentProfileCreatedPayload struct {
 	// preapproved_within_sandbox requires a verified enforced sandbox for the
 	// launcher first (04-agent-runtime.md "Permission policy", ADR-0009).
 	PermissionMode string `json:"permission_mode"`
+	// APMCollections is the attachment list a create landed with (ADR-0084). A
+	// profile may be created with its collections already chosen, because an
+	// attachment names a revision somebody already published — while the digest
+	// still cannot exist until a lock records one. Absent means the create
+	// attached nothing, which is the pre-ADR-0084 create.
+	APMCollections []APMCollectionPinPayload `json:"apm_collections,omitempty"`
 }
 
 // AgentProfileUpdatedPayload is agent.profile.updated. It records the whole APM
@@ -1209,6 +1260,12 @@ type AgentProfileUpdatedPayload struct {
 	// the profile names none. It travels so an update that only moved the
 	// model is readable as what it did, not as an empty APM diff.
 	Model *string `json:"model"`
+	// APMCollections is the profile's ordered attachment list after this write
+	// (ADR-0084) — the whole list, as the triple above is the whole triple.
+	// Changing it clears apm_lock_digest exactly like changing the ref does, so
+	// the event that records a moved list also records the digest that died with
+	// it (nil here means the write carried no digest and none was recorded).
+	APMCollections []APMCollectionPinPayload `json:"apm_collections,omitempty"`
 }
 
 // AgentProfileAPMLockedPayload is agent.profile.apm_locked: the worker's
@@ -1225,6 +1282,16 @@ type AgentProfileAPMLockedPayload struct {
 	ResolvedRef   string `json:"resolved_ref,omitempty"`
 	Commit        string `json:"commit,omitempty"`
 	APMVersion    string `json:"apm_version,omitempty"`
+	// APMCollections names the attached bundles whose entries this digest now
+	// covers (ADR-0084), in attach order. One digest covers the whole flattened
+	// set, so the row says which set — otherwise a reader could not tell a lock of
+	// one package from a lock of thirty-six without replaying the profile.
+	APMCollections []APMCollectionPinPayload `json:"apm_collections,omitempty"`
+	// Deps is the flattened coordinate list the digest was computed over, in
+	// INSTALL order: the collections' entries, then the profile's own ref. It is
+	// the difference between "a digest exists" and "this is the context the
+	// digest pins", and it is what a reader compares against what Stage installed.
+	Deps []string `json:"deps,omitempty"`
 }
 
 // -------------------------------------------------------- M3 enum values ---

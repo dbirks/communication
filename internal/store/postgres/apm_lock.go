@@ -65,7 +65,7 @@ const apmLockClaimSQL = `
 		LIMIT 1
 	) w
 	WHERE r.id = w.request_id
-	RETURNING r.id, r.profile_id::text, r.organization_id::text, r.package_ref, r.target, r.claimed_by::text, r.lease_expires_at, r.status`
+	RETURNING r.id, r.profile_id::text, r.organization_id::text, r.package_ref, r.target, r.claimed_by::text, r.lease_expires_at, r.status, r.deps::text`
 
 // ClaimAPMLockRequest wins at most one due lock request for workerID. The claim
 // itself is the pinned single statement; the worker id comes back on the row and
@@ -80,22 +80,43 @@ func (s *TurnStore) ClaimAPMLockRequest(ctx context.Context, workerID string) (w
 		target     string
 		owner      string
 		status     string
+		depsText   string
 	)
 	err := s.Pool.QueryRow(ctx, apmLockClaimSQL, workerID, worker.DefaultAPMLockResolveTimeout.Seconds()).
-		Scan(&requestID, &profileID, &orgID, &packageRef, &target, &owner, &c.LeaseExpiresAt, &status)
+		Scan(&requestID, &profileID, &orgID, &packageRef, &target, &owner, &c.LeaseExpiresAt, &status, &depsText)
 	if err != nil && errors.Is(err, pgx.ErrNoRows) {
 		return worker.APMLockClaim{}, false, nil
 	}
 	if err != nil {
 		return worker.APMLockClaim{}, false, fmt.Errorf("postgres: claim apm lock: %w", err)
 	}
+	deps, derr := decodeAPMLockDeps([]byte(depsText))
+	if derr != nil {
+		return worker.APMLockClaim{}, false, derr
+	}
 	c.RequestID = requestID
 	c.ProfileID = profileID
 	c.OrganizationID = orgID
 	c.PackageRef = packageRef
+	c.Deps = deps
 	c.Target = target
 	c.WorkerID = owner
 	return c, true, nil
+}
+
+// decodeAPMLockDeps reads an apm_lock_requests.deps column into the dependency
+// list the resolve installs. A malformed row refuses the CLAIM rather than
+// resolving a smaller set than the request recorded: a digest computed over
+// something else would then be stored as this profile's lock.
+func decodeAPMLockDeps(raw []byte) ([]apm.Dep, error) {
+	if len(raw) == 0 || string(raw) == "[]" || string(raw) == "null" {
+		return nil, nil
+	}
+	var deps []apm.Dep
+	if err := json.Unmarshal(raw, &deps); err != nil {
+		return nil, fmt.Errorf("postgres: decode apm lock deps: %w", err)
+	}
+	return deps, nil
 }
 
 // apmLockRequest is one apm_lock_requests row as the store answers it: the
@@ -109,13 +130,29 @@ type apmLockRequest struct {
 
 // apmLockContentsJSON is the wire shape of agent_profiles.apm_contents_summary
 // (migration 00013): the names-only lock summary the resolve computed, in the
-// {skills, instructions, mcp_servers, truncated} shape the AgentProfileView
-// exposes. It is a summary, not a payload.
+// {skills, instructions, mcp_servers, skill_refs, truncated} shape the
+// AgentProfileView exposes. It is a summary, not a payload.
+//
+// skill_refs is ADR-0084's addition: per-skill attribution, [{skill, from_ref}],
+// naming which dependency of the flattened set owns each deployed skill name. It
+// exists because two attached collections CAN ship one skill name and APM settles
+// that by install order rather than by an error — so the app can show which one
+// won ("overridden by …") instead of hiding a rule the operator can neither see
+// nor guess. What APM decided is reported, never reinterpreted: the list below is
+// the lock's own, and the order that decided it is the profile's attach order.
 type apmLockContentsJSON struct {
-	Skills       []string `json:"skills"`
-	Instructions []string `json:"instructions"`
-	MCPServers   []string `json:"mcp_servers"`
-	Truncated    bool     `json:"truncated"`
+	Skills       []string          `json:"skills"`
+	Instructions []string          `json:"instructions"`
+	MCPServers   []string          `json:"mcp_servers"`
+	SkillRefs    []apmSkillRefJSON `json:"skill_refs,omitempty"`
+	Truncated    bool              `json:"truncated"`
+}
+
+// apmSkillRefJSON is one attribution row. `from_ref` is empty when the lock named
+// no owning dependency for that skill — honest, not a guess.
+type apmSkillRefJSON struct {
+	Skill   string `json:"skill"`
+	FromRef string `json:"from_ref"`
 }
 
 func (c apmLockContentsJSON) marshal() ([]byte, error) {
@@ -178,10 +215,15 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 		return nil
 	}
 
+	refs := make([]apmSkillRefJSON, 0, len(result.Contents.SkillRefs))
+	for _, r := range result.Contents.SkillRefs {
+		refs = append(refs, apmSkillRefJSON{Skill: r.Skill, FromRef: r.FromRef})
+	}
 	contents := apmLockContentsJSON{
 		Skills:       result.Contents.Skills,
 		Instructions: result.Contents.Instructions,
 		MCPServers:   result.Contents.MCPServers,
+		SkillRefs:    refs,
 		Truncated:    result.Contents.Truncated,
 	}
 	contentsJSON, err := contents.marshal()
@@ -192,24 +234,35 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 	// resolve just verified (the digest it reported) and appends the version row
 	// in this same transaction, so a lock that lands also moves the token.
 	var lockP CnvProfile
+	var lockPinsText string
 	if err := tx.QueryRow(ctx, `
 		SELECT id::text, organization_id::text, name, launcher_id, permission_mode, created_at, version,
-		       COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, '')
+		       COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, ''),
+		       COALESCE(apm_collections, '[]'::jsonb)::text
 		FROM agent_profiles
 		WHERE id = $1::uuid AND organization_id = $2::uuid`,
 		c.ProfileID, c.OrganizationID).Scan(&lockP.ID, &lockP.OrganizationID, &lockP.Name, &lockP.LauncherID,
 		&lockP.PermissionMode, &lockP.CreatedAt, &lockP.Version,
-		&lockP.APMPackageRef, &lockP.APMTarget, &lockP.APMLockDigest); err != nil {
+		&lockP.APMPackageRef, &lockP.APMTarget, &lockP.APMLockDigest, &lockPinsText); err != nil {
 		return fmt.Errorf("postgres: read agent profile for apm lock %s: %w", c.RequestID, err)
 	}
+	lockPins, err := DecodeAPMCollectionPins([]byte(lockPinsText))
+	if err != nil {
+		return err
+	}
 	lockVersion := lockP.Version + 1
+	// The version this lock lands freezes the attachment list too (ADR-0084):
+	// a digest is meaningless without the list it covers, and a version row that
+	// recorded the digest but not the list would be a version that could not be
+	// re-resolved — which is the whole reason the history freezes the ref.
 	lockSnapshot, err := AgentProfileSnapshot{
-		Name:           lockP.Name,
-		LauncherID:     lockP.LauncherID,
-		PermissionMode: lockP.PermissionMode,
-		APMPackageRef:  apmAnyToPtr(lockP.APMPackageRef),
-		APMTarget:      apmAnyToPtr(lockP.APMTarget),
-		APMLockDigest:  apmAnyToPtr(lockP.APMLockDigest),
+		Name:              lockP.Name,
+		LauncherID:        lockP.LauncherID,
+		PermissionMode:    lockP.PermissionMode,
+		APMPackageRef:     apmAnyToPtr(lockP.APMPackageRef),
+		APMTarget:         apmAnyToPtr(lockP.APMTarget),
+		APMLockDigest:     apmAnyToPtr(lockP.APMLockDigest),
+		APMCollectionPins: lockPins,
 	}.Marshal()
 	if err != nil {
 		return fmt.Errorf("postgres: encode apm lock version snapshot: %w", err)
@@ -242,9 +295,13 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 			APMPackageRef: c.PackageRef,
 			APMTarget:     c.Target,
 			APMLockDigest: result.LockDigest,
-			ResolvedRef:   result.ResolvedRef,
-			Commit:        result.Commit,
-			APMVersion:    result.APMVersion,
+			// The set this digest covers (ADR-0084), in install order. One
+			// digest now summarizes many packages; without the list the row
+			// would say "something was locked" instead of what.
+			Deps:        apm.RefsOf(c.Deps),
+			ResolvedRef: result.ResolvedRef,
+			Commit:      result.Commit,
+			APMVersion:  result.APMVersion,
 		},
 	}); err != nil {
 		return fmt.Errorf("postgres: append apm lock event %s: %w", c.RequestID, err)
@@ -256,12 +313,13 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 		OrganizationID: c.OrganizationID,
 		Actor:          events.Actor{Kind: events.ActorKindWorker, ID: c.WorkerID},
 		Payload: events.AgentProfileUpdatedPayload{
-			ProfileID:     c.ProfileID,
-			Version:       lockVersion,
-			APMPackageRef: c.PackageRef,
-			APMTarget:     c.Target,
-			APMLockDigest: result.LockDigest,
-			APMPinCleared: c.PackageRef == "",
+			ProfileID:      c.ProfileID,
+			Version:        lockVersion,
+			APMPackageRef:  c.PackageRef,
+			APMTarget:      c.Target,
+			APMLockDigest:  result.LockDigest,
+			APMPinCleared:  c.PackageRef == "" && len(c.Deps) == 0,
+			APMCollections: collectionPinPayloads(lockPins),
 		},
 	}); err != nil {
 		return fmt.Errorf("postgres: append apm lock version event %s: %w", c.RequestID, err)
@@ -284,10 +342,18 @@ func boundedErrorText(err error, max int) string {
 // --- control-plane reads: create + latest status -----------------------
 
 // CreateAPMLockRequest queues an APM lock resolve for one profile: the caller
-// must hold the organization admin's write right (the library role) and the
-// profile must carry both an apm_package_ref and an apm_target. The missing
-// coordinate is the ADR-0030 half-pin refusal under the ADR-0030 code, so a
-// lock can never be dispatched for a pin that does not exist.
+// must hold the organization admin's write right (the library role), the profile
+// must carry an apm_target, and it must carry SOMETHING to lock — its own
+// apm_package_ref, an attached collection, or both. The missing coordinate stays
+// the ADR-0030 half-pin refusal under the ADR-0030 code, so a lock can never be
+// dispatched for a pin that does not exist.
+//
+// What the row stores is the FLATTENED dependency list (ADR-0084), computed here
+// through the same apm.FlattenProfile the worker stages with. That is deliberate:
+// the request then states a fixed set of pinned coordinates, so editing a
+// collection between queueing a lock and claiming it cannot move the digest under
+// somebody's feet. The operator locks the set they looked at; Stage later refuses
+// any checkout whose lock does not agree with it.
 func (s *CnvStore) CreateAPMLockRequest(ctx context.Context, c Caller, profileID string) (apmLockRequest, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return apmLockRequest{}, err
@@ -299,17 +365,34 @@ func (s *CnvStore) CreateAPMLockRequest(ctx context.Context, c Caller, profileID
 	if !c.IsOrgAdmin {
 		return apmLockRequest{}, ErrProfileForbidden
 	}
-	if p.APMPackageRef == "" || p.APMTarget == "" {
+	if p.APMTarget == "" || (p.APMPackageRef == "" && len(p.APMCollectionPins) == 0) {
 		return apmLockRequest{}, profileRefused(ProfileCodeAPMIncomplete,
-			"an apm lock needs both apm_package_ref and apm_target; set the pin before locking.")
+			"an apm lock needs an apm_target and something to lock — an apm_package_ref, an attached collection, or both (ADR-0084).")
+	}
+	// The attachments are resolved to their entries and flattened BEFORE the row
+	// is inserted: a revision row that has gone refuses the queueing here, with
+	// the collection's identity in the message, rather than landing a request a
+	// worker would fail minutes later with a resolve error nobody can read.
+	revisions, err := APMCollectionRevisionsFor(ctx, s.Pool, c.OrganizationID, p.APMCollectionPins)
+	if err != nil {
+		return apmLockRequest{}, err
+	}
+	deps, err := apm.FlattenProfile(revisions, p.APMPackageRef)
+	if err != nil {
+		return apmLockRequest{}, err
+	}
+	depsJSON, err := json.Marshal(deps)
+	if err != nil {
+		return apmLockRequest{}, fmt.Errorf("postgres: encode apm lock deps: %w", err)
 	}
 	var req apmLockRequest
 	var errText *string
 	if err := s.Pool.QueryRow(ctx, `
-		INSERT INTO apm_lock_requests (organization_id, profile_id, package_ref, target, status)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+		INSERT INTO apm_lock_requests (organization_id, profile_id, package_ref, target, status, deps)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::jsonb)
 		RETURNING id::text, status, error`,
-		c.OrganizationID, p.ID, p.APMPackageRef, p.APMTarget, apmLockStatusQueued).Scan(&req.RequestID, &req.Status, &errText); err != nil {
+		c.OrganizationID, p.ID, p.APMPackageRef, p.APMTarget, apmLockStatusQueued, string(depsJSON)).
+		Scan(&req.RequestID, &req.Status, &errText); err != nil {
 		return apmLockRequest{}, fmt.Errorf("postgres: create apm lock: %w", err)
 	}
 	req.ProfileID = p.ID

@@ -161,28 +161,77 @@ func checkAgentProfilePermissionMode(mode, sandboxEnforcement string) error {
 // this package so a new column lands in one place. COALESCE keeps the nullable
 // apm columns and the ADR-0068 model plain strings here (NULL and "" mean the
 // same thing: this profile stages no packaged context / names no model); the
-// API layer re-nulls them.
+// API layer re-nulls them. apm_collections (ADR-0084) is read as JSON TEXT
+// because the ordered attachment list is a value the row type carries decoded —
+// the order is the data, so it must survive the read exactly as stored.
 const cnvProfileColumns = `id::text, organization_id::text, name, launcher_id,
 	permission_mode, created_at, version,
 	COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, ''),
-	COALESCE(model, '')`
+	COALESCE(model, ''), COALESCE(apm_collections, '[]'::jsonb)::text`
+
+// scanCnvProfileColumns reads one row of cnvProfileColumns into p. The
+// attachment list is decoded HERE rather than at each call site so one malformed
+// column cannot be silently ignored by the fourth of five readers, and so the
+// order the database stored is the order every reader sees.
+func scanCnvProfileColumns(row pgx.Row, p *CnvProfile) error {
+	var pinsText string
+	if err := row.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
+		&p.PermissionMode, &p.CreatedAt, &p.Version,
+		&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &pinsText); err != nil {
+		return err
+	}
+	return decodeCnvProfilePins(p, pinsText)
+}
+
+// scanCnvProfileColumnsWithContents reads cnvProfileColumns plus the trailing
+// apm_contents_summary column the two lock-aware selects append.
+func scanCnvProfileColumnsWithContents(row pgx.Row, p *CnvProfile) error {
+	var (
+		pinsText string
+		contents *string
+	)
+	if err := row.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
+		&p.PermissionMode, &p.CreatedAt, &p.Version,
+		&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &pinsText, &contents); err != nil {
+		return err
+	}
+	if err := decodeCnvProfilePins(p, pinsText); err != nil {
+		return err
+	}
+	p.APMLockContents = nil
+	if contents != nil {
+		var lock apmLockContentsJSON
+		if uerr := json.Unmarshal([]byte(*contents), &lock); uerr != nil {
+			return fmt.Errorf("postgres: decode apm lock contents: %w", uerr)
+		}
+		p.APMLockContents = &lock
+	}
+	return nil
+}
+
+func decodeCnvProfilePins(p *CnvProfile, pinsText string) error {
+	pins, err := DecodeAPMCollectionPins([]byte(pinsText))
+	if err != nil {
+		return err
+	}
+	p.APMCollectionPins = pins
+	return nil
+}
 
 // cnvProfileRow reads one profile scoped to the caller's organization: a profile
 // in somebody else's organization answers not-found, never a peek
 // (ADR-0014 §3). It is the shared precondition read for PATCH, which needs the
-// current row to decide what "set the triple" means.
+// current row to decide what "set the triple" means — and, since ADR-0084, what
+// "the attachment list changed" means.
 func cnvProfileRow(ctx context.Context, q prjQuerier, profileID, orgID string) (CnvProfile, error) {
 	if !prjValidUUID(profileID) {
 		return CnvProfile{}, ErrProfileNotFound
 	}
 	var p CnvProfile
-	err := q.QueryRow(ctx, `
+	err := scanCnvProfileColumns(q.QueryRow(ctx, `
 		SELECT `+cnvProfileColumns+`
 		FROM agent_profiles
-		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID).
-		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
+		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileNotFound
 	}
@@ -254,23 +303,34 @@ func ValidAPMPackageRef(ref string) bool {
 // would therefore be accepted by the API and then make every conversation using
 // that profile fail to launch — a delayed, anonymous refusal for the next reader
 // instead of an immediate, named one for the writer.
-func checkAPMPin(ref, target, digest *string) error {
+//
+// ADR-0084 widens "pins packaged context" from `apm_package_ref` to
+// "`apm_package_ref` OR an attached collection": a profile whose context is three
+// collections and no ref of its own still needs a target (which tree apm installs
+// into is not inferable from a list) and still may not carry a digest without one.
+// `collections` is the list THIS write leaves on the row — the caller has already
+// merged the absent-means-nothing rule, so the check sees the resulting state.
+func checkAPMPin(ref, target, digest *string, collections []APMCollectionPin) error {
 	hasRef := ref != nil && *ref != ""
 	hasTarget := target != nil && *target != ""
 	hasDigest := digest != nil && *digest != ""
+	hasPins := hasRef || len(collections) > 0
 	switch {
-	case !hasRef && !hasTarget && !hasDigest:
+	case !hasPins && !hasTarget && !hasDigest:
 		return nil // the clear: staging nothing
-	case hasRef && hasTarget && hasDigest:
-		// Locked: the operator recorded a digest for this exact ref + target.
-	case hasRef && hasTarget:
-		// Unlocked (ADR-0054 amendment 2): the ref and the target are the pin,
+	case hasPins && hasTarget && hasDigest:
+		// Locked: the operator recorded a digest for this exact set + target.
+	case hasPins && hasTarget:
+		// Unlocked (ADR-0054 amendment 2): the set and the target are the pin,
 		// the digest is the operator's to record through the lock flow.
 	default:
 		return profileRefused(ProfileCodeAPMIncomplete,
-			"an apm pin is either all three set (locked) or just the ref and target (unlocked); a partial pin is refused.")
+			"an apm pin is either all of (ref or collections) + target + digest (locked) or just the set and the target (unlocked); a partial pin is refused.")
 	}
-	if !ValidAPMPackageRef(*ref) {
+	// ADR-0084: a profile whose context is a collection set and no ref of its own
+	// is a complete pin, so the ref grammar is checked when a ref is present —
+	// always the same grammar, never a weaker one.
+	if hasRef && !ValidAPMPackageRef(*ref) {
 		return profileRefused(ProfileCodeAPMRefInvalid,
 			"apm_package_ref must be an apm git dependency: <owner>/<repo>[/<skill-subdirectory>][#<tag|branch|commit>] — a ref with no #<ref> cannot be pinned.")
 	}
@@ -317,6 +377,21 @@ func (s *CnvStore) cnvPool() (*pgxpool.Pool, error) {
 // organization admin matches zero rows and gets ErrProfileForbidden out of the
 // zero-row branch below, not a row.
 func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launcherID, model, permissionMode, sandboxEnforcement string) (CnvProfile, error) {
+	return s.CreateAgentProfileAttached(ctx, c, name, launcherID, model, permissionMode, sandboxEnforcement, nil)
+}
+
+// CreateAgentProfileAttached is the create path with ADR-0084's attachment list:
+// nil means "this body named no collections", which is the pre-ADR-0084 create
+// byte for byte. A non-nil list is validated against the database BEFORE the row
+// is inserted — every entry a PUBLISHED revision of one of this organization's
+// collections — because a profile created attaching a draft would be a profile
+// whose staged content nobody published, which is the exact thing ADR-0084's
+// published-only rule exists to refuse.
+//
+// What a create still cannot do is record a DIGEST: an attachment arrives
+// UNLOCKED (ADR-0054 amendment 2), and the launch gate refuses it until an
+// operator locks the flattened set. That is the honest state, not a half pin.
+func (s *CnvStore) CreateAgentProfileAttached(ctx context.Context, c Caller, name, launcherID, model, permissionMode, sandboxEnforcement string, collections []APMCollectionPin) (CnvProfile, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvProfile{}, err
 	}
@@ -348,6 +423,18 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	if err != nil {
 		return CnvProfile{}, err
 	}
+	// The attachments are checked against the collections themselves, not against
+	// the profile: the rule is about what exists and is published, and refusing
+	// before the INSERT is one less thing for the transaction to undo.
+	var collectionsJSON []byte
+	if collections != nil {
+		if err := checkProfileAPMCollections(ctx, pool, c.OrganizationID, collections); err != nil {
+			return CnvProfile{}, err
+		}
+		if collectionsJSON, err = ValidateAPMCollectionPins(collections); err != nil {
+			return CnvProfile{}, err
+		}
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return CnvProfile{}, fmt.Errorf("postgres: begin create agent profile: %w", err)
@@ -357,17 +444,16 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	var p CnvProfile
 	// COALESCE, not NULLIF: the two axes are NOT NULL columns with defaults, and
 	// an explicit NULL in the SELECT list would violate the NOT NULL constraint
-	// instead of falling back to the default.
-	err = tx.QueryRow(ctx, `
-		INSERT INTO agent_profiles (organization_id, name, launcher_id, model, permission_mode, sandbox_enforcement)
-		SELECT $1::uuid, $2, $3, NULLIF($4, ''), COALESCE(NULLIF($6, ''), 'ask'), COALESCE(NULLIF($7, ''), 'required')
+	// instead of falling back to the default. $8 is ADR-0084's attachment list,
+	// JSON text or nothing — '[]' when the create attached no collections.
+	err = scanCnvProfileColumns(tx.QueryRow(ctx, `
+		INSERT INTO agent_profiles (organization_id, name, launcher_id, model, permission_mode, sandbox_enforcement, apm_collections)
+		SELECT $1::uuid, $2, $3, NULLIF($4, ''), COALESCE(NULLIF($6, ''), 'ask'), COALESCE(NULLIF($7, ''), 'required'),
+		       COALESCE($8::jsonb, '[]'::jsonb)
 		WHERE $5::boolean
 		RETURNING `+cnvProfileColumns,
 		c.OrganizationID, strings.TrimSpace(name), launcherID, strings.TrimSpace(model), c.IsOrgAdmin,
-		permissionMode, sandboxEnforcement).
-		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
+		permissionMode, sandboxEnforcement, jsonTextOrNil(collectionsJSON)), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
 	}
@@ -376,6 +462,13 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 		return CnvProfile{}, ErrProfileConflict
 	}
 	if pgConflictCode(err, "23514") {
+		// Three authors can refuse a profile row with 23514: the profile's own
+		// column CHECKs, migration 00033's attachment-shape CHECK, and its
+		// attachment-scope trigger. To the caller they are the same refusal.
+		if collections != nil {
+			return CnvProfile{}, profileRefused(CollectionCodeRevisionInvalid,
+				"the apm collection attachments were refused: every attachment must name a published revision of one of your organization's collections, attached once (ADR-0084).")
+		}
 		return CnvProfile{}, profileRefused(ProfileCodeLauncherInvalid,
 			"name and launcher_id were refused by the profile's own column constraints.")
 	}
@@ -389,10 +482,11 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	// rows), and the token on the row is 1.
 	var snapshot []byte
 	snap := AgentProfileSnapshot{
-		Name:           p.Name,
-		LauncherID:     p.LauncherID,
-		PermissionMode: p.PermissionMode,
-		Model:          apmAnyToPtr(p.Model),
+		Name:              p.Name,
+		LauncherID:        p.LauncherID,
+		PermissionMode:    p.PermissionMode,
+		Model:             apmAnyToPtr(p.Model),
+		APMCollectionPins: p.APMCollectionPins,
 	}
 	snapshot, err = snap.Marshal()
 	if err != nil {
@@ -427,6 +521,7 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 			LauncherID:     p.LauncherID,
 			Version:        p.Version,
 			PermissionMode: p.PermissionMode,
+			APMCollections: collectionPinPayloads(p.APMCollectionPins),
 		},
 	}); err != nil {
 		return CnvProfile{}, err
@@ -455,11 +550,76 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 // nil-means-absent rule with a twist: absent leaves the current pin alone,
 // "" clears it, a value sets it — the model is a single column, not a triple.
 func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, ref, target, digest *string, expectedVersion *int, model *string) (CnvProfile, error) {
+	return s.PatchAgentProfileAPMPinned(ctx, c, profileID, ref, target, digest, expectedVersion, model, nil)
+}
+
+// PatchAgentProfileAPMPinned is the profile write with ADR-0084's attachment
+// list. `collections` follows the SAME absent-means-nothing rule as the rest of
+// the body: nil leaves the stored list alone, a non-nil slice (including an
+// empty one, which is the clear) replaces it.
+//
+// Two rules make the list safe to write beside the triple:
+//
+//   - every entry must name a PUBLISHED revision of one of this organization's
+//     collections (checkProfileAPMCollections). A draft is somebody's unfinished
+//     edit; staging one in front of an agent is what the lock flow exists to
+//     prevent.
+//   - CHANGING the list clears apm_lock_digest, exactly as changing the ref does
+//     (ADR-0054). The digest is sha256 of the lock for ONE dependency list; the
+//     moment the list moves, the recorded digest describes a context this profile
+//     no longer resolves, and keeping it would either launch unverified content
+//     or trip the gate with a message that blames somebody else. A write that
+//     carries a digest beside a changed list gets the digest dropped, not stored:
+//     the clearing is the server's rule, not a client courtesy.
+func (s *CnvStore) PatchAgentProfileAPMPinned(ctx context.Context, c Caller, profileID string, ref, target, digest *string, expectedVersion *int, model *string, collections *[]APMCollectionPin) (CnvProfile, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvProfile{}, err
 	}
-	if err := checkAPMPin(ref, target, digest); err != nil {
+	// The precondition read moves ahead of the pin rule, because the rule is about
+	// the resulting row: an absent attachment list means "keep the stored one", and
+	// only the row knows what that is.
+	p0, err := cnvProfileRow(ctx, s.Pool, profileID, c.OrganizationID)
+	if err != nil {
 		return CnvProfile{}, err
+	}
+	// The pin rule reads the RESULTING row, not the body: an absent member keeps
+	// the stored value, and since ADR-0084 a collection list is packaged context
+	// whether or not the body also names a ref. Checking the body's raw pointers
+	// instead would refuse a list-only write against a profile that already carries
+	// a ref and a target — which is the ordinary way to edit a bundle list.
+	pinnedAfter := p0.APMCollectionPins
+	if collections != nil {
+		pinnedAfter = *collections
+	}
+	eff := func(cur string, carried *string) *string {
+		if carried != nil {
+			return carried
+		}
+		keep := cur
+		return &keep
+	}
+	effRef, effTarget, effDigest := eff(p0.APMPackageRef, ref), eff(p0.APMTarget, target), eff(p0.APMLockDigest, digest)
+	if collections != nil && !EqualAPMCollectionPins(*collections, p0.APMCollectionPins) {
+		// The same clearing rule the write below applies, evaluated before it: the
+		// digest a moved list leaves behind is not part of the shape question.
+		empty := ""
+		effDigest = &empty
+	}
+	// The pre-ADR-0084 half-pin rule survives the widening: a body that arrives
+	// with a DIGEST and no pin member of its own is not recording a lock, it is
+	// guessing one. Whether the row already had a ref is beside the point — the
+	// digest an operator recorded arrives with the set it describes.
+	if digest != nil && *digest != "" && ref == nil && target == nil && collections == nil {
+		return CnvProfile{}, profileRefused(ProfileCodeAPMIncomplete,
+			"a digest arrives with the pin it locks (the ref, the target, or an attached collection); a digest on its own is a partial pin.")
+	}
+	if err := checkAPMPin(effRef, effTarget, effDigest, pinnedAfter); err != nil {
+		return CnvProfile{}, err
+	}
+	if collections != nil {
+		if _, err := ValidateAPMCollectionPins(*collections); err != nil {
+			return CnvProfile{}, err
+		}
 	}
 	if model != nil && len(*model) > 200 {
 		return CnvProfile{}, profileRefused(ProfileCodeModelInvalid, "model must be at most 200 characters.")
@@ -502,14 +662,42 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 	// triple) moves the model column and NOTHING else. The old contract — all
 	// three triple members absent is the clear — stands for every other body,
 	// including `{}` and `{"version":n}`; this arm exists so setting a display
-	// model cannot silently stage down a locked profile.
-	apmCarried := ref != nil || target != nil || digest != nil || model == nil
-	if !apmCarried {
+	// model cannot silently stage down a locked profile. An attachment write is
+	// APM state too, so a body that carries one is never "model-only".
+	apmCarried := ref != nil || target != nil || digest != nil || collections != nil || model == nil
+	switch {
+	case ref == nil && target == nil && digest == nil && collections != nil:
+		// A body that carries ONLY the attachment list is not a statement about the
+		// triple: an operator editing which bundles a profile attaches did not say
+		// "and forget the extra package ref, the target and the lock too". The
+		// triple stays as the row has it, and the digest question below is decided
+		// by the list alone.
+		pkg, targ, dig := p.APMPackageRef, p.APMTarget, p.APMLockDigest
+		ref, target, digest = &pkg, &targ, &dig
+	case !apmCarried:
 		ref, target, digest = nil, nil, nil
 		pkg, targ, dig := p.APMPackageRef, p.APMTarget, p.APMLockDigest
 		ref, target, digest = &pkg, &targ, &dig
 	}
-	var contents *string
+	// The attachment list's own arm: validate what the body carried against the
+	// collections, then ask the question that decides the digest.
+	var collectionsJSON []byte
+	collectionsChanged := false
+	if collections != nil {
+		if err := checkProfileAPMCollections(ctx, tx, c.OrganizationID, *collections); err != nil {
+			return CnvProfile{}, err
+		}
+		raw, verr := ValidateAPMCollectionPins(*collections)
+		if verr != nil {
+			return CnvProfile{}, verr
+		}
+		collectionsJSON = raw
+		collectionsChanged = !EqualAPMCollectionPins(*collections, p.APMCollectionPins)
+		if collectionsChanged {
+			// The digest dies with the list it described (see the method doc).
+			digest = nil
+		}
+	}
 	// The write's own WHERE carries the library-role predicate and the version
 	// CAS token: the write refuses rather than trusting the caller to have
 	// checked, because every other writer in this package is a future caller too.
@@ -518,26 +706,29 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 	// unlocked or cleared leaves both null, so a digest (and the names-only
 	// contents summary that came with it) can never survive a ref/target change.
 	carryTriple := apmCarried
-	err = tx.QueryRow(ctx, `
+	err = scanCnvProfileColumnsWithContents(tx.QueryRow(ctx, `
 		UPDATE agent_profiles
 		SET apm_package_ref = $1, apm_target = $2, apm_lock_digest = $3,
 		    apm_contents_summary = CASE WHEN $10::boolean THEN $4 ELSE apm_contents_summary END,
 		    model = CASE WHEN $8::boolean THEN NULLIF($9, '') ELSE model END,
+		    apm_collections = CASE WHEN $11::boolean THEN $12::jsonb ELSE apm_collections END,
 		    version = version + 1
 		WHERE id = $5::uuid AND organization_id = $6::uuid AND version = $7::int
 		RETURNING `+cnvProfileColumns+", apm_contents_summary",
 		null(ref), null(target), null(digest), nil,
 		profileID, c.OrganizationID, p.Version,
-		model != nil, modelOrEmpty(model), carryTriple).
-		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &contents)
+		model != nil, modelOrEmpty(model), carryTriple,
+		collections != nil, jsonTextOrNil(collectionsJSON)), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
 	}
 	if pgConflictCode(err, "23514") {
 		// A CHECK violation means the validation above and the column's own rule
 		// disagreed — still a 422 naming the field, never a 500.
+		if collections != nil {
+			return CnvProfile{}, profileRefused(CollectionCodeRevisionInvalid,
+				"the apm collection attachments were refused by the profile's own constraints: every attachment must name a published revision of one of your organization's collections, attached once (ADR-0084).")
+		}
 		return CnvProfile{}, profileRefused(ProfileCodeAPMDigestInvalid,
 			"the APM triple was refused by the profile's own column constraints.")
 	}
@@ -545,28 +736,24 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		return CnvProfile{}, fmt.Errorf("postgres: patch agent profile apm: %w", err)
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
-	p.APMLockContents = nil
-	if contents != nil {
-		var lock apmLockContentsJSON
-		if uerr := json.Unmarshal([]byte(*contents), &lock); uerr != nil {
-			return CnvProfile{}, fmt.Errorf("postgres: decode apm lock contents: %w", uerr)
-		}
-		p.APMLockContents = &lock
-	}
 
 	// ADR-0058: the patch lands a version — the bumped token and its history row
 	// ride the same transaction as the UPDATE and the event below. The snapshot is
 	// the profile's whole launch descriptor at the new version (the fields the
 	// patch did not move are the row's own current ones, already read back via
-	// RETURNING), so a version records state, never a delta.
+	// RETURNING), so a version records state, never a delta. The attachment list is
+	// part of that state for the same reason the ref is: a version a conversation
+	// pinned must resolve to ONE dependency set, not to whatever the collections
+	// had become when somebody read the version back.
 	snap := AgentProfileSnapshot{
-		Name:           p.Name,
-		LauncherID:     p.LauncherID,
-		PermissionMode: p.PermissionMode,
-		APMPackageRef:  apmAnyToPtr(p.APMPackageRef),
-		APMTarget:      apmAnyToPtr(p.APMTarget),
-		APMLockDigest:  apmAnyToPtr(p.APMLockDigest),
-		Model:          apmAnyToPtr(p.Model),
+		Name:              p.Name,
+		LauncherID:        p.LauncherID,
+		PermissionMode:    p.PermissionMode,
+		APMPackageRef:     apmAnyToPtr(p.APMPackageRef),
+		APMTarget:         apmAnyToPtr(p.APMTarget),
+		APMLockDigest:     apmAnyToPtr(p.APMLockDigest),
+		Model:             apmAnyToPtr(p.Model),
+		APMCollectionPins: p.APMCollectionPins,
 	}
 	snapshot, err := snap.Marshal()
 	if err != nil {
@@ -593,9 +780,12 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 			// The pin is cleared when THIS write carried the triple and left
 			// nothing set — recorded so a reader can tell "this profile now
 			// stages nothing" from "the digest moved". A model-only write
-			// (ADR-0068) never claims a clear it did not perform.
-			APMPinCleared: carryTriple && p.APMPackageRef == "",
-			Model:         apmAnyToPtr(p.Model),
+			// (ADR-0068) never claims a clear it did not perform. With
+			// ADR-0084 the list counts too: a profile that still attaches a
+			// collection stages something, whatever its ref column says.
+			APMPinCleared:  carryTriple && p.APMPackageRef == "" && len(p.APMCollectionPins) == 0,
+			Model:          apmAnyToPtr(p.Model),
+			APMCollections: collectionPinPayloads(p.APMCollectionPins),
 		},
 	}); err != nil {
 		return CnvProfile{}, err
@@ -614,6 +804,16 @@ func modelOrEmpty(m *string) string {
 		return ""
 	}
 	return *m
+}
+
+// jsonTextOrNil hands a jsonb parameter to pgx as JSON TEXT (which pgx encodes
+// into the jsonb parameter) or as a genuine SQL NULL — an empty byte slice would
+// arrive as the jsonb value "" , which is not nothing, it is a parse error.
+func jsonTextOrNil(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return string(raw)
 }
 
 // pgConflictCode reports a SQLSTATE anywhere in err's chain. The database's own

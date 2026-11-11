@@ -56,15 +56,21 @@ var (
 // with Truncated rather than silently dropped.
 const contentsCap = 200
 
-// ResolveRequest is one resolve operation: lock a package ref for a target,
+// ResolveRequest is one resolve operation: lock a package set for a target,
 // no deploy.
 type ResolveRequest struct {
-	// PackageRef is agent_profiles.apm_package_ref. It carries the pin the
-	// resolve is asked to lock, in the ADR-0030 §3 grammar
-	// (<owner>/<repo>[/<subdir>][#<tag|branch|commit>]).
+	// Deps is the profile's flattened dependency list (ADR-0084). It is what
+	// the manifest is rendered from, so the digest this resolve reports covers
+	// the whole set — the same list Stage installs, or the gate is a lie.
+	// Deps and PackageRef are the two shapes of one pin: PackageRef is the
+	// single-ref constructor (the ADR-0030 form) and is exactly
+	// Deps: SingleRefDep(ref); when both are set, Deps wins.
+	Deps []Dep
+	// PackageRef is the one-ref form of Deps, kept as the constructor input it
+	// always was.
 	PackageRef string
 	// Target is the launcher family the package is resolved for
-	// (apm.ValidTarget: claude or codex).
+	// (apm.ValidTarget).
 	Target string
 	// WorkDir is the empty scratch dir the resolve installs into — owned by
 	// the caller, never a repo checkout. It must be empty (a missing dir may be
@@ -104,8 +110,24 @@ type Contents struct {
 	// MCPServers are the MCP server names the resolved package wires up,
 	// sorted.
 	MCPServers []string
+	// SkillRefs is the per-skill attribution ADR-0084 added: which dependency
+	// of the flattened set each skill name came from. Two dependencies can ship
+	// one skill name and APM settles that by install order, not by an error, so
+	// the attribution is what the UI shows as "overridden by …" — what APM
+	// decided, reported rather than reinterpreted. Sorted by skill name.
+	SkillRefs []SkillRef
 	// Truncated reports that a list hit contentsCap and was cut short.
 	Truncated bool
+}
+
+// SkillRef is one skill name with the coordinate that deployed it.
+type SkillRef struct {
+	// Skill is the skill directory name.
+	Skill string `json:"skill"`
+	// FromRef is the dependency that owns the deployed copy, in the profile's
+	// own ref grammar (`owner/repo[/subdir]#<tag|sha>`). "" means the lock
+	// named no owning dependency for it — honest, not a guess.
+	FromRef string `json:"from_ref"`
 }
 
 // ResolveResult is what a successful resolve produced: the lock digest it
@@ -139,11 +161,22 @@ type ResolveResult struct {
 // and stops — no deploy, no digest gate, no exclusion bookkeeping.
 func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 	if !ValidTarget(req.Target) {
-		return nil, fmt.Errorf("apm: resolve target %q is not one of %s/%s", req.Target, TargetClaude, TargetCodex)
+		return nil, fmt.Errorf("apm: resolve target %q is not one of %s", req.Target, targetList())
 	}
-	parsed, err := parsePackageRef(req.PackageRef)
+	deps, err := requestDeps(req.Deps, req.PackageRef)
 	if err != nil {
-		return nil, fmt.Errorf("apm: resolve %s: %w: %w", req.PackageRef, ErrResolveInvalidRef, err)
+		return nil, fmt.Errorf("apm: resolve %s: %w: %w", depName(req), ErrResolveInvalidRef, err)
+	}
+	if len(deps) == 0 {
+		return nil, fmt.Errorf("apm: resolve %s: %w: the request names no package", depName(req), ErrResolveInvalidRef)
+	}
+	parsed := make([]packageRef, 0, len(deps))
+	for _, d := range deps {
+		p, err := parsePackageRef(d.Ref)
+		if err != nil {
+			return nil, fmt.Errorf("apm: resolve %s: %w: %w", depName(req), ErrResolveInvalidRef, err)
+		}
+		parsed = append(parsed, p)
 	}
 	if req.WorkDir == "" || !filepath.IsAbs(req.WorkDir) || strings.Contains(req.WorkDir, "..") {
 		return nil, fmt.Errorf("apm: resolve work dir %q is not an absolute traversal-free path", req.WorkDir)
@@ -176,10 +209,11 @@ func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 	}
 
 	// The shared materialization: a scratch dir that carries no apm.yml gets
-	// the minimal manifest for the ref, so the install below can resolve.
-	materialized, err := writeManifest(req.WorkDir, req.PackageRef)
+	// the minimal manifest for the flattened dependency list, so the install
+	// below can resolve it.
+	materialized, err := writeManifest(req.WorkDir, deps)
 	if err != nil {
-		return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, err)
+		return nil, fmt.Errorf("apm: resolve %s: %w", depName(req), err)
 	}
 
 	timeout := req.Timeout
@@ -207,7 +241,7 @@ func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 		var wrapErr error
 		execPath, execArgs, childEnv, wrapErr = req.Wrap(args, apmChildEnv(req.Home))
 		if wrapErr != nil {
-			return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, wrapErr)
+			return nil, fmt.Errorf("apm: resolve %s: %w", depName(req), wrapErr)
 		}
 	} else {
 		execPath, execArgs, childEnv = bin, args, apmChildEnv(req.Home)
@@ -218,26 +252,26 @@ func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) || cctx.Err() != nil {
-			return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, ErrResolveTimeout)
+			return nil, fmt.Errorf("apm: resolve %s: %w", depName(req), ErrResolveTimeout)
 		}
-		return nil, fmt.Errorf("apm: resolve %s: %w: %s", req.PackageRef, ErrResolveFailed, bounded(string(out), 2000))
+		return nil, fmt.Errorf("apm: resolve %s: %w: %s", depName(req), ErrResolveFailed, bounded(string(out), 2000))
 	}
 
 	lockPath := filepath.Join(req.WorkDir, LockFileName)
 	lockDigest, err := LockDigest(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("apm: resolve %s: install reported success but the lockfile is unusable: %w", req.PackageRef, err)
+		return nil, fmt.Errorf("apm: resolve %s: install reported success but the lockfile is unusable: %w", depName(req), err)
 	}
 	lock, err := parseLockFile(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, err)
+		return nil, fmt.Errorf("apm: resolve %s: %w", depName(req), err)
 	}
-	if err := assertLockPinsRef(lock, parsed.Revision); err != nil {
-		return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, err)
+	if err := assertLockPinsDeps(lock, parsed); err != nil {
+		return nil, fmt.Errorf("apm: resolve %s: %w", depName(req), err)
 	}
 	contents, err := collectContents(req.WorkDir, lock)
 	if err != nil {
-		return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, err)
+		return nil, fmt.Errorf("apm: resolve %s: %w", depName(req), err)
 	}
 
 	return &ResolveResult{
@@ -250,17 +284,41 @@ func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 	}, nil
 }
 
-// assertLockPinsRef refuses a resolve whose lock did not pin the ref it was
+// depName is the resolve's identity in a message: the flattened list when
+// there is one, else the single ref the caller named.
+func depName(req ResolveRequest) string {
+	if len(req.Deps) > 0 {
+		return bounded(strings.Join(RefsOf(req.Deps), ", "), 400)
+	}
+	return req.PackageRef
+}
+
+// assertLockPinsDeps refuses a resolve whose lock did not pin the refs it was
 // asked to lock. A resolving install that answered a different revision (or
 // none) means the lock digest about to be reported describes a context the
 // caller never asked to lock; fail with the named resolve error instead of
-// answering.
-func assertLockPinsRef(lock *lockfile, want string) error {
-	got := resolvedRef(lock)
-	if want == "" || got == want {
-		return nil
+// answering. With a list (ADR-0084) EVERY requested revision must appear among
+// the lock's resolved pins — a dependency that silently dropped out of the
+// graph would otherwise be recorded as locked.
+func assertLockPinsDeps(lock *lockfile, want []packageRef) error {
+	for _, w := range want {
+		if w.Revision == "" {
+			continue
+		}
+		found := false
+		for i := range lock.Dependencies {
+			d := &lock.Dependencies[i]
+			if d.ResolvedRef == w.Revision || d.ResolvedCommit == w.Revision {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("apm: lock does not pin the requested ref %s (resolved %s/%s): %w",
+				w.Revision, resolvedRef(lock), resolvedCommit(lock), ErrResolveFailed)
+		}
 	}
-	return fmt.Errorf("apm: lock does not pin the requested ref %s (resolved %s): %w", want, got, ErrResolveFailed)
+	return nil
 }
 
 // resolvedRef is the tag/branch the lock resolved to, from its first
@@ -290,6 +348,7 @@ func resolvedCommit(lock *lockfile) string {
 // and what it deployed.
 type lockDependency struct {
 	RepoURL            string            `yaml:"repo_url"`
+	VirtualPath        string            `yaml:"virtual_path"`
 	ResolvedCommit     string            `yaml:"resolved_commit"`
 	ResolvedRef        string            `yaml:"resolved_ref"`
 	Version            string            `yaml:"version"`
@@ -301,6 +360,25 @@ type lockDependency struct {
 	DeployedFiles      []string          `yaml:"deployed_files"`
 	DeployedFileHashes map[string]string `yaml:"deployed_file_hashes"`
 	Source             string            `yaml:"source"`
+}
+
+// identity is the dependency's coordinate in the profile's own ref grammar —
+// the `from_ref` a lock summary attributes a skill to. A lock records repo_url,
+// virtual_path and resolved_ref separately; joining them back into the shape
+// the user typed is what makes the attribution readable.
+func (d *lockDependency) identity() string {
+	coord := strings.TrimSuffix(d.RepoURL, "/")
+	if vp := strings.Trim(d.VirtualPath, "/"); vp != "" {
+		coord += "/" + vp
+	}
+	switch rev := d.ResolvedRef; {
+	case rev != "":
+		return coord + "#" + rev
+	case d.ResolvedCommit != "":
+		return coord + "#" + d.ResolvedCommit
+	default:
+		return coord
+	}
 }
 
 // lockfile is the subset of apm.lock.yaml the resolve reads (APM.md's
@@ -338,6 +416,13 @@ func parseLock(data []byte) (*lockfile, error) {
 
 // collectContents derives the names-only summary from the deployed tree the
 // install just wrote and the lock's MCP server names.
+//
+// The per-skill `from_ref` (ADR-0084) comes from the lock, not the tree: each
+// dependency lists the files it deployed, so a skill's owning dependency is the
+// LAST dependency in lock order that names that skill's SKILL.md. Lock order is
+// install order, and install order is what APM's `active_owner` settles on, so
+// this reports the winner rather than every claimant — which is the difference
+// between surfacing APM's rule and silently inventing our own.
 func collectContents(workdir string, lock *lockfile) (Contents, error) {
 	skills := map[string]bool{}
 	instructions := map[string]bool{}
@@ -370,16 +455,59 @@ func collectContents(workdir string, lock *lockfile) (Contents, error) {
 			mcp[name] = true
 		}
 	}
+	owners := skillOwners(lock)
+	refs := make([]SkillRef, 0, len(skills))
+	for name := range skills {
+		refs = append(refs, SkillRef{Skill: name, FromRef: owners[name]})
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Skill < refs[j].Skill })
 
 	skillsOut, skillsTrunc := sortedNames(skills, contentsCap)
 	instructionsOut, instructionsTrunc := sortedNames(instructions, contentsCap)
 	mcpOut, mcpTrunc := sortedNames(mcp, contentsCap)
+	if len(refs) > contentsCap {
+		refs = refs[:contentsCap]
+	}
 	return Contents{
 		Skills:       skillsOut,
 		Instructions: instructionsOut,
 		MCPServers:   mcpOut,
+		SkillRefs:    refs,
 		Truncated:    skillsTrunc || instructionsTrunc || mcpTrunc,
 	}, nil
+}
+
+// skillOwners maps each deployed skill name to the dependency that owns its
+// deployed copy, by walking the lock's dependencies in order (last claimant
+// wins; see collectContents). A dependency that recorded no deployed_files
+// contributes nothing here — its skill_subsets are names without locators, and
+// guessing which of them landed would be a claim, not an observation.
+func skillOwners(lock *lockfile) map[string]string {
+	owners := map[string]string{}
+	for i := range lock.Dependencies {
+		d := &lock.Dependencies[i]
+		for _, f := range d.DeployedFiles {
+			if name, ok := skillNameOfPath(f); ok {
+				owners[name] = d.identity()
+			}
+		}
+	}
+	return owners
+}
+
+// skillNameOfPath is the skill directory a deployed SKILL.md path names:
+// `.claude/skills/grill-me/SKILL.md` (or the apm_modules/ twin) → "grill-me".
+func skillNameOfPath(p string) (string, bool) {
+	segs := strings.Split(strings.ReplaceAll(p, string(filepath.Separator), "/"), "/")
+	for i := 1; i < len(segs); i++ {
+		if segs[i-1] == "skills" && segs[i] != "" {
+			if segs[len(segs)-1] == "SKILL.md" {
+				return segs[i], true
+			}
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // sortedNames returns the set's keys sorted, capped at cap; the second return

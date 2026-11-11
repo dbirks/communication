@@ -107,6 +107,12 @@ const (
 	ProfileCodeLauncherNeedsOperator = "launcher_needs_operator"
 )
 
+// CollectionCodeRevisionInvalid — ADR-0084's attachment refusal — is declared in
+// apm_collections.go with the collection surface's own codes and REUSED here,
+// because it arrives on a PROFILE route: a profile named a collection revision
+// that is a draft, does not exist, or lives in another organization. One code,
+// one spelling, whichever route answered.
+
 // launcherNeverAsks reports whether the launcher registry says this launcher
 // cannot be made to prompt — the entry exists and names no asking mode
 // (`AskModeID == ""`, internal/agent/acp/launchers.go, observed in
@@ -126,6 +132,14 @@ type AgentProfileCreateInput struct {
 	// transcript divider renders after the profile name. Absent or "" names
 	// no model (the harness default).
 	Model string `json:"model,omitempty"`
+	// APMCollectionPins (ADR-0084) is the optional ordered attachment list a
+	// profile may be created with. Every entry names a PUBLISHED revision of one of
+	// this organization's collections, and the store refuses one that does not: an
+	// attachment is the statement that a human published this bundle, and only
+	// publishing makes that true. What a create still cannot do is record a
+	// DIGEST — a profile created with collections is an UNLOCKED pin (ADR-0054
+	// amendment 2), refused at launch until an operator locks the flattened set.
+	APMCollectionPins []APMCollectionPin `json:"apm_collections,omitempty"`
 	// PermissionMode and SandboxEnforcement are NOT request-body fields
 	// (`json:"-"` plus DecodeJSON's DisallowUnknownFields: a body naming either
 	// is a 400, exactly as it was before they existed). They are the launch axes
@@ -155,6 +169,43 @@ type AgentProfileAPMPatch struct {
 	// It rides the same version bump as the APM triple — a pin is a state,
 	// never a delta.
 	Model *string `json:"model"`
+	// APMCollectionPins (ADR-0084) follows this body's absent-means-nothing rule,
+	// with the model's twist: absent leaves the stored list alone, a list
+	// (including `[]`, the clear) replaces it. CHANGING the list clears
+	// apm_lock_digest exactly like changing the ref does — the digest is sha256 of
+	// the lock for ONE dependency list, so once the list moves the recorded digest
+	// describes a context this profile no longer resolves. A body that carries both
+	// a changed list and a digest gets the digest DROPPED, not stored: the clearing
+	// is the server's rule, not a client courtesy.
+	APMCollectionPins *[]APMCollectionPin `json:"apm_collections"`
+}
+
+// apmcPinsShape is the handler's fast refusal on an attachment list: an id that
+// is not an id, a revision below 1, or one collection attached twice. Which
+// revision is PUBLISHED is not answerable here — that is the store's query and
+// the store's refusal with the same code — so passing this gate does not mean the
+// write lands, but failing it means the request never touched a database.
+func apmcPinsShape(w http.ResponseWriter, pins []APMCollectionPin) ([]APMCollectionPin, bool) {
+	seen := map[string]bool{}
+	for i, p := range pins {
+		if !validUUID(p.CollectionID) {
+			profProblem(w, CollectionCodeRevisionInvalid,
+				"attachment "+strconv.Itoa(i+1)+": collection_id must be an APM collection id.")
+			return nil, false
+		}
+		if p.Revision < 1 {
+			profProblem(w, CollectionCodeRevisionInvalid,
+				"attachment "+strconv.Itoa(i+1)+": a collection revision is 1 or higher.")
+			return nil, false
+		}
+		if seen[p.CollectionID] {
+			profProblem(w, CollectionCodeRevisionInvalid,
+				"attachment "+strconv.Itoa(i+1)+": collection "+p.CollectionID+" is attached twice; one attachment carries the order.")
+			return nil, false
+		}
+		seen[p.CollectionID] = true
+	}
+	return pins, true
 }
 
 // apmPinComplete is the all-or-nothing rule as the handler states it. The store
@@ -163,7 +214,17 @@ type AgentProfileAPMPatch struct {
 // the ref + target (unlocked, ADR-0054 amendment 2 — the digest is the
 // operator's to record through the lock flow), or all three cleared (the clear).
 // Any other shape is a half pin and is 422.
+//
+// A body that carries `apm_collections` (ADR-0084) DEFERS the question, including
+// its empty form: whether the resulting profile has a target is a fact about the
+// ROW (a list-only body keeps the stored ref and target), and a handler that
+// guessed from the body alone would refuse writes the store considers complete —
+// the opposite failure of the half pin this function exists to catch early. The
+// store sees the row and refuses a resulting half pin with the same code.
 func apmPinComplete(in AgentProfileAPMPatch) bool {
+	if in.APMCollectionPins != nil {
+		return true
+	}
 	hasRef := in.APMPackageRef != nil && *in.APMPackageRef != ""
 	hasTarget := in.APMTarget != nil && *in.APMTarget != ""
 	hasDigest := in.APMLockDigest != nil && *in.APMLockDigest != ""
@@ -203,6 +264,13 @@ func (h *cnvHandlers) createProfile(w http.ResponseWriter, r *http.Request) {
 	if len(body.Model) > 200 {
 		profProblem(w, ProfileCodeModelInvalid, "model must be at most 200 characters.")
 		return
+	}
+	if body.APMCollectionPins != nil {
+		pins, ok := apmcPinsShape(w, body.APMCollectionPins)
+		if !ok {
+			return
+		}
+		body.APMCollectionPins = pins
 	}
 	if !c.IsOrgAdmin {
 		// A never-asks launcher is refused with its OWN reason before the generic
@@ -255,6 +323,15 @@ func (h *cnvHandlers) patchProfile(w http.ResponseWriter, r *http.Request) {
 			"an apm pin is either all three set (locked) or just the ref and target (unlocked); a partial pin is refused.")
 		return
 	}
+	// ADR-0084's attachment list follows this body's absent-means-nothing rule:
+	// `apm_collections` present (even as []) replaces the stored list, absent
+	// leaves it alone. Whether each entry names a PUBLISHED revision of one of
+	// this organization's collections is the store's question — it is a database
+	// fact, not a shape — and a body naming a draft or a foreign collection is
+	// refused there with apm_collection_revision_invalid. What IS refused here is
+	// a body whose list cannot be a list at all: a malformed id or a revision
+	// below 1 is a 422 before anything reads a row.
+
 	if body.Model != nil {
 		model := strings.TrimSpace(*body.Model)
 		body.Model = &model
@@ -262,6 +339,13 @@ func (h *cnvHandlers) patchProfile(w http.ResponseWriter, r *http.Request) {
 			profProblem(w, ProfileCodeModelInvalid, "model must be at most 200 characters.")
 			return
 		}
+	}
+	if body.APMCollectionPins != nil {
+		pins, ok := apmcPinsShape(w, *body.APMCollectionPins)
+		if !ok {
+			return
+		}
+		body.APMCollectionPins = &pins
 	}
 	if !validUUID(profileID) {
 		h.profileDenied(w, r, c, profileID, "profile.update", "malformed profile id")
@@ -399,6 +483,8 @@ func profProblemTitle(code string) string {
 		return "Invalid Permission Mode"
 	case ProfileCodeLauncherNeedsOperator:
 		return "Launcher Needs an Operator"
+	case CollectionCodeRevisionInvalid:
+		return "Collection Revision Not Attachable"
 	default:
 		return "Validation Failed"
 	}

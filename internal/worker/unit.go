@@ -145,6 +145,14 @@ type ProfileAxes struct {
 	APMPackageRef      string
 	APMTarget          string
 	APMLockDigest      string
+	// APMCollections is the profile's attached collections RESOLVED: one entry
+	// per attachment, in attach order, each carrying the entries of the exact
+	// revision the profile names (ADR-0084). The read that fills it is
+	// postgres.ProfileReader.ProfileFor; the flatten that turns it plus
+	// APMPackageRef into the manifest's dependency list is apm.FlattenProfile,
+	// the one function the lock resolver shares — a staging that flattened
+	// differently from the lock would move the digest and trip the gate.
+	APMCollections []apm.CollectionRevision
 	// ExcludedPaths is the project's declared exclusion set (ADR-0017 D6): the
 	// secret-mount and APM-staging paths that must never reach a commit or an
 	// artifact. It is project-scoped because that is the only scope git honors in
@@ -827,16 +835,25 @@ func (u *Unit) rebuildPlan() error {
 
 // stageAPM is contract § 4.2 step 2, per repository.
 //
+// The dependency list is ADR-0084's flatten of the profile's attached
+// collections plus its own ref: ONE manifest, ONE lock, ONE digest, whatever
+// number of packages the set names — so the digest gate below is unchanged by
+// the list.
+//
 // A digest mismatch refuses rather than warns: probe A5 showed
 // `apm install --frozen` will put mutated content live while reporting that the
 // lockfile is present, so the recorded digest is the only control that sees it —
 // and case 14 is the test that says so out loud.
 func (u *Unit) stageAPM(ctx context.Context, req UnitRequest) error {
-	if u.Profile.APMPackageRef == "" {
+	deps, err := apm.FlattenProfile(u.Profile.APMCollections, u.Profile.APMPackageRef)
+	if err != nil {
+		return fmt.Errorf("worker: profile %s pins an apm collection set the flattener refuses: %w", u.Profile.AgentProfileID, err)
+	}
+	if len(deps) == 0 {
 		return nil // no packaged context for this profile (D-020)
 	}
 	if u.svc.APM == nil {
-		return fmt.Errorf("worker: profile %s pins apm_package_ref=%s but this worker has no apm binary configured: refusing to run a turn without the context the profile promises", u.Profile.AgentProfileID, u.Profile.APMPackageRef)
+		return fmt.Errorf("worker: profile %s pins apm packages (%s) but this worker has no apm binary configured: refusing to run a turn without the context the profile promises", u.Profile.AgentProfileID, apm.DepsForLog(deps))
 	}
 	target := u.Profile.APMTarget
 	if target == "" {
@@ -845,11 +862,20 @@ func (u *Unit) stageAPM(ctx context.Context, req UnitRequest) error {
 	if !apm.ValidTarget(target) {
 		return fmt.Errorf("worker: profile %s has apm target %q, which is not an apm target", u.Profile.AgentProfileID, target)
 	}
+	if target == apm.TargetAgentSkills {
+		// ADR-0084's honest half: the staging for pi is real, the CLAIM about
+		// pi is not. Spike A-1 (docs/compatibility/APM.md) has never observed
+		// pi reading a staged skill, so this records that the install ran for a
+		// target whose harness side is unverified rather than letting the green
+		// turn read as support.
+		u.logger.Info("apm staged for the agent-skills target: pi reading .agents/skills is UNVERIFIED (ADR-0084 spike A-1)",
+			slog.String("agent_profile_id", u.Profile.AgentProfileID))
+	}
 	for i := range u.Repos {
 		repo := &u.Repos[i]
 		staged, err := u.svc.APM.Stage(ctx, apm.StageRequest{
 			Checkout: repo.CheckoutPath, Target: target,
-			PackageRef: u.Profile.APMPackageRef, LockDigest: u.Profile.APMLockDigest,
+			Deps: deps, LockDigest: u.Profile.APMLockDigest,
 			Home: u.Layout.Home,
 		})
 		switch {
@@ -1161,12 +1187,20 @@ func inside(root, path string) bool {
 // launcherTarget maps a launcher id to the apm target it installs packages for.
 // The mapping is explicit rather than derived from the id's shape because a new
 // launcher whose name does not contain its family would silently stage nothing.
+//
+// `pi` maps to apm's `agent-skills` target (ADR-0084): pi reads the shared
+// Agent Skills convention at `.agents/skills/`, which is the tree that target
+// deploys. What is UNVERIFIED is pi itself ever reading what lands there —
+// spike A-1 in docs/compatibility/APM.md — which is why stageAPM logs the
+// staging as unverified-for-pi instead of letting it read as a supported row.
 func launcherTarget(launcherID string) string {
 	switch launcherID {
 	case "claude":
 		return apm.TargetClaude
 	case "codex":
 		return apm.TargetCodex
+	case "pi":
+		return apm.TargetAgentSkills
 	default:
 		return ""
 	}

@@ -135,6 +135,7 @@ tags:
   - name: members
     description: Project memberships and roles.
   - name: profiles
+  - name: collections
     description: >-
       Agent profiles: what harness a conversation may launch. Read-only in M2;
       two are seeded (Claude Code, Codex) and profile editing/publishing is a
@@ -2143,6 +2144,228 @@ paths:
                 $ref: "#/components/schemas/LauncherList"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/apm-collections:
+    get:
+      operationId: listAPMCollections
+      tags: [collections]
+      summary: List the organization's APM collections
+      description: >
+        The collection library (ADR-0084): named, versioned bundles of pinned
+        APM refs that an agent profile attaches in an order of its choosing.
+        A collection is **not** a package — upstream APM deleted its
+        `.collection.yml` kind in 0.12.0 (research
+        `docs/research/2026-11-apm-collections-and-harnesses.md` § 1) — it is an
+        ordered list of `owner/repo[/path]#<tag|sha>` coordinates plus optional
+        skill subsets, which the worker FLATTENS (apm.FlattenProfile) into the
+        one generated `apm.yml` it installs and the one `apm.lock.yaml` whose
+        digest gates a launch. One profile, one lock, one digest, whatever number
+        of packages the attached set names.
+
+        Each row carries its latest revision — identity, status and entries — so
+        the library page needs no second round trip, plus
+        `published_revisions`: the count of revisions a profile may actually
+        attach, computed rather than stored, because the number beside "attach"
+        has to be the number the write path accepts. Ordered by `slug`, one page
+        (the house library listing). Read is any member of the organization; the
+        writes below are the organization's library role.
+
+        Migration 00033 seeds three collections in the default organization:
+        "Matt Pocock skills" (one tag-pinned ref, published) and "pstack (Claude
+        Code)" (36 per-skill refs off `cursor/plugins`, all pinned to one commit,
+        published) — and "Review conventions", an empty **draft**, because
+        publishing an empty bundle would make nothing attachable while an empty
+        draft is the editing a team starts from.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The caller's organization's collections, ordered by slug.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APMCollectionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createAPMCollection
+      tags: [collections]
+      summary: Create an APM collection with its revision 1
+      description: >
+        Identity plus the revision-1 entries, in one transaction. Revision 1
+        lands a **draft**: creating a collection never makes it attachable,
+        publishing does (ADR-0084). `slug` is unique within the organization and
+        matches the launcher-id grammar (one URL-segment rule across the library).
+
+        Every entry's `ref` must already be pinned — `<owner>/<repo>[/<virtual
+        subdirectory>]#<tag|full-commit>` — checked PER ELEMENT by the same
+        grammar an agent-profile ref is checked against. A ref with no `#<ref>`
+        follows a moving branch into an agent's context, where the lock digest
+        would be a digest of whatever upstream looked like that hour, so it is
+        refused here and again in the store and again by the flatten. A `skills`
+        subset narrows the entry to those skill names (apm's object form, the
+        same shape `docs/compatibility/APM.md` T-tag-5 proved survives into the
+        lock).
+
+        The entry ORDER is the data: when two entries ship one skill name, apm
+        settles it by install order — the last claimant becomes the lock's
+        `active_owner` — so the position an entry holds here is the position it
+        holds in the generated manifest, and it is what the app reports as
+        "overridden by …". Organization library role: a member without it gets
+        `403`; a slug clash is `409`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/APMCollectionCreate"
+      responses:
+        "201":
+          description: The created collection, its revision 1 a draft.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APMCollection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/APMCollectionProblem"
+  /api/v1/apm-collections/{collectionId}:
+    get:
+      operationId: getAPMCollection
+      tags: [collections]
+      summary: One collection with its full revision history
+      description: >
+        The collection and every revision it has, newest first, each revision
+        carrying its ordered entries. A revision is immutable once published, so
+        the history is the whole answer — there is no mutation route to a
+        revision row and no digest the server computes: what a profile pins is a
+        (collection, revision) pair, and this is the read that shows what that
+        pair froze. A collection of another organization is the uniform `404`:
+        its existence never leaks (ADR-0014 §3).
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CollectionId"
+      responses:
+        "200":
+          description: The collection and its revisions.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APMCollectionDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/apm-collections/{collectionId}/revisions:
+    post:
+      operationId: createAPMCollectionRevision
+      tags: [collections]
+      summary: Draft a new revision of a collection
+      description: >
+        "Save as a new revision": a new row carrying the supplied entries,
+        numbered one past the highest revision the collection has, as a **draft**.
+        It never edits the revision it was drafted from, because a published
+        revision is frozen (ADR-0002's rule for the pipeline library, which
+        ADR-0084 restates for collections) and a profile may be pinning it right
+        now. Drafting publishes nothing: the new bundle becomes attachable only
+        when somebody publishes it.
+
+        An empty entry list is legal (the empty starter collection is the seed a
+        team edits), and every non-empty ref is refused unless it is pinned.
+        Organization library role; unknown or foreign collection `404`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/CollectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/APMCollectionRevisionCreate"
+      responses:
+        "201":
+          description: The new draft revision.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APMCollectionRevision"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/APMCollectionProblem"
+  /api/v1/apm-collections/{collectionId}/revisions/{revision}/publish:
+    post:
+      operationId: publishAPMCollectionRevision
+      tags: [collections]
+      summary: Publish one collection revision, making it attachable
+      description: >
+        The only write a revision row ever receives after it exists, and it moves
+        exactly one column: the status. From here its entries are frozen — the
+        store issues no content update against a published row and migration
+        00033's trigger refuses one that arrives from elsewhere — and a profile
+        may attach `(collection, revision)`.
+
+        Publishing is what makes an attachment an honest statement: a draft is
+        somebody's unfinished edit, and staging one in front of an agent behind a
+        digest nobody read is the failure the whole lock flow exists to prevent.
+        Publishing an already-published revision is `409` rather than a silent
+        no-op, because the caller's premise (that this draft is pending) is false
+        and a second actor's publish must be visible.
+
+        The attachment side of the same rule lives on the profile write: a
+        profile naming a draft (or a revision of another organization's
+        collection) is refused `422` with code
+        `apm_collection_revision_invalid`. Organization library role.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/CollectionId"
+        - $ref: "#/components/parameters/CollectionRevision"
+      responses:
+        "200":
+          description: The published revision.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APMCollectionRevision"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /api/v1/agent-profiles:
     get:
       operationId: listAgentProfiles
@@ -7380,6 +7603,32 @@ components:
       schema:
         type: string
         format: uuid
+    CollectionId:
+      name: collectionId
+      in: path
+      required: true
+      description: >
+        An `apm_collections` id. Collections are organization-scoped, so a
+        collection of another organization is `404` — never a peek (ADR-0014 §3).
+        A member of the same organization who lacks the library role gets `403`,
+        because the row is already list-visible to them and role is not existence
+        information.
+      schema:
+        type: string
+        format: uuid
+    CollectionRevision:
+      name: revision
+      in: path
+      required: true
+      description: >
+        A collection revision number (1 or higher). Revisions are dense and
+        immutable once published, so the number is a key into history, not a
+        mutable pointer: `latest` is never accepted, because a profile that
+        followed it would have its packaged context moved by somebody else's
+        publish (ADR-0084).
+      schema:
+        type: integer
+        minimum: 1
     ProfileId:
       name: profileId
       in: path
@@ -7702,6 +7951,32 @@ components:
             status: 422
             detail: "apm_package_ref, apm_target and apm_lock_digest must be set together, or all three cleared to remove the pin."
             code: apm_pin_incomplete
+    APMCollectionProblem:
+      description: >
+        `422` on an APM collection write. The `code` member is the
+        machine-readable half and is stable; the `detail` prose beside it is not.
+        Codes (ADR-0084): `apm_collection_slug_invalid` (the slug is not a
+        URL segment), `apm_collection_name_invalid` (name empty/over 200 or
+        description over 2000), `apm_collection_entries_invalid` (an entry ref is
+        not a pinned apm git dependency, a skills subset names an empty skill, or
+        the list is over the cap), `apm_collection_revision_invalid` (a profile
+        attached a revision that is a draft, does not exist, or belongs to another
+        organization — the same code the agent-profile write answers with, because
+        a client switches on the code, not on which route spoke). Adding a code is
+        additive; renaming one is not.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/APMCollectionProblem"
+          example:
+            type: https://communication.dev/errors/apm_collection_entries_invalid
+            title: Invalid Collection Entries
+            status: 422
+            detail: "entry 1: apm: package ref \"mattpocock/skills\" carries no #<tag|branch|commit>; a ref without a revision is not pinned (ADR-0030 § 3)."
+            code: apm_collection_entries_invalid
     ServiceUnavailable:
       description: >
         The replica cannot serve the request: Postgres is unreachable, or its
@@ -8508,6 +8783,248 @@ components:
         evidence:
           type: [string, "null"]
           description: Repo-relative path of the cited evidence; null when not evidence-backed.
+    APMCollectionEntry:
+      title: APMCollectionEntry
+      description: >
+        One ordered entry of a collection revision: a pinned apm git dependency,
+        the optional skill subset it cherry-picks, and a note that tells a reader
+        why the entry is in the bundle. The ref grammar is the agent-profile ref
+        grammar applied PER ELEMENT (ADR-0030 §3), and `skills` is apm's
+        object-form subset — the shape `docs/compatibility/APM.md` T-tag-5 proved
+        persists into `apm.lock.yaml`, so a `--frozen` replay installs the same
+        set.
+      type: object
+      required: [ref]
+      additionalProperties: false
+      properties:
+        ref:
+          type: string
+          maxLength: 512
+          description: >
+            `<owner>/<repo>[/<virtual subdirectory>]#<tag|full-commit>`, e.g.
+            `mattpocock/skills#v1.3.2` or
+            `cursor/plugins/harness/pstack/claude-code/skills/poteto-mode#63912a91d52c43946f974f2aaf661334a6116a82`.
+            The `#<ref>` is required: an unpinned coordinate follows a moving
+            branch into an agent's context.
+        skills:
+          type: array
+          maxItems: 200
+          items:
+            type: string
+            maxLength: 128
+          description: >
+            The skill names this entry narrows to. Empty (or absent) means the
+            whole package.
+        note:
+          type: string
+          maxLength: 500
+          description: Why the entry is here; display text, never interpreted.
+    APMCollectionPin:
+      title: APMCollectionPin
+      description: >
+        One profile attachment: a collection and the EXACT revision frozen on it.
+        `latest` is not expressible — publishing a new revision must never move
+        what an existing profile resolves (ADR-0058's rule, restated for
+        collections). The list of pins is ordered, and the order is what decides
+        which package owns a skill name two of them ship.
+      type: object
+      required: [collection_id, revision]
+      additionalProperties: false
+      properties:
+        collection_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          minimum: 1
+    APMCollectionRevision:
+      title: APMCollectionRevision
+      description: >
+        One revision of one collection, content included. `status` is `draft`
+        until somebody publishes it; a published revision is immutable, so this
+        object never changes after the flip and can be cached forever.
+      type: object
+      required: [revision_id, revision, status, entries, created_by, created_at]
+      properties:
+        revision_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [draft, published]
+        entries:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/APMCollectionEntry"
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    APMCollectionRevisionSummary:
+      title: APMCollectionRevisionSummary
+      description: >
+        A collection row's latest revision: identity, status and content, so the
+        library list shows what a collection currently IS without a second
+        request.
+      type: object
+      required: [revision_id, revision, status, entries, created_at]
+      properties:
+        revision_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [draft, published]
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/APMCollectionEntry"
+        created_at:
+          type: string
+          format: date-time
+    APMCollection:
+      title: APMCollection
+      description: >
+        A named, org-scoped APM collection (ADR-0084) — the library item a
+        profile attaches. Nothing here is a format apm reads: APM deleted its
+        collection kind in 0.12.0, and what the worker installs is the ONE
+        manifest it generates from the flattened attachment list.
+      type: object
+      required: [id, slug, name, description, created_by, created_at, updated_at, published_revisions]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+          description: Unique within the organization; a URL segment.
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        created_by:
+          type: string
+          description: >
+            The writer. TEXT, not a user id: migration 00033 seeds these rows from
+            a migration, which names itself (`migration:00033`) rather than
+            inventing a user — the same reason agent_profile_versions.created_by
+            is text (it has to be able to name a worker).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        latest_revision:
+          description: >
+            The newest revision row, draft OR published — what a collection
+            currently IS. Null only for a collection with no revision at all,
+            which the create path cannot produce (it lands revision 1 beside the
+            row) and a rollback could.
+          anyOf:
+            - $ref: "#/components/schemas/APMCollectionRevisionSummary"
+            - type: "null"
+        published_revisions:
+          type: integer
+          minimum: 0
+          description: >
+            How many revisions a profile may attach. Computed: the number the app
+            shows beside "attach" is the number the write path will accept.
+    APMCollectionList:
+      title: APMCollectionList
+      description: >
+        One page of the library — the whole organization in this page, so
+        `next_cursor` is always null (the M4 library idiom, as `/pipelines`).
+      type: object
+      required: [collections]
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/APMCollection"
+        next_cursor:
+          type: ["string", "null"]
+    APMCollectionDetail:
+      title: APMCollectionDetail
+      description: >
+        One collection plus its FULL revision history, newest first. A revision is
+        immutable once published, so the history is the whole answer about what a
+        pinned (collection, revision) pair froze.
+      type: object
+      required: [collection, revisions]
+      properties:
+        collection:
+          $ref: "#/components/schemas/APMCollection"
+        revisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/APMCollectionRevision"
+    APMCollectionProblem:
+      title: APMCollectionProblem
+      description: >
+        The `application/problem+json` body of an APM collection `422`, with
+        ADR-0084's stable `code` member.
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          properties:
+            code:
+              type: string
+              description: See the `APMCollectionProblem` response's code list.
+    APMCollectionCreate:
+      title: APMCollectionCreate
+      description: >
+        `POST /api/v1/apm-collections`' body: identity plus the revision-1
+        entries. There is no `status` member — a new collection is a draft and
+        publishing is a separate call, because publishing is the act that says a
+        human read the entries.
+      type: object
+      required: [slug, name]
+      additionalProperties: false
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        entries:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/APMCollectionEntry"
+    APMCollectionRevisionCreate:
+      title: APMCollectionRevisionCreate
+      description: >
+        `POST /api/v1/apm-collections/{collectionId}/revisions`' body: "save as a
+        new revision". The revision number is the store's (one past the highest),
+        never the caller's.
+      type: object
+      required: [entries]
+      additionalProperties: false
+      properties:
+        entries:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/APMCollectionEntry"
     AgentProfile:
       title: AgentProfile
       description: >
@@ -8576,12 +9093,17 @@ components:
             profile stages no packaged context.
         apm_target:
           type: ["string", "null"]
-          enum: [claude, codex, null]
+          enum: [claude, codex, agent-skills, null]
           description: >
             The APM install target the digest below was recorded for. apm keeps
             one `apm.lock.yaml` per checkout and *moving* to a second target
             changes that digest (APM.md probe A3), so a digest is meaningful only
             per target — and per launch that means one launcher, one harness.
+            `agent-skills` is the shared `.agents/skills/` tree ADR-0084 gives the
+            `pi` launcher: the target is real (apm installs for it, the digest
+            covers it) and what pi DOES with what lands there is UNVERIFIED —
+            spike A-1 in `docs/compatibility/APM.md`, whose row stays open until
+            an observed Pi turn reads a staged skill.
         apm_lock_digest:
           type: ["string", "null"]
           pattern: "^sha256:[0-9a-f]{64}$"
@@ -8617,8 +9139,44 @@ components:
               type: array
               items:
                 type: string
+            skill_refs:
+              type: array
+              description: >
+                ADR-0084's per-skill attribution: `{skill, from_ref}` naming which
+                dependency of the flattened set owns each deployed skill name. Two
+                attached collections CAN ship one skill name and apm settles that
+                by install order rather than by an error, so the app needs the
+                winner recorded to say "overridden by …" beside the losing entry —
+                what apm decided, reported, never reinterpreted. `from_ref` is null
+                or empty when the lock named no owning dependency, which the UI
+                renders as unattributed rather than as a guess. Empty for a single
+                package pin: nothing is overridden there.
+              items:
+                type: object
+                required: [skill]
+                properties:
+                  skill:
+                    type: string
+                  from_ref:
+                    type: ["string", "null"]
             truncated:
               type: boolean
+        apm_collections:
+          type: array
+          maxItems: 40
+          description: >
+            The profile's ORDERED APM collection attachments (ADR-0084, migration
+            00033): each entry a collection and the exact published revision
+            frozen on it. Always present — `[]` means this profile attaches no
+            collections, which is the pre-ADR-0084 state, not a missing read. The
+            order is not cosmetic: when two attached collections ship one skill
+            name, apm settles it by INSTALL order, so which entry came first is
+            which copy the agent gets, and `apm_lock_digest` is the digest of the
+            ONE lock over this list plus `apm_package_ref` — a reader who cannot
+            see the list cannot know what the digest is a digest of. Changing the
+            list clears the digest, exactly as changing the ref does.
+          items:
+            $ref: "#/components/schemas/APMCollectionPin"
         model:
           type: ["string", "null"]
           maxLength: 200
@@ -8667,6 +9225,21 @@ components:
           description: >
             Optional pinned display model (ADR-0068); absent or empty names
             none (the harness default).
+        apm_collections:
+          type: array
+          maxItems: 40
+          description: >
+            ADR-0084: a profile may be CREATED with its collection attachments
+            chosen, because an attachment names a bundle somebody already
+            published — which is the very thing a digest exists to verify. What a
+            create still cannot do is record one: the new profile arrives UNLOCKED
+            (`apm_lock_digest` null, ADR-0054 amendment 2) and the launch gate
+            refuses it until an operator locks the flattened set. Every entry must
+            name a PUBLISHED revision of one of this organization's collections; a
+            draft, a missing revision or another organization's collection is
+            refused `422` with code `apm_collection_revision_invalid`.
+          items:
+            $ref: "#/components/schemas/APMCollectionPin"
       example:
         name: Claude Code (pinned skills)
         launcher_id: claude
@@ -8677,8 +9250,16 @@ components:
         present, or all three absent/empty; any partial triple is `422`
         `apm_pin_incomplete` (see the route description for why). `model`
         (ADR-0068) is independent of the triple: a body carrying only `model`
-        moves the model column and leaves the pin alone. Unknown fields
-        are refused.
+        moves the model column and leaves the pin alone. `apm_collections`
+        (ADR-0084) follows the same absent-means-nothing rule as `model`: absent
+        leaves the stored attachment list alone, and a list (including `[]`, the
+        clear) replaces it — a body carrying ONLY `apm_collections` is not a
+        statement about the ref, the target or the lock and leaves all three as
+        the row has them. CHANGING the list clears `apm_lock_digest` exactly as
+        changing the ref does, and the store drops a digest carried beside a moved
+        list: one digest is sha256 of the lock for ONE dependency list, so a
+        digest that outlives its list describes a context the profile no longer
+        resolves. Unknown fields are refused.
       type: object
       additionalProperties: false
       minProperties: 0
@@ -8688,7 +9269,7 @@ components:
           description: See AgentProfile.apm_package_ref.
         apm_target:
           type: ["string", "null"]
-          enum: [claude, codex, null]
+          enum: [claude, codex, agent-skills, null]
         apm_lock_digest:
           type: ["string", "null"]
           pattern: "^sha256:[0-9a-f]{64}$"
@@ -8701,6 +9282,20 @@ components:
             a value sets it. A body carrying only `model` moves the model
             column alone — it never clears the APM triple. Like every write
             here it lands a new profile version (ADR-0058).
+        apm_collections:
+          type: array
+          maxItems: 40
+          description: >
+            The profile's ordered attachment list (ADR-0084). Every entry must
+            name a PUBLISHED revision of one of this organization's collections: a
+            draft is somebody's unfinished edit, and staging one in front of an
+            agent behind a digest nobody read is what the lock flow exists to
+            prevent, so a draft, a revision that never was, or another
+            organization's collection is refused `422` with code
+            `apm_collection_revision_invalid`. The order is what decides which
+            package owns a skill two of them ship.
+          items:
+            $ref: "#/components/schemas/APMCollectionPin"
         version:
           type: ["integer", "null"]
           description: >
