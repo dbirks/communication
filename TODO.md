@@ -84,13 +84,16 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Fix every finding and add a regression test for each.
 
 ## 6. Workflows page and templates
-- [ ] Give the Workflows page a visual and UX pass.
-- [ ] Template: Matt Pocock's skills preloaded (github.com/mattpocock/skills).
-- [ ] Template: poteto's **pstack** packaged through APM. Upstream:
+- [x] Give the Workflows page a visual and UX pass. Evidence: a31da6a, ~/.cache/pi-orch/communication/evidence/workflows-pass/workflows-1440x900.png,
+      workflows-390x844.png, Library.test.tsx.
+- [x] Template: Matt Pocock's skills preloaded (github.com/mattpocock/skills). Evidence:
+      docs/samples/home/matt-pocock-spec-to-pr.yaml (compiles, samples_test.go); collection seeded per ADR-0084.
+- [ ] Template: poteto's **pstack** packaged through APM (template docs/samples/home/pstack-feature.yaml is in a31da6a; the APM packaging lands with the collections backend). Upstream:
       github.com/cursor/plugins/tree/main/pstack (Lauren Tan / @poteto,
       Cursor). Open Pstack (github.com/ericlitman/open-pstack) is the
       Claude Code/Codex translation to borrow from. Not gstack.
-- [ ] Template: implement, then review with Codex.
+- [x] Template: implement, then review with Codex. Evidence: docs/samples/home/implement-then-codex-review.yaml
+      (fails closed without a Codex login).
 - [ ] Wire the Claude subscription through the existing OAuth token
       (ADR-0040).
 - [ ] Put the Codex subscription's `~/.codex` auth into a SOPS secret (the
