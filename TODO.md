@@ -70,11 +70,13 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Finding: CI audit failed on GO-2026-6859 (net/http). Bumped Go to 1.27.4 in
       ceafd03; confirm CI is green.
 
-- [ ] Finding (deployed): New profile with launcher Pi defaults to permission `ask`, which can
+- [x] Finding (deployed): New profile with launcher Pi defaults to permission `ask`, which can
       never run ("permission mode ask needs a prompting mode for launcher pi"). The UI can't
       set `autonomous_within_sandbox`; it is operator SQL only (ADR-0069). Fix: a Pi profile is
-      created as autonomous_within_sandbox + required, and the UI explains why.
-- [ ] Finding (deployed): the New profile name suggestion read "Pi · 2" when no Pi profile existed.
+      created as autonomous_within_sandbox + required, and the UI explains why. Fixed: 0c60ab7
+      (agent_profiles_test.go, NewProfileDialog.test.tsx).
+- [x] Finding (deployed): the New profile name suggestion read "Pi · 2" when no Pi profile existed.
+      Fixed: 0c60ab7 (profiles.test.ts).
 
 ## 5. Assistant end-to-end exercise
 - [ ] Run Playwright against the real model and hunt for errors and visual or
@@ -147,7 +149,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       01a1c958-a99d-7433-a947-a4a5c1c5856b, turn 01a1c958-a99e-73ae-a6c5-6abb91ca3b29 status
       completed (it ran ls and read in the nono sandbox on the deployed worker), screenshot
       /tmp/claude-1000/-home-david-dev-eg-llm-collective/03ca2e2d-7f08-4df0-8426-d927c41b5773/scratchpad/pi-thread-done.png.
-- [ ] Finding: the completed Pi turn shows tool calls and "Turn completed" but NO agent reply
+- [x] Finding: the completed Pi turn shows tool calls and "Turn completed" but NO agent reply
       text, so the README summary never appears. Find whether pi-acp's agent_message_chunk is
       dropped, or the model ended with no text after "Retrying the model… (3 attempts)".
       Root cause from the journal: Pi's narration ("Let me check the files…", "The file's name
@@ -155,9 +157,11 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       AGENT THOUGHT block), and its `conversation.message.agent` chunks were only "\n\n". The
       final answer never came because the model's retries ran out (the Collective was at
       capacity while 4–5 pi workers ran), and the turn still ended `completed`.
-- [ ] Fix (small UI): don't render a whitespace-only agent message as an empty "Pi · time" block.
-- [ ] Fix: when an agent's retries run out with no final message, the turn shows "ended
-      without an answer — the model was unavailable", not a silent "Turn completed".
+- [x] Fix (small UI): don't render a whitespace-only agent message as an empty "Pi · time" block.
+      0c60ab7 (transcript.test.ts).
+- [x] Fix: when an agent's retries run out with no final message, the turn shows "ended
+      without an answer — the model was unavailable", not a silent "Turn completed". 0c60ab7
+      (Transcript.test.tsx).
 
 ## 11. APM collections attached to agent profiles
 User's vision: named APM collections (bundles of skills, instructions and MCP)
