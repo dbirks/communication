@@ -130,6 +130,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       nono inside them, using minimal RBAC and network policy. Check this
       against the research in `docs/` (commit f918881) and write an ADR.
       ADR-0082 ffc7149; research docs/research/2026-11-k8s-run-modes.md.
+- [ ] (Progress) The acp.Transport seam is in 9d138e1 (transport_test.go; -race green). The pod launcher
+      (k8s-pod) and the chart plus kind script (helm-chart) are queued.
 - [ ] Ship a deliberately simple Helm chart with minimal boilerplate.
 - [ ] Test it in kind: install, run a pipeline that spawns an agent pod, and
       check that RBAC least privilege holds. Wire it into CI if that's cheap.
