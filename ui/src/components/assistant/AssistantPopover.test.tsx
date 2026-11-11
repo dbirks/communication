@@ -649,6 +649,33 @@ describe("the three sizes (handoff §1)", () => {
     expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
   });
 
+  /**
+   * §3: the side panel is pinned to the VIEWPORT, so its head is flush with the
+   * top of the window even while the page behind it is scrolled. jsdom has no
+   * layout, so the contract is structural: the sheet is `fixed` with `inset-0`
+   * (and `lg:inset-y-0` + `lg:left-auto` once it is a column), and NOTHING
+   * rides above the panel — the always-mounted error wrapper used to push that
+   * head 8px below y=0.
+   */
+  it("the dock is fixed to the viewport top with nothing above its head", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-popover");
+    fireEvent.click(screen.getByTestId("assistant-dock"));
+    const dock = screen.getByTestId("assistant-popover");
+    expect(dock.className).toContain("fixed");
+    expect(dock.className).toContain("inset-0");
+    expect(dock.className).toContain("lg:inset-y-0");
+    expect(dock.className).toContain("lg:left-auto");
+    const header = screen.getByTestId("assistant-panel-header");
+    expect(header.className).toContain("h-[48px]");
+    const first = dock.firstElementChild as HTMLElement;
+    expect(first).toBeTruthy();
+    expect(first.contains(header)).toBe(true);
+    expect(header.parentElement?.parentElement).toBe(first);
+  });
+
   it("popover → full page → exit comes back as the popover on the route it left", async () => {
     stubViewport(1440);
     stubFetch(() => json({ messages: [], next_cursor: null }));

@@ -367,10 +367,12 @@ describe("AssistantPanel (page and dock)", () => {
     const header = screen.getByTestId("assistant-panel-header");
     expect(header.textContent).not.toContain("ASSISTANT");
     const title = screen.getByTestId("assistant-thread-title");
-    // Design L134: the wide headers' title is 13.5px/600, ellipsized.
-    expect(title.className).toContain("text-[13.5px]");
+    // §2: the full page's head is the shared 48px row and its title is
+    // 14px/600, ellipsized (it was 13.5px in a ~38px header before).
+    expect(title.className).toContain("text-[14px]");
     expect(title.className).toContain("font-semibold");
     expect(title.className).toContain("truncate");
+    expect(header.className).toContain("h-[48px]");
     expect(title.textContent).toBe("Fix the board");
     // Below ~1000px the caller hides the thread list and returns the thread
     // buttons to the header (`showThreadControls`); here they are the page's
@@ -433,11 +435,14 @@ describe("AssistantPanel (page and dock)", () => {
     // page-context button, not the header.
     expect(header.textContent).not.toContain("ASSISTANT");
     expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
-    // Review fix 3: the dock header is ~38px — the popover's 6/8/6/10 padding
-    // around the 26px buttons (the page header's is 10/16).
-    expect(header.className).toContain("pt-[6px]");
-    expect(header.className).toContain("pl-[10px]");
-    expect(header.className).toContain("pr-[8px]");
+    // §3: the dock's head is no longer the ~38px box header (6/10/8/6 padding)
+    // — it is the SAME 48px row as the full page's columns, so the sheet
+    // pinned to the viewport top reads as one line with them.
+    expect(header.className).toContain("h-[48px]");
+    expect(header.className).toContain("px-[16px]");
+    expect(header.className).toContain("border-b");
+    expect(header.className).toContain("border-line");
+    expect(header.className).not.toContain("pt-[6px]");
     const dock = screen.getByTestId("assistant-dock") as HTMLButtonElement;
     expect(dock.title).toBe("Back to popover");
     expect(dock.getAttribute("aria-label")).toBe("Back to popover");
@@ -1006,7 +1011,8 @@ describe("the full page's height chain (walk-through finding 1)", () => {
     expect(side.className).toContain("border-l");
     expect(side.className).toContain("border-line");
     expect(side.className).toContain("h-full");
-    expect(side.className).toContain("overflow-y-auto");
+    // §2: the head row does not scroll — the sections below it do.
+    expect((side.querySelector(".overflow-y-auto") as HTMLElement) ?? null).toBeTruthy();
 
     // The conversation panel fills its column; the body is the scroll box and
     // the composer frame is pinned below it (never inside the scroll).
@@ -1204,5 +1210,98 @@ describe("the transcript's auto-scroll (walk-through finding 3)", () => {
     };
     rerender(<AssistantPanel variant="popover" {...panelProps} messages={[decided]} />);
     expect(model.scrollTop).toBe(600);
+  });
+});
+
+/**
+ * Redesign "one header row" (§2/§3): EVERY column of the full page — and the
+ * docked side panel — opens with the same head: exactly 48px tall, 16px of
+ * horizontal padding, content vertically centred, `border-line` underneath, so
+ * the three bottom borders read as ONE continuous line at y=48. Before this the
+ * thread list's title sat at y≈25, the thread's at y≈23, and the context column
+ * had no head at all.
+ */
+describe("the one 48px head row (§2)", () => {
+  const HEAD_CLASSES = ["h-[48px]", "px-[16px]", "items-center", "border-b", "border-line"];
+
+  function renderFullPage() {
+    return render(
+      withQuery(
+        <AssistantPageFrame
+          threadColumn={
+            <AssistantThreadColumn
+              conversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+              activeId="c1"
+              onSwitch={() => {}}
+              onNewConversation={() => {}}
+            />
+          }
+          sideColumn={
+            <AssistantPageSideColumn
+              pageContextOn
+              pageLabel="Today"
+              pageRoute="/"
+              changes={[]}
+              trustLevel="ask_risky"
+            />
+          }
+        >
+          <AssistantPanel
+            variant="page"
+            {...panelProps}
+            messages={[userMessage("hi")]}
+            recentConversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+            activeConversationId="c1"
+          />
+        </AssistantPageFrame>,
+      ),
+    );
+  }
+
+  it("every column opens with the same 48px head", () => {
+    renderFullPage();
+    const heads = [
+      screen.getByTestId("assistant-page-threads-head"),
+      screen.getByTestId("assistant-panel-header"),
+      screen.getByTestId("assistant-page-side-head"),
+    ];
+    for (const head of heads) {
+      for (const cls of HEAD_CLASSES) {
+        expect(head.className, head.getAttribute("data-testid") ?? "").toContain(cls);
+      }
+    }
+    // The thread list's head: the word plus the New thread button, right-aligned.
+    const threadsHead = screen.getByTestId("assistant-page-threads-head");
+    expect(threadsHead.textContent).toContain("Assistant");
+    expect(
+      screen
+        .getByTestId("assistant-page-new-thread")
+        .closest('[data-testid="assistant-page-threads-head"]'),
+    ).toBeTruthy();
+    // The thread's head names the THREAD (14px/600, truncated).
+    const title = screen.getByTestId("assistant-thread-title");
+    expect(title.textContent).toBe("Fix the board");
+    expect(title.className).toContain("text-[14px]");
+    expect(title.className).toContain("truncate");
+    // The context column's head is the mono label; its sections follow below.
+    const sideHead = screen.getByTestId("assistant-page-side-head");
+    expect(sideHead.textContent).toBe("CONTEXT");
+    expect(sideHead.className).toContain("font-mono");
+    expect(sideHead.className).toContain("text-faint");
+    expect(screen.getByTestId("assistant-page-side").textContent).toContain("LOOKING AT");
+    expect(screen.getByTestId("assistant-page-side").textContent).toContain("TRUST");
+  });
+
+  it("the dock's head is the same 48px row, the popover's stays compact", () => {
+    render(<AssistantPanel variant="dock" {...panelProps} />);
+    const dockHeader = screen.getByTestId("assistant-panel-header");
+    for (const cls of HEAD_CLASSES) {
+      expect(dockHeader.className).toContain(cls);
+    }
+    cleanup();
+    renderPanel();
+    const popoverHeader = screen.getByTestId("assistant-panel-header");
+    expect(popoverHeader.className).not.toContain("h-[48px]");
+    expect(popoverHeader.className).toContain("pt-[6px]");
   });
 });

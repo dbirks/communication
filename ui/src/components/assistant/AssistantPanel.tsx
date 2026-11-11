@@ -258,6 +258,16 @@ function ThreadRow({
   );
 }
 
+/**
+ * The ONE head row the wide assistant surfaces share (redesign: "one header
+ * row"). Exactly 48px tall, 16px of horizontal padding, content vertically
+ * centred, and a `border-line` bottom edge — so the full page's three columns
+ * and the docked side panel all draw their bottom border on the SAME line at
+ * y=48 (and, for the dock, y=0 + 48 from the top of the viewport).
+ */
+export const COLUMN_HEAD_CLASS =
+  "flex h-[48px] shrink-0 items-center border-b border-line px-[16px]";
+
 /** The "Search threads" field both thread lists draw. */
 function ThreadSearch({ value, onChange }: { value: string; onChange: (next: string) => void }) {
   return (
@@ -463,9 +473,11 @@ export function AssistantThreadColumn({
   return (
     <aside
       data-testid="assistant-page-threads"
-      className="flex h-full min-h-0 w-[240px] shrink-0 flex-col gap-[6px] overflow-hidden border-r border-line bg-surface px-[10px] py-3"
+      className="flex h-full min-h-0 w-[240px] shrink-0 flex-col overflow-hidden border-r border-line bg-surface"
     >
-      <span className="flex items-center gap-[6px] px-1 pb-1">
+      {/* §2: the column's head is the SAME 48px row as the thread's and the
+          context column's, so the three bottom borders are one line. */}
+      <span data-testid="assistant-page-threads-head" className={COLUMN_HEAD_CLASS}>
         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink">
           Assistant
         </span>
@@ -477,34 +489,36 @@ export function AssistantThreadColumn({
           <IconEdit size={15} stroke={2} aria-hidden className="shrink-0" />
         </HeaderIconButton>
       </span>
-      <ThreadSearch value={query} onChange={setQuery} />
-      <span className="px-1 pb-[2px] pt-2 font-mono text-[10px] tracking-[0.06em] text-faint">
-        THREADS
-      </span>
-      <span className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto">
-        {rows.length === 0 &&
-        (query.trim().length > 0 || (currentThread === null && activeId === null)) ? (
-          <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
-            {query.trim().length > 0
-              ? "No thread matches that search."
-              : "No threads yet — the next answer starts one."}
-          </p>
-        ) : (
-          rows.map((conversation) => (
-            <ThreadRow
-              key={conversation.id.length === 0 ? "current-unsaved" : conversation.id}
-              showCheck={false}
-              conversation={conversation}
-              active={conversation.id === selectedId}
-              onSelect={(id) => {
-                // The unsaved row IS the thread already open: selecting it
-                // switches to nothing.
-                if (id.length === 0) return;
-                onSwitch(id);
-              }}
-            />
-          ))
-        )}
+      <span className="flex min-h-0 flex-1 flex-col gap-[6px] overflow-hidden px-[10px] py-3">
+        <ThreadSearch value={query} onChange={setQuery} />
+        <span className="px-1 pb-[2px] font-mono text-[10px] tracking-[0.06em] text-faint">
+          THREADS
+        </span>
+        <span className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto">
+          {rows.length === 0 &&
+          (query.trim().length > 0 || (currentThread === null && activeId === null)) ? (
+            <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
+              {query.trim().length > 0
+                ? "No thread matches that search."
+                : "No threads yet — the next answer starts one."}
+            </p>
+          ) : (
+            rows.map((conversation) => (
+              <ThreadRow
+                key={conversation.id.length === 0 ? "current-unsaved" : conversation.id}
+                showCheck={false}
+                conversation={conversation}
+                active={conversation.id === selectedId}
+                onSelect={(id) => {
+                  // The unsaved row IS the thread already open: selecting it
+                  // switches to nothing.
+                  if (id.length === 0) return;
+                  onSwitch(id);
+                }}
+              />
+            ))
+          )}
+        </span>
       </span>
     </aside>
   );
@@ -531,38 +545,49 @@ export function AssistantPageSideColumn({
   return (
     <aside
       data-testid="assistant-page-side"
-      className="flex h-full min-h-0 w-[260px] shrink-0 flex-col gap-[8px] overflow-y-auto border-l border-line bg-paper px-[12px] py-[14px]"
+      className="flex h-full min-h-0 w-[260px] shrink-0 flex-col overflow-hidden border-l border-line bg-paper"
     >
-      <span className="font-mono text-[10px] tracking-[0.06em] text-muted">LOOKING AT</span>
-      <span className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2">
-        <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">
-          {pageContextOn ? pageLabel : "Page context off"}
-        </span>
-        {pageContextOn ? (
-          <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{pageRoute}</span>
-        ) : null}
+      {/* §2: this column had no head at all; it now opens with the same 48px
+          row as the other two, and the LOOKING AT / CHANGES / TRUST sections
+          follow below it unchanged. */}
+      <span
+        data-testid="assistant-page-side-head"
+        className={`${COLUMN_HEAD_CLASS} font-mono text-[10.5px] uppercase tracking-[.06em] text-faint`}
+      >
+        CONTEXT
       </span>
-      <span className="mt-[8px] font-mono text-[10px] tracking-[0.06em] text-muted">
-        CHANGES IN THIS THREAD
-      </span>
-      {changes.length === 0 ? (
-        <p className="m-0 px-[2px] text-[12px] text-faint">Nothing changed yet.</p>
-      ) : (
-        changes.map((change) => (
-          <span
-            key={change.id}
-            data-testid="assistant-page-change"
-            className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2"
-          >
-            <span className="min-w-0 text-[12.5px] text-ink">{change.summary}</span>
-            <span className="min-w-0 font-mono text-[10px] text-faint">
-              {change.undone_at !== null ? "undone" : `you confirmed · ${changeUndoWord(change)}`}
-            </span>
+      <span className="flex min-h-0 flex-1 flex-col gap-[8px] overflow-y-auto px-[12px] py-[14px]">
+        <span className="font-mono text-[10px] tracking-[0.06em] text-muted">LOOKING AT</span>
+        <span className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2">
+          <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">
+            {pageContextOn ? pageLabel : "Page context off"}
           </span>
-        ))
-      )}
-      <span className="mt-[8px] font-mono text-[10px] tracking-[0.06em] text-muted">TRUST</span>
-      <p className="m-0 px-[2px] text-[12px] leading-[1.45] text-ink-2">{trust?.label ?? ""}</p>
+          {pageContextOn ? (
+            <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{pageRoute}</span>
+          ) : null}
+        </span>
+        <span className="mt-[8px] font-mono text-[10px] tracking-[0.06em] text-muted">
+          CHANGES IN THIS THREAD
+        </span>
+        {changes.length === 0 ? (
+          <p className="m-0 px-[2px] text-[12px] text-faint">Nothing changed yet.</p>
+        ) : (
+          changes.map((change) => (
+            <span
+              key={change.id}
+              data-testid="assistant-page-change"
+              className="flex flex-col gap-[2px] rounded-[3px] border border-line bg-surface px-[10px] py-2"
+            >
+              <span className="min-w-0 text-[12.5px] text-ink">{change.summary}</span>
+              <span className="min-w-0 font-mono text-[10px] text-faint">
+                {change.undone_at !== null ? "undone" : `you confirmed · ${changeUndoWord(change)}`}
+              </span>
+            </span>
+          ))
+        )}
+        <span className="mt-[8px] font-mono text-[10px] tracking-[0.06em] text-muted">TRUST</span>
+        <p className="m-0 px-[2px] text-[12px] leading-[1.45] text-ink-2">{trust?.label ?? ""}</p>
+      </span>
     </aside>
   );
 }
@@ -813,13 +838,18 @@ export function AssistantPanel({
   const header = (
     <div
       data-testid="assistant-panel-header"
-      className={`flex shrink-0 items-center gap-[4px] border-b border-line ${
-        pageMode ? "px-[16px] py-[10px]" : "pb-[6px] pl-[10px] pr-[8px] pt-[6px]"
-      } ${pageMode ? "bg-surface" : "bg-fill"}`}
+      className={`flex shrink-0 items-center gap-[4px] ${
+        // §2/§3: the full page's thread column and the docked side panel both
+        // open with the SAME 48px head as the page's other columns — the popover
+        // keeps its compact box header.
+        popover
+          ? "border-b border-line bg-fill pb-[6px] pl-[10px] pr-[8px] pt-[6px]"
+          : `${COLUMN_HEAD_CLASS} ${pageMode ? "bg-surface" : "bg-fill"}`
+      }`}
     >
       {/* Design L131–137: the POPOVER header shows only the mono ASSISTANT
           label; the side panel and the full page show only the thread title
-          (13.5px/600, ellipsized, "New thread" when empty). */}
+          (14px/600, ellipsized, "New thread" when empty) in the 48px head. */}
       {popover ? (
         <>
           <span className="shrink-0 whitespace-nowrap font-mono text-[10.5px] font-semibold tracking-wider text-ink">
@@ -829,7 +859,7 @@ export function AssistantPanel({
         </>
       ) : (
         <span
-          className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-ink"
+          className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink"
           data-testid="assistant-thread-title"
           title={headerTitle}
         >

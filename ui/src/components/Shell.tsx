@@ -40,6 +40,19 @@ export function sectionOf(pathname: string): string {
   return (hit?.label ?? (first || "projects")).toLowerCase();
 }
 
+/**
+ * The assistant's full-page route (`pages/AssistantPage.tsx`). It lives here,
+ * next to the shell's own frame rules, because the SHELL has to key on it and
+ * the assistant engine (`assistant/AssistantPopover.tsx`) already imports this
+ * module — a constant the other way round would close the cycle.
+ */
+export const ASSISTANT_PAGE_PATH = "/assistant";
+
+/** Is this path the assistant full page (`/assistant`, `/assistant/…`)? */
+export function isAssistantPagePath(pathname: string): boolean {
+  return pathname === ASSISTANT_PAGE_PATH || pathname.startsWith(`${ASSISTANT_PAGE_PATH}/`);
+}
+
 export interface ShellProps {
   children: ReactNode;
 }
@@ -154,6 +167,16 @@ export default function Shell({ children }: ShellProps) {
   const location = useLocation();
   const narrow = useIsNarrow();
   const railWidth = useIsRailWidth();
+  const assistantPage = isAssistantPagePath(location.pathname);
+  /**
+   * The assistant full page steps the app nav back to the 52px RAIL (the
+   * user's words: the expanded column beside the page's own thread column read
+   * as "two left panels"). Like the forced-rail geometry, this never writes
+   * `sidebarCollapsed` — leaving `/assistant` gives the person back exactly the
+   * column they had. Below 768px there is no column to step back (the drawer
+   * frame is unchanged).
+   */
+  const railForced = railWidth || (!narrow && assistantPage);
   const { prefs, update, loaded } = useLayoutPrefs();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -188,8 +211,8 @@ export default function Shell({ children }: ShellProps) {
     if (!narrow) setDrawerOpen(false);
   }, [narrow]);
   useEffect(() => {
-    if (!railWidth) setRailOverlay(false);
-  }, [railWidth]);
+    if (!railForced) setRailOverlay(false);
+  }, [railForced]);
 
   // ⌘\ (⌃\ off Apple keyboards) toggles the column from anywhere (4a):
   // the preference at ≥1024px, the overlay inside the forced-rail zone —
@@ -200,7 +223,7 @@ export default function Shell({ children }: ShellProps) {
       if (event.key !== "\\" || !(event.metaKey || event.ctrlKey)) return;
       if (narrow || isTypingTarget(event.target)) return;
       event.preventDefault();
-      if (railWidth) {
+      if (railForced) {
         if (railOverlay) closeRailOverlay();
         else openRailOverlay();
         return;
@@ -212,7 +235,7 @@ export default function Shell({ children }: ShellProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [narrow, railWidth, railOverlay, loaded, prefs.sidebarCollapsed, update]);
+  }, [narrow, railForced, railOverlay, loaded, prefs.sidebarCollapsed, update]);
 
   // Esc closes the drawer and the keyboard goes back to the button that
   // opened it; the page body is locked while it stands over the content.
@@ -257,7 +280,10 @@ export default function Shell({ children }: ShellProps) {
           edge drag snaps to the same overlay. */}
       {narrow ? null : (
         <div className="sticky top-0 h-screen shrink-0">
-          <Sidebar forceCollapsed={railWidth} onExpand={railWidth ? openRailOverlay : undefined} />
+          <Sidebar
+            forceCollapsed={railForced}
+            onExpand={railForced ? openRailOverlay : undefined}
+          />
         </div>
       )}
 
@@ -360,7 +386,7 @@ export default function Shell({ children }: ShellProps) {
           preference. Esc, the backdrop, the column\u2019s own ‹‹ button and
           another ⌘\ all close it; the keyboard returns to the control that
           opened it. */}
-      {railWidth && railOverlay ? (
+      {railForced && railOverlay ? (
         <div className="fixed inset-0 z-40">
           <button
             type="button"

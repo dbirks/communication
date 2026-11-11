@@ -49,7 +49,12 @@ import AssistantPanel, {
   AssistantThreadColumn,
 } from "./AssistantPanel";
 import { openAsk, useAskOpen, type AskOpenContext } from "./askControl";
-import { sectionOf, useMediaQuery } from "../Shell";
+import {
+  sectionOf,
+  useMediaQuery,
+  ASSISTANT_PAGE_PATH as ASSISTANT_PAGE_ROUTE,
+  isAssistantPagePath,
+} from "../Shell";
 import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
 import { assistantTransientErrorLine, problemOf } from "../../api/client";
@@ -99,8 +104,16 @@ const DOCK_WIDTH_PX = 450;
 const PAGE_THREADS_QUERY = "(min-width: 1000px)";
 const PAGE_CONTEXT_QUERY = "(min-width: 1240px)";
 
-/** The `/assistant` route's path — the full page IS this route. */
-export const ASSISTANT_PAGE_ROUTE = "/assistant";
+/**
+ * The `/assistant` route's path — the full page IS this route. The constant
+ * lives with the shell's frame rules (`Shell.tsx`), which step the app nav back
+ * to the 52px rail on the same path. It is RE-EXPORTED as an import binding,
+ * not copied into a module-level `const`: these two modules import each other,
+ * and a copy is evaluated while the other module is still in flight — the
+ * first browser pass crashed the whole app on
+ * `ReferenceError: Cannot access 'ASSISTANT_PAGE_PATH' before initialization`.
+ */
+export { ASSISTANT_PAGE_ROUTE };
 
 /**
  * The threads read's two sizes: the header's title lookup needs the newest
@@ -429,8 +442,10 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     writeChoice({ conversationId, awaitingNew });
   }, [conversationId, awaitingNew]);
 
-  /** The full page is the route: the URL says it, whatever set the state. */
-  const onAssistantRoute = location.pathname === ASSISTANT_PAGE_ROUTE;
+  /** The full page is the route: the URL says it, whatever set the state. A
+   * nested `/assistant/…` path is still the full page (the shell collapses the
+   * app nav for the same range). */
+  const onAssistantRoute = isAssistantPagePath(location.pathname);
   const pageHost = useAssistantPageHost();
   const showThreadColumn = useMediaQuery(PAGE_THREADS_QUERY);
   const showContextColumn = useMediaQuery(PAGE_CONTEXT_QUERY);
@@ -1021,9 +1036,12 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
               ? // Handoff §1's side panel (and the 2f thread → workflow draft):
                 // the sheet is the right-hand column, and the injected
                 // reservation shrinks the shell's content column by the same
-                // width, so the page beside it stays on screen whole. Below
-                // 1024px a column would leave nothing of the page, so the panel
-                // takes the screen and reserves no width.
+                // width, so the page beside it stays on screen whole. §3: it is
+                // pinned to the VIEWPORT (`inset-0` → `lg:inset-y-0` with
+                // `lg:left-auto`), so its 48px head stays at y=0 while the page
+                // behind it scrolls. Below 1024px a column would leave nothing
+                // of the page, so the panel takes the screen and reserves no
+                // width.
                 "fixed inset-0 z-40 flex flex-col border-l border-ink bg-surface lg:inset-y-0 lg:left-auto lg:w-[450px]"
               : // Handoff §1's popover: the 400px box anchored 16px off the
                 // bottom-right corner. The holder is the relative anchor the
@@ -1034,9 +1052,14 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           data-testid="assistant-popover"
           data-dock={mode === "dock" ? "right" : undefined}
         >
-          <div className={mode === "dock" ? "px-[10px] pt-[8px]" : "contents"}>
-            {sendError ? errorLine : null}
-          </div>
+          {/* §3: the side panel is pinned to the viewport (`fixed`, top 0,
+              bottom 0), so its 48px head sits flush with the top of the window
+              even while the page behind it is scrolled. The error slot is
+              therefore drawn ONLY when there is an error to draw — an empty
+              padded wrapper above the panel pushed that head down 8px. */}
+          {sendError ? (
+            <div className={mode === "dock" ? "px-[10px] pt-[8px]" : "contents"}>{errorLine}</div>
+          ) : null}
           <div
             className={
               mode === "dock"

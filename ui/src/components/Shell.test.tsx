@@ -492,6 +492,136 @@ describe("⌘\\ toggles the sidebar (4a)", () => {
   });
 });
 
+describe("the assistant full page collapses the app nav to the rail", () => {
+  const PREFS_PATH = "/api/v1/me/preferences";
+  const COLLAPSED = "sidebar:collapsed";
+
+  /** The saved document with the preference set to EXPANDED. Any write the
+   * shell made on the full page would land in `layout.expanded`. */
+  function prefsDoc(): unknown {
+    return {
+      layout: {
+        projects_mode: "tree",
+        ask_placement: "sidebar",
+        show_workflow_folders: true,
+        expanded: { [COLLAPSED]: false },
+      },
+      assistant: { trust_level: "ask_risky" },
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  function routesWithPrefs(): RouteStub[] {
+    return [
+      ...signedIn,
+      { path: PREFS_PATH, method: "GET", body: prefsDoc() },
+      { path: PREFS_PATH, method: "PATCH", body: prefsDoc() },
+    ];
+  }
+
+  // The user's words on the full page: the expanded column beside the page's
+  // own thread column read as "two left panels". At `/assistant` the shell is
+  // the 52px rail whatever `sidebarCollapsed` says — and the preference is
+  // never written, so leaving the page gives the column back.
+  it("renders the rail on /assistant with the preference still saying expanded", async () => {
+    stubViewport(1440);
+    try {
+      const { requests } = renderApp({ path: "/assistant", routes: routesWithPrefs() });
+      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
+      // The rail replaced the 220px column: no labels, and the assistant
+      // page's own thread list is the only left panel on screen.
+      expect(within(rail).getByTestId("sidebar-expand")).toBeTruthy();
+      expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
+      expect(screen.queryByTestId("sidebar-link-threads")).toBeNull();
+      // Nothing wrote the preference — the collapse is the route's, not the
+      // person's.
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("gives the expanded column back on / — and only there", async () => {
+    stubViewport(1440);
+    try {
+      const { requests } = renderApp({ path: "/assistant", routes: routesWithPrefs() });
+      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
+      // Leaving the full page by the rail's own Today tile: the preference
+      // still says expanded, so the 220px column returns (no overlay, no
+      // sticky forced-rail state).
+      fireEvent.click(within(rail).getByTestId("rail-item-today"));
+      const column = (await screen.findByTestId("sidebar", undefined, {
+        timeout: READ_MS,
+      })) as HTMLElement;
+      expect(within(column).getByTestId("sidebar-collapse")).toBeTruthy();
+      expect(screen.queryByTestId("sidebar-rail")).toBeNull();
+      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  // Same geometry as the 768–1023px forced rail: the expand (button or ⌘\)
+  // opens the column as an OVERLAY over the page, never a layout push, and
+  // Esc / an outside press closes it.
+  it("opens the column as an overlay over the page, and Escape closes it", async () => {
+    stubViewport(1440);
+    try {
+      const { requests } = renderApp({ path: "/assistant", routes: routesWithPrefs() });
+      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
+
+      fireEvent.click(within(rail).getByTestId("sidebar-expand"));
+      const overlay = await screen.findByTestId("rail-overlay-backdrop", undefined, {
+        timeout: READ_MS,
+      });
+      const column = overlay.parentElement?.querySelector('[data-testid="sidebar"]');
+      expect(column).toBeTruthy();
+      expect(within(column as HTMLElement).getByTestId("sidebar-collapse")).toBeTruthy();
+      // The overlay stands OVER the page; the rail behind it does not widen to
+      // push the three columns sideways.
+      expect(screen.getByTestId("sidebar-rail")).toBeTruthy();
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
+        timeout: READ_MS,
+      });
+
+      // ⌘\ opens it again; an outside press (the backdrop) closes it.
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      const backdrop = await screen.findByTestId("rail-overlay-backdrop", undefined, {
+        timeout: READ_MS,
+      });
+      fireEvent.click(backdrop);
+      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
+        timeout: READ_MS,
+      });
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  // The phone frame (<768px) is unchanged by the route: still the drawer, no
+  // forced rail, no overlay.
+  it("changes nothing below 768px — the drawer stays the only column", async () => {
+    stubViewport(390);
+    try {
+      renderApp({ path: "/assistant", routes: routesWithPrefs() });
+      const open = await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS });
+      expect(screen.queryByTestId("sidebar-rail")).toBeNull();
+      fireEvent.click(open);
+      expect(
+        await screen.findByTestId("sidebar-close", undefined, { timeout: READ_MS }),
+      ).toBeTruthy();
+      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
+    } finally {
+      restoreViewport();
+    }
+  });
+});
+
 describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
   it("mounts the strip with the palette trigger, never over the page", async () => {
     stubViewport(390);
