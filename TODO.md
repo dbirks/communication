@@ -102,7 +102,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
   - [x] F-6 (partial): execution_mode says "inprocess" on a split deployment; the chat model block lacks endpoint_host and key_set;
         workflow.list has no timestamps. F-3..F-6 fixed in c228101 (howto_scan_test.go, broker_test.go, client.test.ts,
         assistant_status_test.go).
-  - [ ] F-6 remainder: workflow.list created_at/updated_at needs pipeline timestamps on PipelineSummary (store, API,
+  - [x] F-6 remainder (d99bead, pipelines_updated_at_test.go): workflow.list created_at/updated_at needs pipeline timestamps on PipelineSummary (store, API,
         openapi). Small follow-up.
   - [ ] F-1: ui.navigate never moves the client.
   - [ ] F-2 and F-7: there is no way to list agent threads ("no Pi activity" while two Pi threads exist), plus a
