@@ -36,7 +36,7 @@ describe("BriefNeedsYou", () => {
     // The fixture is deliberately NOT sorted by kind: the page must not re-sort
     // it, so the first row is the 2h-old question, not the approval.
     expect(rows[0]?.textContent).toContain("Alert routing: one tree or two?");
-    expect(rows[1]?.textContent).toContain("Fix flaky checkout test");
+    expect(rows[1]?.textContent).toContain("Stabilise the invoice export test");
     expect(rows[2]?.textContent).toContain("Rotate the payments webhook secret");
   });
 
@@ -48,7 +48,7 @@ describe("BriefNeedsYou", () => {
     expect(failedRun?.textContent).toContain("3m");
     expect(approval?.textContent).toContain("15m");
     expect(question?.textContent).toContain("infra");
-    expect(approval?.textContent).toContain("payments-api");
+    expect(approval?.textContent).toContain("billing-service");
     // The failed run's glyph is the warning triangle in the failure red; the
     // other two kinds have their own shapes, so kind is never colour alone.
     expect(screen.getByTestId("catchup-brief-failed-glyph")).toBeDefined();

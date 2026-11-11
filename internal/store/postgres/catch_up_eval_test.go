@@ -1,3 +1,5 @@
+//go:build eval
+
 package postgres
 
 // ADR-0081 § Evaluation, the second half: the USEFULNESS eval.

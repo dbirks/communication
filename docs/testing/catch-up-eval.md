@@ -73,7 +73,7 @@ export COMMUNICATION_TEST_DATABASE_URL='postgres://ci@127.0.0.1:55432/ci?sslmode
 COMMUNICATION_EVAL_BASE_URL='<openai-compatible server root>' \
 COMMUNICATION_EVAL_MODEL='<model id>' \
 COMMUNICATION_EVAL_API_KEY_FILE='<path to a file holding the key>' \
-  go test ./internal/store/postgres/ -run CatchUpUsefulnessEval -count=1 -v -timeout 30m
+  go test -tags eval ./internal/store/postgres/ -run CatchUpUsefulnessEval -count=1 -v -timeout 30m
 
 # and the same command with -update-eval to prepend this run's table here
 ```

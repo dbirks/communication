@@ -64,7 +64,7 @@ describe("section rows", () => {
     row(<BriefRunningRow row={fullBrief.running_now[0]!} now={BRIEF_NOW} />);
     const running = screen.getByTestId(/^catchup-brief-running-/);
     expect(running.textContent).toContain("Add idempotency keys to refunds");
-    expect(running.textContent).toContain("payments-api");
+    expect(running.textContent).toContain("billing-service");
     expect(running.textContent).toContain("step implement · 6m");
     cleanup();
     row(<BriefRunningRow row={fullBrief.running_now[1]!} now={BRIEF_NOW} />);

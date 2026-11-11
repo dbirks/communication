@@ -1,3 +1,5 @@
+//go:build realapm
+
 package apm
 
 // The gated real-APM proof (ADR-0084 § Verification, AGENTS.md: a mocked green

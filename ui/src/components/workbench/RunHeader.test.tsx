@@ -145,7 +145,7 @@ function mountHeader(
             revision_digest: wireRevision.revision_digest,
           }}
           nodes={NODES}
-          repoName="payments-api"
+          repoName="billing-service"
           startedBy="Priya Natarajan"
           {...over}
         />
@@ -310,7 +310,7 @@ describe("RunHeader rows 1 and 3", () => {
     expect(facts.querySelector("dt")?.className).toContain("uppercase");
     const values = Array.from(facts.querySelectorAll("dd"));
     expect(values[0].textContent).toBe("feature-development · rev 7");
-    expect(values[1].textContent).toBe("payments-api");
+    expect(values[1].textContent).toBe("billing-service");
     expect(values[1].className).toContain("font-mono");
     expect(values[2].textContent).toMatch(/ago by Priya Natarajan$/);
     // § 7.2 W4: the whole 12 hex chars, mono, so the reader can compare it

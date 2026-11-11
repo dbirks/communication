@@ -24,7 +24,7 @@ describe("BriefHeadline", () => {
     expect(block.querySelector("p")?.className).toContain("line-clamp-2");
     const lines = screen.getAllByTestId(/^catchup-brief-project-/);
     expect(lines).toHaveLength(2);
-    expect(lines[0]?.textContent).toContain("payments-api");
+    expect(lines[0]?.textContent).toContain("billing-service");
     expect(lines[0]?.textContent).toContain("CI still red");
   });
 

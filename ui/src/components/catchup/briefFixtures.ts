@@ -16,7 +16,7 @@ export const BRIEF_NOW = new Date("2026-11-11T12:00:00Z");
  * is the schema's closed enum, so these are typed as the chip they are. */
 const payments: CatchUpProjectChip = {
   id: "01987a90-0000-7000-8000-111111111111",
-  name: "payments-api",
+  name: "billing-service",
   color: "#6a4bc4",
 };
 const webApp: CatchUpProjectChip = {
@@ -58,7 +58,7 @@ export const quietBrief: CatchUpBrief = {
 export const fullBrief: CatchUpBrief = {
   ...quietBrief,
   headline: {
-    text: "Two gates wait on you, and payments-api CI has failed 3 times in a row.",
+    text: "Two gates wait on you, and billing-service CI has failed 3 times in a row.",
     state: "ready",
   },
   needs_you: [
@@ -72,7 +72,7 @@ export const fullBrief: CatchUpBrief = {
     },
     {
       kind: "failed_run",
-      title: "Fix flaky checkout test",
+      title: "Stabilise the invoice export test",
       project: webApp,
       link: "/runs/01987a90-0000-7000-8000-555555555555",
       at: "2026-11-11T11:57:00Z",
@@ -112,7 +112,7 @@ export const fullBrief: CatchUpBrief = {
       project: payments,
       ref: {
         number: 412,
-        url: "https://github.com/acme/payments-api/pull/412",
+        url: "https://github.com/acme/billing-service/pull/412",
         sha: "3649f6f664c442b050fb1d1666aeeb6fe90649d9",
       },
       by: "ravi",
@@ -130,7 +130,7 @@ export const fullBrief: CatchUpBrief = {
     },
     {
       kind: "workflow_revision",
-      title: "payments-api CI v2.1.0",
+      title: "billing-service CI v2.1.0",
       project: payments,
       ref: {},
       by: "a teammate",
@@ -140,7 +140,7 @@ export const fullBrief: CatchUpBrief = {
   ],
   broke: [
     {
-      title: "payments-api CI",
+      title: "billing-service CI",
       project: payments,
       failures: 3,
       error_class: "test",
