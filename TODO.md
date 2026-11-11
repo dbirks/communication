@@ -95,12 +95,15 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       screenshots in ~/.cache/pi-orch/communication/evidence/assistant-exercise/).
 - [ ] Fix every finding and add a regression test for each.
   - [x] UGLY 6 and 19 and the WRONG copy on 8: fixed in dd65618 (runner_test.go, MessageList.test.tsx).
-  - [ ] F-3: the how-to corpus trips the secret scanner ("token: `credential.create`"), so the GitHub-credential
+  - [x] F-3: the how-to corpus trips the secret scanner ("token: `credential.create`"), so the GitHub-credential
         journey is refused 3/3.
-  - [ ] F-4: the 30 s per-completion timeout is too tight for fan-out turns.
-  - [ ] F-5: a raw Go error string is shown for mid-turn refusals.
-  - [ ] F-6: execution_mode says "inprocess" on a split deployment; the chat model block lacks endpoint_host and key_set;
-        workflow.list has no timestamps.
+  - [x] F-4: the 30 s per-completion timeout is too tight for fan-out turns.
+  - [x] F-5: a raw Go error string is shown for mid-turn refusals.
+  - [x] F-6 (partial): execution_mode says "inprocess" on a split deployment; the chat model block lacks endpoint_host and key_set;
+        workflow.list has no timestamps. F-3..F-6 fixed in c228101 (howto_scan_test.go, broker_test.go, client.test.ts,
+        assistant_status_test.go).
+  - [ ] F-6 remainder: workflow.list created_at/updated_at needs pipeline timestamps on PipelineSummary (store, API,
+        openapi). Small follow-up.
   - [ ] F-1: ui.navigate never moves the client.
   - [ ] F-2 and F-7: there is no way to list agent threads ("no Pi activity" while two Pi threads exist), plus a
         run-versus-thread vocabulary pass.
