@@ -251,6 +251,10 @@ that can be attached to different ACP agent setups. Today the spec
 - [x] Finding (8436088): env-mode secret values can ride inside the pods/exec command, which the API server may
       write to audit logs. Fix: an env-file wrapper (k8s-pod2 queued).
 
+- [ ] Finding (deployed, minor): profile history labels collection attach and lock versions "no change" (v3–v7);
+      the staged skill list on the SKILLS panel is a long flat list (61 rows), and should group by collection and
+      collapse.
+
 ## CI and Acceptance notes Fixed: 910c493 (pod-exec
       env-file wrapper; transporter_test asserts no value appears in the exec request).
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
