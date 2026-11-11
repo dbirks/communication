@@ -194,9 +194,9 @@ that can be attached to different ACP agent setups. Today the spec
 - [x] Deployed check at 3d564fb (2026-11-11): palette centered over the full-page assistant, nav collapsed to the
       rail, 48px heads, "Don't ask" pill, speech and decision models configured. Evidence:
       ~/.cache/pi-orch/communication/evidence/deployed/deployed-palette.png, deployed-assistant-full.png.
-- [ ] Finding (deployed): the Operations "Workflow model steps" row reads "no model id · not set up" because serve
+- [x] Finding (deployed): the Operations "Workflow model steps" row reads "no model id · not set up" because serve
       doesn't carry COMMUNICATION_MODEL_CHAT_*. Either give serve those env vars in home-k8s or have the worker
-      report its models in its heartbeat.
+      report its models in its heartbeat. Fixed via GitOps: home-k8s serve env (model and base URL, no key).
 
 ## CI and Acceptance notes
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
