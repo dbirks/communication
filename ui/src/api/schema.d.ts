@@ -534,6 +534,32 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/catch-up/brief": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The deterministic "what you missed" brief (ADR-0081)
+     * @description The answer to "I was away; what do I need to know?", assembled by the server from the rows it already holds — no model is asked anything on this path, so the page renders it whole when the assistant is off. The recap it replaces could only see tour titles, so approvals waiting on the reader, work in flight, what shipped, what is STILL broken and what changed in the setup were never in its input (`docs/research/2026-11-catch-up-audit.md` § 5).
+     *
+     *     Every section is scoped to the caller's own project memberships inside its own statement, so a project they are not a member of contributes no row and no count — including to `numbers`. Naming one is therefore never a `403`: it narrows the answer, exactly as it does on `GET /catch-up/items`, and existence is not confirmed either way (ADR-0014 § 3).
+     *
+     *     `headline` is the model's one sentence and `by_project` its per-project lines; both are generated asynchronously by another path and cached per reader, window and brief digest. This response always carries `headline.state = "unavailable"` with an empty `text` and an empty `by_project` until that generator has written them — a state, never a placeholder the reader could mistake for news. Sections never wait on the model.
+     *
+     *     It is a pure read: it stamps no visit, schedules no generation and carries no assistant throttle, because the page and the navigation badge ask it on every mount.
+     */
+    get: operations["getCatchUpBrief"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/catch-up/items/{itemId}/stops/{stopId}/reply": {
     parameters: {
       query?: never;
@@ -6700,6 +6726,195 @@ export interface components {
       seen_at: string;
     };
     /**
+     * CatchUpBrief
+     * @description ADR-0081: the deterministic "what you missed" answer. The sections are lists the SERVER already holds — gates waiting on this reader, work in flight, what shipped, what failed and whether it is still failing, must-know signals, setup changes, and the arithmetic beside them — because a model choosing which facts belong in a list is how a recap ends up invented or dropped. The model's contribution is `headline` and `by_project`, which cite these rows by id.
+     *
+     *     Every section is an array and `omitted` is an object, always present: a client must not tell "nothing happened in this window" apart from "this server has no such section". `omitted` counts the rows the window's cap did not show (5 for `15m`/`1h`, 8 for `6h`/`24h`, 10 for `2d`/`7d` and `unseen`), which is what lets the page say "and N more" about a list it never received the end of.
+     */
+    CatchUpBrief: {
+      window: components["schemas"]["CatchUpBriefWindow"];
+      headline: components["schemas"]["CatchUpBriefHeadline"];
+      /** @description What waits on this reader specifically, sorted OLDEST first: the thing that has waited longest is the thing somebody else is blocked on. Pending gates they may decide (the designated-approver rule of `approval.decide`, so a gate nobody here may decide is not "needs you"), tour beats that asked something and got no reply, and THEIR own failed runs whose pipeline has not gone green since. */
+      needs_you: components["schemas"]["CatchUpBriefNeed"][];
+      /** @description Work in flight as of `window.until` — the section the old recap could not have, because tour candidates are terminal runs only. Newest started first. */
+      running_now: components["schemas"]["CatchUpBriefRunning"][];
+      /** @description What the window produced: a pull request, a commit, or a workflow revision that went live. Newest first. The `ref` is labelled data harvested from the run's own outputs, NOT reconciled state: the UI says "opened" for a PR url and never "merged", because nothing in this deployment has spoken to GitHub. */
+      shipped: components["schemas"]["CatchUpBriefShipped"][];
+      /** @description The window's failures grouped per (project, pipeline), so five red runs of one workflow read as one problem with a count. A row that is `still_failing` is the current truth; a row with `fixed_at` is history with the moment it stopped being true. */
+      broke: components["schemas"]["CatchUpBriefBroke"][];
+      /** @description The must-know signals the deployment's own records show for the window's work — the same rules that raise a tour beat to `must_know`, applied to the same facts rather than to a model's opinion. One row per (item, signal): an auth change that is also a migration is two reasons to look. */
+      heads_up: components["schemas"]["CatchUpBriefHeadsUp"][];
+      /** @description What moved in the SETUP rather than in the code: a workflow published, an agent profile created or edited, a member added. Newest first, each with its actor where the row records one — a membership row stores no inviter, so `by` is empty there rather than guessed. A published revision appears here AND in `shipped`: "the setup changed" and "it went out" are two questions about one event. */
+      changes: components["schemas"]["CatchUpBriefChange"][];
+      numbers: components["schemas"]["CatchUpBriefNumbers"];
+      /** @description The model's per-project line, produced only for a window of 24h or longer with activity in two or more projects. Empty is its own answer (one project, a short window, or no model) — never a filler line. */
+      by_project: components["schemas"]["CatchUpBriefProjectLine"][];
+      /** @description Rows the cap cut, keyed by section name (`shipped`, `needs_you`, …). Sections that cut nothing are absent rather than zero-filled. */
+      omitted: {
+        [key: string]: number;
+      };
+    };
+    /**
+     * CatchUpBriefWindow
+     * @description The interval every section was read against, stated so a reader can tell what a row's ABSENCE means: the window they asked for, resolved to the clock the server used. `since` inclusive, `until` exclusive.
+     */
+    CatchUpBriefWindow: {
+      /** @enum {string} */
+      key: "15m" | "1h" | "6h" | "24h" | "2d" | "7d" | "unseen";
+      /** Format: date-time */
+      since: string;
+      /** Format: date-time */
+      until: string;
+    };
+    /**
+     * CatchUpBriefHeadline
+     * @description The model's one or two sentences over these rows: at most 280 characters, no greeting, no advice beyond what to open first, counts and exact quoted titles instead of adjectives. It is generated asynchronously and cached per reader, window and brief digest.
+     *
+     *     `unavailable` with an empty `text` is the honest absence — the model is not configured, has not answered, or failed — and the page renders the sections alone. It is never a placeholder: an empty headline claiming to be `ready` would tell the reader there was nothing to read.
+     */
+    CatchUpBriefHeadline: {
+      /** @description Empty unless `state` is `ready`. */
+      text: string;
+      /** @enum {string} */
+      state: "ready" | "pending" | "unavailable";
+    };
+    /**
+     * CatchUpBriefNeed
+     * @description One thing that waits on this reader. `at` is how long it has been waiting, which is the sort key of the section.
+     */
+    CatchUpBriefNeed: {
+      /** @enum {string} */
+      kind: "approval" | "question" | "failed_run";
+      title: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      /** @description The in-app page where the reader answers it: the gate, the beat inside its tour (`/catch-up/{workId}?stop={stopId}`), or the run. */
+      link: string;
+      /** Format: date-time */
+      at: string;
+      /** @description The one line that says what is being asked — the gate's summary, the beat's prompt, the run's failure cause. Clipped, never a document. */
+      detail: string;
+    };
+    /**
+     * CatchUpBriefRunning
+     * @description One run in flight.
+     */
+    CatchUpBriefRunning: {
+      /** Format: uuid */
+      run_id: string;
+      title: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      /** Format: date-time */
+      started_at: string;
+      /** @description The node instance executing as the brief was read. EMPTY when nothing is running this instant (queued, or between nodes) — the page draws that as "queued", never as a step it guessed. */
+      step: string;
+      link: string;
+    };
+    /**
+     * CatchUpBriefShipped
+     * @description One piece of work the window produced.
+     */
+    CatchUpBriefShipped: {
+      /** @enum {string} */
+      kind: "pr" | "commit" | "workflow_revision";
+      title: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      ref: components["schemas"]["CatchUpBriefShippedRef"];
+      /** @description Whoever started the run that named it, as the `users` row reads. Empty when the run had no human submitter (a schedule, a child). */
+      by: string;
+      /** Format: date-time */
+      at: string;
+      link: string;
+    };
+    /**
+     * CatchUpBriefShippedRef
+     * @description The label the run carried. Members are omitted when the run did not name them; an empty ref means the row is a workflow revision, whose identity is its title.
+     */
+    CatchUpBriefShippedRef: {
+      /** @description The pull request number, as the run's outputs named it. */
+      number?: number;
+      /** @description The pull request url the run's outputs named. */
+      url?: string;
+      /** @description A commit sha the run's outputs named. */
+      sha?: string;
+    };
+    /**
+     * CatchUpBriefBroke
+     * @description One pipeline that failed in the window. `still_failing` is the sentence the old recap had no way to say: the NEWEST run of this pipeline — over all time, not just the window — is itself red.
+     */
+    CatchUpBriefBroke: {
+      /** @description The workflow's display name, or its slug if it has none. */
+      title: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      /** @description Red runs of this pipeline inside the window. */
+      failures: number;
+      /** @description The newest failed node's own error class (ADR-0023 § 7's vocabulary, e.g. `test_failure`, `infra`). Empty when no failed node recorded one — the run failed above the node level. */
+      error_class: string;
+      still_failing: boolean;
+      /**
+       * Format: date-time
+       * @description When the first run after the window's last failure went green. Null while `still_failing` is true: the two are never both set.
+       */
+      fixed_at: string | null;
+      link: string;
+    };
+    /**
+     * CatchUpBriefHeadsUp
+     * @description One must-know signal on one piece of work. The rules are the tour's own importance floor (`internal/assistant`), applied to the facts the server holds rather than to prose: an auth or security path, a data migration, a new dependency, a commit pushed straight to main, skipped or deleted tests, the public API spec.
+     */
+    CatchUpBriefHeadsUp: {
+      /** @enum {string} */
+      signal: "migration" | "auth" | "deps" | "push_to_main" | "skipped_test" | "public_api";
+      title: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      link: string;
+    };
+    /**
+     * CatchUpBriefChange
+     * @description One change to the setup rather than to the code.
+     */
+    CatchUpBriefChange: {
+      /** @enum {string} */
+      kind: "workflow_published" | "profile_created" | "profile_updated" | "member_added";
+      title: string;
+      /** @description The actor, where the row records one. Empty for a membership added — `memberships` carries no inviter, and inventing one would put words on a row that never had them. */
+      by: string;
+      /** Format: date-time */
+      at: string;
+      link: string;
+    };
+    /**
+     * CatchUpBriefNumbers
+     * @description The arithmetic the old recap had no access to. Terminal statuses count runs that FINISHED inside the window; `running` is a present-tense stock of the same set `running_now` lists. There is no key for `interrupted`, so it is counted with `cancelled` — both are "ended without finishing".
+     */
+    CatchUpBriefNumbers: {
+      runs: {
+        succeeded: number;
+        failed: number;
+        cancelled: number;
+        running: number;
+      };
+      approvals: {
+        /** @description Gates decided inside the window, by anybody in scope. */
+        decided: number;
+        /** @description Gates still pending in the caller's projects right now. */
+        pending: number;
+      };
+      /** @description Non-archived conversations that moved inside the window — the threads somebody was actually talking in. */
+      threads_active: number;
+      /** @description Distinct pull requests the window's runs named, counted from the harvest rather than from the rows the cap left standing: a reader who sees "5 shown, 9 more" still gets fourteen. */
+      prs: number;
+      /** @description Distinct commit shas the window's runs named. */
+      commits: number;
+    };
+    /**
+     * CatchUpBriefProjectLine
+     * @description The model's line for one project: at most 140 characters, and every name it quotes must be a name this brief actually served (`validateCatchUpRecapNames`).
+     */
+    CatchUpBriefProjectLine: {
+      project: components["schemas"]["CatchUpProjectChip"];
+      line: string;
+    };
+    /**
      * CatchUpRecap
      * @description ADR-0078: one reader's cached narrative. Regenerating writes a NEW row rather than overwriting — "what did we tell this person, and when" is the generator's evaluation data, the same argument ADR-0071 made for keeping a dismissed note. `text` is model output about text the model does not control: rendered as text, never re-read as an instruction, and never executed by anything on this page.
      */
@@ -8187,6 +8402,63 @@ export interface operations {
       };
       /** @description The endpoint stopped before it answered (`degraded: model_timeout`). */
       504: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  getCatchUpBrief: {
+    parameters: {
+      query?: {
+        /** @description How far back to look. `15m` and `1h` are the two short windows ADR-0081 added so "the last few minutes" is askable at all; `unseen` starts at this reader's last recorded catch-up visit, and at seven days ago when they have none. Absent is `unseen`. Anything else is a `400` listing the allowed keys. */
+        window?: "15m" | "1h" | "6h" | "24h" | "2d" | "7d" | "unseen";
+        /** @description Project ids — comma or repeated form. Absent or empty is "every project I belong to"; present is INTERSECTED with that, so it can only narrow. A malformed value is `422`. */
+        projects?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The brief for that window (`no-store`). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpBrief"];
+        };
+      };
+      /** @description `window` is outside the closed vocabulary. The detail names every key the surface accepts, so a client that got it wrong learns the list from the answer. */
+      400: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description `projects` holds a value that is not a uuid. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description This deployment mounted catch-up without a brief store. Stated as an absence rather than served as an empty brief, because a reader cannot tell "nobody worked while I was away" apart from "this server did not look". */
+      501: {
         headers: {
           "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
           [name: string]: unknown;

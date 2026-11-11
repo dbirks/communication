@@ -540,7 +540,11 @@ func TestCatchUpVisitWindowBands(t *testing.T) {
 		visits []time.Time
 		want   string
 	}{
-		{"hourly", []time.Time{older(time.Hour), older(2 * time.Hour), older(3 * time.Hour)}, CatchUpWindowDaily},
+		// ADR-0081 extended the inference downwards: an hourly reader is not a
+		// daily reader, and opening their page on 24 hours buries the one thing
+		// they might have missed under a day of already-known work.
+		{"hourly", []time.Time{older(time.Hour), older(2 * time.Hour), older(3 * time.Hour)}, CatchUpWindowOneHour},
+		{"every few minutes", []time.Time{older(4 * time.Minute), older(10 * time.Minute), older(16 * time.Minute)}, CatchUpWindowFifteenMin},
 		{"daily", []time.Time{older(2 * time.Hour), older(26 * time.Hour), older(50 * time.Hour)}, CatchUpWindowDaily},
 		{"every other day", []time.Time{older(40 * time.Hour), older(88 * time.Hour), older(136 * time.Hour)}, CatchUpWindowTwoDay},
 		{"three days", []time.Time{older(60 * time.Hour), older(132 * time.Hour)}, CatchUpWindowTwoDay},
@@ -888,9 +892,9 @@ func TestCatchUpRoutesAreDocumented(t *testing.T) {
 			continue
 		}
 	}
-	if len(registered) != 10 {
-		// ADR-0078 step 1 mounted eight; T13a adds the per-reader tour page
-		// and T13b the browser-askable recap.
+	if len(registered) != 11 {
+		// ADR-0078 step 1 mounted eight; T13a adds the per-reader tour page,
+		// T13b the browser-askable recap, and ADR-0081 the deterministic brief.
 		t.Fatalf("catch_up.go registers %d routes, want the 10 ADR-0078 mounts: %v",
 			len(registered), registered)
 	}

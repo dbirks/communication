@@ -4,7 +4,7 @@ package api
 // over the store an engineer reads when they come back — "what did the agents
 // do while I was away?".
 //
-// Ten routes, and every one of them is scoped by project membership inside
+// Eleven routes, and every one of them is scoped by project membership inside
 // the store's own statement:
 //
 //   - `GET  /api/v1/catch-up/items`: the caller's work items, unseen by
@@ -25,6 +25,9 @@ package api
 //     a browser may ask for it at all (ADR-0078 § Decision 1).
 //   - `POST /api/v1/catch-up/items/{itemId}/stops/{stopId}/reply`: an answer to
 //     a beat's question, stored and posted as an ordinary message.
+//   - `GET /api/v1/catch-up/brief`: ADR-0081's deterministic "what you missed"
+//     — assembled by the server from the rows it holds, with no model on the
+//     read path (the whole surface of `catch_up_brief.go`).
 //
 // What is still deliberately absent is any route that WRITES A SHARED TOUR.
 // The tour is the project's story, read by everybody in it in one order, so the
@@ -526,6 +529,9 @@ func RegisterCatchUp(s *Server, store CatchUpStore, poster CatchUpConversationPo
 	s.HandleAuthed("POST /api/v1/catch-up/visits", http.HandlerFunc(h.recordVisit))
 	s.HandleAuthed("GET /api/v1/catch-up/visits/suggestion", http.HandlerFunc(h.visitSuggestion))
 	s.HandleAuthed("GET /api/v1/catch-up/recap", http.HandlerFunc(h.recap))
+	// ADR-0081: the deterministic brief. A pure read like the list and the item —
+	// no model is called on this path, so it carries no assistant throttle.
+	s.HandleAuthed("GET /api/v1/catch-up/brief", http.HandlerFunc(h.brief))
 	// The one POST on this surface that buys a completion: mounted with the
 	// ASSISTANT throttle (ADR-0077), the same limiter instance the assistant
 	// routes wrap, keyed on the principal. Recap prose is per-reader, so a
@@ -862,6 +868,11 @@ var catchUpRecapWindows = map[string]time.Duration{
 	CatchUpWindowDaily:   24 * time.Hour,
 	CatchUpWindowTwoDay:  2 * 24 * time.Hour,
 	CatchUpWindowWeekly:  7 * time.Hour * 24,
+	// ADR-0081: the two short windows. 15m is what makes "the last few minutes"
+	// askable at all — the audit's § 5 finding was that the smallest window was
+	// 6h, so a reader who stepped out for coffee had no honest question to ask.
+	CatchUpWindowFifteenMin: 15 * time.Minute,
+	CatchUpWindowOneHour:    time.Hour,
 }
 
 // generateRecap answers POST /catch-up/recap: the reader's own summary, asked
@@ -891,7 +902,7 @@ func (h *catchUpHandlers) generateRecap(w http.ResponseWriter, r *http.Request) 
 	}
 	since, known := catchUpRecapWindows[window]
 	if !known {
-		catchUpInvalid(w, "window must be one of unseen, 6h, 24h, 2d, 7d.")
+		catchUpInvalid(w, "window must be one of "+strings.Join(catchUpBriefWindowKeys, ", ")+".")
 		return
 	}
 	if h.recapGen == nil || !h.recapGen.Configured() {
@@ -1326,14 +1337,17 @@ func (h *catchUpHandlers) parseStopIDs(w http.ResponseWriter, ids []string) ([]s
 
 // --- the visit window --------------------------------------------------
 
-// The three windows the page can open with. They are the design's, and the
-// inference below is deliberately coarse: it is choosing a default, not
-// reporting a measurement.
+// The windows the page can open with. They are the design's, and the inference
+// below is deliberately coarse: it is choosing a default, not reporting a
+// measurement. ADR-0081 added the two short ones: a reader who was away for
+// twenty minutes may now ask about twenty minutes.
 const (
-	CatchUpWindowDaily   = "24h"
-	CatchUpWindowTwoDay  = "2d"
-	CatchUpWindowWeekly  = "7d"
-	CatchUpWindowSixHour = "6h"
+	CatchUpWindowDaily      = "24h"
+	CatchUpWindowTwoDay     = "2d"
+	CatchUpWindowWeekly     = "7d"
+	CatchUpWindowSixHour    = "6h"
+	CatchUpWindowFifteenMin = "15m"
+	CatchUpWindowOneHour    = "1h"
 )
 
 // catchUpSuggestion infers the window from the reader's own visit
@@ -1361,6 +1375,13 @@ func catchUpSuggestion(visits []time.Time, now time.Time) CatchUpVisitSuggestion
 	median := gaps[len(gaps)/2]
 	name := CatchUpWindowWeekly
 	switch {
+	// ADR-0081's downward arms: an engineer who checks in every few minutes is
+	// not a daily reader, and opening their page on 24 hours buries the one
+	// thing they might have missed under a day of already-known work.
+	case median < 30*time.Minute:
+		name = CatchUpWindowFifteenMin
+	case median < 2*time.Hour:
+		name = CatchUpWindowOneHour
 	case median < 36*time.Hour:
 		name = CatchUpWindowDaily
 	case median <= 4*24*time.Hour:
