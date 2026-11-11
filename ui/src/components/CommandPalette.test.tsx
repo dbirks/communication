@@ -254,6 +254,25 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("closes on a press on the dimmed backdrop, and on Esc after focus left the input", async () => {
+    mountPalette();
+    await act(async () => {
+      openPalette();
+    });
+    await screen.findByRole("dialog");
+    // The backdrop sits inside the portal root; it is still outside the dialog.
+    fireEvent.mouseDown(screen.getByTestId("palette-backdrop"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await act(async () => {
+      openPalette();
+    });
+    const input = await screen.findByTestId("palette-input");
+    input.blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("opens from the app bar box, whose chip carries the current section", async () => {
     mountPalette();
     const box = screen.getByTestId("ask-box");

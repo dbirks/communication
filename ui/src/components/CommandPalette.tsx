@@ -315,11 +315,25 @@ export default function CommandPalette({ context, className = "" }: CommandPalet
     if (!open) return;
     const onMouseDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (wrap.current?.contains(target) || panel.current?.contains(target)) return;
+      // The backdrop lives inside the portal root, so test the dialog itself:
+      // a press on the dimmed page is outside and closes the palette.
+      const dialog = panel.current?.querySelector('[role="dialog"]');
+      if (wrap.current?.contains(target) || dialog?.contains(target)) return;
+      close();
+    };
+    // Escape closes from anywhere: focus can leave the input (a click on the
+    // backdrop, a tab out), and the input's own handler would never see it.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
       close();
     };
     document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [open]);
 
   return (
@@ -456,7 +470,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
       role="dialog"
       aria-modal="true"
       aria-label="Jump to"
-      className="fixed left-1/2 top-[12vh] z-40 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-[4px] border border-ink bg-surface shadow-raised"
+      className="fixed left-1/2 top-[max(12px,calc(50vh-200px))] z-40 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-[4px] border border-ink bg-surface shadow-raised"
     >
       <div className="border-b border-line px-[10px]">
         <input
