@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -1691,4 +1692,105 @@ func TestAgentTurnAttemptPlanGrantsTheCommitAxisOnlyWhenGranted(t *testing.T) {
 	if got := grantPaths(plan.Grants, wsgit.RoleWorktreeAdmin); len(got) != 1 || got[0] != adminDir {
 		t.Errorf("mirror_admin_dir = %v, want exactly %s", got, adminDir)
 	}
+}
+
+// TestAgentTurnPodVerifyRefusalIsSandboxFailure is ADR-0082 Decision 3's reporting
+// half: a Kubernetes attempt pod that refused to host the agent because its own
+// in-pod probe did not observe enforcement is the same event on the same chain as
+// a local nono refusal. Reading it as infra would let a pipeline retry a kernel
+// that already said no, and would leave the journal with no sandbox.enforcement_failed
+// row on an attempt that was refused for sandbox reasons.
+func TestAgentTurnPodVerifyRefusalIsSandboxFailure(t *testing.T) {
+	t.Run("the in-pod probe refusing is a sandbox refusal", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		f.spawn.err = fmt.Errorf("sandbox/k8s: attempt pod refused the launch: %w", &acp.Denial{
+			Stage:   acp.StagePodVerify,
+			Reason:  "landlock_abi_below_v4",
+			Message: "the attempt pod reported Landlock ABI 0; agent turns need at least V4",
+			Backend: "nono",
+		})
+
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassSandboxEnforcementFail {
+			t.Fatalf("res = %+v, want failed/sandbox_enforcement_failed, never infra (ADR-0019 D6)", res)
+		}
+		if !strings.Contains(res.Detail, "Landlock ABI 0") {
+			t.Errorf("detail lost the pod's own reason: %q", res.Detail)
+		}
+		var payload *events.SandboxEnforcementFailedPayload
+		for _, ev := range f.sink.events {
+			if ev.Type != events.TypeSandboxEnforcementFailed {
+				continue
+			}
+			p, ok := ev.Payload.(events.SandboxEnforcementFailedPayload)
+			if !ok {
+				t.Fatalf("payload is %T, want the D6 shape", ev.Payload)
+			}
+			payload = &p
+		}
+		if payload == nil {
+			t.Fatalf("sandbox.enforcement_failed was never journalled: %v", f.sink.types())
+		}
+		if !events.ValidSandboxStage(payload.Stage) || !events.ValidSandboxFailureReason(payload.Reason) {
+			t.Errorf("stage/reason %q/%q are outside the D6 enums (the pod's own reason belongs in detail)", payload.Stage, payload.Reason)
+		}
+		if payload.Reason != events.SandboxReasonLandlockUnavailable {
+			t.Errorf("reason = %q, want landlock_unavailable", payload.Reason)
+		}
+		if payload.Verified || payload.ChildStarted {
+			t.Errorf("verified/child_started = %t/%t: the refusal is the evidence, and no agent ever ran", payload.Verified, payload.ChildStarted)
+		}
+		if payload.WorkerID == "" || payload.ProjectID == "" {
+			t.Errorf("payload lost its attribution: %+v", payload)
+		}
+		if !strings.Contains(payload.Detail, "pod-verify") {
+			t.Errorf("detail = %q, want the pod's own words", payload.Detail)
+		}
+	})
+
+	t.Run("a pod that never reached Running stays infra", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		f.spawn.err = fmt.Errorf("sandbox/k8s: attempt pod was not Running: %w", &acp.Denial{
+			Stage:   acp.StagePodWait,
+			Reason:  "timeout",
+			Message: "attempt pod att-abc was not Running within 5m0s",
+			Backend: "nono",
+		})
+
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		// Nothing asked a kernel anything: a pod that would not schedule is an
+		// infrastructure gap, which is the class every agent node retries.
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want failed/infra", res)
+		}
+		if types := strings.Join(f.sink.types(), ","); strings.Contains(types, events.TypeSandboxEnforcementFailed) {
+			t.Errorf("a scheduling gap journalled a sandbox refusal: %s", types)
+		}
+	})
+
+	t.Run("a denial with no pod stage is not this branch", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		// The class rule is about the pod stage only: the local chain's refusals
+		// are still classified where they are observed (verifyThenPlan), and a
+		// denial with no pod stage is not this branch's business.
+		f.spawn.err = fmt.Errorf("acp: launch failed: %w", &acp.Denial{
+			Stage:   acp.StageSandboxLauncher,
+			Reason:  "grant_mismatch",
+			Message: "grant did not resolve",
+			Backend: "nono",
+		})
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want the spawn's infra class for a stage this branch does not own", res)
+		}
+	})
 }

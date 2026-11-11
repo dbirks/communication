@@ -717,6 +717,18 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 			// loop's flags name the terminal from the signal it owns.
 			return AttemptResult{}, nil
 		}
+		// A pod Transporter that refused the launch because its in-pod probe
+		// refused (ADR-0082 Decision 3) is reporting a sandbox refusal, not an
+		// infrastructure gap: the kernel was there and the denial was observed,
+		// exactly as on the local chain, so it journals the same ADR-0019 D6 pair
+		// and closes with the same class. Everything else about a session that
+		// never came up — a pod that would not schedule, an exec that could not
+		// attach, a harness that is not installed — stays infra, which is the
+		// class every bundled agent node retries.
+		if d, ok := podVerifyDenial(err); ok {
+			a.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, a.podEnforcementPayload(c, workspaceID, d))
+			return failedResult(ErrorClassSandboxEnforcementFail, "sandbox refused the agent launch: "+a.redact(d.Message)), nil
+		}
 		return failedResult(ErrorClassInfra, "agent session unavailable: "+a.redact(err.Error())), nil
 	}
 	info := sess.Info()
@@ -1458,6 +1470,50 @@ func (a *AgentTurn) enforcementFailedPayload(c AttemptClaim, workspaceID string,
 		payload.Verified = res.Verified
 	}
 	return payload
+}
+
+// podVerifyDenial reports whether a failed session spawn is a Kubernetes attempt
+// pod refusing to host the agent because its own sandbox probe did not report
+// enforcement (internal/sandbox/k8s.verifyPod). Only that stage is a sandbox
+// refusal: a pod that never reached Running (stage "pod_wait") is an
+// infrastructure gap on the node, and reading it as a refusal would tell an
+// operator the kernel said no when nothing asked it.
+func podVerifyDenial(err error) (*acp.Denial, bool) {
+	var d *acp.Denial
+	if !errors.As(err, &d) || d == nil || d.Stage != acp.StagePodVerify {
+		return nil, false
+	}
+	return d, true
+}
+
+// podEnforcementPayload is sandbox.enforcement_failed for a refusal observed
+// inside the attempt pod. The stage names where the pod's probe sits on the
+// ADR-0019 chain — the probe, since the refusal is that the in-pod probe could
+// not observe enforcement — and the reason is mapped into D6's enum, with the
+// pod's own words kept in Detail because an operator needs to know whether the
+// kernel offered no Landlock or only too little of it. Verified is false and
+// ChildStarted is whatever the pod reported, which for every refusal this
+// produces is false: the denial itself is the evidence (D6).
+func (a *AgentTurn) podEnforcementPayload(c AttemptClaim, workspaceID string, d *acp.Denial) events.SandboxEnforcementFailedPayload {
+	reason := events.SandboxReasonFSUnverified
+	switch d.Reason {
+	case "landlock_abi_below_v4":
+		reason = events.SandboxReasonLandlockUnavailable
+	case "tcp_unreachable":
+		reason = events.SandboxReasonTCPUnverified
+	case "exec_failed", "no_verdict":
+		reason = events.SandboxReasonEgressCheckFailed
+	}
+	backend := d.Backend
+	if backend == "" {
+		backend = "nono"
+	}
+	return events.SandboxEnforcementFailedPayload{
+		ProjectID: c.ProjectID, WorkspaceID: workspaceID, WorkerID: c.WorkerID,
+		Stage: events.SandboxStageProbe, Reason: reason,
+		Backend: backend, Verified: false, ChildStarted: d.ChildStarted,
+		Detail: bounded(a.redact("pod-verify: "+d.Reason+": "+d.Message), 512),
+	}
 }
 
 // permissionBridge is the Decider installed on the session: the node policy

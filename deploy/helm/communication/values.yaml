@@ -66,6 +66,11 @@ worker:
   # never ships pod-creation privileges.
   launcher: local
   agentNamespace: ""
+  # The claim an attempt pod mounts its workspace roots from, when the launcher is
+  # `kubernetes`. Empty means "this release's own claim", which is only correct
+  # while agentNamespace is the release namespace: claims do not cross namespaces.
+  # With its own agent namespace, name a claim that lives there.
+  workspacePVC: ""
   capacity: 2
 
 persistence:

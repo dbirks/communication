@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path"
 	"sort"
@@ -165,7 +166,38 @@ func (f *RESTExecutors) NewExecutor(_ context.Context, namespace, pod string, co
 	if f.Client == nil || f.RESTConfig == nil {
 		return nil, errors.New("sandbox/k8s: no clientset or rest config to exec through")
 	}
-	req := f.Client.CoreV1().RESTClient().Post().
+	u, err := f.ExecRequestURL(namespace, pod, command)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := remotecommand.NewWebSocketExecutor(f.RESTConfig, "POST", u)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox/k8s: websocket executor for exec on %s: %w", pod, err)
+	}
+	spdy, err := remotecommand.NewSPDYExecutor(f.RESTConfig, "POST", mustParseURL(u))
+	if err != nil {
+		return nil, fmt.Errorf("sandbox/k8s: spdy executor for exec on %s: %w", pod, err)
+	}
+	fb, err := remotecommand.NewFallbackExecutor(ws, spdy, fallbackToSPDY)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox/k8s: fallback executor for exec on %s: %w", pod, err)
+	}
+	return fb, nil
+}
+
+// ExecRequestURL is the `pods/exec` POST URL an exec for these arguments uses.
+//
+// It is exported because the URL is the leak: a `pods/exec` request carries its
+// argv as repeated `command=` query parameters, which apiserver audit and kubelet
+// request logs record verbatim, so "no launch value ever leaves this process" is
+// a statement about THIS string as much as about the argv (ADR-0082 Decision 6).
+// Building it here, once, is what lets a test assert on the whole request instead
+// of on SessionCommand's output alone.
+func (f *RESTExecutors) ExecRequestURL(namespace, pod string, command []string) (string, error) {
+	if f.Client == nil {
+		return "", errors.New("sandbox/k8s: no clientset to exec through")
+	}
+	return f.Client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod).
 		Namespace(namespace).
@@ -177,20 +209,18 @@ func (f *RESTExecutors) NewExecutor(_ context.Context, namespace, pod string, co
 			Stdout:    true,
 			Stderr:    true,
 			TTY:       false,
-		}, scheme.ParameterCodec)
-	ws, err := remotecommand.NewWebSocketExecutor(f.RESTConfig, "POST", req.URL().String())
+		}, scheme.ParameterCodec).URL().String(), nil
+}
+
+// mustParseURL turns ExecRequestURL's output back into a url.URL for the SPDY
+// executor. The string came from a *url.URL a moment ago, so a parse failure is
+// a programming error rather than input.
+func mustParseURL(raw string) *url.URL {
+	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox/k8s: websocket executor for exec on %s: %w", pod, err)
+		panic("sandbox/k8s: exec url could not be parsed: " + err.Error())
 	}
-	spdy, err := remotecommand.NewSPDYExecutor(f.RESTConfig, "POST", req.URL())
-	if err != nil {
-		return nil, fmt.Errorf("sandbox/k8s: spdy executor for exec on %s: %w", pod, err)
-	}
-	fb, err := remotecommand.NewFallbackExecutor(ws, spdy, fallbackToSPDY)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox/k8s: fallback executor for exec on %s: %w", pod, err)
-	}
-	return fb, nil
+	return u
 }
 
 // fallbackToSPDY decides when a failed WebSocket exec may be retried over the
@@ -275,7 +305,7 @@ func (t *PodTransporter) Start(ctx context.Context, plan acp.LaunchPlan) (acp.Tr
 		return nil, err
 	}
 
-	plain, creds, err := SplitEnv(plan.Env)
+	files, err := EnvFiles(plan.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -289,10 +319,10 @@ func (t *PodTransporter) Start(ctx context.Context, plan acp.LaunchPlan) (acp.Tr
 		LocalPaths:      append(cfg.mountPaths(), uncoveredGrantPaths(plan, cfg)...),
 		SandboxHome:     cfg.SandboxHome,
 		SandboxSelfTest: cfg.SandboxSelfTest,
-		CredentialKeys:  credentialNames(creds),
+		EnvNames:        EnvFileNames(files),
 	}
 
-	names := credentialNames(creds)
+	names := CredentialNames(files)
 	log := t.log()
 	log.Info("attempt pod launch",
 		slog.String("attempt_id", attemptID),
@@ -302,7 +332,7 @@ func (t *PodTransporter) Start(ctx context.Context, plan acp.LaunchPlan) (acp.Tr
 		slog.Any("credential_names", names),
 	)
 
-	secret, err := BuildSecret(attemptID, cfg.Namespace, creds)
+	secret, err := BuildSecret(attemptID, cfg.Namespace, files)
 	if err != nil {
 		return nil, err
 	}
@@ -315,12 +345,12 @@ func (t *PodTransporter) Start(ctx context.Context, plan acp.LaunchPlan) (acp.Tr
 	// start an agent that fails mid-turn, and an orphan Secret with no pod is
 	// deleted by the cleanup below.
 	if _, err := t.Client.CoreV1().Secrets(cfg.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-		return nil, fmt.Errorf("sandbox/k8s: create attempt secret %s: %w", secret.Name, withoutValues(err, creds))
+		return nil, fmt.Errorf("sandbox/k8s: create attempt secret %s: %w", secret.Name, withoutValues(err, files))
 	}
 	createdPod, err := t.Client.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		t.deleteSecret(ctx, cfg.Namespace, secret.Name)
-		return nil, fmt.Errorf("sandbox/k8s: create attempt pod %s: %w", pod.Name, withoutValues(err, creds))
+		return nil, fmt.Errorf("sandbox/k8s: create attempt pod %s: %w", pod.Name, withoutValues(err, files))
 	}
 	// ownerReferences need the pod's uid, so they are a patch after both creates
 	// (ADR-0082 Decision 5). A failure here is fatal: a Secret that outlives its
@@ -333,7 +363,7 @@ func (t *PodTransporter) Start(ctx context.Context, plan acp.LaunchPlan) (acp.Tr
 	}
 	if _, err := t.Client.CoreV1().Secrets(cfg.Namespace).Patch(ctx, secret.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 		t.retire(ctx, cfg.Namespace, createdPod.Name, secret.Name, 0)
-		return nil, fmt.Errorf("sandbox/k8s: adopt attempt secret %s into pod %s: %w", secret.Name, createdPod.Name, withoutValues(err, creds))
+		return nil, fmt.Errorf("sandbox/k8s: adopt attempt secret %s into pod %s: %w", secret.Name, createdPod.Name, withoutValues(err, files))
 	}
 
 	// Everything below the pod's existence must retire the pod on the way out.
@@ -351,7 +381,7 @@ func (t *PodTransporter) Start(ctx context.Context, plan acp.LaunchPlan) (acp.Tr
 		return nil, fail(err)
 	}
 
-	command, err := SessionCommand(plan, plain, creds)
+	command, err := SessionCommand(plan)
 	if err != nil {
 		return nil, fail(err)
 	}
@@ -409,11 +439,11 @@ func (t *PodTransporter) verifyPod(ctx context.Context, cfg Config, pod string) 
 		Tty:    false,
 	})
 	if err != nil {
-		return denial("pod_verify", "exec_failed", fmt.Sprintf("the attempt pod's sandbox probe could not run: %s", bounded(err.Error(), 512)))
+		return denial(acp.StagePodVerify, "exec_failed", fmt.Sprintf("the attempt pod's sandbox probe could not run: %s", bounded(err.Error(), 512)))
 	}
 	verdict, perr := ParseVerdict(out.Bytes())
 	if perr != nil {
-		return denial("pod_verify", "no_verdict", bounded(perr.Error(), 512))
+		return denial(acp.StagePodVerify, "no_verdict", bounded(perr.Error(), 512))
 	}
 	if cerr := verdict.Check(); cerr != nil {
 		t.log().Error("attempt pod refused the launch",
@@ -460,17 +490,17 @@ func (t *PodTransporter) waitRunning(ctx context.Context, cfg Config, pod string
 			case corev1.PodRunning:
 				return p, nil
 			case corev1.PodSucceeded, corev1.PodFailed:
-				return nil, denial("pod_wait", "pod_terminated",
+				return nil, denial(acp.StagePodWait, "pod_terminated",
 					fmt.Sprintf("attempt pod %s ended in phase %s before the session started: %s", pod, p.Status.Phase, t.describe(ctx, cfg.Namespace, pod, p)))
 			}
 		} else if apierrors.IsNotFound(err) {
-			return nil, denial("pod_wait", "pod_missing", fmt.Sprintf("attempt pod %s disappeared while the worker waited for it to start", pod))
+			return nil, denial(acp.StagePodWait, "pod_missing", fmt.Sprintf("attempt pod %s disappeared while the worker waited for it to start", pod))
 		} else {
 			lastErr = err
 		}
 		select {
 		case <-ctx.Done():
-			return nil, denial("pod_wait", "interrupted", fmt.Sprintf("waiting for attempt pod %s to start: %v", pod, ctx.Err()))
+			return nil, denial(acp.StagePodWait, "interrupted", fmt.Sprintf("waiting for attempt pod %s to start: %v", pod, ctx.Err()))
 		case <-ticker.C:
 		}
 		if !time.Now().Before(deadline) {
@@ -478,7 +508,7 @@ func (t *PodTransporter) waitRunning(ctx context.Context, cfg Config, pod string
 			if lastErr != nil {
 				detail = lastErr.Error() + "; " + detail
 			}
-			return nil, denial("pod_wait", "timeout",
+			return nil, denial(acp.StagePodWait, "timeout",
 				fmt.Sprintf("attempt pod %s was not Running within %s: %s", pod, cfg.ReadyTimeout, detail))
 		}
 	}
@@ -561,74 +591,45 @@ func (t *PodTransporter) deleteSecret(ctx context.Context, namespace, secret str
 // the exec command
 // ---------------------------------------------------------------------------
 
-// SessionCommand renders the argv `pods/exec` runs for the session.
+// SessionCommand renders the argv `pods/exec` runs for the session:
 //
-// The shape is `sh -c <script> <name> <cwd> <path> <args…>` because the exec has
-// to do three things the API cannot ask for directly: change directory, install
-// an environment built from scratch, and exec the plan so the shell is replaced
-// rather than left as the agent's parent. `env -C` would cover the first two on
-// GNU coreutils, but not the third's credential substitution below, and the argv
-// would then have to carry the values.
+//	communication pod-exec --env-dir /run/attempt/env --cwd <dir> -- <path> <args…>
 //
-// The credential entries are the reason for the script: their VALUES never enter
-// the exec request — the API server would log them — only the `cat` of the 0600
-// file the initContainer wrote does, inside the pod, at exec time.
-func SessionCommand(plan acp.LaunchPlan, plain []string, creds []Credential) ([]string, error) {
+// Every element of it is a name or a path, because the exec request is a URL and
+// its `command=` query parameters are recorded in full by apiserver audit and by
+// kubelet logs. The `sh -c` script this replaces built the environment into that
+// command line with `env -i NAME=value`, so every plain launch entry — and with
+// it anything the worker had put in the plan that the credential classifier did
+// not catch — was written into the cluster's audit log; the credentials only
+// escaped because the script `cat`ed their files inside the pod. Here the values
+// live in the per-attempt Secret, the initContainer has already put them at
+// `env/<NAME>`, and the wrapper (ADR-0082 Decision 6) reads them, sets the working
+// directory and execs the plan in the pod's own address space. The wrapper is
+// also the last element of the argv, so the plan's own arguments — the adapter's
+// flags and the nono grant flags — need no shell quoting at all.
+func SessionCommand(plan acp.LaunchPlan) ([]string, error) {
 	if plan.Path == "" {
 		return nil, errors.New("sandbox/k8s: the launch plan names no executable")
 	}
 	if strings.HasPrefix(plan.Path, "-") {
-		// `env` would read it as a flag. The plan's path is nono's, resolved by
-		// the worker; a flag-shaped one is a bug, not a launch.
+		// pod-exec stops flag parsing at `--`, so a leading dash would reach the
+		// kernel as a program name. The plan's path is nono's, resolved by the
+		// worker; a flag-shaped one is a bug, not a launch.
 		return nil, fmt.Errorf("sandbox/k8s: launch path %q looks like a flag", plan.Path)
 	}
 	if plan.Dir == "" {
 		return nil, fmt.Errorf("sandbox/k8s: the launch plan carries no working directory")
 	}
 	if !safePath.MatchString(plan.Dir) {
-		return nil, fmt.Errorf("sandbox/k8s: working directory %q cannot be used in the exec script", plan.Dir)
+		return nil, fmt.Errorf("sandbox/k8s: working directory %q cannot be carried in the exec request", plan.Dir)
 	}
-
-	var b strings.Builder
-	b.WriteString("set -e\ncd \"$1\"\nshift\nexec env -i")
-	for _, kv := range plain {
-		name, _, ok := strings.Cut(kv, "=")
-		if !ok || name == "" {
-			return nil, fmt.Errorf("sandbox/k8s: launch environment entry %q is not NAME=VALUE", kv)
-		}
-		fmt.Fprintf(&b, " %s", shQuote(kv))
+	argv := []string{
+		"communication", "pod-exec",
+		"--env-dir", EnvDir,
+		"--cwd", plan.Dir,
+		"--", plan.Path,
 	}
-	for _, c := range creds {
-		if !safeKey.MatchString(c.Name) {
-			return nil, fmt.Errorf("sandbox/k8s: credential %q cannot be an environment name", c.Name)
-		}
-		// The single quotes inside the double quotes are literal: the pod's shell
-		// expands the command substitution, and `env` receives one already
-		// substituted assignment. A trailing newline is stripped by the shell, so
-		// a token file with one still yields the same value the worker read.
-		fmt.Fprintf(&b, " %s=\"$(cat '%s')\"", c.Name, path.Join(CredentialDir, c.Name))
-	}
-	// "$@" is now <path> <args…>; the plan's argv needs no quoting because it
-	// never passes through this shell — it is the exec's argument vector.
-	b.WriteString(" \"$@\"\n")
-
-	argv := []string{"sh", "-c", b.String(), "communication-agent", plan.Dir, plan.Path}
 	return append(argv, plan.Args...), nil
-}
-
-// shQuote quotes one word for POSIX sh.
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// credentialNames is the loggable half of a credential list.
-func credentialNames(creds []Credential) []string {
-	out := make([]string, 0, len(creds))
-	for _, c := range creds {
-		out = append(out, c.Name)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // grantFlag names the argv flags that carry a sandbox grant path.
@@ -645,7 +646,7 @@ var grantFlags = map[string]bool{"--allow": true, "--read": true}
 // launcher there — the worker's own credential tree never travels to the pod.
 func uncoveredGrantPaths(plan acp.LaunchPlan, cfg Config) []string {
 	covered := append(append([]string(nil), cfg.ClaimPaths...), cfg.mountPaths()...)
-	covered = append(covered, CredentialVolumeDir)
+	covered = append(covered, AttemptDir)
 	var out []string
 	seen := map[string]bool{}
 	var found []string
@@ -862,22 +863,6 @@ func mapExit(pod string, err error) error {
 		return &ExitError{Pod: pod, Code: ce.ExitStatus(), Err: ce.Err}
 	}
 	return err
-}
-
-// withoutValues rewrites an API error so a credential value it happened to echo
-// (a patch that included the Secret's body, say) cannot reach a log or an
-// attempt detail. Names survive; values do not.
-func withoutValues(err error, creds []Credential) error {
-	if err == nil {
-		return nil
-	}
-	msg := err.Error()
-	for _, c := range creds {
-		if len(c.Value) > 0 {
-			msg = strings.ReplaceAll(msg, string(c.Value), "<redacted>")
-		}
-	}
-	return errors.New(bounded(msg, 1024))
 }
 
 // capture is a bounded, mutex-guarded tail of what a stream wrote. It mirrors the

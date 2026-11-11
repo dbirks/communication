@@ -250,6 +250,15 @@ Launcher-seam environment, only with the pod launcher (ADR-0082 Decision 8).
   valueFrom:
     fieldRef:
       fieldPath: spec.nodeName
+# The claim the attempt pod mounts its workspace roots from. It is named here
+# rather than assumed: a claim can only be mounted by a pod in the claim's own
+# namespace, so when attempts run in a namespace of their own (Decision 6, the
+# whole point of agentNamespace) the platform claim this release creates is
+# unreachable from them and worker.workspacePVC must name a claim that lives
+# where the pods do. The launcher refuses to start without it (Decision 4), so
+# the chart refuses to render it wrongly.
+- name: COMMUNICATION_AGENT_WORKSPACE_PVC
+  value: {{ include "communication.agentClaim" . | quote }}
 {{- end }}
 {{- end -}}
 
@@ -408,6 +417,24 @@ storage roots stay siblings inside a single volume (ADR-0082 Decision 1).
 */}}
 {{- define "communication.pvcName" -}}
 {{ printf "%s-data" (include "communication.fullname" .) }}
+{{- end -}}
+
+{{/*
+The claim an attempt pod mounts (ADR-0082 Decision 4). Inside the release
+namespace it is the release's own claim; with a separate agent namespace it has
+to be one that exists there, which is why worker.workspacePVC exists at all and
+why guessing here would be a silent failure: the pod would sit Pending on
+`persistentvolumeclaim not found` and the attempt would time out 300 seconds
+later, far from the sentence that explains it.
+*/}}
+{{- define "communication.agentClaim" -}}
+{{- if .Values.worker.workspacePVC -}}
+{{ .Values.worker.workspacePVC }}
+{{- else if eq .Values.worker.agentNamespace .Release.Namespace -}}
+{{ include "communication.pvcName" . }}
+{{- else -}}
+{{ fail (printf "worker.workspacePVC is required when worker.agentNamespace (%s) is not the release namespace (%s): a claim cannot be mounted across namespaces, so name one that exists in the agent namespace (ADR-0082 Decision 4)" .Values.worker.agentNamespace .Release.Namespace) }}
+{{- end -}}
 {{- end -}}
 
 {{/*

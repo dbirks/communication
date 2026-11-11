@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,7 +20,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/remotecommand"
 
@@ -247,8 +252,17 @@ func TestPodTransporterCreatesSecretAndPodAndAdoptsTheSecret(t *testing.T) {
 	if string(secret.Data["CLAUDE_CODE_OAUTH_TOKEN"]) != "sk-ant-super-secret-token" {
 		t.Error("the credential did not reach the Secret intact")
 	}
-	if len(secret.Data) != 2 {
-		t.Errorf("secret data keys = %v, want only the two credentials", keysOf(secret.Data))
+	// The WHOLE launch environment is in the Secret, not only the credential-shaped
+	// part of it: the exec request that starts the session carries names, so a
+	// plain entry has nowhere else to arrive from.
+	if len(secret.Data) != len(testPlan().Env) {
+		t.Errorf("secret data keys = %v, want all %d entries of the plan's environment", keysOf(secret.Data), len(testPlan().Env))
+	}
+	for _, kv := range testPlan().Env {
+		name, value, _ := strings.Cut(kv, "=")
+		if string(secret.Data[name]) != value {
+			t.Errorf("secret key %q = %q, want the plan's value", name, string(secret.Data[name]))
+		}
 	}
 	// The owner reference is a patch after the pod create, and it is what makes
 	// Kubernetes GC the credential when the pod goes (spike S4).
@@ -279,7 +293,7 @@ func TestPodTransporterCreatesSecretAndPodAndAdoptsTheSecret(t *testing.T) {
 	for _, m := range pod.Spec.Containers[0].VolumeMounts {
 		mounted[m.MountPath] = true
 	}
-	for _, want := range []string{"/home/worker/.claude", "/sandbox-selftest", "/data/workspaces", CredentialVolumeDir} {
+	for _, want := range []string{"/home/worker/.claude", "/sandbox-selftest", "/data/workspaces", AttemptDir} {
 		if !mounted[want] {
 			t.Errorf("attempt pod does not mount %s", want)
 		}
@@ -560,55 +574,144 @@ func TestPodTransporterRefusesAMissingPlan(t *testing.T) {
 	}
 }
 
-func TestSessionCommandKeepsValuesOutOfTheExecRequest(t *testing.T) {
-	plain, creds, err := SplitEnv(testPlan().Env)
-	if err != nil {
-		t.Fatalf("SplitEnv: %v", err)
-	}
-	cmd, err := SessionCommand(testPlan(), plain, creds)
+func TestSessionCommandCarriesNamesAndPathsOnly(t *testing.T) {
+	cmd, err := SessionCommand(testPlan())
 	if err != nil {
 		t.Fatalf("SessionCommand: %v", err)
 	}
+	// The shape ADR-0082 Decision 6 names: the in-pod wrapper, the directory its
+	// environment was delivered to, the working directory, and then the plan's own
+	// argv after a `--` that ends the wrapper's flag parsing.
+	want := []string{
+		"communication", "pod-exec",
+		"--env-dir", EnvDir,
+		"--cwd", "/data/workspaces/run/abc/repos",
+		"--", "/usr/local/bin/nono",
+	}
+	if got := cmd[:len(want)]; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("argv head = %q, want %q", got, want)
+	}
+	// Everything after it is the plan's argv, verbatim: the grant paths and the
+	// `env` hop the worker journalled are what the pod runs.
+	if got := strings.Join(cmd[len(want):], " "); got != strings.Join(testPlan().Args, " ") {
+		t.Errorf("argv tail = %q, want the plan's args", got)
+	}
+	// No value from the environment is anywhere in it — not the credentials, and
+	// not the plain entries the `sh -c` script used to put on the command line.
 	joined := strings.Join(cmd, "\n")
-	for _, secret := range []string{"sk-ant-super-secret-token", "sk-collective-super-secret-key"} {
-		if strings.Contains(joined, secret) {
-			t.Errorf("the exec request carries a credential value:\n%s", joined)
+	for _, kv := range testPlan().Env {
+		_, value, _ := strings.Cut(kv, "=")
+		if value != "" && strings.Contains(joined, value) {
+			t.Errorf("the exec request carries an environment value (%q):\n%s", value, joined)
 		}
-	}
-	if cmd[0] != "sh" || cmd[1] != "-c" {
-		t.Fatalf("argv = %q", cmd)
-	}
-	script := cmd[2]
-	for _, want := range []string{
-		`cd "$1"`,
-		`exec env -i`,
-		`'PATH=/usr/local/bin:/usr/bin:/bin'`,
-		`CLAUDE_CODE_OAUTH_TOKEN="$(cat '/run/communication/credentials/CLAUDE_CODE_OAUTH_TOKEN')"`,
-		`"$@"`,
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("exec script missing %s:\n%s", want, script)
-		}
-	}
-	// Everything after the script is the cwd plus the plan's argv, verbatim: the
-	// grant paths and the `env` hop the worker journalled are what the pod runs.
-	tail := cmd[3:]
-	if tail[0] != "communication-agent" || tail[1] != "/data/workspaces/run/abc/repos" || tail[2] != "/usr/local/bin/nono" {
-		t.Errorf("argv tail = %q", tail)
-	}
-	if got := tail[len(tail)-2:]; strings.Join(got, " ") != "node /opt/adapters/pi-acp" {
-		t.Errorf("adapter argv = %q", got)
-	}
-	// A value with a quote in it cannot break out of the single-quoted assignment.
-	odd := []string{`PATH=/bin`, `X=A'B`}
-	if _, creds, err := SplitEnv(odd); err != nil {
-		t.Fatalf("SplitEnv: %v", err)
-	} else if c, err := SessionCommand(acp.LaunchPlan{Path: "nono", Dir: "/tmp", Env: odd}, []string{`PATH=/bin`, `X=A'B`}, creds); err != nil {
-		t.Fatalf("SessionCommand with an apostrophe in a value: %v", err)
-	} else if !strings.Contains(c[2], `'X=A'\''B'`) {
-		t.Errorf("value not shell-quoted: %s", c[2])
 	}
 }
+
+// TestExecRequestURLCarriesNoLaunchValue is the same rule asserted on the request
+// the launcher actually sends: `pods/exec` puts its argv in the URL's query, and
+// apiserver audit records the URL, so the URL is the leak surface (ADR-0082
+// Decision 6). The plan below carries a secret named SECRET, value s3cr3t.
+func TestExecRequestURLCarriesNoLaunchValue(t *testing.T) {
+	fx := newTransportFixture(t)
+	plan := testPlan()
+	plan.Env = append(plan.Env, "SECRET=s3cr3t")
+
+	files, err := EnvFiles(plan.Env)
+	if err != nil {
+		t.Fatalf("EnvFiles: %v", err)
+	}
+	cmd, err := SessionCommand(plan)
+	if err != nil {
+		t.Fatalf("SessionCommand: %v", err)
+	}
+
+	rc, err := rest.RESTClientFor(&rest.Config{
+		Host:                 "http://127.0.0.1:8080",
+		GroupVersion:         &corev1.SchemeGroupVersion,
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+	})
+	if err != nil {
+		t.Fatalf("rest client for the exec url: %v", err)
+	}
+	factory := &RESTExecutors{Client: clientsetWithRESTClient{Interface: fx.client, rc: rc}, RESTConfig: &rest.Config{Host: "http://127.0.0.1:8080"}}
+	rawURL, err := factory.ExecRequestURL("communication-agents", "att-9f2c4d6e-1a2b-4c", cmd)
+	if err != nil {
+		t.Fatalf("ExecRequestURL: %v", err)
+	}
+	decoded := rawURL
+	if unescaped, err := url.QueryUnescape(rawURL); err == nil {
+		decoded = unescaped
+	}
+	for _, needle := range []string{"s3cr3t", "sk-ant-super-secret-token", "sk-collective-super-secret-key"} {
+		if strings.Contains(decoded, needle) {
+			t.Errorf("the exec request carries the value %q:\n%s", needle, decoded)
+		}
+	}
+	// What it does carry: the wrapper, the delivery directory, and the plan's own
+	// program. Anything else in the query is kubelet plumbing.
+	for _, needle := range []string{"pod-exec", "--env-dir", "--cwd", EnvDir, "command="} {
+		if !strings.Contains(decoded, needle) {
+			t.Errorf("the exec request lost %q:\n%s", needle, decoded)
+		}
+	}
+	// And the Secret holds what the request does not, under the name, at the
+	// `env/<NAME>` path the pod projects.
+	secret, err := BuildSecret("9f2c4d6e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", "communication-agents", files)
+	if err != nil {
+		t.Fatalf("BuildSecret: %v", err)
+	}
+	if string(secret.Data["SECRET"]) != "s3cr3t" {
+		t.Errorf("secret data = %v, want the plan's SECRET value", keysOf(secret.Data))
+	}
+	pod, err := PodInput{
+		AttemptID: "9f2c4d6e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", Namespace: "communication-agents",
+		Image: "img", NodeName: "n", Claim: "c", ClaimPaths: []string{"/data/workspaces"},
+		SandboxHome: "/sandbox-home", SandboxSelfTest: "/sandbox-selftest",
+		LocalPaths: []string{"/sandbox-home", "/sandbox-selftest"},
+		EnvNames:   EnvFileNames(files),
+	}.Pod()
+	if err != nil {
+		t.Fatalf("Pod: %v", err)
+	}
+	projected := map[string]string{}
+	for _, v := range pod.Spec.Volumes {
+		if v.Secret == nil {
+			continue
+		}
+		for _, it := range v.Secret.Items {
+			projected[it.Key] = it.Path
+		}
+	}
+	if projected["SECRET"] != EnvFileDir+"/SECRET" {
+		t.Errorf("secret key SECRET projects to %q, want the file env/SECRET", projected["SECRET"])
+	}
+	if got := EnvFilePath("SECRET"); got != "/run/attempt/env/SECRET" {
+		t.Errorf("the wrapper reads %q, want /run/attempt/env/SECRET", got)
+	}
+	// The pod spec itself stays clean too: it references the Secret by name.
+	if strings.Contains(fmt.Sprint(pod.Spec), "s3cr3t") {
+		t.Error("the pod spec carries a launch value")
+	}
+}
+
+// clientsetWithRESTClient gives the fake clientset a REST client real enough to
+// build a request URL with — the fake's own CoreV1().RESTClient() is nil, and the
+// URL is exactly the thing under test.
+type clientsetWithRESTClient struct {
+	kubernetes.Interface
+	rc rest.Interface
+}
+
+func (c clientsetWithRESTClient) CoreV1() corev1client.CoreV1Interface {
+	return coreV1WithRESTClient{CoreV1Interface: c.Interface.CoreV1(), rc: c.rc}
+}
+
+type coreV1WithRESTClient struct {
+	corev1client.CoreV1Interface
+	rc rest.Interface
+}
+
+func (c coreV1WithRESTClient) RESTClient() rest.Interface { return c.rc }
 
 func TestSessionCommandRefusesAnUnusablePlan(t *testing.T) {
 	for _, tc := range []struct {
@@ -619,37 +722,14 @@ func TestSessionCommandRefusesAnUnusablePlan(t *testing.T) {
 		{"no path", acp.LaunchPlan{Dir: "/x"}, "names no executable"},
 		{"flag-shaped path", acp.LaunchPlan{Path: "-lc", Dir: "/x"}, "looks like a flag"},
 		{"no cwd", acp.LaunchPlan{Path: "nono"}, "no working directory"},
-		{"cwd a shell cannot quote", acp.LaunchPlan{Path: "nono", Dir: "/work; rm -rf /"}, "cannot be used"},
+		{"cwd the exec request cannot carry", acp.LaunchPlan{Path: "nono", Dir: "/work; rm -rf /"}, "cannot be carried"},
+		{"cwd with a space", acp.LaunchPlan{Path: "nono", Dir: "/work dirs/abc"}, "cannot be carried"},
 	} {
-		if _, err := SessionCommand(tc.plan, nil, nil); err == nil {
+		if _, err := SessionCommand(tc.plan); err == nil {
 			t.Errorf("%s: SessionCommand accepted the plan", tc.name)
 		} else if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error %q does not mention %q", tc.name, err, tc.want)
 		}
-	}
-}
-
-func TestAttemptIDFromPlan(t *testing.T) {
-	if got, err := AttemptIDFromPlan(testPlan()); err != nil || got != "9f2c4d6e-1a2b-4c3d-8e9f-0a1b2c3d4e5f" {
-		t.Errorf("from the argv hop: %q, %v", got, err)
-	}
-	envOnly := acp.LaunchPlan{Env: []string{EnvAttemptID + "=11111111-2222-3333-4444-555555555555"}}
-	if got, err := AttemptIDFromPlan(envOnly); err != nil || got != "11111111-2222-3333-4444-555555555555" {
-		t.Errorf("from the environment: %q, %v", got, err)
-	}
-	dirOnly := acp.LaunchPlan{Dir: "/data/workspaces/run/abc/home/attempts/22222222-3333-4444-5555-666666666666"}
-	if got, err := AttemptIDFromPlan(dirOnly); err != nil || got != "22222222-3333-4444-5555-666666666666" {
-		t.Errorf("from the attempt HOME: %q, %v", got, err)
-	}
-	if _, err := AttemptIDFromPlan(acp.LaunchPlan{Dir: "/data/workspaces/run/abc/repos"}); err == nil {
-		t.Error("a plan with no attempt identity must be refused")
-	}
-}
-
-func TestWithoutValuesRedacts(t *testing.T) {
-	err := withoutValues(errors.New("patch rejected: secret holds sk-ant-super-secret-token"), []Credential{{Name: "T", Value: []byte("sk-ant-super-secret-token")}})
-	if !strings.Contains(err.Error(), "<redacted>") || strings.Contains(err.Error(), "sk-ant") {
-		t.Errorf("value survived into an error string: %v", err)
 	}
 }
 

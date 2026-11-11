@@ -100,6 +100,20 @@ type Verification struct {
 	CommitGranted bool
 }
 
+// Denial Stage values. The first two are the local chain's (ADR-0019 D6): the
+// sandbox launcher refused, or the child's own self-test did. The last two are
+// the Kubernetes pod Transporter's (ADR-0082 Decision 3), which reports from
+// inside the attempt pod — and they are deliberately different, because a pod
+// that never reached Running is an infrastructure gap on the node while a pod
+// whose in-pod probe refused to certify enforcement is a sandbox refusal, and the
+// attempt's error class separates those two.
+const (
+	StageSandboxLauncher = "sandbox_launcher"
+	StageChildSelfTest   = "child_self_test"
+	StagePodVerify       = "pod_verify"
+	StagePodWait         = "pod_wait"
+)
+
 // Denial is a sandbox that refused to start. It is an error, and the turn loop
 // maps it onto sandbox.enforcement_failed with the same stage/reason pair.
 type Denial struct {

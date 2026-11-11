@@ -27,6 +27,11 @@ modes:
   doctor    report on the local environment and supported agent tools
   pod-wait  (inside an attempt pod) hold the container open for exec sessions
   pod-verify (inside an attempt pod) print the nono enforcement verdict as JSON
+  pod-exec  (inside an attempt pod) start the agent session from the delivered
+            environment files: pod-exec --env-dir <dir> [--cwd <dir>] -- <path>
+            [args…]. ADR-0082 Decision 6: this is the only way a process starts
+            in an attempt pod, and the only reason a launch value never appears
+            in an exec request.
   version   print the binary version
   help      show this help
 `
@@ -67,6 +72,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPodWait(stdout, stderr)
 	case "pod-verify":
 		return runPodVerify(stdout, stderr)
+	case "pod-exec":
+		return runPodExec(args[1:], stdout, stderr)
+	case "acp-echo":
+		// Deliberately absent from the usage text above: it is not a run mode, it is
+		// the ACP peer the Kubernetes launcher's spike S2 needs, and it refuses to
+		// start unless COMMUNICATION_ACP_ECHO=1 says that is what this process is for.
+		return runACPEcho(os.Stdin, stdout, stderr)
 	}
 
 	fmt.Fprintf(stderr, "unknown mode %q\n", args[0])

@@ -22,9 +22,9 @@ func sampleInput() PodInput {
 		Claim:      "communication-workspaces",
 		ClaimPaths: []string{"/data/workspaces", "/data/repos", "/sandbox-policy"},
 		LocalPaths: []string{"/sandbox-home", "/sandbox-selftest"},
-		// The launcher's credential directory arrives as an uncovered grant path
-		// in a real launch; the test names it directly.
-		CredentialKeys:  []string{"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"},
+		// Every launch-environment entry is delivered as a file; the test names
+		// the pair a real agent launch always carries plus a credential.
+		EnvNames:        []string{"PATH", "HOME", "OPENAI_API_KEY"},
 		SandboxHome:     "/sandbox-home",
 		SandboxSelfTest: "/sandbox-selftest",
 	}
@@ -128,20 +128,27 @@ func TestBuildPodIdentityEntrypointAndVolumes(t *testing.T) {
 	if c.ImagePullPolicy != corev1.PullIfNotPresent {
 		t.Errorf("imagePullPolicy = %q, want IfNotPresent (the kind script loads a local image)", c.ImagePullPolicy)
 	}
-	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != InitCredentials {
-		t.Fatalf("initContainers = %+v, want the credential copy", pod.Spec.InitContainers)
+	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != InitEnv {
+		t.Fatalf("initContainers = %+v, want the environment copy", pod.Spec.InitContainers)
 	}
 	init := pod.Spec.InitContainers[0]
 	script := strings.Join(init.Args, " ")
-	for _, want := range []string{"umask 077", "chmod 700 '" + CredentialDir + "'", "chmod 600 '" + CredentialDir + "/OPENAI_API_KEY'"} {
+	for _, want := range []string{
+		"umask 077",
+		"chmod 700 '" + EnvDir + "'",
+		"chmod 600 '" + EnvFilePath("OPENAI_API_KEY") + "'",
+		// Each copy reads the Secret projection at `env/<NAME>` and writes the
+		// wrapper's directory at the same relative name.
+		"cp '" + EnvSourcePath("OPENAI_API_KEY") + "' '" + EnvFilePath("OPENAI_API_KEY") + "'",
+	} {
 		if !strings.Contains(script, want) {
-			t.Errorf("credential init script missing %q:\n%s", want, script)
+			t.Errorf("environment init script missing %q:\n%s", want, script)
 		}
 	}
 	// Only the file NAMES may appear: a value in an init script would be a value
 	// in the pod spec, which is the leak ADR-0082 Decision 5 closes.
 	if strings.Contains(script, "sk-ant-") || strings.Contains(script, "secret-value") {
-		t.Errorf("credential init script carries a value:\n%s", script)
+		t.Errorf("environment init script carries a value:\n%s", script)
 	}
 
 	mounts := map[string]corev1.VolumeMount{}
@@ -166,8 +173,16 @@ func TestBuildPodIdentityEntrypointAndVolumes(t *testing.T) {
 	if _, ok := mounts["/sandbox-home"]; !ok {
 		t.Error("nono's HOME must be a pod-private directory, not the worker's")
 	}
-	if m, ok := mounts[CredentialVolumeDir]; !ok || m.Name != VolumeCredentials {
-		t.Errorf("credential emptyDir mount = %+v (ok=%t)", m, ok)
+	if m, ok := mounts[AttemptDir]; !ok || m.Name != VolumeAttempt || !m.ReadOnly {
+		t.Errorf("attempt emptyDir mount = %+v (ok=%t): the delivered environment is an input, not a scratch directory", m, ok)
+	}
+	// The Secret projection itself must never reach the agent container: it is
+	// `..data` symlinks at a mode the pod did not choose, and the whole point of
+	// the copy is that the session reads 0600 regular files or nothing.
+	for _, m := range c.VolumeMounts {
+		if m.Name == VolumeEnvSrc {
+			t.Errorf("agent container mounts the Secret projection at %s: only the init container may read it", m.MountPath)
+		}
 	}
 	vols := map[string]corev1.Volume{}
 	for _, v := range pod.Spec.Volumes {
@@ -176,18 +191,30 @@ func TestBuildPodIdentityEntrypointAndVolumes(t *testing.T) {
 	if v, ok := vols[VolumeWorkspace]; !ok || v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "communication-workspaces" {
 		t.Errorf("claim volume = %+v", vols[VolumeWorkspace])
 	}
-	src := vols[VolumeCredentialsSrc]
+	src := vols[VolumeEnvSrc]
 	if src.Secret == nil || src.Secret.SecretName != pod.Name {
-		t.Errorf("credential source volume does not name the attempt secret: %+v", src.Secret)
+		t.Errorf("environment source volume does not name the attempt secret: %+v", src.Secret)
 	}
-	if len(src.Secret.Items) != 2 {
-		t.Errorf("credential source volume projects %d items, want exactly the 2 the launch needs", len(src.Secret.Items))
+	if len(src.Secret.Items) != 3 {
+		t.Errorf("environment source volume projects %d items, want exactly the 3 entries the launch carries", len(src.Secret.Items))
 	}
-	if src.Secret.DefaultMode == nil || *src.Secret.DefaultMode != 0o400 {
-		t.Errorf("secret defaultMode = %v, want 0400", src.Secret.DefaultMode)
+	// Every key is projected as `env/<NAME>`, which is the file the wrapper reads;
+	// a Secret key cannot carry that path itself (Kubernetes keys forbid `/`), so
+	// the projection is what realises the layout.
+	projected := map[string]string{}
+	for _, it := range src.Secret.Items {
+		projected[it.Key] = it.Path
 	}
-	if v, ok := vols[VolumeCredentials]; !ok || v.EmptyDir == nil {
-		t.Errorf("credential emptyDir missing: %+v", vols)
+	for _, name := range []string{"PATH", "HOME", "OPENAI_API_KEY"} {
+		if want := EnvFileDir + "/" + name; projected[name] != want {
+			t.Errorf("secret key %q projects to %q, want %q", name, projected[name], want)
+		}
+	}
+	if src.Secret.DefaultMode == nil || *src.Secret.DefaultMode != secretFileMode {
+		t.Errorf("secret defaultMode = %v, want %o (group-read: the init container is not root)", src.Secret.DefaultMode, secretFileMode)
+	}
+	if v, ok := vols[VolumeAttempt]; !ok || v.EmptyDir == nil {
+		t.Errorf("attempt emptyDir missing: %+v", vols)
 	}
 }
 
@@ -226,10 +253,11 @@ func TestPodInputValidateRefusesTheUnshapable(t *testing.T) {
 		{"nested mounts", func(in *PodInput) {
 			in.ClaimPaths = []string{"/data", "/data/workspaces", "/sandbox-policy"}
 		}, "sits inside mount"},
-		{"credential mount shadowed", func(in *PodInput) {
-			in.LocalPaths = []string{"/sandbox-home", "/sandbox-selftest", "/run/communication/credentials"}
+		{"delivered-environment mount shadowed", func(in *PodInput) {
+			in.LocalPaths = []string{"/sandbox-home", "/sandbox-selftest", EnvDir}
 		}, "sits inside mount"},
-		{"bad credential name", func(in *PodInput) { in.CredentialKeys = []string{"BAD NAME"} }, "usable file name"},
+		{"bad credential name", func(in *PodInput) { in.EnvNames = []string{"BAD NAME"} }, "usable file name"},
+		{"no environment names", func(in *PodInput) { in.EnvNames = nil }, "carries no launch environment"},
 		{"sandbox home off volume", func(in *PodInput) { in.SandboxHome = "/nowhere" }, "no volume covers"},
 	} {
 		in := sampleInput()

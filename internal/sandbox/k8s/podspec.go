@@ -47,26 +47,28 @@ const (
 
 	// ContainerName is the single container in an attempt pod.
 	ContainerName = "agent"
-	// InitCredentials is the one-shot that copies the Secret's files into the
-	// 0700 emptyDir as 0600 regular files (the home manifest's keyring pattern:
-	// a Secret volume exposes `..data` symlinks at 0644, which the launchers
-	// refuse and then try to rewrite).
-	InitCredentials = "credentials"
+	// InitEnv is the one-shot that copies the Secret's files into the 0700
+	// attempt emptyDir as 0600 regular files (the home manifest's keyring
+	// pattern: a Secret volume exposes `..data` symlinks, and the wrapper that
+	// reads the environment should read 0600 files it can trust).
+	InitEnv = "env"
 
-	VolumeCredentials    = "communication-credentials"
-	VolumeCredentialsSrc = "communication-credentials-src"
-	VolumeWorkspace      = "communication-workspace"
+	VolumeAttempt   = "communication-attempt"
+	VolumeEnvSrc    = "communication-env-src"
+	VolumeWorkspace = "communication-workspace"
 
-	// CredentialVolumeDir is the emptyDir the initContainer owns; CredentialDir is
-	// the 0700 directory it creates inside it and the agent reads from; and
-	// CredentialSrcDir is the read-only Secret volume it copies from. They are
-	// fixed because the exec script names CredentialDir. The emptyDir is mounted
-	// one level up so the 0700 mode is real: an emptyDir's own root is created by
-	// the kubelet, so the mode has to come from a directory this pod's
-	// initContainer makes — the home manifest's keyring pattern.
-	CredentialVolumeDir = "/run/communication"
-	CredentialDir       = "/run/communication/credentials"
-	CredentialSrcDir    = "/run/communication-src"
+	// AttemptDir is the emptyDir the initContainer owns; EnvDir is the 0700
+	// directory it creates inside it and the in-pod wrapper reads from; and
+	// EnvSrcDir is the read-only Secret volume it copies from. The emptyDir is
+	// mounted one level up so the 0700 is real: an emptyDir's own root is created
+	// by the kubelet, so the mode has to come from a directory this pod's
+	// initContainer makes — the home manifest's keyring pattern. EnvFileDir is
+	// the directory name each value is delivered under, so every launch-environment
+	// entry is the file `env/<NAME>`.
+	AttemptDir = "/run/attempt"
+	EnvDir     = "/run/attempt/env"
+	EnvSrcDir  = "/run/secrets"
+	EnvFileDir = "env"
 
 	// AttemptUID is the pod's uid/gid (ADR-0082 Decision 2), the same 10001 the
 	// worker image and the home manifests run as.
@@ -74,8 +76,16 @@ const (
 	AttemptGID = 10001
 	AttemptFS  = 10001
 
-	// secretFileMode is the 0400 on the projected Secret files.
-	secretFileMode int32 = 0o400
+	// secretFileMode is the mode on the projected Secret files. It is group-read
+	// on purpose: the projection is owned `root:root`, the kubelet only moves its
+	// group to the pod's fsGroup, and the initContainer that copies it runs as the
+	// attempt uid — so a 0400 here would be unreadable by the one container that
+	// has to read it. The volume is a tmpfs that exists only in this attempt pod,
+	// and what the agent actually reads is the 0600 copy (envFileMode).
+	secretFileMode int32 = 0o440
+
+	// envFileMode is the mode of the delivered copy the wrapper reads.
+	envFileMode int32 = 0o600
 
 	// DefaultGracePeriodSeconds is the deletion grace the launcher asks for on a
 	// SIGTERM-shaped teardown; SIGKILL-shaped teardown asks for 0.
@@ -139,9 +149,11 @@ type PodInput struct {
 	// *value* of a credential ever appears in a pod spec).
 	SandboxHome     string
 	SandboxSelfTest string
-	// CredentialKeys are the Secret's data keys — the credential environment
-	// names this launch carries. Only names ever reach the pod spec.
-	CredentialKeys []string
+	// EnvNames are the Secret's data keys — every launch-environment name this
+	// launch carries, projected as `env/<NAME>`. Only names ever reach the pod
+	// spec: an exec request or a pod spec that carried a value would put the
+	// agent's credentials in apiserver audit and kubelet logs (ADR-0082 Decision 6).
+	EnvNames []string
 	// ExtraLabels joins the pod's labels (nil is fine).
 	ExtraLabels map[string]string
 	// Command overrides PodCommand. Tests and the kind script use it; the
@@ -190,12 +202,15 @@ func (in PodInput) Validate() error {
 	if in.Claim == "" && len(in.ClaimPaths) > 0 {
 		return fmt.Errorf("sandbox/k8s: COMMUNICATION_AGENT_WORKSPACE_PVC is required for the paths %v", in.ClaimPaths)
 	}
-	for _, k := range in.CredentialKeys {
+	if len(in.EnvNames) == 0 {
+		return fmt.Errorf("sandbox/k8s: attempt pod for %q carries no launch environment: the plan's env is delivered whole through the per-attempt Secret, so an empty name list means nothing was parsed", in.AttemptID)
+	}
+	for _, k := range in.EnvNames {
 		if !safeKey.MatchString(k) {
 			return fmt.Errorf("sandbox/k8s: credential name %q is not a usable file name", k)
 		}
 	}
-	all := append(append(append([]string{}, in.ClaimPaths...), in.LocalPaths...), CredentialVolumeDir, CredentialSrcDir)
+	all := append(append(append([]string{}, in.ClaimPaths...), in.LocalPaths...), AttemptDir, EnvSrcDir)
 	for _, p := range all {
 		for _, q := range all {
 			if p != q && pathWithin(q, p) {
@@ -298,7 +313,7 @@ func (in PodInput) Pod() (*corev1.Pod, error) {
 					Type: corev1.SeccompProfileTypeRuntimeDefault,
 				},
 			},
-			InitContainers: []corev1.Container{in.credentialsInit()},
+			InitContainers: []corev1.Container{in.envInit()},
 			Containers: []corev1.Container{{
 				Name:            ContainerName,
 				Image:           in.Image,
@@ -355,22 +370,22 @@ func (in PodInput) labels() map[string]string {
 func (in PodInput) volumes() []corev1.Volume {
 	vols := []corev1.Volume{
 		{
-			Name: VolumeCredentials,
+			Name: VolumeAttempt,
 			VolumeSource: corev1.VolumeSource{
 				// The 0700 is put on the directory inside this volume by the
-				// initContainer; see CredentialVolumeDir.
+				// initContainer; see AttemptDir.
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
 		},
 		{
-			Name: VolumeCredentialsSrc,
+			Name: VolumeEnvSrc,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					// The Secret carries the pod's own name (BuildSecret below), so
 					// the two objects are one pair in `kubectl get`.
 					SecretName:  in.secretName(),
 					DefaultMode: int32Ptr(secretFileMode),
-					Items:       secretItems(in.CredentialKeys),
+					Items:       secretItems(in.EnvNames),
 				},
 			},
 		},
@@ -394,14 +409,29 @@ func (in PodInput) volumes() []corev1.Volume {
 	return vols
 }
 
-// secretItems lists exactly the credential file names: a Secret volume that
-// projected the whole Secret would project keys nobody asked for into the pod.
-func secretItems(keys []string) []corev1.KeyToPath {
-	items := make([]corev1.KeyToPath, 0, len(keys))
-	for _, k := range keys {
-		items = append(items, corev1.KeyToPath{Key: k, Path: k})
+// secretItems lists exactly the launch-environment names, each projected into
+// the volume's `env/` directory: a Secret volume that projected the whole Secret
+// unchecked would put its keys wherever the kubelet chose, and the wrapper needs
+// one directory it can enumerate.
+func secretItems(names []string) []corev1.KeyToPath {
+	items := make([]corev1.KeyToPath, 0, len(names))
+	for _, n := range names {
+		items = append(items, corev1.KeyToPath{Key: n, Path: EnvFileDir + "/" + n})
 	}
 	return items
+}
+
+// EnvSourcePath is the `env/<NAME>` file the Secret projection writes, under
+// EnvSrcDir.
+func EnvSourcePath(name string) string {
+	return EnvSrcDir + "/" + EnvFileDir + "/" + name
+}
+
+// EnvFilePath is the `env/<NAME>` file the in-pod wrapper (`communication
+// pod-exec`, ADR-0082 Decision 6) reads: the initContainer's 0600 copy under the
+// 0700 EnvDir.
+func EnvFilePath(name string) string {
+	return EnvDir + "/" + name
 }
 
 // agentMounts is the agent container's view: the credential emptyDir plus one
@@ -409,8 +439,12 @@ func secretItems(keys []string) []corev1.KeyToPath {
 // per pod-private path.
 func (in PodInput) agentMounts() []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{{
-		Name:      VolumeCredentials,
-		MountPath: CredentialVolumeDir,
+		Name:      VolumeAttempt,
+		MountPath: AttemptDir,
+		// Read-only: the agent's environment is an input, and a session that could
+		// rewrite its own delivered values could rewrite the next exec's view of
+		// them.
+		ReadOnly: true,
 	}}
 	for _, p := range in.ClaimPaths {
 		mounts = append(mounts, corev1.VolumeMount{
@@ -428,18 +462,18 @@ func (in PodInput) agentMounts() []corev1.VolumeMount {
 	return mounts
 }
 
-// credentialsInit is the home manifest's keyring pattern: copy the projected
-// Secret files into the 0700 emptyDir as 0600 regular files, so the launcher can
-// rewrite its own credential file mid-turn and so nothing in the launch path
-// reads through a `..data` symlink. The key list is the only thing rendered into
-// the script — never a value.
-func (in PodInput) credentialsInit() corev1.Container {
+// envInit is the home manifest's keyring pattern: copy the projected Secret
+// files into the 0700 attempt directory as 0600 regular files, so nothing in the
+// launch path reads through a `..data` symlink and so the delivered environment
+// is a set of files the agent's own uid owns. The name list is the only thing
+// rendered into the script — never a value.
+func (in PodInput) envInit() corev1.Container {
 	return corev1.Container{
-		Name:            InitCredentials,
+		Name:            InitEnv,
 		Image:           in.Image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"sh", "-ec"},
-		Args:            []string{credentialCopyScript(in.CredentialKeys)},
+		Args:            []string{envCopyScript(in.EnvNames)},
 		SecurityContext: &corev1.SecurityContext{
 			RunAsNonRoot:             boolPtr(true),
 			RunAsUser:                int64Ptr(AttemptUID),
@@ -449,24 +483,25 @@ func (in PodInput) credentialsInit() corev1.Container {
 			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: VolumeCredentialsSrc, MountPath: CredentialSrcDir, ReadOnly: true},
-			{Name: VolumeCredentials, MountPath: CredentialVolumeDir},
+			{Name: VolumeEnvSrc, MountPath: EnvSrcDir, ReadOnly: true},
+			{Name: VolumeAttempt, MountPath: AttemptDir},
 		},
 	}
 }
 
-// credentialCopyScript is the initContainer body. It fails (non-zero) on a
-// missing key: a launch whose credential file did not arrive must not start an
-// agent that will fail confusingly mid-turn.
-func credentialCopyScript(keys []string) string {
-	sorted := append([]string(nil), keys...)
+// envCopyScript is the initContainer body. It fails (non-zero) on a missing
+// file: a launch whose environment did not arrive must not start an agent that
+// will fail confusingly mid-turn. It names files only — a value never passes
+// through this shell.
+func envCopyScript(names []string) string {
+	sorted := append([]string(nil), names...)
 	sort.Strings(sorted)
 	var b strings.Builder
 	b.WriteString("set -e\numask 077\n")
-	fmt.Fprintf(&b, "mkdir -p '%s'\nchmod 700 '%s'\n", CredentialDir, CredentialDir)
-	for _, k := range sorted {
-		fmt.Fprintf(&b, "cp '%s/%s' '%s/%s'\n", CredentialSrcDir, k, CredentialDir, k)
-		fmt.Fprintf(&b, "chmod 600 '%s/%s'\n", CredentialDir, k)
+	fmt.Fprintf(&b, "mkdir -p '%s'\nchmod 700 '%s'\n", EnvDir, EnvDir)
+	for _, n := range sorted {
+		fmt.Fprintf(&b, "cp '%s' '%s'\n", EnvSourcePath(n), EnvFilePath(n))
+		fmt.Fprintf(&b, "chmod %o '%s'\n", envFileMode, EnvFilePath(n))
 	}
 	return b.String()
 }

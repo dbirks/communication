@@ -78,12 +78,12 @@ func ParseVerdict(out []byte) (Verdict, error) {
 func (v Verdict) Check() error {
 	switch {
 	case !v.Verified:
-		return denial("pod_verify", "not_verified", v.Detail)
+		return denial(acp.StagePodVerify, "not_verified", v.Detail)
 	case v.LandlockABI < MinLandlockABI:
-		return denial("pod_verify", "landlock_abi_below_v4",
+		return denial(acp.StagePodVerify, "landlock_abi_below_v4",
 			fmt.Sprintf("the attempt pod reported Landlock ABI %d; agent turns need at least V4 (%s)", v.LandlockABI, v.Detail))
 	case !v.TCP:
-		return denial("pod_verify", "tcp_unreachable",
+		return denial(acp.StagePodVerify, "tcp_unreachable",
 			"the attempt pod's agent-turn TCP-reachability probe did not report ok ("+v.Detail+")")
 	}
 	return nil

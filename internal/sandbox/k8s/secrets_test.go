@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-func TestSplitEnvSeparatesCredentialsFromLocations(t *testing.T) {
+func TestEnvFilesDeliversEveryEntryAsAFile(t *testing.T) {
 	env := []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
 		"HOME=/data/workspaces/run/abc/home/attempts/9f2c4d6e",
@@ -25,53 +25,82 @@ func TestSplitEnvSeparatesCredentialsFromLocations(t *testing.T) {
 		"OPENAI_API_KEY=sk-collective-key",
 		"ACME_GATEWAY_PASSWORD=hunter2",
 	}
-	plain, creds, err := SplitEnv(env)
+	files, err := EnvFiles(env)
 	if err != nil {
-		t.Fatalf("SplitEnv: %v", err)
+		t.Fatalf("EnvFiles: %v", err)
 	}
-	if len(plain) != 8 {
-		t.Errorf("plain = %d entries %v, want the 8 non-credential entries", len(plain), plain)
+	// Every entry is delivered, not just the credential-shaped ones: the exec
+	// request must carry no value at all, so there is no plain half left to send.
+	if len(files) != len(env) {
+		t.Errorf("entries = %d, want all %d of the plan's environment", len(files), len(env))
 	}
 	got := map[string]string{}
-	for _, c := range creds {
-		got[c.Name] = string(c.Value)
+	for _, f := range files {
+		got[f.Name] = string(f.Value)
 	}
-	if len(got) != 3 {
-		t.Fatalf("credentials = %v, want the token, the key and the password", got)
-	}
-	if got["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-secret-token-value" {
-		t.Errorf("token value was altered: %q", got["CLAUDE_CODE_OAUTH_TOKEN"])
-	}
-	// A credential *directory* is a location, not a secret: it stays in the exec
-	// environment, or the launcher would be pointed at nothing.
-	for _, name := range []string{"CLAUDE_CONFIG_DIR", "PATH", "HOME", "COMMUNICATION_ATTEMPT_ID", "GIT_AUTHOR_EMAIL"} {
-		found := false
-		for _, kv := range plain {
-			if strings.HasPrefix(kv, name+"=") {
-				found = true
-			}
+	for _, name := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "TMPDIR", "TERM", "GIT_AUTHOR_EMAIL", "COMMUNICATION_ATTEMPT_ID", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "ACME_GATEWAY_PASSWORD"} {
+		v, ok := got[name]
+		if !ok {
+			t.Errorf("%s was not delivered", name)
+			continue
 		}
-		if !found {
-			t.Errorf("%s must stay a plain entry (it names a path or an id, not a secret)", name)
+		if want := strings.TrimPrefix(lookup(env, name), name+"="); v != want {
+			t.Errorf("%s value = %q, want the plan's bytes", name, v)
 		}
 	}
-	for _, name := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "ACME_GATEWAY_PASSWORD"} {
-		for _, kv := range plain {
-			if strings.HasPrefix(kv, name+"=") {
-				t.Errorf("%s leaked into the plain environment", name)
-			}
+	// The classification survives as the redaction/logging rule: what an operator
+	// may see named, and what an empty value would make a bug.
+	wantSensitive := []string{"ACME_GATEWAY_PASSWORD", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"}
+	if creds := CredentialNames(files); strings.Join(creds, ",") != strings.Join(wantSensitive, ",") {
+		t.Errorf("credential names = %v, want %v (sorted, values never named)", creds, wantSensitive)
+	}
+	// A credential *directory* is a location: delivered like everything else, but
+	// not one an error string has to scrub.
+	for _, f := range files {
+		if f.Name == "CLAUDE_CONFIG_DIR" && f.Sensitive {
+			t.Error("CLAUDE_CONFIG_DIR names a path, not a secret")
 		}
 	}
 }
 
-func TestSplitEnvRefusesWhatTheChildCannotGetBack(t *testing.T) {
-	if _, _, err := SplitEnv([]string{"PATH"}); err == nil {
-		t.Error("a bare name (no =) must be refused: it would silently vanish from the child's environment")
+func lookup(env []string, name string) string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, name+"=") {
+			return kv
+		}
 	}
-	// An env name that cannot be a file name cannot be delivered as a file, so it
-	// must not be quietly classified as one.
-	if _, _, err := SplitEnv([]string{"MY TOKEN=secret"}); err == nil {
-		t.Error("a credential name that is not a usable file name must be refused")
+	return ""
+}
+
+func TestEnvFilesRefusesWhatTheChildCannotGetBack(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"bare name", []string{"PATH"}, "not NAME=VALUE"},
+		{"name with a space", []string{"MY TOKEN=secret"}, "Secret key or file name"},
+		{"name with a slash", []string{"acme/api=secret"}, "Secret key or file name"},
+		{"name that is not an identifier", []string{"CLAUDE.HOME=/x"}, "environment variable name"},
+		{"repeated name", []string{"PATH=/bin", "PATH=/usr/bin"}, "repeats"},
+		{"empty credential", []string{"ACME_TOKEN="}, "is empty"},
+		{"no environment at all", nil, "empty"},
+	}
+	for _, tc := range cases {
+		if _, err := EnvFiles(tc.env); err == nil {
+			t.Errorf("%s: EnvFiles accepted it", tc.name)
+		} else if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not mention %q", tc.name, err, tc.want)
+		}
+	}
+	// An empty plain entry is the plan's own business (a variable set to nothing),
+	// and the attempt pod must be able to carry it.
+	files, err := EnvFiles([]string{"PATH=/bin", "ACME_FEATURE="})
+	if err != nil {
+		t.Fatalf("an empty plain value must be deliverable: %v", err)
+	}
+	if len(files) != 2 || files[1].Value == nil || string(files[1].Value) != "" {
+		t.Errorf("entries = %+v, want ACME_FEATURE delivered as an empty file", files)
 	}
 }
 
@@ -101,7 +130,7 @@ func TestSensitiveEnvNameShapeRules(t *testing.T) {
 }
 
 func TestBuildSecretHoldsOnlyTheLaunchNeeds(t *testing.T) {
-	secret, err := BuildSecret("9F2C4D6E-1A2B-4C3D-8E9F-0A1B2C3D4E5F", "communication-agents", []Credential{
+	secret, err := BuildSecret("9F2C4D6E-1A2B-4C3D-8E9F-0A1B2C3D4E5F", "communication-agents", []EnvFile{
 		{Name: "OPENAI_API_KEY", Value: []byte("sk-collective-key")},
 		{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: []byte("sk-ant-token\n")},
 	})
@@ -115,7 +144,15 @@ func TestBuildSecretHoldsOnlyTheLaunchNeeds(t *testing.T) {
 		t.Errorf("namespace = %q", secret.Namespace)
 	}
 	if len(secret.Data) != 2 {
-		t.Errorf("data keys = %v, want exactly the two credentials", keysOf(secret.Data))
+		t.Errorf("data keys = %v, want exactly the two entries", keysOf(secret.Data))
+	}
+	// The key is the entry's name: the `env/<NAME>` file layout is the pod's
+	// projection (see BuildPodIdentityEntrypointAndVolumes), because a Kubernetes
+	// Secret key may not contain a `/`.
+	for _, name := range []string{"OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		if _, ok := secret.Data[name]; !ok {
+			t.Errorf("secret has no key %q (keys: %v)", name, keysOf(secret.Data))
+		}
 	}
 	if secret.Immutable == nil || !*secret.Immutable {
 		t.Error("the per-attempt secret must be immutable: it is written once and read once")
@@ -135,13 +172,13 @@ func TestBuildSecretHoldsOnlyTheLaunchNeeds(t *testing.T) {
 }
 
 func TestBuildSecretRefusesEmptyAndMalformedCredentials(t *testing.T) {
-	if _, err := BuildSecret("abc", "ns", []Credential{{Name: "TOKEN", Value: nil}}); err == nil {
+	if _, err := BuildSecret("abc", "ns", []EnvFile{{Name: "TOKEN", Value: nil}}); err == nil {
 		t.Error("an empty credential must be refused, not delivered as an empty password")
 	}
-	if _, err := BuildSecret("abc", "ns", []Credential{{Name: "bad name", Value: []byte("x")}}); err == nil {
+	if _, err := BuildSecret("abc", "ns", []EnvFile{{Name: "bad name", Value: []byte("x")}}); err == nil {
 		t.Error("a malformed credential name must be refused")
 	}
-	if _, err := BuildSecret("abc", "ns", []Credential{{Name: "TOKEN", Value: []byte("a")}, {Name: "TOKEN", Value: []byte("b")}}); err == nil {
+	if _, err := BuildSecret("abc", "ns", []EnvFile{{Name: "TOKEN", Value: []byte("a")}, {Name: "TOKEN", Value: []byte("b")}}); err == nil {
 		t.Error("a duplicate credential must be refused")
 	}
 	if _, err := BuildSecret("", "ns", nil); err == nil {
@@ -150,13 +187,14 @@ func TestBuildSecretRefusesEmptyAndMalformedCredentials(t *testing.T) {
 	if _, err := BuildSecret("abc", "", nil); err == nil {
 		t.Error("no namespace must be refused")
 	}
-	// No credentials at all is legal: not every launch carries one.
+	// An empty entry set is constructible at this layer even though EnvFiles
+	// refuses it: the builder's contract is "these bytes under these keys".
 	s, err := BuildSecret("abc", "ns", nil)
 	if err != nil {
-		t.Fatalf("a launch with no credentials: %v", err)
+		t.Fatalf("a launch with no entries: %v", err)
 	}
 	if len(s.Data) != 0 {
-		t.Errorf("empty credential set produced data %v", keysOf(s.Data))
+		t.Errorf("empty entry set produced data %v", keysOf(s.Data))
 	}
 }
 

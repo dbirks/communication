@@ -23,6 +23,12 @@ worker:
   enforcement: required
   launcher: kubernetes
   agentNamespace: communication-agents
+  # The release's own claim lives in the release namespace and cannot be mounted
+  # by a pod in another one, so attempts mount this claim instead — the kind
+  # script binds it to the same volume as `communication-data` and then reads a
+  # file back through the worker pod to prove the workspace really is shared
+  # (ADR-0082 Decision 4).
+  workspacePVC: communication-agents-data
   capacity: 4
 networkPolicy:
   # Documentation-shaped example: a model endpoint and a git host, in CIDR form
