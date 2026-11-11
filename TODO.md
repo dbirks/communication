@@ -104,8 +104,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
         assistant_status_test.go).
   - [x] F-6 remainder (d99bead, pipelines_updated_at_test.go): workflow.list created_at/updated_at needs pipeline timestamps on PipelineSummary (store, API,
         openapi). Small follow-up.
-  - [ ] F-1: ui.navigate never moves the client.
-  - [ ] F-2 and F-7: there is no way to list agent threads ("no Pi activity" while two Pi threads exist), plus a
+  - [x] F-1: ui.navigate never moves the client. Fixed: f29405f (AssistantPopoverNavigate.test.tsx).
+  - [x] F-2 and F-7 (fixed f29405f: thread.list, threadtools_test.go): there is no way to list agent threads ("no Pi activity" while two Pi threads exist), plus a
         run-versus-thread vocabulary pass.
   - [ ] Re-run prompts 4, 5, 8, 11, 15 and 18 on the deployed app after these land.
 
