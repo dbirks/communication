@@ -659,7 +659,7 @@ func (a APICatchUpStore) CatchUpBriefRevisions(ctx context.Context, c api.Caller
 // same one `catchUpVisibleHead` requires of every project read here.
 const catchUpBriefProfilesSQL = `
 	SELECT v.profile_id::text, COALESCE (p.name, ''), v.version, v.created_at,
-	       COALESCE (u.display_name, NULLIF (v.created_by, ''), '')
+	       COALESCE (u.display_name, CASE WHEN NULLIF (v.created_by, '') IS NULL THEN '' ELSE 'the worker' END)
 	FROM agent_profile_versions v
 	JOIN agent_profiles p ON p.id = v.profile_id
 	LEFT JOIN users u ON u.id::text = v.created_by
@@ -685,6 +685,11 @@ func (a APICatchUpStore) CatchUpBriefProfiles(ctx context.Context, c api.Caller,
 	}
 	defer rows.Close()
 	out := []api.CatchUpBriefChange{}
+	// One row per profile: its newest version in the window. Six saves and locks
+	// of one profile are one change to a returning reader, not six (deployed
+	// finding). Rows arrive newest first, so the first seen wins; a profile
+	// created in the window still reads "created" because its version 1 is in it.
+	index := map[string]int{}
 	for rows.Next() {
 		var (
 			profileID, name, by string
@@ -694,15 +699,24 @@ func (a APICatchUpStore) CatchUpBriefProfiles(ctx context.Context, c api.Caller,
 		if err := rows.Scan(&profileID, &name, &version, &at, &by); err != nil {
 			return nil, catchUpQueryErr(err, "scan catchup brief profile")
 		}
-		kind, line := api.CatchUpChangeProfileEd, "edited"
+		kind := api.CatchUpChangeProfileEd
 		if version <= 1 {
-			kind, line = api.CatchUpChangeProfileNew, "created"
+			kind = api.CatchUpChangeProfileNew
 		}
 		if name == "" {
 			name = "Agent profile " + catchUpBriefShortID(profileID)
 		}
+		if i, seen := index[profileID]; seen {
+			if kind == api.CatchUpChangeProfileNew {
+				out[i].Kind = kind
+			}
+			continue
+		}
+		index[profileID] = len(out)
+		// The title is the profile's name alone: the page's own verb ("Updated",
+		// "Created") comes from the kind.
 		out = append(out, api.CatchUpBriefChange{
-			Kind: kind, Title: name + " " + line, By: by, At: at.UTC(),
+			Kind: kind, Title: name, By: by, At: at.UTC(),
 			Link: "/profiles/" + profileID,
 		})
 	}
