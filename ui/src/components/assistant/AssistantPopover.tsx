@@ -60,7 +60,6 @@ import { useAssistantPrefs } from "../../lib/prefs";
 import {
   ASSISTANT_FAILURE_DEFAULT_LINE,
   assistantFailureLine,
-  assistantTransientErrorLine,
   isRawAssistantErrorText,
   problemOf,
 } from "../../api/client";
@@ -314,14 +313,24 @@ function contextLabelOf(pathname: string): string {
  * earlier tools had already run. So a cause the server names in
  * `ASSISTANT_FAILURE_LINES` is answered with ITS one sentence and nothing is
  * appended to it, and a raw `assistant: …` detail is never shown at all.
+ *
+ * Deployed finding (rerun 18, TODO § 5): the same leak on the other arm — a
+ * Collective 503 read `… — try again. llm-collective… returned http 503 Your
+ * question was not sent — send it again.`, the endpoint's own status line pasted
+ * into the middle of a sentence and a second instruction after it. An upstream
+ * 5xx and a model that is not there are ONE fact to the person (`isModelUnavailable`
+ * now covers both), answered by one sentence with no detail appended and nothing
+ * tacked on after it: the composer still holds the ask and Retry is still there.
  */
 function failureLine(error: unknown, failed: "question" | "decision" = "question"): string {
   if (assistantNotConfigured(error)) {
     return ASSISTANT_NOT_CONFIGURED_LINE;
   }
-  // Deployed finding 2026-11-11: with the model offline the ask used to read as
-  // a broken answer. It is not one, and a second ask will not fix it, so this
-  // cause names the screen where an admin repoints the model.
+  // Deployed finding 2026-11-11 + rerun 18: with the model offline, or the
+  // endpoint answering 5xx, the ask reads as one sentence and the Operations jump
+  // under it carries where an operator fixes it. The endpoint's own words never
+  // join the sentence, and no "send it again" clause follows it — the sentence
+  // already says what to do, and the composer holds the ask.
   if (isModelUnavailable(error)) {
     return MODEL_UNAVAILABLE_LINE;
   }
@@ -334,12 +343,11 @@ function failureLine(error: unknown, failed: "question" | "decision" = "question
   // the screen at all.
   const causeLine = assistantFailureLine(error);
   if (causeLine) return causeLine;
-  const transient = assistantTransientErrorLine(error);
-  if (transient) {
-    return failed === "decision"
-      ? transient
-      : `${transient} Your question was not sent — send it again.`;
-  }
+  // `assistantTransientErrorLine` used to be consulted here. Every cause it can
+  // name is now answered above — an unavailable model by this line's own sentence
+  // (deployed finding rerun 18: the endpoint's status line was being pasted into
+  // the middle of it), a timeout by `ASSISTANT_FAILURE_LINES` — so calling it
+  // again could only say something the lines above already said better.
   const problem = problemOf(error);
   // F-5: a raw internal error string (`assistant: …`) is never the person's
   // sentence. With the detail suppressed there is nothing left to quote, so the

@@ -452,3 +452,132 @@ export function defaultApmTarget(launcherId: string): "claude" | "codex" | "agen
   if (launcherId === "pi") return "agent-skills";
   return "claude";
 }
+
+/** The label of the group the lock attributed to no dependency at all. */
+export const UNATTRIBUTED_SOURCE = "no source named";
+
+/**
+ * One source of staged skills: the dependency that owns the names in it, as the
+ * lock reported them (ADR-0084's `skill_refs[].from_ref`).
+ */
+export interface SkillSourceGroup {
+  /** The owning dependency ref; "" for the names the lock attributed to none. */
+  ref: string;
+  /** The collection's name, the extra package's own label, or `no source named`
+   * — never a guess. */
+  name: string;
+  skills: string[];
+}
+
+/** ref → the collection that ships it, from the library read's entry lists. The
+ * first collection to carry a ref wins the name; a ref no library entry names
+ * stays the ref itself, because that is all anybody knows about it. */
+export function skillSourceNames(
+  collections: APMCollection[] | null | undefined,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const collection of collections ?? []) {
+    for (const entry of collection.latest_revision?.entries ?? []) {
+      if (!map.has(entry.ref)) map.set(entry.ref, collection.name);
+    }
+  }
+  return map;
+}
+
+/** The group label for a ref the lock named: the collection that ships it, the
+ * extra package when the ref IS this profile's own pin, else the ref. */
+export function skillSourceLabel(
+  ref: string,
+  names: Map<string, string>,
+  packageRef?: string | null,
+): string {
+  if (ref === "") return UNATTRIBUTED_SOURCE;
+  const collection = names.get(ref);
+  if (collection) return collection;
+  if (packageRef && ref === packageRef) return "extra package";
+  return ref;
+}
+
+/**
+ * The lock's staged skill names, grouped by the dependency that owns each one
+ * (deployed finding 2026-11-11: 61 rows as one flat list told a person nothing
+ * about where a skill came from). Order: sources by the name they show under,
+ * `no source named` last; a skill the lock did not attribute belongs to the
+ * profile's own extra package when it has one — that IS the package this block
+ * is about — and to the unattributed group otherwise. Names inside a group are
+ * sorted; every skill in the input appears exactly once.
+ */
+export function groupSkillsBySource(
+  skills: readonly string[],
+  skillRefs: readonly { skill: string; from_ref?: string | null }[] | undefined,
+  sourceNames: Map<string, string>,
+  packageRef?: string | null,
+): SkillSourceGroup[] {
+  const owner = new Map<string, string>();
+  for (const row of skillRefs ?? []) {
+    if (row.from_ref) owner.set(row.skill, row.from_ref);
+  }
+  const buckets = new Map<string, string[]>();
+  for (const skill of skills) {
+    // The lock attributed nothing and this profile pins an extra package: the
+    // name came from that package (a single-package lock reports no `skill_refs`
+    // at all, because there was nothing to settle). With no package either the
+    // honest answer is that no source was named.
+    const ref = owner.get(skill) ?? (packageRef || "");
+    const bucket = buckets.get(ref);
+    if (bucket) bucket.push(skill);
+    else buckets.set(ref, [skill]);
+  }
+  return [...buckets.entries()]
+    .map(([ref, names]): SkillSourceGroup => ({
+      ref,
+      name: skillSourceLabel(ref, sourceNames, packageRef),
+      skills: [...names].sort(),
+    }))
+    .sort((a, b) =>
+      a.name === UNATTRIBUTED_SOURCE
+        ? 1
+        : b.name === UNATTRIBUTED_SOURCE
+          ? -1
+          : a.name.localeCompare(b.name),
+    );
+}
+
+/**
+ * The grouped staged-skill list: one collapsible group per source that owns the
+ * names, `<name> · <n> skills`, collapsed by default (deployed finding 2026-11-11: the SKILLS panel's 61 staged skills were one flat list). A profile
+ * that pins nothing but an extra package has one group named `extra package`;
+ * the lock attributing a name to no dependency shows it under `no source named`
+ * rather than guessing where it came from.
+ */
+export function SkillSourceGroups({
+  groups,
+  testidPrefix,
+}: {
+  groups: readonly SkillSourceGroup[];
+  testidPrefix: string;
+}) {
+  return (
+    <ul className="mt-0.5 space-y-[1px]" data-testid={`${testidPrefix}-list`}>
+      {groups.map((group) => (
+        <li
+          key={group.ref || UNATTRIBUTED_SOURCE}
+          data-testid={`${testidPrefix}-${group.ref || "unattributed"}`}
+        >
+          <details>
+            <summary className="cursor-pointer font-mono text-[10.5px] text-muted">
+              {group.name} · {group.skills.length} {group.skills.length === 1 ? "skill" : "skills"}
+            </summary>
+            <ul className="list-disc pl-4">
+              {group.skills.map((skill) => (
+                <li key={skill} className="font-mono text-[11px] text-ink-2">
+                  {skill}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </li>
+      ))}
+    </ul>
+  );
+}

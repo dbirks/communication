@@ -177,6 +177,54 @@ describe("SKILLS panel — attached collections", () => {
     expect(screen.getByTestId(`agent-apm-extra-label-${profile.id}`)).toBeDefined();
   });
 
+  /**
+   * Deployed finding 2026-11-11: the EXTRA PACKAGE block listed every staged
+   * skill name flat (61 rows on the deployed profile). The names now ride one
+   * collapsible group per owning source — the collection that ships the ref, or
+   * `extra package` for the profile's own pin — and every group starts closed.
+   */
+  it("groups the staged skills by source, collapsed by default", async () => {
+    const profile = profileWith({
+      apm_package_ref: "mattpocock/skills#v1.3.1",
+      apm_target: "claude",
+      apm_lock_digest: `sha256:${"1a".repeat(32)}`,
+      apm_collections: [{ collection_id: "c-matt", revision: 1 }],
+      apm_contents: {
+        skills: ["grilling", "tdd", "ask-matt"],
+        skill_refs: [
+          { skill: "grilling", from_ref: MATT_REF },
+          { skill: "tdd", from_ref: MATT_REF },
+        ],
+        instructions: [],
+        mcp_servers: [],
+        truncated: false,
+      },
+    });
+    mount(profile);
+    const contents = await screen.findByTestId(`agent-apm-contents-${profile.id}`);
+    expect(contents.textContent).toContain("SKILLS · 3");
+    // The collection name is a read: wait for the library before the label is
+    // claimed, exactly as the row's own name does.
+    await screen.findByText("Matt Pocock skills");
+
+    const groups = screen.getByTestId(`agent-apm-skills-group-${profile.id}-list`);
+    const rows = groups.querySelectorAll(":scope > li");
+    expect(rows).toHaveLength(2);
+    for (const panel of Array.from(groups.querySelectorAll("details"))) {
+      expect((panel as HTMLDetailsElement).open).toBe(false);
+    }
+    expect(
+      screen.getByTestId(`agent-apm-skills-group-${profile.id}-${MATT_REF}`).textContent,
+    ).toContain("Matt Pocock skills · 2 skills");
+    expect(
+      screen.getByTestId(`agent-apm-skills-group-${profile.id}-mattpocock/skills#v1.3.1`)
+        .textContent,
+    ).toContain("extra package · 1 skill");
+    // The grouped names are still readable — closed, not hidden.
+    expect(groups.textContent).toContain("grilling");
+    expect(groups.textContent).toContain("ask-matt");
+  });
+
   it("shows the empty state when no collections are attached", async () => {
     const profile = profileWith({ apm_collections: [] });
     mount(profile);

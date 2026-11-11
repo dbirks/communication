@@ -255,13 +255,22 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 	// a digest is meaningless without the list it covers, and a version row that
 	// recorded the digest but not the list would be a version that could not be
 	// re-resolved — which is the whole reason the history freezes the ref.
+	//
+	// The DIGEST is the resolve's own value, not the row's. `lockP` was read
+	// before the UPDATE below, so its digest member is the state this write is
+	// leaving, and freezing it wrote a version whose whole content — the lock —
+	// it did not record. Deployed finding 2026-11-11: every lock version of a
+	// profile read `no change` in the app's history, because the version beside
+	// the digest really did carry the pre-lock state (ADR-0058: a version
+	// records the state it landed, never the state it found).
+	frozenDigest := result.LockDigest
 	lockSnapshot, err := AgentProfileSnapshot{
 		Name:              lockP.Name,
 		LauncherID:        lockP.LauncherID,
 		PermissionMode:    lockP.PermissionMode,
 		APMPackageRef:     apmAnyToPtr(lockP.APMPackageRef),
 		APMTarget:         apmAnyToPtr(lockP.APMTarget),
-		APMLockDigest:     apmAnyToPtr(lockP.APMLockDigest),
+		APMLockDigest:     &frozenDigest,
 		APMCollectionPins: lockPins,
 	}.Marshal()
 	if err != nil {

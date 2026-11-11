@@ -279,7 +279,7 @@ describe("approval detail (4g)", () => {
     ]);
 
     expect(await screen.findByTestId(`approval-detail-summary-fallback-${T}`)).toBeTruthy();
-    expect(screen.getByText(/The assistant's model is unavailable right now/)).toBeTruthy();
+    expect(screen.getByText(/The assistant's model isn't available right now/)).toBeTruthy();
     // The gate's own summary still backs the decider — never a blocked gate.
     const fallbackText = textOf(screen.getByTestId(`approval-detail-summary-fallback-${T}`));
     expect(fallbackText).toContain(wireApproval.summary);

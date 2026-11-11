@@ -11,6 +11,8 @@ import {
   assistantFailureLine,
   assistantTransientErrorLine,
   isRawAssistantErrorText,
+  isUpstreamModelUnavailable,
+  problemCauseOf,
 } from "./client";
 import { assistantNotConfigured } from "./assistant";
 
@@ -39,13 +41,78 @@ describe("ApiError.degraded", () => {
 });
 
 describe("assistantTransientErrorLine", () => {
-  it("answers with the retry line for a transient upstream cause", () => {
+  /**
+   * Deployed finding (TODO § 5, rerun 18): a Collective 503 reached the thread as
+   * `The assistant's model is unavailable right now — try again. llm-collective…
+   * returned http 503 Your question was not sent — send it again.` — the endpoint's
+   * own status line inside a sentence, and a second instruction after it. The
+   * upstream 5xx now answers with the model-unavailable sentence and NOTHING is
+   * appended: the endpoint's words are an operator's, not a person's.
+   */
+  it("answers an upstream 5xx with the model-unavailable sentence and no raw detail", () => {
     const line = assistantTransientErrorLine(
       assistantError("model_unreachable", 503, "the model endpoint returned 503"),
     );
-    expect(line).toBe(
-      "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
+    expect(line).toBe("The assistant's model isn't available right now. Try again in a moment.");
+  });
+
+  it.each(["model_unavailable", "upstream_status", "upstream_unavailable"])(
+    "names the model unavailable for the cause %s whatever the endpoint said",
+    (cause) => {
+      const line = assistantTransientErrorLine(
+        assistantError(
+          cause,
+          503,
+          "llm-collective.e-gineering.com returned http 503 Your question was not sent — send it again.",
+        ),
+      );
+      expect(line).toBe("The assistant's model isn't available right now. Try again in a moment.");
+      // The endpoint's host, its status code and its own instruction are gone.
+      expect(line).not.toMatch(/llm-collective|http 503|send it again/i);
+    },
+  );
+
+  it("reads the cause from the body's code member when no degraded is named", () => {
+    // A gateway in front of the endpoint answers the problem shape with `code`;
+    // the failure is the same fact and must read the same.
+    const body = {
+      type: "https://communication.dev/errors/assistant-degraded",
+      title: "Assistant unavailable",
+      status: 503,
+      detail:
+        "llm-collective.e-gineering.com returned http 503 Your question was not sent — send it again.",
+      code: "model_unavailable",
+    };
+    const error = new ApiError(body, body);
+    expect(error.degraded).toBeNull();
+    expect(problemCauseOf(error)).toBe("model_unavailable");
+    expect(isUpstreamModelUnavailable(error)).toBe(true);
+    expect(assistantTransientErrorLine(error)).toBe(
+      "The assistant's model isn't available right now. Try again in a moment.",
     );
+  });
+
+  it("reads an upstream 5xx off the detail when the body names no cause at all", () => {
+    const body = {
+      type: "about:blank",
+      title: "Bad Gateway",
+      status: 502,
+      detail: "llm-collective.e-gineering.com returned http 503",
+    };
+    expect(isUpstreamModelUnavailable(new ApiError(body, body))).toBe(true);
+  });
+
+  it("leaves a failure that is not an outage alone", () => {
+    // A 500 with no cause is the replica's own breakdown, not the model's: the
+    // caller keeps its honest problem line rather than blaming the endpoint.
+    const body = {
+      type: "about:blank",
+      title: "Internal Server Error",
+      status: 500,
+      detail: "boom",
+    };
+    expect(isUpstreamModelUnavailable(new ApiError(body, body))).toBe(false);
+    expect(assistantTransientErrorLine(new ApiError(body, body))).toBeNull();
   });
 
   it("answers with the retry line for a model timeout", () => {
@@ -173,14 +240,15 @@ describe("isRawAssistantErrorText", () => {
 });
 
 /**
- * F-5 on the transient line too: the server's detail is quoted only when it
- * reads as prose, never when it is the raw `assistant: …` string.
+ * F-5 on the transient line too: only a timeout quotes the server's prose, and
+ * never the raw `assistant: …` string. An unavailable model quotes nothing at all
+ * (deployed finding rerun 18).
  */
 describe("assistantTransientErrorLine with a raw detail", () => {
   it("withholds a raw assistant: detail from the retry line", () => {
     expect(
       assistantTransientErrorLine(
-        assistantError("model_unreachable", 503, "assistant: request to api.example.com failed"),
+        assistantError("model_timeout", 504, "assistant: no completion within 30s"),
       ),
     ).toBe("The assistant's model is unavailable right now — try again.");
   });

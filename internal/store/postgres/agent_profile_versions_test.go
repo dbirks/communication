@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dbirks/communication/internal/agent/apm"
 	"github.com/dbirks/communication/internal/api"
 )
 
@@ -301,4 +302,114 @@ func TestAgentProfileAutonomousModePair(t *testing.T) {
 		f.orgID, f.profWName("auton-direct")); err == nil {
 		t.Fatal("the DB CHECK let an autonomous profile with sandbox 'disabled' in")
 	}
+}
+
+// TestAgentProfileVersionSnapshotCarriesTheSkillsMembers is the server half of
+// the deployed finding 2026-11-11: the profile history labelled a collection
+// attach and a lock "no change". A version row cannot say more than it records,
+// so this pins that the snapshot JSON carries ADR-0084's ordered attachment list
+// and ADR-0054's lock digest — the two members the app names `skills changed`
+// and `skills locked` — with the values THIS write landed. The lock arm is the
+// real flow (queue, claim, complete), because it is the one that writes the
+// digest outside the profile's own columns: a snapshot frozen from the row read
+// BEFORE that write records a version in which nothing moved.
+func TestAgentProfileVersionSnapshotCarriesTheSkillsMembers(t *testing.T) {
+	f := apmcSetup(t)
+	ctx := testCtx(t)
+	col := f.create(t, "hist-matt", APMCollectionEntry{Ref: "mattpocock/skills#v1.3.2"})
+	f.publish(t, col.ID, 1)
+
+	prof, err := f.api.CreateAgentProfile(ctx, f.caller(f.alice, true),
+		api.AgentProfileCreateInput{Name: f.profWName("hist"), LauncherID: "claude"})
+	if err != nil {
+		t.Fatalf("CreateAgentProfile: %v", err)
+	}
+
+	// v2: attach the collection with its install target — unlocked, no digest.
+	if _, err := f.api.PatchAgentProfileAPM(ctx, f.caller(f.alice, true), prof.ID,
+		api.AgentProfileAPMPatch{
+			APMTarget:         ptr("claude"),
+			APMCollectionPins: &[]api.APMCollectionPin{{CollectionID: col.ID, Revision: 1}},
+		}); err != nil {
+		t.Fatalf("attach the collection: %v", err)
+	}
+	attached := snapshotMap(t, f, ctx, prof.ID, 2)
+	raw, ok := attached["apm_collections"]
+	if !ok {
+		t.Fatalf("version 2's snapshot carries no apm_collections member: %s", marshalOf(attached))
+	}
+	var pins []APMCollectionPin
+	if err := json.Unmarshal(raw, &pins); err != nil {
+		t.Fatalf("decode apm_collections: %v", err)
+	}
+	if len(pins) != 1 || pins[0].CollectionID != col.ID || pins[0].Revision != 1 {
+		t.Errorf("snapshot apm_collections = %+v, want the one attachment at r1", pins)
+	}
+	if digest := string(attached["apm_lock_digest"]); digest != "null" {
+		t.Errorf("an unlocked attach froze apm_lock_digest = %s, want null", digest)
+	}
+
+	// v3: the worker's resolve records the lock. The version this lands must
+	// freeze the digest the resolve REPORTED, not the null the row carried
+	// before it — otherwise the history says nothing changed on the version
+	// whose whole content is the lock.
+	req, err := f.api.CreateAPMLockRequest(ctx, f.caller(f.alice, true), prof.ID)
+	if err != nil {
+		t.Fatalf("CreateAPMLockRequest: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := f.pool.Exec(ctx, `DELETE FROM apm_lock_requests WHERE id = $1::uuid`, req.RequestID); err != nil {
+			t.Errorf("apm lock cleanup: %v", err)
+		}
+	})
+	turns := &TurnStore{Pool: f.pool}
+	claim, ok, err := turns.ClaimAPMLockRequest(ctx, f.worker)
+	if err != nil || !ok {
+		t.Fatalf("ClaimAPMLockRequest: ok=%v err=%v", ok, err)
+	}
+	result := &apm.ResolveResult{
+		LockDigest:  "sha256:" + strings.Repeat("c", 64),
+		ResolvedRef: "v1.3.2",
+		Commit:      "abc123def456",
+		APMVersion:  "0.34.0",
+		Contents:    apm.Contents{Skills: []string{"grilling"}, SkillRefs: []apm.SkillRef{{Skill: "grilling", FromRef: "mattpocock/skills#v1.3.2"}}},
+	}
+	if err := turns.CompleteAPMLockRequest(ctx, claim, result, nil); err != nil {
+		t.Fatalf("CompleteAPMLockRequest: %v", err)
+	}
+	locked := snapshotMap(t, f, ctx, prof.ID, 3)
+	if got := string(locked["apm_lock_digest"]); got != `"`+result.LockDigest+`"` {
+		t.Errorf("the lock version froze apm_lock_digest = %s, want the digest the resolve reported (%s)",
+			got, result.LockDigest)
+	}
+	if err := json.Unmarshal(locked["apm_collections"], &pins); err != nil {
+		t.Fatalf("decode the lock version's apm_collections: %v", err)
+	}
+	if len(pins) != 1 || pins[0].CollectionID != col.ID {
+		t.Errorf("the lock version froze apm_collections = %+v, want the attachment it still carries", pins)
+	}
+}
+
+// snapshotMap reads one version's snapshot as its raw JSON members, so a key
+// that is absent and a key that is null read differently (they are different
+// facts about the version).
+func snapshotMap(t *testing.T, f *apmcFixture, ctx context.Context, profileID string, version int) map[string]json.RawMessage {
+	t.Helper()
+	var raw []byte
+	if err := f.pool.QueryRow(ctx,
+		`SELECT snapshot FROM agent_profile_versions WHERE profile_id = $1::uuid AND version = $2`,
+		profileID, version).Scan(&raw); err != nil {
+		t.Fatalf("read snapshot of version %d: %v", version, err)
+	}
+	out := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode snapshot of version %d: %v", version, err)
+	}
+	return out
+}
+
+// marshalOf renders a snapshot map for a failure message only.
+func marshalOf(m map[string]json.RawMessage) []byte {
+	b, _ := json.Marshal(m)
+	return b
 }

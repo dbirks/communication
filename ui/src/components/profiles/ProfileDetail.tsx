@@ -18,7 +18,7 @@
  *   that reference this profile in their latest published revision or an open
  *   draft, with the honest empty, loading and error states.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient, useQueries } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
@@ -38,7 +38,13 @@ import {
 } from "../../api/queries";
 import type { AgentProfileAPMPatch } from "../../api/queries";
 import { useApmLockStatus, usePostApmLock } from "../../api/useApmLock";
-import { ProfileSkills } from "../collections/ProfileSkills";
+import {
+  ProfileSkills,
+  groupSkillsBySource,
+  skillSourceNames,
+  SkillSourceGroups,
+} from "../collections/ProfileSkills";
+import { useApmCollections } from "../../api/apmCollections";
 import { agentProfileVersionsKey, useAgentProfileVersions } from "../../api/useProfileVersions";
 import ProfileHistory from "./ProfileHistory";
 import { ENFORCEMENT_COPY } from "../../api/sandbox";
@@ -129,6 +135,19 @@ export default function ProfileDetail({
   const [duplicateProblem, setDuplicateProblem] = useState<unknown>(null);
   const unlocked = profile.apm_package_ref != null && profile.apm_lock_digest == null;
   const contents = profile.apm_contents;
+  // The staged names are grouped by the dependency that owns each one, and the
+  // library read is what turns a ref into a collection name (ADR-0084).
+  const collectionLibrary = useApmCollections();
+  const skillGroups = useMemo(
+    () =>
+      groupSkillsBySource(
+        contents?.skills ?? [],
+        contents?.skill_refs,
+        skillSourceNames(collectionLibrary.data?.collections),
+        profile.apm_package_ref,
+      ),
+    [contents, collectionLibrary.data, profile.apm_package_ref],
+  );
 
   /**
    * `Duplicate…`: `POST` a copy named `<name> copy` (the route takes name +
@@ -347,12 +366,18 @@ export default function ProfileDetail({
                 className="pt-1 font-sans text-[11px] text-muted"
                 data-testid={`agent-apm-contents-${profile.id}`}
               >
-                <div>SKILLS · {(contents.skills ?? []).length}</div>
-                <ul className="mt-0.5 list-disc pl-4">
-                  {(contents.skills ?? []).map((skill) => (
-                    <li key={skill}>{skill}</li>
-                  ))}
-                </ul>
+                <div data-testid={`agent-apm-skills-count-${profile.id}`}>
+                  SKILLS · {(contents.skills ?? []).length}
+                </div>
+                {/* Deployed finding 2026-11-11: the staged names are grouped by
+                    the dependency that owns each one (the lock's `from_ref`), so
+                    61 rows read as the handful of sources they came from. Each
+                    group starts collapsed; the count in the heading is the whole
+                    staged set either way. */}
+                <SkillSourceGroups
+                  groups={skillGroups}
+                  testidPrefix={`agent-apm-skills-group-${profile.id}`}
+                />
                 <div>INSTRUCTIONS · {(contents.instructions ?? []).length}</div>
                 <ul className="mt-0.5 list-disc pl-4">
                   {(contents.instructions ?? []).map((instruction) => (

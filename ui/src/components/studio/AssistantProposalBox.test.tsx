@@ -259,7 +259,7 @@ describe("AssistantProposalBox", () => {
     ).toBe("The assistant is not configured on this server.");
   });
 
-  it("maps a transient upstream degraded code to the retry line, not the not-configured one", () => {
+  it("maps a transient upstream degraded code to the model-unavailable line, not the not-configured one", () => {
     expect(
       draftProposalErrorOf(
         new ApiError(
@@ -267,9 +267,7 @@ describe("AssistantProposalBox", () => {
           null,
         ),
       ),
-    ).toBe(
-      "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
-    );
+    ).toBe("The assistant's model isn't available right now. Try again in a moment.");
   });
 
   it("maps 409 to the reload-before-asking line", () => {

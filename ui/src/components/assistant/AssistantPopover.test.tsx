@@ -399,14 +399,23 @@ describe("approval decision post body (ui-confirm)", () => {
  * not-configured sentence.
  */
 describe("assistant send failure honesty (503 degraded mapping)", () => {
-  it("a transient upstream degraded cause shows the retry line on the send error", async () => {
+  /**
+   * Deployed finding (rerun 18, TODO § 5): a Collective 503 used to read
+   * `… — try again. llm-collective… returned http 503 Your question was not sent
+   * — send it again.` — the endpoint's own status line inside the sentence. An
+   * upstream 5xx now answers with the model-unavailable sentence alone, no detail
+   * appended, and the Operations jump under it (the composer still holds the ask
+   * and Retry is still on screen).
+   */
+  it("answers an upstream 5xx with one sentence and no leaked endpoint detail", async () => {
     stubFetch(() =>
       json(
         {
           type: "https://communication.dev/errors/assistant-degraded",
           title: "Assistant unavailable",
           status: 503,
-          detail: "the model endpoint returned 503",
+          detail:
+            "llm-collective.e-gineering.com returned http 503 Your question was not sent — send it again.",
           degraded: "model_unreachable",
         },
         503,
@@ -417,18 +426,26 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
     const input = await screen.findByTestId("assistant-composer-input");
     fireEvent.change(input, { target: { value: "what is failing?" } });
     fireEvent.click(screen.getByTestId("assistant-send"));
-    expect((await screen.findByTestId("assistant-error")).textContent).toContain(
-      "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain(
+      "The assistant's model isn't available right now. Try again in a moment.",
+    );
+    expect(line.textContent).not.toMatch(/llm-collective|returned http|send it again/i);
+    // The fix is an operator's, so the jump that names it rides the line — the
+    // same one the missing-model cause has always carried.
+    expect(within(line).getByTestId("assistant-error-link").textContent).toBe(
+      "Settings → Operations → Models",
     );
   });
 
   /**
-   * Deployed finding 2026-11-11: `COMMUNICATION_ASSISTANT_MODEL` named a model
-   * the collective had offline. The ask used to fail as `malformed_completion`
-   * (and, before the retry fix, after three attempts); the server now names the
-   * cause `model_unavailable`, and the thread says what is actually true — the
-   * model is not there, and the fix is an admin's, on Operations → Models. So
-   * the line carries that jump, and does NOT tell the person to try again.
+   * Deployed finding 2026-11-11 + rerun 18: `COMMUNICATION_ASSISTANT_MODEL` named
+   * a model the collective had offline. The ask used to fail as
+   * `malformed_completion` (and, before the retry fix, after three attempts); the
+   * server names the cause `model_unavailable` and the thread says the one
+   * sentence — the model is not there — with the jump an admin can act on. The
+   * sentence no longer names the admin's screen (the link does that, in the
+   * nav's own words), and the endpoint's own words never appear.
    */
   it("names a missing model as missing, with the jump an admin can act on", async () => {
     stubFetch(() =>
@@ -471,12 +488,15 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
 
     const line = await screen.findByTestId("assistant-error");
     expect(line.textContent).toContain(
-      "The assistant's model isn't available right now. An admin can check Settings → Operations → Models.",
+      "The assistant's model isn't available right now. Try again in a moment.",
     );
-    // Not the transient line: a second ask cannot fix a model that is off.
-    expect(line.textContent).not.toContain("try again");
-    // And not the old blame-the-answer reading, in either wording.
-    expect(line.textContent).not.toMatch(/malformed|didn.t answer|not a completion/i);
+    // The admin's screen is the link, not the sentence.
+    expect(line.textContent).not.toContain("An admin can check");
+    // Never the endpoint's own status line, and not the old blame-the-answer
+    // reading in either wording.
+    expect(line.textContent).not.toMatch(
+      /llm-collective|returned http|malformed|didn.t answer|not a completion/i,
+    );
 
     fireEvent.click(within(line).getByTestId("assistant-error-link"));
     await waitFor(() => expect(seen[seen.length - 1]).toBe("/settings/operations"));

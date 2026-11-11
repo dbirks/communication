@@ -10,13 +10,15 @@
  * reading of it: one sentence that says what is wrong, and the place an admin
  * can fix it.
  *
- * Kept apart from `api/client.ts`'s `assistantTransientErrorLine` on purpose:
- * that line is "the model was tried and did not answer — try again", which is
- * advice for a transient outage. A model this deployment points at nothing is
- * not going to answer on the second ask, and the person cannot fix it — so the
- * copy names the admin's screen instead of a retry.
+ * Kept apart from `api/client.ts`'s `assistantTransientErrorLine` in name only:
+ * deployed finding 2026-11-11 (rerun 18) merged the two sentences. An upstream 5xx
+ * and a model this deployment points at nothing are one fact on screen — the model
+ * did not answer — and both send the person to the same place, so both read
+ * `ASSISTANT_MODEL_UNAVAILABLE_LINE`, and nothing (least of all the endpoint's own
+ * status line) is ever appended to it.
  */
 import { degradedOf } from "../../api/assistant";
+import { ASSISTANT_MODEL_UNAVAILABLE_LINE, isUpstreamModelUnavailable } from "../../api/client";
 import { routes } from "../../lib/routes";
 
 /** The `degraded` cause the broker answers with when the endpoint says THIS
@@ -28,11 +30,20 @@ export const MODEL_UNAVAILABLE = "model_unavailable";
  * at a model that is up. */
 export const MODEL_UNAVAILABLE_ROUTE = routes.ops();
 
-/** What the thread shows for that cause. The model's own name is in the
- * server's `detail` (and on the Operations page); this line stays true for
- * every model, which is why it does not repeat it. */
-export const MODEL_UNAVAILABLE_LINE =
-  "The assistant's model isn't available right now. An admin can check Settings → Operations → Models.";
+/** What the thread shows for that cause.
+ *
+ * One sentence for a missing model AND for an upstream 5xx — see
+ * `ASSISTANT_MODEL_UNAVAILABLE_LINE` in `api/client.ts`, which this line IS. The
+ * model's own name and the endpoint's status line live in the server's `detail`
+ * (and in the log, and on the Operations page); this line stays true for every
+ * model and every gateway, which is why it repeats neither. Deployed finding
+ * (rerun 18): the endpoint's `returned http 503` used to be glued onto the end of
+ * the sentence a person read.
+ *
+ * Where the fix lives is said by the jump this line rides on — see
+ * `failureLineRoute` and `MODEL_UNAVAILABLE_LINK_LABEL` — not by the sentence.
+ */
+export const MODEL_UNAVAILABLE_LINE = ASSISTANT_MODEL_UNAVAILABLE_LINE;
 
 /**
  * The cause the ask route answers with when the deployment set no
@@ -57,9 +68,13 @@ export const STEP_CAP_LINE =
 /** The label of the jump under the line — the nav's own words, not a route. */
 export const MODEL_UNAVAILABLE_LINK_LABEL = "Settings → Operations → Models";
 
-/** True when this failure is the model-not-available cause. */
+/** True when this failure says the model was not there to answer: the
+ * `model_unavailable` cause, or an upstream 5xx (`model_unreachable`, a bare
+ * `… returned http 503` detail). Both get the same one sentence and the same
+ * jump, because from the person's seat they are the same fact — the answer that
+ * did not come — and the Operations page is where an operator looks either way. */
 export function isModelUnavailable(error: unknown): boolean {
-  return degradedOf(error) === MODEL_UNAVAILABLE;
+  return isUpstreamModelUnavailable(error) || degradedOf(error) === MODEL_UNAVAILABLE;
 }
 
 /**

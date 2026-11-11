@@ -9466,10 +9466,21 @@ components:
               type: ["string", "null"]
             apm_target:
               type: ["string", "null"]
-              enum: [claude, codex, null]
+              enum: [claude, codex, agent-skills, null]
             apm_lock_digest:
               type: ["string", "null"]
               pattern: "^sha256:[0-9a-f]{64}$"
+            apm_collections:
+              type: array
+              description: The ordered collection revisions this version attached (ADR-0084).
+              items:
+                type: object
+                required: [collection_id, revision]
+                properties:
+                  collection_id: {type: string}
+                  revision: {type: integer}
+            model:
+              type: ["string", "null"]
         created_by:
           type: string
           description: >

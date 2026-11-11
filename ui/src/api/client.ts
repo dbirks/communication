@@ -91,16 +91,72 @@ export function problemOf(error: unknown): components["schemas"]["Problem"] {
 }
 
 /**
+ * The one sentence for every failure where the model did not answer because it,
+ * or the endpoint serving it, is not there: the `model_unavailable` cause (this
+ * deployment points at a model the endpoint does not have) and any upstream 5xx.
+ *
+ * Deployed finding (TODO rerun 18): a Collective 503 reached the thread as
+ * `The assistant's model is unavailable right now — try again. llm-collective…
+ * returned http 503 Your question was not sent — send it again.` — the endpoint's
+ * own status line glued onto a sentence that already said what to do, with a
+ * clause after it that contradicted it. The endpoint's words are an operator's
+ * fact (the log and Settings → Operations → Models carry them), not a sentence;
+ * this is the one a person reads, and nothing is ever appended to it.
+ */
+export const ASSISTANT_MODEL_UNAVAILABLE_LINE =
+  "The assistant's model isn't available right now. Try again in a moment.";
+
+/** The stable causes that mean the model was not there to answer. `upstream_*`
+ * is the generic `code` spelling the non-assistant problem shapes use for the
+ * same fact, so both members are read (see `problemCauseOf`). */
+const UPSTREAM_UNAVAILABLE_CAUSES = new Set([
+  "model_unavailable",
+  "model_unreachable",
+  "upstream_status",
+  "upstream_unavailable",
+]);
+
+/**
+ * The stable cause a problem names: the assistant's `degraded` member, or the
+ * generic `code` member the other problem shapes carry. Null when the body named
+ * neither.
+ */
+export function problemCauseOf(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.degraded) return error.degraded;
+  const code = (error.body as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code !== "" ? code : null;
+}
+
+/**
+ * True when this failure says the model was not there — by its stable cause, or
+ * by the endpoint's own status line in the detail (`… returned http 503`), which
+ * is how an upstream 5xx reads when the body names no cause at all.
+ */
+export function isUpstreamModelUnavailable(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const cause = problemCauseOf(error);
+  if (cause && UPSTREAM_UNAVAILABLE_CAUSES.has(cause)) return true;
+  return /\breturned http [45]\d\d\b/i.test(error.detail);
+}
+
+/**
  * The honest one-line answer for a failed assistant turn whose `degraded` cause
  * was a transient upstream failure: the broker already retried within its
  * budget (ADR-0023 § 7), so the endpoint was tried and failed — the caller should
  * try again, not be told the assistant is unconfigured. Returns null when the
  * cause is not transient; the caller keeps its own honest line.
+ *
+ * An unavailable model answers with `ASSISTANT_MODEL_UNAVAILABLE_LINE` and
+ * NOTHING appended (deployed finding rerun 18); only a timeout — where the
+ * server's own prose names the deadline that went off — still quotes its detail.
  */
 export function assistantTransientErrorLine(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null;
+  if (isUpstreamModelUnavailable(error)) return ASSISTANT_MODEL_UNAVAILABLE_LINE;
   const degraded = error.degraded;
-  if (degraded !== "model_unreachable" && degraded !== "model_timeout") return null;
+  if (degraded !== "model_timeout" && degraded !== "timeout" && degraded !== "upstream_timeout")
+    return null;
   // F-5: the server's own detail is quoted only when it reads as a sentence.
   // A raw Go error string (`assistant: …`) is never put in front of a person.
   const detail = error.detail && !isRawAssistantErrorText(error.detail) ? ` ${error.detail}` : "";
@@ -153,6 +209,9 @@ const ASSISTANT_CAUSES_SAID_ELSEWHERE = new Set([
   "model_call_cap_exceeded",
   "tool_cap_exceeded",
   "model_unreachable",
+  // The same fact in the generic `code` spelling, and the bare-5xx shapes.
+  "upstream_status",
+  "upstream_unavailable",
   // The person's own words broke a stated rule (empty, over the length cap);
   // the server's detail IS the actionable sentence, so it is not hidden behind
   // a generic one.

@@ -3780,8 +3780,14 @@ export interface components {
           | "autonomous_within_sandbox";
         apm_package_ref?: string | null;
         /** @enum {string|null} */
-        apm_target?: "claude" | "codex" | null;
+        apm_target?: "claude" | "codex" | "agent-skills" | null;
         apm_lock_digest?: string | null;
+        /** @description The ordered collection revisions this version attached (ADR-0084). */
+        apm_collections?: {
+          collection_id: string;
+          revision: number;
+        }[];
+        model?: string | null;
       };
       /** @description The user id (or worker id, for a lock-written version) that produced the version. */
       created_by: string;
