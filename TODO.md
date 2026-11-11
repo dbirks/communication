@@ -35,13 +35,15 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       surface as "model unavailable", not `malformed_completion`.
 
 ## 2. Assistant UI
-- [ ] When a thread opens in the sidebar, its top bar is flush with the top.
+- [x] When a thread opens in the sidebar, its top bar is flush with the top.
+      Evidence: 7f2de80 (the dock is fixed at y=0 even on a scrolled page; every head is 48px), ~/.cache/pi-orch/communication/evidence/asst-fullpage/c-dock-pinned-top-scrolled300.png, AssistantPanel.test.tsx.
 - [x] No-decision-model state: remove "fixed table decides" and write copy
       that makes sense. Evidence: f0a14e3 ("built-in rules flag risky changes"), SetupChecklist.test.tsx.
 - [x] "don't ask" uses the same capitalization as its sibling controls. Evidence: f0a14e3
       (pills read "Ask every change / Ask when risky / Don't ask"), types.test.ts.
-- [ ] Full screen collapses the far-left nav by default, and leaving full
-      screen restores it.
+- [x] Full screen collapses the far-left nav by default, and leaving full
+      screen restores it. Evidence: 7f2de80, Shell.test.tsx (rail on /assistant, pref not written,
+      overlay plus Esc), ~/.cache/pi-orch/communication/evidence/asst-fullpage/a-assistant-fullpage.png.
 
 ## 3. Search (CommandPalette)
 - [x] The box is vertically centered. Evidence: e9624ea.
