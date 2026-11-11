@@ -543,6 +543,11 @@ func (s APINodeTemplateStore) adoptDrafts(ctx context.Context, tx pgx.Tx, c api.
 			Scan(&draftID); err != nil {
 			return nil, nil, fmt.Errorf("postgres: create adopted draft %s: %w", a.pipelineID, err)
 		}
+		// The adoption writes a draft under the definition — the same write a
+		// route-7 create performs, so it stamps the same clock (00034).
+		if err := touchPipeline(ctx, tx, a.pipelineID); err != nil {
+			return nil, nil, err
+		}
 		if err := m4AppendAppendable(ctx, tx, events.TypePipelineDraftCreated, c.OrganizationID, "",
 			c.UserID, events.PipelineDraftCreatedPayload{
 				PipelineID: a.pipelineID, DraftID: draftID, Reason: "template_adopt",

@@ -222,7 +222,7 @@ func m4PipelineView(p Pipeline) api.PipelineView {
 	return api.PipelineView{
 		ID: p.ID, Slug: p.Slug, DisplayName: p.DisplayName, Description: p.Description,
 		Folder:    p.Folder,
-		CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
+		CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 		LatestRevisionNumber: p.LatestRevisionNumber, RevisionCount: p.RevisionCount,
 		Archived:  p.ArchivedAt != nil,
 		Revisions: []api.RevisionSummaryView{},
@@ -252,7 +252,7 @@ func (a APIPipelineStore) ListPipelines(ctx context.Context, c api.Caller) ([]ap
 	}
 	rows, err := pool.Query(ctx, `
 		SELECT p.id, p.slug, p.display_name, p.folder, COALESCE(r.latest, 0), COALESCE(r.total, 0),
-		       p.archived_at IS NOT NULL
+		       p.archived_at IS NOT NULL, p.created_at, p.updated_at
 		`+m4PipelineFrom+`
 		ORDER BY p.slug`, c.OrganizationID)
 	if err != nil {
@@ -264,7 +264,7 @@ func (a APIPipelineStore) ListPipelines(ctx context.Context, c api.Caller) ([]ap
 		var v api.PipelineSummaryView
 		var archived bool
 		if err := rows.Scan(&v.ID, &v.Slug, &v.DisplayName, &v.Folder, &v.LatestRevisionNumber,
-			&v.RevisionCount, &archived); err != nil {
+			&v.RevisionCount, &archived, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("postgres: scan api pipeline: %w", err)
 		}
 		v.Archived = archived
@@ -295,10 +295,10 @@ func (a APIPipelineStore) CreatePipeline(ctx context.Context, c api.Caller, slug
 		INSERT INTO pipelines (organization_id, slug, display_name, description, created_by)
 		VALUES ($1::uuid, $2, $3, $4, $5::uuid)
 		RETURNING id::text, organization_id::text, slug, display_name, description,
-		          created_by::text, created_at, archived_at`,
+		          created_by::text, created_at, updated_at, archived_at`,
 		c.OrganizationID, slug, displayName, description, c.UserID).
 		Scan(&pipe.ID, &pipe.OrganizationID, &pipe.Slug, &pipe.DisplayName,
-			&pipe.Description, &pipe.CreatedBy, &pipe.CreatedAt, &pipe.ArchivedAt)
+			&pipe.Description, &pipe.CreatedBy, &pipe.CreatedAt, &pipe.UpdatedAt, &pipe.ArchivedAt)
 	if pipUniqueErr(err) != nil {
 		return api.PipelineView{}, api.ErrPipelineConflict
 	}
@@ -380,14 +380,15 @@ func (a APIPipelineStore) UpdatePipeline(ctx context.Context, c api.Caller, pipe
 		    folder       = CASE
 		        WHEN $6::int = 0 THEN folder
 		        WHEN $6::int = 1 THEN NULL
-		        ELSE $7 END
+		        ELSE $7 END,
+		    updated_at   = now()
 		WHERE id = $2::uuid AND organization_id = $1::uuid
 		RETURNING id, organization_id, slug, display_name, description, folder,
-		          created_by::text, created_at, archived_at`,
+		          created_by::text, created_at, updated_at, archived_at`,
 		c.OrganizationID, pipelineID, in.DisplayName, in.Description, in.Archived,
 		folderMode, folderVal).
 		Scan(&pipe.ID, &pipe.OrganizationID, &pipe.Slug, &pipe.DisplayName, &pipe.Description,
-			&pipe.Folder, &pipe.CreatedBy, &pipe.CreatedAt, &pipe.ArchivedAt)
+			&pipe.Folder, &pipe.CreatedBy, &pipe.CreatedAt, &pipe.UpdatedAt, &pipe.ArchivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.PipelineView{}, api.ErrPipelineNotFound
 	}
@@ -652,6 +653,9 @@ func (a APIPipelineStore) ReplaceDraft(ctx context.Context, c api.Caller, draftI
 	if err != nil {
 		return api.DraftView{}, fmt.Errorf("postgres: api replace draft %s: %w", draftID, err)
 	}
+	if err := touchPipeline(ctx, tx, d.PipelineID); err != nil {
+		return api.DraftView{}, err
+	}
 	if err := m4AppendAppendable(ctx, tx, events.TypePipelineDraftUpdated, orgID, "",
 		c.UserID, events.PipelineDraftUpdatedPayload{
 			DraftID: d.ID, Version: d.Version, SourceSHA256: d.SourceSHA256,
@@ -681,7 +685,7 @@ func (a APIPipelineStore) DeleteDraft(ctx context.Context, c api.Caller, draftID
 	if _, err := pool.Exec(ctx, `DELETE FROM pipeline_drafts WHERE id = $1::uuid`, draftID); err != nil {
 		return fmt.Errorf("postgres: api delete draft %s: %w", draftID, err)
 	}
-	return nil
+	return touchPipeline(ctx, pool, d.PipelineID)
 }
 
 // RecordValidation is route 11's write: status + the body verbatim + the
@@ -737,6 +741,9 @@ func (a APIPipelineStore) RecordValidation(ctx context.Context, c api.Caller, dr
 	}
 	if err != nil {
 		return api.DraftView{}, fmt.Errorf("postgres: api record validation %s: %w", draftID, err)
+	}
+	if err := touchPipeline(ctx, tx, d.PipelineID); err != nil {
+		return api.DraftView{}, err
 	}
 	codes := make([]string, 0, len(in.Body.Errors))
 	for _, e := range in.Body.Errors {
@@ -864,6 +871,9 @@ func (a APIPipelineStore) PublishDraft(ctx context.Context, c api.Caller, draftI
 		}); err != nil {
 		return api.RevisionView{}, err
 	}
+	if err := touchPipeline(ctx, tx, rev.PipelineID); err != nil {
+		return api.RevisionView{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return api.RevisionView{}, fmt.Errorf("postgres: commit publish: %w", err)
 	}
@@ -989,12 +999,12 @@ func (a APIPipelineStore) DeprecateRevision(ctx context.Context, c api.Caller, r
 		return api.RevisionView{}, fmt.Errorf("postgres: begin deprecate revision: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var orgID, digest string
+	var orgID, digest, revPipelineID string
 	err = tx.QueryRow(ctx, `
 		UPDATE pipeline_revisions SET status = 'deprecated'
 		WHERE id = $1::uuid AND organization_id = $2::uuid AND status = 'published'
-		RETURNING organization_id::text, revision_digest`, revisionID, c.OrganizationID).
-		Scan(&orgID, &digest)
+		RETURNING organization_id::text, revision_digest, pipeline_id::text`, revisionID, c.OrganizationID).
+		Scan(&orgID, &digest, &revPipelineID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `
@@ -1017,6 +1027,9 @@ func (a APIPipelineStore) DeprecateRevision(ctx context.Context, c api.Caller, r
 	}
 	if err := m4AppendAppendable(ctx, tx, events.TypePipelineRevisionDeprecated, orgID, "",
 		c.UserID, events.PipelineRevisionDeprecatedPayload{RevisionID: revisionID, RevisionDigest: digest}); err != nil {
+		return api.RevisionView{}, err
+	}
+	if err := touchPipeline(ctx, tx, revPipelineID); err != nil {
 		return api.RevisionView{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

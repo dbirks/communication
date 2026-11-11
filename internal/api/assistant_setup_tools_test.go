@@ -230,7 +230,9 @@ func oneSetupWorld() *setupStore {
 		DefaultBranch: "main", CredentialSecretID: &credCopy, Credential: "configured",
 	}}
 	store.pipelines = []PipelineSummaryView{
-		{ID: "pl-1", Slug: "issue-to-pr", DisplayName: "Issue to PR", LatestRevisionNumber: 3, RevisionCount: 3},
+		{ID: "pl-1", Slug: "issue-to-pr", DisplayName: "Issue to PR", LatestRevisionNumber: 3, RevisionCount: 3,
+			CreatedAt: time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 11, 11, 16, 0, 0, 0, time.UTC)},
 		{ID: "pl-2", Slug: "team-review", DisplayName: "Team review", LatestRevisionNumber: 1, RevisionCount: 1},
 	}
 	store.pipelineGet["pl-1"] = PipelineView{ID: "pl-1", Slug: "issue-to-pr", DisplayName: "Issue to PR", LatestRevisionNumber: 3}
@@ -613,7 +615,10 @@ func TestAssistantWorkflowListRows(t *testing.T) {
 		t.Fatalf("payload = %s, want both library rows", raw)
 	}
 	want := map[string]map[string]any{
-		"pl-1": {"slug": "issue-to-pr", "name": "Issue to PR", "latest_revision": float64(3), "sample": true},
+		"pl-1": {"slug": "issue-to-pr", "name": "Issue to PR", "latest_revision": float64(3), "sample": true,
+			// F-6 remainder: the row carries WHEN — the store's create/draft
+			// clock, RFC3339 (migration 00034).
+			"created_at": "2026-11-09T08:00:00Z", "updated_at": "2026-11-11T16:00:00Z"},
 		"pl-2": {"slug": "team-review", "name": "Team review", "latest_revision": float64(1), "sample": false},
 	}
 	for _, row := range rows {

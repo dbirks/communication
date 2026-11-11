@@ -291,6 +291,9 @@ func (a APIAssignmentStore) CreateAssignment(ctx context.Context, c api.Caller, 
 	if err != nil {
 		return api.AssignmentView{}, fmt.Errorf("postgres: api create assignment: %w", err)
 	}
+	if err := touchPipeline(ctx, tx, in.PipelineID); err != nil {
+		return api.AssignmentView{}, err
+	}
 
 	budgetMap, err := m4JSONAsMap(overrides)
 	if err != nil {
@@ -473,6 +476,9 @@ func (a APIAssignmentStore) updateWithVersion(ctx context.Context, c api.Caller,
 	if err != nil {
 		return api.AssignmentView{}, fmt.Errorf("postgres: api update assignment: %w", err)
 	}
+	if err := touchPipeline(ctx, tx, beforePipe); err != nil {
+		return api.AssignmentView{}, err
+	}
 	if in.PinnedRevisionID != nil {
 		digest, err = m4RevisionDigestLocked(ctx, tx, revID)
 		if err != nil {
@@ -558,13 +564,13 @@ func (a APIAssignmentStore) DeleteAssignment(ctx context.Context, c api.Caller, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var projectID string
+	var projectID, pipelineID string
 	err = tx.QueryRow(ctx, `
-		SELECT x.project_id::text
+		SELECT x.project_id::text, x.pipeline_id::text
 		`+m4AssignmentScope+`
 		  AND x.id = $4::uuid
 		FOR UPDATE OF x`,
-		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, assignmentID).Scan(&projectID)
+		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, assignmentID).Scan(&projectID, &pipelineID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ErrAssignmentNotFound
 	}
@@ -577,6 +583,9 @@ func (a APIAssignmentStore) DeleteAssignment(ctx context.Context, c api.Caller, 
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM assignments WHERE id = $1::uuid`, assignmentID); err != nil {
 		return fmt.Errorf("postgres: api delete assignment %s: %w", assignmentID, err)
+	}
+	if err := touchPipeline(ctx, tx, pipelineID); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("postgres: commit delete assignment: %w", err)

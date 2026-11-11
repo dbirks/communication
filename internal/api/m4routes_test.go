@@ -1718,6 +1718,44 @@ func TestM4PipelinesSortedBySlug(t *testing.T) {
 	}
 }
 
+// TestM4PipelineSummaryCarriesTimestamps: route 1's rows carry created_at and
+// updated_at (assistant exercise 2026-11-11 F-6 remainder — the assistant's
+// "what changed this week?" needs a date on the library row to quote).
+func TestM4PipelineSummaryCarriesTimestamps(t *testing.T) {
+	fx := m4PopulatedServer(t)
+	stamp := time.Date(2026, 11, 11, 16, 0, 0, 0, time.UTC)
+	for i := range fx.pipes.listRows {
+		fx.pipes.listRows[i].CreatedAt = stamp
+		fx.pipes.listRows[i].UpdatedAt = stamp.Add(90 * time.Minute)
+	}
+	rec := fx.get(t, "http://localhost:8080/api/v1/pipelines")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /pipelines = %d: %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Pipelines []PipelineSummaryView `json:"pipelines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("body shape: %v (%s)", err, rec.Body)
+	}
+	if len(list.Pipelines) != 3 {
+		t.Fatalf("pipelines = %d rows, want 3", len(list.Pipelines))
+	}
+	for _, row := range list.Pipelines {
+		if !row.CreatedAt.Equal(stamp) {
+			t.Errorf("%s created_at = %s, want %s", row.Slug, row.CreatedAt, stamp)
+		}
+		if !row.UpdatedAt.Equal(stamp.Add(90 * time.Minute)) {
+			t.Errorf("%s updated_at = %s, want %s", row.Slug, row.UpdatedAt, stamp.Add(90*time.Minute))
+		}
+	}
+	// Wire form: RFC3339 on the response, not an epoch or a Go-native layout.
+	if !strings.Contains(rec.Body.String(), `"created_at":"2026-11-11T16:00:00Z"`) ||
+		!strings.Contains(rec.Body.String(), `"updated_at":"2026-11-11T17:30:00Z"`) {
+		t.Errorf("timestamps not RFC3339 on the wire: %s", rec.Body)
+	}
+}
+
 // ------------------------------------------------------------- scheduler (37)
 
 func TestM4SchedulerStatusShape(t *testing.T) {

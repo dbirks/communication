@@ -225,6 +225,13 @@ type assistantWorkflowRow struct {
 	LatestRevision int      `json:"latest_revision"`
 	Sample         bool     `json:"sample"`
 	AssignedTo     []string `json:"assigned_to"`
+	// CreatedAt/UpdatedAt answer "when did this workflow last move?" — the
+	// exercise's prompt 18 could only say "nothing published, nothing
+	// assigned" because the row carried no date (F-6 remainder). UpdatedAt
+	// is the pipeline store's own clock (migration 00034): create, draft
+	// save, publish, deprecation, assignment change all stamp it.
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // assistantWorkflowDetail is workflow.inspect: the row above plus the
@@ -283,6 +290,8 @@ func (t *assistantSetupTools) WorkflowList(ctx context.Context, c as.Caller) (js
 			LatestRevision: p.LatestRevisionNumber,
 			Sample:         sampleWorkflowSlugs[strings.TrimSpace(p.Slug)],
 			AssignedTo:     slugs,
+			CreatedAt:      assistantFormatTime(p.CreatedAt),
+			UpdatedAt:      assistantFormatTime(p.UpdatedAt),
 		})
 	}
 	return asstJSON(out)
@@ -312,6 +321,8 @@ func (t *assistantSetupTools) WorkflowInspect(ctx context.Context, c as.Caller,
 			LatestRevision: view.LatestRevisionNumber,
 			Sample:         sampleWorkflowSlugs[strings.TrimSpace(view.Slug)],
 			AssignedTo:     assigned[view.ID],
+			CreatedAt:      assistantFormatTime(view.CreatedAt),
+			UpdatedAt:      assistantFormatTime(view.UpdatedAt),
 		},
 		Revisions:      make([]assistantRevisionRow, 0, maxInspectRevisions),
 		RevisionsTotal: len(revs),

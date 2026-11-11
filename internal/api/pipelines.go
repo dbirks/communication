@@ -222,13 +222,15 @@ type DraftPublishInput struct {
 // Folder is ADR-0049 § 8's display group: null = unfiled, computed into
 // groups client-side.
 type PipelineSummaryView struct {
-	ID                   string  `json:"id"`
-	Slug                 string  `json:"slug"`
-	DisplayName          string  `json:"display_name"`
-	Folder               *string `json:"folder"`
-	LatestRevisionNumber int     `json:"latest_revision_number"`
-	RevisionCount        int     `json:"revision_count"`
-	Archived             bool    `json:"archived"`
+	ID                   string    `json:"id"`
+	Slug                 string    `json:"slug"`
+	DisplayName          string    `json:"display_name"`
+	Folder               *string   `json:"folder"`
+	LatestRevisionNumber int       `json:"latest_revision_number"`
+	RevisionCount        int       `json:"revision_count"`
+	Archived             bool      `json:"archived"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // PipelineListView is the PipelineList envelope.
@@ -247,6 +249,7 @@ type PipelineView struct {
 	Folder               *string               `json:"folder"`
 	CreatedBy            string                `json:"created_by"`
 	CreatedAt            time.Time             `json:"created_at"`
+	UpdatedAt            time.Time             `json:"updated_at"`
 	LatestRevisionNumber int                   `json:"latest_revision_number"`
 	RevisionCount        int                   `json:"revision_count"`
 	Archived             bool                  `json:"archived"`

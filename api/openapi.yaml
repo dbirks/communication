@@ -11446,6 +11446,20 @@ components:
           description: >
             ADR-0049 § 8: the display group the Workflows index groups by;
             null = unfiled (the UI renders the Unfiled group client-side).
+        created_at:
+          type: string
+          format: date-time
+          description: >
+            When the definition was created (migration 00034). Additive —
+            like `folder`, older fixtures omit it; the server always serves it.
+        updated_at:
+          type: string
+          format: date-time
+          description: >
+            The newest write the pipeline store made for this definition —
+            create, metadata PATCH, draft save, publish, deprecation,
+            assignment change (assistant exercise 2026-11-11 F-6: the
+            assistant must be able to say WHEN a workflow last moved).
     PipelineList:
       title: PipelineList
       type: object
@@ -11486,6 +11500,12 @@ components:
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: >
+            The newest write the pipeline store made for this definition
+            (migration 00034); additive like `folder`.
         latest_revision_number:
           type: integer
           minimum: 0

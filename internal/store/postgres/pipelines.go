@@ -59,9 +59,14 @@ type Pipeline struct {
 	Description    string
 	// Folder is ADR-0049 § 8's display string: NULL = unfiled, the API
 	// never special-cases an empty string (the CHECK allows none).
-	Folder     *string
-	CreatedBy  string
-	CreatedAt  time.Time
+	Folder    *string
+	CreatedBy string
+	CreatedAt time.Time
+	// UpdatedAt is the newest write the pipeline store made for this
+	// definition (00034, assistant exercise F-6): create, metadata PATCH,
+	// archive, draft save, publish, deprecation, assignment change. It moves
+	// inside the same transaction as the write it stamps.
+	UpdatedAt  time.Time
 	ArchivedAt *time.Time
 	// LatestRevisionNumber and RevisionCount are read together with the row
 	// (contract § 2.1 route 1); 0 when nothing has ever been published.
@@ -138,11 +143,11 @@ type Assignment struct {
 }
 
 const pipPipelineColumns = `id, organization_id, slug, display_name, description,
-	created_by::text, created_at, archived_at`
+	created_by::text, created_at, updated_at, archived_at`
 
 const pipPipelineShape = `
 	SELECT p.id, p.organization_id, p.slug, p.display_name, p.description,
-	       p.folder, p.created_by::text, p.created_at, p.archived_at,
+	       p.folder, p.created_by::text, p.created_at, p.updated_at, p.archived_at,
 	       COALESCE(r.latest, 0), COALESCE(r.total, 0)
 	FROM pipelines p
 	LEFT JOIN LATERAL (
@@ -156,7 +161,7 @@ func (s *PipelineStore) scanPipeline(row pgx.Row) (Pipeline, error) {
 		arch *time.Time
 	)
 	err := row.Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.DisplayName, &p.Description,
-		&p.Folder, &p.CreatedBy, &p.CreatedAt, &arch, &p.LatestRevisionNumber, &p.RevisionCount)
+		&p.Folder, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &arch, &p.LatestRevisionNumber, &p.RevisionCount)
 	p.ArchivedAt = arch
 	return p, err
 }
@@ -172,7 +177,7 @@ func (s *PipelineStore) CreatePipeline(ctx context.Context, organizationID, crea
 		RETURNING `+pipPipelineColumns,
 		organizationID, slug, displayName, description, createdBy).
 		Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.DisplayName, &p.Description,
-			&p.CreatedBy, &p.CreatedAt, &p.ArchivedAt)
+			&p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.ArchivedAt)
 	if pipUniqueErr(err) != nil {
 		return Pipeline{}, ErrConflict
 	}
@@ -220,7 +225,8 @@ func (s *PipelineStore) ListPipelines(ctx context.Context, organizationID string
 // revisions and runs are untouched (ADR-0002); archiving twice is a no-op.
 func (s *PipelineStore) ArchivePipeline(ctx context.Context, id string) error {
 	_, err := s.Pool.Exec(ctx, `
-		UPDATE pipelines SET archived_at = COALESCE(archived_at, now()) WHERE id = $1::uuid`, id)
+		UPDATE pipelines SET archived_at = COALESCE(archived_at, now()), updated_at = now()
+		WHERE id = $1::uuid`, id)
 	if err != nil {
 		return fmt.Errorf("postgres: archive pipeline %s: %w", id, err)
 	}
@@ -287,6 +293,9 @@ func (s *PipelineStore) CreateDraft(ctx context.Context, in NewDraft) (Draft, er
 		}
 		return Draft{}, fmt.Errorf("postgres: create draft for pipeline %s: %w", in.PipelineID, err)
 	}
+	if err := touchPipeline(ctx, s.Pool, d.PipelineID); err != nil {
+		return Draft{}, err
+	}
 	return d, nil
 }
 
@@ -349,6 +358,9 @@ func (s *PipelineStore) ReplaceDraftDocument(ctx context.Context, draftID, docum
 	if err != nil {
 		return Draft{}, fmt.Errorf("postgres: replace draft %s document: %w", draftID, err)
 	}
+	if err := touchPipeline(ctx, s.Pool, d.PipelineID); err != nil {
+		return Draft{}, err
+	}
 	return d, nil
 }
 
@@ -399,6 +411,9 @@ func (s *PipelineStore) RecordValidation(ctx context.Context, draftID, status st
 	}
 	if err != nil {
 		return Draft{}, fmt.Errorf("postgres: record validation for draft %s: %w", draftID, err)
+	}
+	if err := touchPipeline(ctx, s.Pool, d.PipelineID); err != nil {
+		return Draft{}, err
 	}
 	return d, nil
 }
@@ -506,6 +521,9 @@ func (s *PipelineStore) PublishDraft(ctx context.Context, draftID string, in New
 		WHERE id = $1::uuid AND version = $3`, draftID, rev.ID, in.ExpectedDraftVersion); err != nil {
 		return PipelineRevision{}, fmt.Errorf("postgres: mark draft %s published: %w", draftID, err)
 	}
+	if err := touchPipeline(ctx, tx, rev.PipelineID); err != nil {
+		return PipelineRevision{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return PipelineRevision{}, fmt.Errorf("postgres: commit publish: %w", err)
 	}
@@ -594,9 +612,16 @@ func (s *PipelineStore) ListRevisions(ctx context.Context, pipelineID string) ([
 // untouched (ADR-0002, route 15). A deprecated row deprecating again is a
 // no-op, and no other column moves.
 func (s *PipelineStore) DeprecateRevision(ctx context.Context, revisionID string) error {
+	// One statement: the deprecation, and — only when a row actually flipped —
+	// the definition's updated_at re-stamp (00034: the store stamps its own
+	// writes; an already-deprecated revision writes nothing and stamps nothing).
 	_, err := s.Pool.Exec(ctx, `
-		UPDATE pipeline_revisions SET status = 'deprecated'
-		WHERE id = $1::uuid AND status = 'published'`, revisionID)
+		WITH r AS (
+			UPDATE pipeline_revisions SET status = 'deprecated'
+			WHERE id = $1::uuid AND status = 'published'
+			RETURNING pipeline_id
+		)
+		UPDATE pipelines p SET updated_at = now() FROM r WHERE p.id = r.pipeline_id`, revisionID)
 	if err != nil {
 		return fmt.Errorf("postgres: deprecate revision %s: %w", revisionID, err)
 	}
@@ -657,6 +682,9 @@ func (s *PipelineStore) CreateAssignment(ctx context.Context, in NewAssignment) 
 	if err != nil {
 		return Assignment{}, fmt.Errorf("postgres: create assignment project=%s pipeline=%s: %w",
 			in.ProjectID, in.PipelineID, err)
+	}
+	if err := touchPipeline(ctx, s.Pool, a.PipelineID); err != nil {
+		return Assignment{}, err
 	}
 	return a, nil
 }
@@ -736,6 +764,9 @@ func (s *PipelineStore) UpdateAssignment(ctx context.Context, id string, p Updat
 	if err != nil {
 		return Assignment{}, fmt.Errorf("postgres: update assignment %s: %w", id, err)
 	}
+	if err := touchPipeline(ctx, s.Pool, a.PipelineID); err != nil {
+		return Assignment{}, err
+	}
 	return a, nil
 }
 
@@ -743,19 +774,41 @@ func (s *PipelineStore) UpdateAssignment(ctx context.Context, id string, p Updat
 // pinned revision and policies_snapshot because runs reference the revision
 // row, not the assignment, for everything that executes.
 func (s *PipelineStore) DeleteAssignment(ctx context.Context, id string) error {
-	tag, err := s.Pool.Exec(ctx, `DELETE FROM assignments WHERE id = $1::uuid`, id)
+	var pipelineID string
+	err := s.Pool.QueryRow(ctx, `
+		DELETE FROM assignments WHERE id = $1::uuid RETURNING pipeline_id::text`, id).Scan(&pipelineID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPipelineNotFound
+	}
 	if err != nil {
 		// A run still pointing at the assignment is a FK refusal, not a
 		// miss: the API answers 409 with that fact.
 		return fmt.Errorf("postgres: delete assignment %s: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrPipelineNotFound
-	}
-	return nil
+	return touchPipeline(ctx, s.Pool, pipelineID)
 }
 
 // ---------------------------------------------------------------- helpers
+
+// pipExec is the Exec seam both *pgxpool.Pool and pgx.Tx satisfy, so one
+// helper stamps the definition's clock whether or not the write runs inside
+// a transaction.
+type pipExec interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// touchPipeline re-stamps a definition's updated_at (00034). Every write the
+// pipeline store makes below the pipelines row — draft save, validation
+// record, publish, deprecation, assignment change — calls this in the same
+// transaction as its own write, so pipelines.updated_at is the newest honest
+// time the assistant can quote about a workflow (exercise 2026-11-11 F-6).
+func touchPipeline(ctx context.Context, q pipExec, pipelineID string) error {
+	if _, err := q.Exec(ctx, `
+		UPDATE pipelines SET updated_at = now() WHERE id = $1::uuid`, pipelineID); err != nil {
+		return fmt.Errorf("postgres: touch pipeline %s: %w", pipelineID, err)
+	}
+	return nil
+}
 
 // pipUniqueErr maps 23505 (and composite-key 23P01) onto ErrConflict and
 // returns every other error unchanged.
