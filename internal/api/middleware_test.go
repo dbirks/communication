@@ -286,7 +286,7 @@ func TestPanicBeforeAnyWrite(t *testing.T) {
 // wantCSP is the policy pinned verbatim, so editing appCSPBaseTemplate cannot
 // pass by agreeing with itself.
 const wantCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-	"img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; " +
+	"img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; " +
 	"frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 const wantPermissionsPolicy = "camera=(), geolocation=(), microphone=(self)"
@@ -356,7 +356,7 @@ func TestSecurityHeadersKeepEveryDirective(t *testing.T) {
 		"default-src":     "'self'",
 		"script-src":      "'self'",
 		"style-src":       "'self' 'unsafe-inline'",
-		"img-src":         "'self' data: blob:",
+		"img-src":         "'self' data: blob: https:",
 		"font-src":        "'self' data:",
 		"connect-src":     "'self'",
 		"frame-ancestors": "'none'",

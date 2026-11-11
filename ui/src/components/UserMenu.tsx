@@ -1,41 +1,27 @@
 /**
  * The sidebar footer's user menu: the signed-in user's avatar + name is the
  * trigger (`user-badge`), and the menu carries the account affordances —
- * Settings, Operations, Sign out. The box, arrow, placement (opens upward,
- * right-aligned) and menu keyboard live in the ds primitive
+ * Profile, Settings, Operations, Sign out. The box, arrow, placement (opens
+ * upward, right-aligned) and menu keyboard live in the ds primitive
  * (`components/ds/Menu`): Escape closes and returns focus to the trigger,
  * arrow keys move between items, click-outside closes, ArrowDown opens.
+ *
+ * The avatar is `UserAvatar`: the identity provider's `picture` claim when the
+ * login released one, the person's initials otherwise. The same trigger serves
+ * the expanded column and the collapsed rail — `Sidebar`'s footer narrows the
+ * button so only the tile prints ink there.
  */
 import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useNavigate } from "react-router";
 import { problemOf } from "../api/client";
 import { useLogout, useMe } from "../api/queries";
 import { Menu, MENU_ITEM_CLASS } from "./ds/Menu";
+import UserAvatar from "./UserAvatar";
 import { routes } from "../lib/routes";
 
 const MENU_LIST_ID = "user-menu-list";
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring";
-
-function initialsOf(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
-
-function InitialsTile({ name, className = "" }: { name: string; className?: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={`grid place-items-center rounded-[3px] border border-ink bg-surface font-mono text-ink ${className}`}
-    >
-      {initialsOf(name) || "?"}
-    </span>
-  );
-}
 
 export default function UserMenu() {
   const me = useMe();
@@ -45,6 +31,7 @@ export default function UserMenu() {
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const displayName = me.data?.display_name ?? "";
+  const avatarUrl = me.data?.avatar_url ?? "";
 
   const close = () => setOpen(false);
 
@@ -81,8 +68,8 @@ export default function UserMenu() {
         onKeyDown={onTriggerKeyDown}
         className={`flex w-full items-center gap-2 rounded-[3px] px-2 py-[3px] text-left hover:bg-fill ${FOCUS_RING}`}
       >
-        <InitialsTile name={displayName} className="h-[26px] w-[26px] text-[10px]" />
-        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-2">
+        <UserAvatar name={displayName} avatarUrl={avatarUrl} size={24} testid="user-avatar" />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
           <strong data-testid="user-badge" className="font-semibold text-ink">
             {displayName}
           </strong>
@@ -102,6 +89,18 @@ export default function UserMenu() {
         {/* Items drawn here so the e2e ids stay literal attributes —
             `scripts/check-testids.mjs` never follows a string through a
             prop. */}
+        <button
+          type="button"
+          role="menuitem"
+          data-testid="user-menu-profile"
+          onClick={() => {
+            close();
+            navigate(routes.account());
+          }}
+          className={MENU_ITEM_CLASS}
+        >
+          Profile
+        </button>
         <button
           type="button"
           role="menuitem"

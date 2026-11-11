@@ -30,7 +30,11 @@ type User struct {
 	OrganizationID string
 	DisplayName    string
 	Email          string
-	IsOrgAdmin     bool
+	// AvatarURL is the provider's `picture` claim as released at the last
+	// login: an https URL, or "" when the provider released none. It is a
+	// cache of someone else's data, never an identity key.
+	AvatarURL  string
+	IsOrgAdmin bool
 }
 
 // LoginState is one in-flight OIDC Authorization Code + PKCE handshake. It
@@ -52,9 +56,11 @@ type IdentityStore struct {
 
 // idnUserColumns is the users projection returned by every identity query.
 // The users.email column is nullable; it is coalesced to the empty string so
-// callers never deal with three states of the same field.
+// callers never deal with three states of the same field. users.avatar_url is
+// NOT NULL with an empty-string default (migration 00031), so it needs no
+// coalesce either.
 const idnUserColumns = `u.id::text, u.organization_id::text, u.display_name,
-	COALESCE(u.email, ''), u.is_org_admin`
+	COALESCE(u.email, ''), u.avatar_url, u.is_org_admin`
 
 // DefaultOrganization returns the organization seeded by migration 00001.
 // M1 is single-tenant, so login always provisions users into this row.
@@ -78,13 +84,19 @@ func (s *IdentityStore) DefaultOrganization(ctx context.Context) (Organization, 
 // UpsertOIDCUser maps (issuer, subject) to a user, creating the user and its
 // identity row on first login and refreshing profile fields afterwards.
 //
+// avatarURL is written verbatim on every login, including when it is the empty
+// string: it mirrors a claim the identity provider owns, so a provider that
+// stops releasing a picture takes the avatar away rather than leaving a stale
+// face on the screen forever. Callers sanitize first (internal/api/auth keeps
+// https URLs only) and migration 00031 CHECKs the same rule.
+//
 // makeAdmin can only ever grant is_org_admin: a later login that is not in the
 // bootstrap list never revokes an existing admin. The whole mapping runs in
 // one transaction; a concurrent first login for the same subject surfaces as a
 // unique violation on oidc_identities and is retried once, by which point the
 // identity row exists and the update path applies.
 func (s *IdentityStore) UpsertOIDCUser(ctx context.Context, orgID, issuer, subject,
-	displayName, email string, makeAdmin bool) (User, error) {
+	displayName, email, avatarURL string, makeAdmin bool) (User, error) {
 	if s == nil || s.Pool == nil {
 		return User{}, errors.New("postgres: identity store has no pool")
 	}
@@ -94,7 +106,7 @@ func (s *IdentityStore) UpsertOIDCUser(ctx context.Context, orgID, issuer, subje
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		u, err := s.idnUpsertUser(ctx, orgID, issuer, subject, displayName, email, makeAdmin)
+		u, err := s.idnUpsertUser(ctx, orgID, issuer, subject, displayName, email, avatarURL, makeAdmin)
 		if err == nil {
 			return u, nil
 		}
@@ -107,7 +119,7 @@ func (s *IdentityStore) UpsertOIDCUser(ctx context.Context, orgID, issuer, subje
 }
 
 func (s *IdentityStore) idnUpsertUser(ctx context.Context, orgID, issuer, subject,
-	displayName, email string, makeAdmin bool) (u User, err error) {
+	displayName, email, avatarURL string, makeAdmin bool) (u User, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return User{}, fmt.Errorf("postgres: begin identity upsert: %w", err)
@@ -124,17 +136,19 @@ func (s *IdentityStore) idnUpsertUser(ctx context.Context, orgID, issuer, subjec
 		FROM oidc_identities i
 		JOIN users u ON u.id = i.user_id
 		WHERE i.issuer = $1 AND i.subject = $2`, issuer, subject).
-		Scan(&u.ID, &u.OrganizationID, &u.DisplayName, &u.Email, &u.IsOrgAdmin)
+		Scan(&u.ID, &u.OrganizationID, &u.DisplayName, &u.Email, &u.AvatarURL, &u.IsOrgAdmin)
 	switch {
 	case err == nil:
 		u, err = idnScanUser("refresh user", tx.QueryRow(ctx, `
 			UPDATE users AS u SET
 				display_name  = $2,
 				email         = $3,
+				avatar_url    = $4,
 				last_login_at = now(),
-				is_org_admin  = is_org_admin OR $4
+				is_org_admin  = is_org_admin OR $5
 			WHERE id = $1::uuid
-			RETURNING `+idnUserColumns, u.ID, displayName, idnEmailParam(email), makeAdmin))
+			RETURNING `+idnUserColumns,
+			u.ID, displayName, idnEmailParam(email), avatarURL, makeAdmin))
 		if err != nil {
 			return User{}, err
 		}
@@ -149,9 +163,11 @@ func (s *IdentityStore) idnUpsertUser(ctx context.Context, orgID, issuer, subjec
 	}
 
 	u, err = idnScanUser("insert user", tx.QueryRow(ctx, `
-		INSERT INTO users AS u (organization_id, display_name, email, is_org_admin, last_login_at)
-		VALUES ($1::uuid, $2, $3, $4, now())
-		RETURNING `+idnUserColumns, orgID, displayName, idnEmailParam(email), makeAdmin))
+		INSERT INTO users AS u (organization_id, display_name, email, avatar_url,
+			is_org_admin, last_login_at)
+		VALUES ($1::uuid, $2, $3, $4, $5, now())
+		RETURNING `+idnUserColumns,
+		orgID, displayName, idnEmailParam(email), avatarURL, makeAdmin))
 	if err != nil {
 		return User{}, err
 	}
@@ -336,8 +352,9 @@ type idnScanner interface {
 // trailing destinations (a session's csrf_token) in the same pass.
 func idnScanUser(what string, row idnScanner, extra ...any) (User, error) {
 	var u User
-	dest := make([]any, 0, 5+len(extra))
-	dest = append(dest, &u.ID, &u.OrganizationID, &u.DisplayName, &u.Email, &u.IsOrgAdmin)
+	dest := make([]any, 0, 6+len(extra))
+	dest = append(dest, &u.ID, &u.OrganizationID, &u.DisplayName, &u.Email,
+		&u.AvatarURL, &u.IsOrgAdmin)
 	dest = append(dest, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return User{}, idnWrapScan(what, err)

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -118,6 +119,7 @@ func (s *Service) Authenticate(r *http.Request) (*api.Principal, error) {
 		OrganizationID: u.OrganizationID,
 		DisplayName:    u.DisplayName,
 		Email:          u.Email,
+		AvatarURL:      u.AvatarURL,
 		CSRFToken:      csrf,
 		IsOrgAdmin:     u.IsOrgAdmin,
 	}, nil
@@ -175,12 +177,15 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // idTokenClaims are the profile claims this deployment consumes. email is
-// optional and never an identity key.
+// optional and never an identity key. picture is the provider's profile image
+// URL; providers that keep it off the ID token (tailscale's tsidp serves it
+// only from /userinfo) are handled by userInfoProfile below.
 type idTokenClaims struct {
 	Nonce             string `json:"nonce"`
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
 	Email             string `json:"email"`
+	Picture           string `json:"picture"`
 }
 
 // handleCallback finishes the handshake: consume state, exchange the code with
@@ -272,6 +277,22 @@ func (s *Service) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	displayName := displayNameFrom(claims, subject)
+	avatarURL := avatarURLFrom(claims.Picture)
+	if avatarURL == "" || displayName == subject {
+		// One UserInfo round trip, only when the ID token left something out.
+		// A failure here is never fatal: this login is already verified.
+		if uiPicture, uiName := s.userInfoProfile(ctx, p, tok); uiPicture != "" || uiName != "" {
+			if avatarURL == "" {
+				avatarURL = uiPicture
+			}
+			// ADR-0012 §4 precedence (name -> preferred_username -> subject)
+			// still holds: UserInfo only fills the gap where the ID token
+			// carried neither name claim.
+			if displayName == subject && uiName != "" {
+				displayName = uiName
+			}
+		}
+	}
 
 	org, err := s.store.DefaultOrganization(ctx)
 	if err != nil {
@@ -279,7 +300,7 @@ func (s *Service) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := s.store.UpsertOIDCUser(ctx, org.ID, s.cfg.Issuer, subject,
-		displayName, claims.Email, s.cfg.IsBootstrapAdmin(subject))
+		displayName, claims.Email, avatarURL, s.cfg.IsBootstrapAdmin(subject))
 	if err != nil {
 		s.serverError(w, r, "callback", fmt.Errorf("auth: upsert user: %w", err))
 		return
@@ -331,9 +352,15 @@ type meResponse struct {
 	ID           string       `json:"id"`
 	DisplayName  string       `json:"display_name"`
 	Email        string       `json:"email"`
+	AvatarURL    string       `json:"avatar_url"`
 	IsOrgAdmin   bool         `json:"is_org_admin"`
 	Organization organization `json:"organization"`
 	CSRFToken    string       `json:"csrf_token"`
+	// IssuerHost is the host of the configured OIDC issuer ("idp.example"), so
+	// the Profile page can say where the name and picture come from without the
+	// UI ever learning the issuer URL or the client id. "" when the issuer will
+	// not parse.
+	IssuerHost string `json:"issuer_host"`
 }
 
 type organization struct {
@@ -361,10 +388,24 @@ func (s *Service) handleMe(w http.ResponseWriter, r *http.Request) {
 		ID:           p.UserID,
 		DisplayName:  p.DisplayName,
 		Email:        p.Email,
+		AvatarURL:    p.AvatarURL,
 		IsOrgAdmin:   p.IsOrgAdmin,
 		Organization: organization{ID: org.ID, Slug: org.Slug, Name: org.Name},
 		CSRFToken:    p.CSRFToken,
+		IssuerHost:   s.issuerHost(),
 	})
+}
+
+// issuerHost is the host part of the configured issuer, for the Profile page's
+// "Signed in with …" line. The full issuer URL (which can carry a tenant path)
+// and the client id stay server-side: the page needs a name to print, not an
+// endpoint to call.
+func (s *Service) issuerHost() string {
+	u, err := url.Parse(strings.TrimSpace(s.cfg.Issuer))
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // userSummary is one entry of GET /api/v1/users.
@@ -492,6 +533,64 @@ func displayNameFrom(c idTokenClaims, subject string) string {
 		}
 	}
 	return subject
+}
+
+// maxAvatarURLLen matches the users_avatar_url_check length cap (migration
+// 00031): a claim longer than this is not a URL anyone meant to load into an
+// <img>.
+const maxAvatarURLLen = 2048
+
+// avatarURLFrom is the one place a provider-supplied picture becomes stored
+// state: an absolute https URL with a host, or "". Anything else — relative,
+// http, data:, javascript:, a bare word — becomes "" so the UI draws initials
+// and the value never reaches a browser as an img src.
+func avatarURLFrom(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" || len(v) > maxAvatarURLLen ||
+		!strings.HasPrefix(strings.ToLower(v), "https://") {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return ""
+	}
+	return v
+}
+
+// userInfoProfile queries the provider's UserInfo endpoint once, for the
+// picture and name claims the ID token did not carry. tailscale's tsidp is the
+// reason this exists: it takes `picture` from the Tailscale profile and serves
+// it ONLY at /userinfo, never in the ID token (see serveUserInfo and the
+// userInfo struct in
+// https://raw.githubusercontent.com/tailscale/tailscale/main/cmd/tsidp/tsidp.go,
+// read 2026-11-11).
+//
+// Every failure mode returns two empty strings — no endpoint advertised, no
+// access token, an error, a body without those claims — because the login is
+// already verified and a missing face is never a reason to refuse a session.
+func (s *Service) userInfoProfile(ctx context.Context, p *oidc.Provider,
+	tok *oauth2.Token) (picture, name string) {
+	if p.UserInfoEndpoint() == "" || tok == nil || tok.AccessToken == "" {
+		return "", ""
+	}
+	uctx, cancel := context.WithTimeout(oidc.ClientContext(ctx, s.client), discoveryTimeout)
+	defer cancel()
+	info, err := p.UserInfo(uctx, oauth2.StaticTokenSource(tok))
+	if err != nil {
+		s.log.WarnContext(ctx, "oidc userinfo request failed; continuing without a picture",
+			"detail", redactErr(err))
+		return "", ""
+	}
+	var claims struct {
+		Picture string `json:"picture"`
+		Name    string `json:"name"`
+	}
+	if err := info.Claims(&claims); err != nil {
+		s.log.WarnContext(ctx, "oidc userinfo claims unreadable; continuing without a picture",
+			"detail", redactErr(err))
+		return "", ""
+	}
+	return avatarURLFrom(claims.Picture), strings.TrimSpace(claims.Name)
 }
 
 // sessionHash is the only form of a session token that is ever persisted.

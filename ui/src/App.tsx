@@ -59,6 +59,7 @@ const RunDeepLink = lazy(() => import("./pages/RunDeepLink"));
 const ProjectSettings = lazy(() => import("./pages/ProjectSettings"));
 const Projects = lazy(() => import("./pages/Projects"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
+const ProfilePage = lazy(() => import("./pages/Profile"));
 const Steps = lazy(() => import("./pages/Steps"));
 const Threads = lazy(() => import("./pages/Threads"));
 // The assistant's full page (handoff §1): a real route so the URL is shareable
@@ -464,6 +465,17 @@ export default function App() {
             }
           />
           <Route path="/settings" element={<Redirect to={routes.settings()} />} />
+          {/* The signed-in person's own page (`/profile`, singular — the
+            plural `/profiles` is the agent-profile library). Read-only: the
+            identity provider owns the name, the email and the picture. */}
+          <Route
+            path="/profile"
+            element={
+              <RequireAuth>
+                <ProfilePage />
+              </RequireAuth>
+            }
+          />
           {/* Operations is a real Settings tab (`/settings/:tab` → `operations`);
             the old `/ops` URL stays alive as a replace redirect to the tab. */}
           <Route path="/ops" element={<Navigate to={routes.ops()} replace />} />

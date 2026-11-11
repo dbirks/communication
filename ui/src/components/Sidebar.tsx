@@ -296,8 +296,9 @@ function ProjectTree() {
 }
 
 /**
- * The footer the app bar used to carry: the signed-in user as the menu
- * trigger (`user-badge`) over the account menu (`user-menu-list`: Settings,
+ * The footer the app bar used to carry: the signed-in user (their provider's
+ * picture, or their initials — `UserAvatar`) as the menu trigger
+ * (`user-badge`) over the account menu (`user-menu-list`: Profile, Settings,
  * Operations, Sign out), plus the honest "not signed in" state. The replica
  * name moved to Settings — the honest operations signal the footer used to
  * carry — and the Operations page shows it too.
@@ -310,10 +311,10 @@ function Footer({ rail = false }: { rail?: boolean }) {
       className={
         rail
           ? // The rail has room for the avatar tile and nothing else. The
-            // button is pinned to the tile's own 26px with its own overflow,
+            // button is pinned to the tile's own 24px with its own overflow,
             // so the name (which stays in the DOM, and stays the trigger's
             // accessible name) prints no ink past the tile.
-            "w-full border-t border-line pt-2 [&>div>button]:mx-auto [&>div>button]:w-[26px] [&>div>button]:gap-0 [&>div>button]:overflow-hidden [&>div>button]:px-0"
+            "w-full border-t border-line pt-2 [&>div>button]:mx-auto [&>div>button]:w-[24px] [&>div>button]:gap-0 [&>div>button]:overflow-hidden [&>div>button]:px-0"
           : "mt-auto border-t border-line px-1 pt-2"
       }
     >

@@ -105,7 +105,7 @@ const (
 	appCSPBaseTemplate = "default-src 'self'; " +
 		"script-src 'self'; " +
 		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data: blob:; " +
+		"img-src 'self' data: blob: https:; " +
 		"font-src 'self' data:; " +
 		"connect-src 'self'; " +
 		"frame-src %s; " +
@@ -133,8 +133,17 @@ const (
 //     studio) writes inline style attributes and injects <style> rules at
 //     runtime, which the browser rejects without 'unsafe-inline'. Inline CSS
 //     cannot execute script under this policy (script-src has no inline).
-//   - img-src 'self' data: blob: — icons/images are same-origin, and the
-//     bundle creates blob: object URLs for client-side downloads.
+//   - img-src 'self' data: blob: https: — icons/images are same-origin, and the
+//     bundle creates blob: object URLs for client-side downloads. https: is
+//     here for one thing: the identity provider's profile picture
+//     (users.avatar_url, migration 00031). It cannot be narrowed to the issuer
+//     origin, because the issuer is not where the image lives — tailscale's
+//     tsidp serves `picture` as the Tailscale profile URL, i.e. a Google or
+//     GitHub avatar host, not the funnel host it issues tokens from. The
+//     server stores nothing but an absolute https URL (avatarURLFrom rejects
+//     http, data: and javascript: claims), so https: is the smallest scheme set
+//     that draws a face; `http:` stays out, and script, connect and frame
+//     sources are untouched — a remote image can still load nothing else.
 //   - font-src 'self' data: — the fonts are self-hosted woff/woff2 emitted
 //     under /assets (@font-face URLs are all /assets/...); no CDN font faces.
 //   - connect-src 'self' — apiFetch() and every EventSource are same-origin

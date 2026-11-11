@@ -2940,7 +2940,7 @@ export interface components {
     };
     /**
      * Me
-     * @description The signed-in principal plus the CSRF token required by mutations.
+     * @description The signed-in principal plus the CSRF token required by mutations. `avatar_url` and `issuer_host` are listed as not-required because a replica that predates migration 00031 answers this route without them: every consumer must treat a missing `avatar_url` as the empty string (draw initials). A current server always sends both.
      */
     Me: {
       /** Format: uuid */
@@ -2948,6 +2948,10 @@ export interface components {
       display_name: string;
       /** @description From the OIDC `email` claim; null when the provider did not supply it. */
       email: string | null;
+      /** @description The identity provider's `picture` claim as released at the last login (migration 00031) — an absolute `https://` URL, or `"` when the provider released none or released a non-https one. It is a cache of a claim the provider owns: it changes when the person changes their profile there, never from this app. Display-only — it authorizes nothing. */
+      avatar_url?: string;
+      /** @description Host (and port, when non-default) of the configured OIDC issuer, so the Profile page can name where the person signed in. The full issuer URL and the client id stay server-side. */
+      issuer_host?: string;
       is_org_admin: boolean;
       organization: components["schemas"]["Organization"];
       /** @description Send back as the `X-CSRF-Token` header on every mutation. */

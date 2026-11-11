@@ -88,6 +88,13 @@ export const routes = {
   /** User settings: `/settings/:tab` (`layout`, `assistant`, `operations`);
       `/settings` → `layout`. */
   settings: (tab?: string): string => (tab ? `/settings/${encode(tab)}` : "/settings/layout"),
+  /**
+   * `/profile` — the signed-in PERSON's own page (their name, picture and
+   * organization, all read-only because the identity provider owns them). It
+   * is deliberately singular and separate from `profiles()`/`profile(id)`
+   * above, which are the AGENT profile library.
+   */
+  account: (): string => "/profile",
   /** `/approvals/:approvalId` — the 4g approval detail page (ADR-0052). */
   approval: (id: string): string => `/approvals/${encode(id)}`,
 };

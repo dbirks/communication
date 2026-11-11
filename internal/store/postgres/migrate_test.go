@@ -214,7 +214,9 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00030 (assistant handoff §6:
+// version every replica demands. Current head: 00031 (avatar: users.avatar_url,
+// the https-only `picture` claim cached from the identity provider at login) on
+// top of 00030 (assistant handoff §6:
 // the assistant_changes kind CHECK gains the five setup kinds) on top of
 // 00029 (ADR-0078 § Grouping:
 // catchup_work_items.group_key + its partial (project_id, group_key) unique
@@ -282,10 +284,15 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
 //
+// Head bump for 00031 (avatar: users.avatar_url — NOT NULL with an
+// empty-string default, CHECK https-only-or-empty, ≤ 2048 chars — refreshed by
+// UpsertOIDCUser on every login and surfaced as `avatar_url` on
+// GET /api/v1/me).
+//
 // Head bump for 00030 (assistant handoff §6: the assistant_changes kind CHECK
 // gains project_create, repo_add, assignment_set, run_cancel and
 // schedule_create — forward-only, no row rewritten).
-const migHeadVersion = 30
+const migHeadVersion = 31
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.

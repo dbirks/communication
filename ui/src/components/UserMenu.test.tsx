@@ -1,23 +1,28 @@
 /**
  * The sidebar footer's user menu (`components/UserMenu.tsx`): the signed-in
- * user's avatar + name is the menu trigger, and the menu carries Settings,
- * Operations and Sign out. The menu semantics are asserted with the keyboard
- * (open, arrows, Escape → focus returns to the trigger, click-outside closes)
- * and the sign-out writes the real `POST /auth/logout` mutation.
+ * user's avatar + name is the menu trigger, and the menu carries Profile,
+ * Settings, Operations and Sign out. The menu semantics are asserted with the
+ * keyboard (open, arrows, Escape → focus returns to the trigger, click-outside
+ * closes) and the sign-out writes the real `POST /auth/logout` mutation.
+ *
+ * The avatar itself is `components/UserAvatar.tsx` (own test file); what lives
+ * here is which picture the trigger draws — the `avatar_url` /me released, or
+ * the initials when it released none.
  */
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
+import type { Me } from "../api/types";
 
 /** Wait budget for the first round trips the menu's reads wait on. */
 const READ_MS = 5_000;
 
 const PREFS_PATH = "/api/v1/me/preferences";
 
-function routes(extra: RouteStub[] = []): RouteStub[] {
+function routes(extra: RouteStub[] = [], me: Me = meFixture): RouteStub[] {
   return [
-    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/me", body: me },
     { path: "/api/v1/projects", body: { items: [projectFixture] } },
     { path: "/api/v1/pipelines", body: { pipelines: [] } },
     { path: "/api/v1/agent-profiles", body: { items: [] } },
@@ -40,21 +45,45 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
 }
 
 describe("the sidebar user menu", () => {
-  it("opens from the user trigger with Settings, Operations and Sign out, focused on the first item", async () => {
+  it("opens from the user trigger with Profile, Settings, Operations and Sign out, focused on the first item", async () => {
     renderApp({ path: "/", routes: routes() });
     const trigger = await screen.findByTestId("user-menu");
     expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     // The always-visible user element keeps the name the e2e signIn waits for.
     expect(screen.getByTestId("user-badge").textContent).toContain("Ada Lovelace");
+    // meFixture carries no avatar_url, so the trigger draws initials.
+    expect(screen.getByTestId("user-avatar").textContent).toBe("AL");
+    expect(screen.queryByTestId("user-avatar-img")).toBeNull();
 
     fireEvent.click(trigger);
     const menu = await screen.findByTestId("user-menu-list", undefined, { timeout: READ_MS });
     expect(menu.getAttribute("role")).toBe("menu");
+    expect(screen.getByTestId("user-menu-profile").textContent).toBe("Profile");
     expect(screen.getByTestId("user-menu-settings").textContent).toBe("Settings");
     expect(screen.getByTestId("user-menu-ops").textContent).toBe("Operations");
     expect(screen.getByTestId("sign-out").textContent).toBe("Sign out");
-    expect(document.activeElement).toBe(screen.getByTestId("user-menu-settings"));
+    expect(document.activeElement).toBe(screen.getByTestId("user-menu-profile"));
+  });
+
+  it("draws the provider picture in the trigger when /me released one", async () => {
+    renderApp({
+      path: "/",
+      routes: routes([], { ...meFixture, avatar_url: "https://avatars.example.test/ada.png" }),
+    });
+    const img = await screen.findByTestId("user-avatar-img", undefined, { timeout: READ_MS });
+    expect(img.getAttribute("src")).toBe("https://avatars.example.test/ada.png");
+    // The name prints beside it, so the picture is decoration for a reader.
+    expect(img.getAttribute("alt")).toBe("");
+  });
+
+  it("Profile goes to /profile and closes the menu", async () => {
+    renderApp({ path: "/", routes: routes() });
+    fireEvent.click(await screen.findByTestId("user-menu"));
+    const profile = await screen.findByTestId("user-menu-profile", undefined, { timeout: READ_MS });
+    fireEvent.click(profile);
+    expect(await screen.findByTestId("profile-page", undefined, { timeout: READ_MS })).toBeTruthy();
+    expect(screen.queryByTestId("user-menu-list")).toBeNull();
   });
 
   it("opens with ArrowDown, moves with the arrows and closes on Escape returning focus to the trigger", async () => {
@@ -63,18 +92,20 @@ describe("the sidebar user menu", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
 
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
-    const settings = await screen.findByTestId("user-menu-settings", undefined, {
+    const profile = await screen.findByTestId("user-menu-profile", undefined, {
       timeout: READ_MS,
     });
-    expect(document.activeElement).toBe(settings);
+    expect(document.activeElement).toBe(profile);
 
     // Arrows move between items, with wrap-around.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByTestId("user-menu-settings"));
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
     expect(document.activeElement).toBe(screen.getByTestId("user-menu-ops"));
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
     expect(document.activeElement).toBe(screen.getByTestId("sign-out"));
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(screen.getByTestId("user-menu-settings"));
+    expect(document.activeElement).toBe(screen.getByTestId("user-menu-profile"));
 
     // Escape closes and returns focus to the trigger.
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });

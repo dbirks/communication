@@ -19,6 +19,10 @@ type Principal struct {
 	DisplayName string
 	// Email is optional (the IdP may not release it).
 	Email string
+	// AvatarURL is the identity provider's `picture` claim as released at the
+	// last login: an https URL, or "" when it released none. Display-only — it
+	// authorizes nothing, and the UI falls back to initials when it is empty.
+	AvatarURL string
 	// CSRFToken is the session's CSRF token. Browsers must echo it in the
 	// X-CSRF-Token header on mutations; it is never logged.
 	CSRFToken string

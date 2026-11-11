@@ -93,7 +93,8 @@ func TestIdentityUpsertOIDCUserCreatesThenUpdates(t *testing.T) {
 
 	const issuer, subject = "https://idn.test/first", "subject-create-update"
 
-	first, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Alice", "alice@example.test", false)
+	first, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Alice",
+		"alice@example.test", "https://avatar.test/alice.png", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser (create): %v", err)
 	}
@@ -106,8 +107,12 @@ func TestIdentityUpsertOIDCUserCreatesThenUpdates(t *testing.T) {
 	if first.IsOrgAdmin {
 		t.Errorf("created user IsOrgAdmin = true, want false")
 	}
+	if first.AvatarURL != "https://avatar.test/alice.png" {
+		t.Errorf("created AvatarURL = %q, want the picture released at login", first.AvatarURL)
+	}
 
-	second, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Alice II", "", false)
+	second, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Alice II", "",
+		"https://avatar.test/alice-second.png", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser (update): %v", err)
 	}
@@ -119,6 +124,21 @@ func TestIdentityUpsertOIDCUserCreatesThenUpdates(t *testing.T) {
 	}
 	if second.Email != "" {
 		t.Errorf("Email = %q, want empty (cleared from NULL column)", second.Email)
+	}
+	// The picture is refreshed, not merged: it mirrors a claim the identity
+	// provider owns, and the latest login is the truth.
+	if second.AvatarURL != "https://avatar.test/alice-second.png" {
+		t.Errorf("AvatarURL after re-login = %q, want the new picture", second.AvatarURL)
+	}
+
+	// A provider that stops releasing a picture takes it away rather than
+	// leaving a stale face on the screen forever.
+	third, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Alice II", "", "", false)
+	if err != nil {
+		t.Fatalf("UpsertOIDCUser (avatar cleared): %v", err)
+	}
+	if third.AvatarURL != "" {
+		t.Errorf("AvatarURL after a login with no picture = %q, want empty", third.AvatarURL)
 	}
 
 	// last_login_at must be set by both logins.
@@ -144,15 +164,80 @@ func TestIdentityUpsertOIDCUserCreatesThenUpdates(t *testing.T) {
 	}
 }
 
+// TestIdentityMigration00031AvatarColumn proves the column the avatar story
+// rests on exists in the real database with the invariants the API assumes:
+// NOT NULL with an empty-string default (so a user row written before the
+// feature, or by a provider that releases no picture, reads back as "draw the
+// initials"), and a
+// CHECK that refuses a non-https URL — the API sanitizes, and this is what
+// stops a future caller that forgot to.
+func TestIdentityMigration00031AvatarColumn(t *testing.T) {
+	ctx, store := idnTestStore(t)
+	org := idnDefaultOrg(t, ctx, store)
+	t.Cleanup(func() {
+		bg := context.Background()
+		if _, err := store.Pool.Exec(bg,
+			`DELETE FROM users WHERE display_name IN ('avatar-check', 'avatar-accepted')`); err != nil {
+			t.Errorf("cleanup avatar users: %v", err)
+		}
+	})
+
+	var typ, def string
+	var notNull bool
+	if err := store.Pool.QueryRow(ctx, `
+		SELECT format_type(a.atttypid, a.atttypmod),
+		       COALESCE((SELECT pg_get_expr(d.adbin, d.adrelid)
+		                 FROM pg_attrdef d
+		                 WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum), ''),
+		       a.attnotnull
+		FROM pg_attribute a
+		WHERE a.attrelid = 'users'::regclass AND a.attname = 'avatar_url'`).
+		Scan(&typ, &def, &notNull); err != nil {
+		t.Fatalf("users.avatar_url missing: %v", err)
+	}
+	if typ != "text" {
+		t.Errorf("avatar_url type = %q, want text", typ)
+	}
+	if !notNull {
+		t.Error("avatar_url is nullable; every read path would need a third state")
+	}
+	if !strings.Contains(def, "''") {
+		t.Errorf("avatar_url default = %q, want the empty string", def)
+	}
+
+	// A non-https picture URL cannot be stored at all.
+	if _, err := store.Pool.Exec(ctx, `
+		INSERT INTO users (organization_id, display_name, avatar_url)
+		VALUES ($1::uuid, 'avatar-check', 'http://avatar.test/insecure.png')`, org.ID); err == nil {
+		t.Error("an http avatar_url was accepted: users_avatar_url_check is missing")
+	} else if !strings.Contains(err.Error(), "users_avatar_url_check") {
+		t.Errorf("rejected with %v, want the users_avatar_url_check violation", err)
+	}
+
+	// The empty string and an https URL both land, and read back unchanged.
+	for _, want := range []string{"", "https://avatar.test/ok.png"} {
+		var got string
+		if err := store.Pool.QueryRow(ctx, `
+			INSERT INTO users (organization_id, display_name, avatar_url)
+			VALUES ($1::uuid, 'avatar-accepted', $2) RETURNING avatar_url`, org.ID, want).
+			Scan(&got); err != nil {
+			t.Fatalf("avatar_url %q rejected: %v", want, err)
+		}
+		if got != want {
+			t.Errorf("avatar_url = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestIdentityUpsertDistinctSubjectsAndIssuers(t *testing.T) {
 	ctx, store := idnTestStore(t)
 	org := idnDefaultOrg(t, ctx, store)
 
-	a, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/two", "bob", "Bob", "", false)
+	a, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/two", "bob", "Bob", "", "", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser bob: %v", err)
 	}
-	b, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/two", "carol", "Carol", "", false)
+	b, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/two", "carol", "Carol", "", "", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser carol: %v", err)
 	}
@@ -160,7 +245,8 @@ func TestIdentityUpsertDistinctSubjectsAndIssuers(t *testing.T) {
 		t.Fatalf("different subjects mapped to the same user %q", a.ID)
 	}
 	// Same subject under a different issuer is a different identity (ADR-0012).
-	c, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/three", "bob", "Bob Elsewhere", "", false)
+	c, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/three", "bob", "Bob Elsewhere", "",
+		"", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser cross-issuer bob: %v", err)
 	}
@@ -194,14 +280,14 @@ func TestIdentityAdminFlagOnlyEverSet(t *testing.T) {
 	org := idnDefaultOrg(t, ctx, store)
 	const issuer, subject = "https://idn.test/admin", "admin-subject"
 
-	u, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Admin", "", false)
+	u, err := store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Admin", "", "", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser (non-admin): %v", err)
 	}
 	if u.IsOrgAdmin {
 		t.Fatalf("first login IsOrgAdmin = true, want false")
 	}
-	u, err = store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Admin", "", true)
+	u, err = store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Admin", "", "", true)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser (admin): %v", err)
 	}
@@ -209,7 +295,7 @@ func TestIdentityAdminFlagOnlyEverSet(t *testing.T) {
 		t.Fatalf("bootstrap admin login did not set IsOrgAdmin")
 	}
 	// A later login that is not in the bootstrap list must not demote.
-	u, err = store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Admin Renamed", "", false)
+	u, err = store.UpsertOIDCUser(ctx, org.ID, issuer, subject, "Admin Renamed", "", "", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser (post-admin): %v", err)
 	}
@@ -224,7 +310,8 @@ func TestIdentityAdminFlagOnlyEverSet(t *testing.T) {
 func TestIdentitySessionLifecycle(t *testing.T) {
 	ctx, store := idnTestStore(t)
 	org := idnDefaultOrg(t, ctx, store)
-	user, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/sessions", "sess", "Sess", "", false)
+	user, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/sessions", "sess", "Sess", "",
+		"https://avatar.test/sess.png", false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser: %v", err)
 	}
@@ -241,6 +328,11 @@ func TestIdentitySessionLifecycle(t *testing.T) {
 	}
 	if got.ID != user.ID || csrf != "csrf-live" {
 		t.Fatalf("SessionUser = (%+v, %q), want user %s and csrf csrf-live", got, csrf, user.ID)
+	}
+	// The avatar rides the same projection /api/v1/me is built from (migration
+	// 00031): a session read that lost it would draw initials forever.
+	if got.AvatarURL != "https://avatar.test/sess.png" {
+		t.Errorf("SessionUser AvatarURL = %q, want the stored picture", got.AvatarURL)
 	}
 
 	// Expired sessions are never returned.
@@ -285,7 +377,8 @@ func TestIdentitySessionLifecycle(t *testing.T) {
 func TestIdentitySessionLastSeenThrottle(t *testing.T) {
 	ctx, store := idnTestStore(t)
 	org := idnDefaultOrg(t, ctx, store)
-	user, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/seen", "seen", "Seen", "", false)
+	user, err := store.UpsertOIDCUser(ctx, org.ID, "https://idn.test/seen", "seen", "Seen", "", "",
+		false)
 	if err != nil {
 		t.Fatalf("UpsertOIDCUser: %v", err)
 	}

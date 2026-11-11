@@ -1,11 +1,20 @@
 package auth
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+
+	"github.com/dbirks/communication/internal/store/postgres"
 )
 
 func TestSanitizeReturnTo(t *testing.T) {
@@ -260,4 +269,336 @@ func requireFlowEnv(t *testing.T) (databaseURL, issuer string) {
 		t.Skip("COMMUNICATION_TEST_OIDC_ISSUER not set")
 	}
 	return databaseURL, issuer
+}
+
+// TestAvatarURLFrom pins the one rule a provider-supplied picture must pass to
+// become stored state: an absolute https URL with a host, or the empty string.
+// Everything else — http, data:, javascript:, a relative path, userinfo in the
+// authority, an over-long claim — becomes "", which the UI draws as initials.
+func TestAvatarURLFrom(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"whitespace only", "   ", ""},
+		{"https kept", "https://avatars.example.test/a/b.png", "https://avatars.example.test/a/b.png"},
+		{"surrounding space trimmed", " https://cdn.example.test/p.png ", "https://cdn.example.test/p.png"},
+		{"http is not https", "http://cdn.example.test/p.png", ""},
+		{"data uri", "data:image/png;base64,AAAA", ""},
+		{"javascript", "javascript:alert(1)", ""},
+		{"relative path", "/avatars/me.png", ""},
+		{"protocol relative", "//cdn.example.test/p.png", ""},
+		{"userinfo in the authority", "https://user:pw@cdn.example.test/p.png", ""},
+		{"no host", "https://", ""},
+		{"control character", "https://cdn.example.test/a\x01b.png", ""},
+		{"over long", "https://cdn.example.test/" + strings.Repeat("a", maxAvatarURLLen), ""},
+		{"exactly at the cap is kept", "https://c.test/" + strings.Repeat("a", maxAvatarURLLen-len("https://c.test/")),
+			"https://c.test/" + strings.Repeat("a", maxAvatarURLLen-len("https://c.test/"))},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := avatarURLFrom(c.in); got != c.want {
+				t.Errorf("avatarURLFrom(%q) = %q, want %q", truncateForTest(c.in), got, c.want)
+			}
+		})
+	}
+}
+
+func truncateForTest(s string) string {
+	if len(s) > 48 {
+		return s[:48] + "…"
+	}
+	return s
+}
+
+// TestIDTokenClaimsReadPicture proves the claim is read next to name/email.
+func TestIDTokenClaimsReadPicture(t *testing.T) {
+	var c idTokenClaims
+	if err := json.Unmarshal([]byte(`{"name":"David Birks","preferred_username":"dbirks",`+
+		`"email":"d@example.test","picture":"https://avatars.example.test/d.png"}`), &c); err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if c.Picture != "https://avatars.example.test/d.png" {
+		t.Errorf("picture = %q", c.Picture)
+	}
+	if got := displayNameFrom(c, "sub"); got != "David Birks" {
+		t.Errorf("name precedence broken: %q", got)
+	}
+	// preferred_username still wins over the subject when name is absent.
+	var pref idTokenClaims
+	if err := json.Unmarshal([]byte(`{"preferred_username":"dbirks"}`), &pref); err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if got := displayNameFrom(pref, "sub"); got != "dbirks" {
+		t.Errorf("preferred_username fallback: %q", got)
+	}
+}
+
+// TestMeResponseCarriesAvatarURL pins the wire name on GET /api/v1/me: the
+// field is always present, and an empty picture is an empty string rather than
+// a missing key.
+func TestMeResponseCarriesAvatarURL(t *testing.T) {
+	body, err := json.Marshal(meResponse{ID: "u-1", DisplayName: "David Birks",
+		AvatarURL: "https://avatars.example.test/d.png"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"avatar_url":"https://avatars.example.test/d.png"`) {
+		t.Errorf("me body = %s, want avatar_url with the stored picture", body)
+	}
+	empty, err := json.Marshal(meResponse{ID: "u-1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(empty), `"avatar_url":""`) {
+		t.Errorf("me body = %s, want an always-present avatar_url", empty)
+	}
+}
+
+// startProviderStub serves just enough OIDC for oidc.NewProvider and
+// Provider.UserInfo on loopback: a discovery document, an empty JWKS and the
+// caller's /userinfo handler.
+func startProviderStub(t *testing.T, advertiseUserinfo bool, userinfo http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		doc := map[string]any{
+			"issuer":                                srv.URL,
+			"authorization_endpoint":                srv.URL + "/authorize",
+			"token_endpoint":                        srv.URL + "/token",
+			"jwks_uri":                              srv.URL + "/certs",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		}
+		if advertiseUserinfo {
+			doc["userinfo_endpoint"] = srv.URL + "/userinfo"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	})
+	mux.HandleFunc("/certs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	})
+	if userinfo != nil {
+		mux.HandleFunc("/userinfo", userinfo)
+	}
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// providerFor discovers the stub above with the same client the service uses.
+func providerFor(t *testing.T, svc *Service, url string) *oidc.Provider {
+	t.Helper()
+	p, err := oidc.NewProvider(oidc.ClientContext(context.Background(), svc.client), url)
+	if err != nil {
+		t.Fatalf("discover stub provider: %v", err)
+	}
+	return p
+}
+
+// TestUserInfoProfileSuppliesWhatTheIDTokenLacked is the tsidp case: the
+// provider releases `picture` (and `name`) only at /userinfo, so a login whose
+// ID token carried neither must still end up with the face — and it must send
+// the access token to get it.
+func TestUserInfoProfileSuppliesWhatTheIDTokenLacked(t *testing.T) {
+	var authHeader string
+	srv := startProviderStub(t, true, func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sub":"user-1","name":"David Birks",` +
+			`"picture":"https://avatars.example.test/d.png"}`))
+	})
+	svc := New(Config{Issuer: srv.URL, ClientID: "cid"}, nil, nil)
+	p := providerFor(t, svc, srv.URL)
+
+	picture, name := svc.userInfoProfile(context.Background(), p, &oauth2.Token{AccessToken: "at"})
+	if picture != "https://avatars.example.test/d.png" {
+		t.Errorf("picture = %q, want the /userinfo claim", picture)
+	}
+	if name != "David Birks" {
+		t.Errorf("name = %q, want the /userinfo claim", name)
+	}
+	if authHeader != "Bearer at" {
+		t.Errorf("userinfo request Authorization = %q, want %q", authHeader, "Bearer at")
+	}
+}
+
+// TestUserInfoProfileNeverBreaksLogin covers every way the UserInfo endpoint
+// can fail to help. A missing face is a cosmetic problem; none of these may
+// look like an error, and none may store a picture the browser should not load.
+func TestUserInfoProfileNeverBreaksLogin(t *testing.T) {
+	cases := []struct {
+		name        string
+		advertise   bool
+		userinfo    http.HandlerFunc
+		token       *oauth2.Token
+		wantPicture string
+		wantName    string
+	}{
+		{
+			name:      "provider advertises no userinfo endpoint",
+			advertise: false,
+			token:     &oauth2.Token{AccessToken: "at"},
+		},
+		{
+			name:      "exchange produced no access token",
+			advertise: true,
+			userinfo: func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("userinfo was called with no access token")
+			},
+			token: &oauth2.Token{},
+		},
+		{
+			name:      "userinfo errors",
+			advertise: true,
+			userinfo: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "boom", http.StatusInternalServerError)
+			},
+			token: &oauth2.Token{AccessToken: "at"},
+		},
+		{
+			name:      "userinfo body is not JSON",
+			advertise: true,
+			userinfo: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = w.Write([]byte("not json"))
+			},
+			token: &oauth2.Token{AccessToken: "at"},
+		},
+		{
+			// The name is still true; only the unsafe URL is dropped.
+			name:      "userinfo releases a non-https picture",
+			advertise: true,
+			userinfo: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"sub":"user-1","name":"David",` +
+					`"picture":"http://cdn.example.test/insecure.png"}`))
+			},
+			token:    &oauth2.Token{AccessToken: "at"},
+			wantName: "David",
+		},
+		{
+			name:      "userinfo releases no picture at all",
+			advertise: true,
+			userinfo: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"sub":"user-1"}`))
+			},
+			token: &oauth2.Token{AccessToken: "at"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := startProviderStub(t, c.advertise, c.userinfo)
+			svc := New(Config{Issuer: srv.URL, ClientID: "cid"}, nil, nil)
+			p := providerFor(t, svc, srv.URL)
+			picture, name := svc.userInfoProfile(context.Background(), p, c.token)
+			if picture != c.wantPicture || name != c.wantName {
+				t.Errorf("userInfoProfile = (%q, %q), want (%q, %q)",
+					picture, name, c.wantPicture, c.wantName)
+			}
+		})
+	}
+}
+
+// TestFlowLoginStoresPictureClaim drives the real provider end to end: an ID
+// token with a `picture` claim is stored and answered by GET /api/v1/me, and a
+// non-https claim never reaches the browser.
+func TestFlowLoginStoresPictureClaim(t *testing.T) {
+	f := startFlow(t)
+	callback := f.login("avatar-alice", `{"name":"Alice Example",`+
+		`"picture":"https://avatars.example.test/alice.png"}`, "/")
+	f.finish(callback, "/")
+
+	var withPicture struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+	f.decode(f.mustDo(http.MethodGet, f.publicURL+"/api/v1/me", nil, ""), http.StatusOK, &withPicture)
+	if withPicture.ID == "" {
+		t.Fatal("/api/v1/me returned no id")
+	}
+	f.userID = withPicture.ID
+	if withPicture.DisplayName != "Alice Example" {
+		t.Errorf("display_name = %q, want the name claim", withPicture.DisplayName)
+	}
+	if withPicture.AvatarURL != "https://avatars.example.test/alice.png" {
+		t.Errorf("avatar_url = %q, want the https picture claim", withPicture.AvatarURL)
+	}
+	t.Cleanup(func() {
+		purgeFlowUser(t, f.databaseURL, withPicture.ID)
+	})
+}
+
+// TestFlowLoginRejectsInsecurePictureClaim is the other half of the rule at the
+// only place a provider gets to speak: an http (or javascript, or data) picture
+// is stored as "", so /me can never hand a browser a mixed-content or scripted
+// image source.
+func TestFlowLoginRejectsInsecurePictureClaim(t *testing.T) {
+	f := startFlow(t)
+	subject := "avatar-insecure"
+	callback := f.login(subject, `{"picture":"http://cdn.example.test/insecure.png"}`, "/")
+	f.finish(callback, "/")
+
+	var body struct {
+		ID        string `json:"id"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	f.decode(f.mustDo(http.MethodGet, f.publicURL+"/api/v1/me", nil, ""), http.StatusOK, &body)
+	if body.ID == "" {
+		t.Fatal("/api/v1/me returned no id")
+	}
+	if body.AvatarURL != "" {
+		t.Errorf("avatar_url = %q, want empty for a non-https claim", body.AvatarURL)
+	}
+	t.Cleanup(func() { purgeFlowUser(t, f.databaseURL, body.ID) })
+}
+
+// purgeFlowUser deletes one user (with its sessions and identities) that a
+// flow test created. The flow helper only removes the id it recorded in
+// f.userID, which these tests learn only after /api/v1/me has answered.
+func purgeFlowUser(t *testing.T, databaseURL, userID string) {
+	t.Helper()
+	if userID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := postgres.Open(ctx, databaseURL)
+	if err != nil {
+		t.Errorf("purgeFlowUser: open pool: %v", err)
+		return
+	}
+	defer pool.Close()
+	for _, q := range []string{
+		`DELETE FROM sessions WHERE user_id = $1::uuid`,
+		`DELETE FROM oidc_identities WHERE user_id = $1::uuid`,
+		`DELETE FROM users WHERE id = $1::uuid`,
+	} {
+		if _, err := pool.Exec(ctx, q, userID); err != nil {
+			t.Errorf("purgeFlowUser %q: %v", q[:24], err)
+		}
+	}
+}
+
+// TestIssuerHostNamesOnlyTheHost proves the Profile page's "Signed in with"
+// line gets a host and nothing more: no scheme, no tenant path, no client id.
+func TestIssuerHost(t *testing.T) {
+	cases := []struct {
+		issuer, want string
+	}{
+		{"https://idp.example.test", "idp.example.test"},
+		{"https://idp.example.test/tailnet-abc", "idp.example.test"},
+		{"http://localhost:18090/default", "localhost:18090"},
+		{"https://idp.example.test:8443/", "idp.example.test:8443"},
+		{"", ""},
+		{"not a url", ""},
+	}
+	for _, c := range cases {
+		svc := New(Config{Issuer: c.issuer, ClientID: "cid", PublicURL: "https://app.test"}, nil, nil)
+		if got := svc.issuerHost(); got != c.want {
+			t.Errorf("issuerHost(%q) = %q, want %q", c.issuer, got, c.want)
+		}
+	}
 }
