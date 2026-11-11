@@ -111,8 +111,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
         15 answers via docs.search (no refusal); 11 uses thread.list and chat.transcript and names Pi's two threads;
         8 moves the browser to /settings/operations; 4, 5 and 18 answer via catchup.brief. Screenshots:
         ~/.cache/pi-orch/communication/evidence/deployed/rerun-{4,5,8,11,15,18}.png.
-  - [ ] Finding (rerun 18, transient 503): the copy still leaks "llm-collective… returned http 503 Your question was not
-        sent" (raw detail, missing period). Map 5xx upstream to the plain model-unavailable sentence.
+  - [x] Finding (rerun 18, transient 503): the copy still leaks "llm-collective… returned http 503 Your question was not
+        sent" (raw detail, missing period). Map 5xx upstream to the plain model-unavailable sentence. Fixed: 1b0de31 (client.test.ts, AssistantPopover.test.tsx).
 
 ## 6. Workflows page and templates
 - [x] Give the Workflows page a visual and UX pass. Evidence: a31da6a, ~/.cache/pi-orch/communication/evidence/workflows-pass/workflows-1440x900.png,
@@ -256,9 +256,9 @@ that can be attached to different ACP agent setups. Today the spec
 - [x] Finding (8436088): env-mode secret values can ride inside the pods/exec command, which the API server may
       write to audit logs. Fix: an env-file wrapper (k8s-pod2 queued).
 
-- [ ] Finding (deployed, minor): profile history labels collection attach and lock versions "no change" (v3–v7);
+- [x] Finding (deployed, minor): profile history labels collection attach and lock versions "no change" (v3–v7);
       the staged skill list on the SKILLS panel is a long flat list (61 rows), and should group by collection and
-      collapse.
+      collapse. Fixed: 1b0de31 (ProfileHistory.test.tsx, ProfileSkills.test.tsx; lock versions froze a null digest, fixed in apm_lock.go).
 
 ## CI and Acceptance notes Fixed: 910c493 (pod-exec
       env-file wrapper; transporter_test asserts no value appears in the exec request).
