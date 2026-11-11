@@ -65,8 +65,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Add an LLM-graded or snapshot eval of usefulness.
 - [ ] Keep a single depth for now, with no gauge.
 
-- [ ] Finding (deployed): Operations lists 35 dead worker pods above the one live
-      worker. Covered by the section 8 redesign.
+- [x] Finding (deployed): Operations lists 35 dead worker pods above the one live
+      worker. Covered by the section 8 redesign (2faa0a0).
 - [ ] Finding: CI audit failed on GO-2026-6859 (net/http). Bumped Go to 1.27.4 in
       ceafd03; confirm CI is green.
 
@@ -114,11 +114,14 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Implement the provider abstraction if it's small. (Brief oidc-providers is queued.)
 
 ## 8. Operations
-- [ ] Redesign Operations (currently a 14-line page) into a useful operations
+- [x] Redesign Operations (currently a 14-line page) into a useful operations
       and settings page: health, workers, queue, models, secrets status and
-      integrations.
-- [ ] If the visual language needs it, file a `claude-design-needed` issue per
-      the design-heavy rule.
+      integrations. Evidence: 8e9d604 (overview plus probe API, system_overview_test.go), 2faa0a0 (UI,
+      OperationsBody.test.tsx: 35 offline workers collapsed, tiles ok/warn/bad), ~/.cache/pi-orch/communication/evidence/ops-ui/ops-1440-full.png,
+      ops-390-full.png. Deployed screenshot still pending.
+- [x] If the visual language needs it, file a `claude-design-needed` issue per
+      the design-heavy rule. Not needed: the orchestrator designed it inside the existing panel, chip and
+      token language (spec in ~/.cache/pi-orch/communication/tasks/ops-ui.md).
 
 ## 9. Two run modes: single container and Kubernetes native
 - [ ] Simple mode: one container or Go binary runs serve plus worker, with
