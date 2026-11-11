@@ -270,13 +270,22 @@ that can be attached to different ACP agent setups. Today the spec
 ## CI and Acceptance notes Fixed: 910c493 (pod-exec
       env-file wrapper; transporter_test asserts no value appears in the exec request).
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
-- [ ] Acceptance 42975520340 (7ddec9d) failed m4 core-a (C1c, C9g, C10c) and github-loop (issue #650 run
+- [x] ~~Acceptance 42975520340 (7ddec9d) failed m4 core-a~~ (superseded: its C1c/C9g/C10c and github-loop failures did not
+      recur on 45d2c79, where github-loop passed and core-a failed only on the W7 labels fixed above) (C1c, C9g, C10c) and github-loop (issue #650 run
       failed) while 4–5 pi workers saturated the Collective (429 "backend at capacity" in worker
       retries). Re-run on the final SHA with no workers running, and investigate if it still fails.
 
-- [ ] Acceptance 43091513041 (ccca111) "failed" without running a job: its first job never got a runner during
+- [x] ~~Acceptance 43091513041 (ccca111) "failed" without running a job:~~ (superseded by 43103856039 on 45d2c79, which ran
+      every job) its first job never got a runner during
       GitHub's Actions major outage (githubstatus.com, 2026-11-11 ~20:40 UTC). Not a test result. Re-run on the final SHA
       once Actions recovers. CI 43091513363 on ccca111 was green.
+
+- [x] Acceptance 43103856039 (45d2c79): everything green except lab-e2e (4) and m4 core-a W7 (13), all from this
+      push's UI changes, not regressions in behaviour. (a) Three Pi specs expected the old label "permission:
+      autonomous_within_sandbox"; the UI now says "autonomous (sandbox is the boundary)" (0c60ab7), so the e2e regexes
+      were updated. (b) The /workflows 390px overflow was the pstack card's step chain not truncating; fixed (block
+      w-full min-w-0 truncate). (c) The W7 Ops gate looked for the old QUEUE labels ("attempts queued"…); the gate
+      and its unit tests now use the redesigned terms (1634 gate-logic tests OK). github-loop now passes.
 
 ## Done when
 - [ ] Every box above is checked with evidence.

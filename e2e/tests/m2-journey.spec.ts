@@ -288,7 +288,7 @@ test.describe("M2 shared conversation and control handoff", () => {
         );
         await alice.getByTestId(`agent-row-${rowId}`).click();
         await expect(alice.getByTestId(`agent-permission-${rowId}`)).toHaveText(
-          /^permission: autonomous_within_sandbox$/,
+          /^permission: autonomous \(sandbox is the boundary\)$/,
         );
         // Back to the thread: the takeover test below drives alice's composer.
         await gotoApp(alice, conversationPath);

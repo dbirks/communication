@@ -24215,16 +24215,18 @@ def w_typed_input_verdicts(plan, rows):
     return verdicts
 
 
-# § 6.2's counter set as the Ops page renders it (term + the JSON member).
+# § 6.2's counter set as the Ops page renders it (term + the JSON member). The
+# 2026-11-11 Operations redesign (2faa0a0) labels the QUEUE panel's grid with the
+# short terms below; the members and their meaning are unchanged.
 W7_COUNTERS = [
-    ("attempts queued", ["attempts_by_status", "queued"]),
-    ("attempts leased", ["attempts_by_status", "leased"]),
-    ("attempts running", ["attempts_by_status", "running"]),
+    ("queued", ["attempts_by_status", "queued"]),
+    ("leased", ["attempts_by_status", "leased"]),
+    ("running", ["attempts_by_status", "running"]),
     ("lease expirations", ["lease_expirations"]),
-    ("max retry loop depth", ["max_retry_loop_depth"]),
-    ("oldest queued age", ["oldest_queued_age_seconds"]),
+    ("retry depth", ["max_retry_loop_depth"]),
+    ("oldest queued", ["oldest_queued_age_seconds"]),
     ("waiting approvals", ["waiting_approvals"]),
-    ("queued unbindable runs", ["queued_unbindable_runs"]),
+    ("unbindable runs", ["queued_unbindable_runs"]),
 ]
 
 
@@ -28173,11 +28175,11 @@ def w7():
         gap("W7 all browser arms", "alice could not sign in through the browser")
         return
     pw_goto("/ops", session="m4w7")
-    landed, nodes = pw_poll(lambda ns: any(pw_text(n).lower().startswith("attempts queued")
+    landed, nodes = pw_poll(lambda ns: any(pw_text(n).lower().startswith("unbindable runs")
                                           for n in ns), session="m4w7", tries=8, delay=2)
     shot = pw_shot("w7-ops", session="m4w7")
     check("W7 the Ops page renders its SCHEDULER panel", landed,
-          f"attempts queued row seen={landed} [{shot}]")
+          f"queue panel (unbindable runs row) seen={landed} [{shot}]")
     for label, ok, detail in w_counter_verdicts(status, nodes):
         check(f"W7 {label}", ok, f"{detail} [{shot}]")
 

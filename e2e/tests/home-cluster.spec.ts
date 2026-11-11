@@ -1437,7 +1437,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await page.getByTestId(`agent-row-${profileId}`).click();
       await expect(page.getByTestId("profile-version")).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId(`agent-permission-${profileId}`)).toHaveText(
-        new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous_within_sandbox" : "ask"}$`),
+        new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous \\(sandbox is the boundary\\)" : "ask"}$`),
       );
       await gotoApp(page, "/profiles");
       await expect(page.getByTestId(`agent-item-${profileId}`)).toBeVisible();

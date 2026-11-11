@@ -349,7 +349,7 @@ class OpsPageRenderTest(unittest.TestCase):
              'memory or disk caps in this release.'
     PANEL = ('- generic [ref=e1]:\n'
              '  - heading "Operations" [level=1] [ref=e2]\n'
-             '  - term "attempts queued" [ref=e3]\n'
+             '  - term "queued" [ref=e3]\n'
              '  - columnheader "Worker" [ref=e4]\n'
              '  - columnheader "Active attempts / capacity" [ref=e5]\n')
 

@@ -612,20 +612,20 @@ def test_counter_verdicts():
               "workers": [{"name": "worker-a", "active_attempts": 1, "capacity": 2},
                           {"name": "worker-b", "active_attempts": 0, "capacity": 2}]}
     text = "\n".join([
-        '  - term "attempts queued" [ref=e1]',
-        '  - term "attempts leased" [ref=e2]',
-        '  - term "attempts running" [ref=e3]',
+        '  - term "queued" [ref=e1]',
+        '  - term "leased" [ref=e2]',
+        '  - term "running" [ref=e3]',
         '  - term "lease expirations" [ref=e4]',
-        '  - term "max retry loop depth" [ref=e5]',
-        '  - term "oldest queued age" [ref=e6]',
+        '  - term "retry depth" [ref=e5]',
+        '  - term "oldest queued" [ref=e6]',
         '  - term "waiting approvals" [ref=e7]',
-        '  - term "queued unbindable runs" [ref=e8]',
+        '  - term "unbindable runs" [ref=e8]',
         '  - row "worker-a 1 / 2" [ref=e9]',
         '  - row "worker-b 0 / 2" [ref=e10]',
     ])
     v = w_counter_verdicts(status, pw_snapshot_nodes(text))
     _assert("all § 6.2 counters render", all(ok for _, ok, _ in v), v)
-    missing = w_counter_verdicts(status, pw_snapshot_nodes('  - term "attempts queued" [ref=e1]'))
+    missing = w_counter_verdicts(status, pw_snapshot_nodes('  - term "queued" [ref=e1]'))
     _assert("missing counters FAIL loudly", sum(1 for _, ok, _ in missing if not ok) >= 7,
             missing)
     _assert("empty status -> empty verdicts (the caller GAPs)",

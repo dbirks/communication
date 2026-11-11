@@ -217,7 +217,7 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
         );
         await admin.getByTestId(`agent-row-${rowId}`).click();
         await expect(admin.getByTestId(`agent-permission-${rowId}`)).toHaveText(
-          new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous_within_sandbox" : "ask"}$`),
+          new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous \\(sandbox is the boundary\\)" : "ask"}$`),
         );
         await shot(admin, "m5-inbox-01-ask-profile");
       });
