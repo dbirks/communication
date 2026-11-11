@@ -142,13 +142,12 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Finding: the completed Pi turn shows tool calls and "Turn completed" but NO agent reply
       text, so the README summary never appears. Find whether pi-acp's agent_message_chunk is
       dropped, or the model ended with no text after "Retrying the model… (3 attempts)".
-      Root cause from the journal: two `conversation.message.agent` events WERE written ("Let me
-      check the files…", "The file's name is not README.md but simply README…") but the thread
-      renders an empty "Pi · 06:45:07" block, so the UI drops agent message text for this
-      thread. Then the model's retries ran out (Collective at capacity) and the turn still
-      ended `completed` with no answer.
-- [ ] Fix: render `conversation.message.agent` text for Pi threads (regression test from these
-      payloads).
+      Root cause from the journal: Pi's narration ("Let me check the files…", "The file's name
+      is not README.md but simply README…") arrived as `conversation.thought` (the collapsed
+      AGENT THOUGHT block), and its `conversation.message.agent` chunks were only "\n\n". The
+      final answer never came because the model's retries ran out (the Collective was at
+      capacity while 4–5 pi workers ran), and the turn still ended `completed`.
+- [ ] Fix (small UI): don't render a whitespace-only agent message as an empty "Pi · time" block.
 - [ ] Fix: when an agent's retries run out with no final message, the turn shows "ended
       without an answer — the model was unavailable", not a silent "Turn completed".
 
