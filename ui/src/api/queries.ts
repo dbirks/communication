@@ -536,6 +536,16 @@ export function useSystemSandbox() {
   });
 }
 
+/**
+ * The operations overview read and the admin-only model probe. Both live in
+ * `./overview`, whose shapes are hand-written until `api/openapi.yaml` names
+ * them (so `./types` has nothing to alias — see that file's header); they are
+ * re-exported here to keep the app's reads on the one surface they already
+ * import from.
+ */
+export { probeModel, systemOverviewKey, fetchSystemOverview, useSystemOverview } from "./overview";
+export type { ModelKind, ModelProbeResult, OverviewModel, SystemOverview } from "./overview";
+
 /** Artifacts the caller's role may see (the sensitivity filter runs in SQL). */
 export function useArtifacts(projectId: string) {
   return useQuery({

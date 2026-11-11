@@ -716,6 +716,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		M3:              m3,
 		Assistant:       assistantCfg,
 		AssistantStatus: serveAssistantStatusConfig(os.Getenv),
+		WorkerChat:      api.WorkerChatConfigFromEnv(os.Getenv),
 		Decision:        decisionCfg,
 		Speech:          serveSpeechConfig(os.Getenv),
 	})
@@ -962,6 +963,15 @@ type serveStackDeps struct {
 	// unsetting these variables returns every caller to the table
 	// (ADR-0079 Migration/rollback).
 	Decision serveDecision
+
+	// WorkerChat is the resolved COMMUNICATION_MODEL_CHAT_* triple as THIS
+	// process sees it (api.WorkerChatConfigFromEnv), for the ops overview's
+	// fourth model row. The serve pod normally carries none of those variables
+	// — the worker owns that egress — and then the row reads
+	// `configured: false, key_set: null`, which the page says "set on the
+	// worker". It is a config hand-off, not a client: nothing here opens a
+	// connection, and the key is only ever read to answer "is one set".
+	WorkerChat api.WorkerChatConfig
 
 	// scheduleTickRunner overrides the schedule ticker loop; nil means
 	// production's runScheduleTicker over a postgres.ScheduleStore. Like
@@ -1899,6 +1909,29 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			PinnedBackendVersion: d.M3.PinnedVersion,
 			PolicyDigest:         d.M3.PolicyDigest,
 		})
+	// The operations page's one read and one action: GET /system/overview and
+	// POST /system/models/{kind}/probe. Every value below is config this
+	// process already resolved (the assistant's egress triple, the §2 model
+	// pair, the judge's key, the artifact backend's own name, the preview
+	// host) or a caller-scoped read an existing route already serves, so the
+	// overview can state no fact the routes above disagree with. See
+	// internal/api/system_overview.go for what each row means and what the
+	// probe refuses to say.
+	api.RegisterSystemOverview(handler, api.NewSystemOverviewService(api.SystemOverviewDeps{
+		Version:         d.API.Version,
+		Replica:         d.API.ReplicaName,
+		Chat:            asstDeps.Config,
+		Models:          d.AssistantStatus,
+		DecisionAPIKey:  d.Decision.APIKey,
+		WorkerChat:      d.WorkerChat,
+		IssuerURL:       d.Auth.Issuer,
+		ArtifactBackend: api.ArtifactBackendName(d.M3.ArtifactBytes),
+		PreviewHost:     d.M3.PreviewHost,
+		Workers:         postgres.APIWorkerStore{R: &postgres.WorkerRegistry{Pool: d.Pool}, HeartbeatInterval: d.WorkerHeartbeat},
+		Projects:        apiProjects,
+		Secrets:         postgres.APISecretStore{S: secretStore},
+		Heartbeat:       d.WorkerHeartbeat,
+	}, d.API.Logger))
 	// ADR-0046: the per-user display preferences (GET/PATCH
 	// /api/v1/me/preferences). Self-scoped — keyed by the caller's own user
 	// id, so the store needs only the pool. (The same store answers the
