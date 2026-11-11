@@ -260,6 +260,13 @@ that can be attached to different ACP agent setups. Today the spec
       the staged skill list on the SKILLS panel is a long flat list (61 rows), and should group by collection and
       collapse. Fixed: 1b0de31 (ProfileHistory.test.tsx, ProfileSkills.test.tsx; lock versions froze a null digest, fixed in apm_lock.go).
 
+- [x] Finding (deployed 45d2c79, final-catchup.png): CHANGES listed 6 rows titled 'Updated "Claude Code edited"', with lock
+      versions showing a raw worker UUID as the actor. Fixed in 132204c: one row per profile, titled by name, "the worker"
+      as actor (Brief|CatchUp postgres tests green).
+- [x] Deployed final check at 45d2c79: ~/.cache/pi-orch/communication/evidence/deployed/final/final-{ops,catchup,workflows,collections,profile,assistant}.png show
+      Operations, the catch-up brief, the Workflows templates, the Collections tab, the Profile page and the full-page
+      assistant.
+
 ## CI and Acceptance notes Fixed: 910c493 (pod-exec
       env-file wrapper; transporter_test asserts no value appears in the exec request).
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
