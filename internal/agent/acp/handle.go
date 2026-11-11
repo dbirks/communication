@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -26,8 +25,8 @@ type handle struct {
 	logger *slog.Logger
 	stderr *ringBuffer
 
-	cmd   *exec.Cmd
-	stdin io.Closer
+	transport Transport
+	stdin     io.Closer
 
 	sessionID       string
 	protocolVersion int
@@ -57,10 +56,10 @@ type handle struct {
 	mu        sync.RWMutex
 	evtClosed bool
 
-	// exited is closed when cmd.Wait returns (or immediately for
+	// exited is closed when the transport's Wait returns (or immediately for
 	// process-less test handles).
 	exited chan struct{}
-	// exitErr holds cmd.Wait's verdict, written before exited closes.
+	// exitErr holds the transport's Wait verdict, written before exited closes.
 	exitErrMu sync.Mutex
 	exitErr   error
 
@@ -263,19 +262,21 @@ func (h *handle) initLive() {
 	}
 }
 
-// attachProcess arranges process reaping for handle launched via exec.Cmd.
-func (h *handle) attachProcess(cmd *exec.Cmd, stdout io.ReadCloser) {
+// attachProcess arranges reaping for a handle launched over a Transport. The
+// transport is all this handle knows about what produced the stdio: a local
+// child process today, a pod in Kubernetes mode (ADR-0082 §8).
+func (h *handle) attachProcess(t Transport) {
 	h.events = make(chan domain.ConversationEvent, eventBuffer)
 	h.exited = make(chan struct{})
 	h.permWaiters = make(map[chan struct{}]struct{})
 	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.transport = t
 	go func() {
 		defer close(h.exited)
 		// Ensure the reader goroutine in the SDK connection ends: closing
 		// the pipe after Wait is documented behaviour, but we must not
 		// leak if Wait blocks on a live pipe.
-		err := cmd.Wait()
-		_ = stdout.Close()
+		err := t.Wait()
 		h.exitErrMu.Lock()
 		h.exitErr = err
 		h.exitErrMu.Unlock()
@@ -316,8 +317,8 @@ func (h *handle) emit(ev domain.ConversationEvent) {
 	}
 }
 
-// exitDetail returns cmd.Wait's verdict as text ("" while the process lives
-// or when it exited cleanly).
+// exitDetail returns the transport's Wait verdict as text ("" while the agent
+// lives or when it exited cleanly).
 func (h *handle) exitDetail() string {
 	h.exitErrMu.Lock()
 	defer h.exitErrMu.Unlock()
@@ -372,7 +373,7 @@ func (h *handle) Disconnect() (DisconnectInfo, bool) {
 // to be reaped, so a mid-turn death reports the stronger reason it deserves.
 // The bound keeps a wedged reap from ever stalling an attempt.
 func (h *handle) awaitReap(wait time.Duration) (DisconnectInfo, bool) {
-	if h.cmd == nil || h.exited == nil {
+	if h.transport == nil || h.exited == nil {
 		return DisconnectInfo{}, false
 	}
 	select {
@@ -387,7 +388,7 @@ func (h *handle) awaitReap(wait time.Duration) (DisconnectInfo, bool) {
 // closes the moment the SDK returns an answer, which is the ordering that
 // keeps a normal end-then-exit from reading as a disconnect.
 func (h *handle) watchProcessDeath(done <-chan struct{}) {
-	if h.cmd == nil || h.exited == nil {
+	if h.transport == nil || h.exited == nil {
 		return
 	}
 	go func() {
@@ -519,7 +520,7 @@ func (h *handle) Close() error {
 		if h.stdin != nil {
 			_ = h.stdin.Close()
 		}
-		if h.cmd != nil && h.cmd.Process != nil {
+		if h.transport != nil {
 			waitErr = h.waitProcess()
 		}
 		h.mu.Lock()
@@ -531,28 +532,29 @@ func (h *handle) Close() error {
 }
 
 // waitProcess runs the shutdown ladder: EOF wait ≤5s → SIGTERM the whole
-// process group ≤5s → SIGKILL the group, then a bounded reap wait. The
-// signals target the GROUP (Setpgid at launch made the harness's pid its
-// pgid), not the direct process: a harness that closed its stdio often
-// leaves descendants behind that still hold the stderr pipe, and
-// cmd.Wait waits on the copier that reads it — so killing only the direct
-// process wedges the reap, and with it every caller of Close (lab run
-// 41789603709: the turn loop stood still behind one dead session for the
-// rest of the lab). cmd.WaitDelay bounds the copier even when a descendant
-// escaped the group, so the final wait below is belt-and-braces.
+// process group ≤5s → SIGKILL the group, then a bounded reap wait. The rungs
+// belong to the Transport: on the local one Signal targets the GROUP
+// (Setpgid at launch made the harness's pid its pgid), not the direct process —
+// a harness that closed its stdio often leaves descendants behind that still
+// hold the stderr pipe, and cmd.Wait waits on the copier that reads it, so
+// killing only the direct process wedges the reap, and with it every caller of
+// Close (lab run 41789603709: the turn loop stood still behind one dead session
+// for the rest of the lab). cmd.WaitDelay bounds the copier even when a
+// descendant escaped the group, so the final wait below is belt-and-braces; a
+// pod transport answers the same ladder by deleting the pod.
 func (h *handle) waitProcess() error {
 	if h.waitExited(5 * time.Second) {
 		return nil
 	}
 	// Ask the agent to exit; exec.CommandContext's own kill-on-ctx stays as
 	// the last resort for the direct process if this is ignored.
-	if err := h.signalProcessGroup(syscall.SIGTERM); err != nil && h.logger != nil {
+	if err := h.transport.Signal(syscall.SIGTERM); err != nil && h.logger != nil {
 		h.logger.Debug("acp: SIGTERM failed", "err", err)
 	}
 	if h.waitExited(5 * time.Second) {
 		return nil
 	}
-	if err := h.signalProcessGroup(syscall.SIGKILL); err != nil && h.logger != nil {
+	if err := h.transport.Signal(syscall.SIGKILL); err != nil && h.logger != nil {
 		h.logger.Debug("acp: SIGKILL failed", "err", err)
 	}
 	// The group is dead or will be: the reap is bounded by cmd.WaitDelay plus
@@ -567,8 +569,8 @@ func (h *handle) waitProcess() error {
 	return errors.New("acp: agent process required SIGKILL")
 }
 
-// waitExited reports whether cmd.Wait has agreed the process is gone within
-// the window.
+// waitExited reports whether the transport's Wait has agreed the agent is gone
+// within the window.
 func (h *handle) waitExited(wait time.Duration) bool {
 	select {
 	case <-h.exited:
@@ -576,30 +578,6 @@ func (h *handle) waitExited(wait time.Duration) bool {
 	case <-time.After(wait):
 		return false
 	}
-}
-
-// signalProcessGroup sends sig to the harness's whole process group and, as
-// the direct-process fallback, to the harness itself: a harness that
-// re-parented itself out of the group is still the process we must retire,
-// and a pid the kernel has already reused answers ESRCH, which means the
-// group is already gone.
-func (h *handle) signalProcessGroup(sig syscall.Signal) error {
-	p := h.cmd.Process
-	if p == nil {
-		return nil
-	}
-	var firstErr error
-	if err := syscall.Kill(-p.Pid, sig); err != nil {
-		if !errors.Is(err, syscall.ESRCH) {
-			firstErr = err
-		}
-	}
-	if err := p.Signal(sig); err != nil {
-		if !errors.Is(err, syscall.ESRCH) && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
 }
 
 // ---------------------------------------------------------------------------

@@ -56,7 +56,7 @@ func (h *handle) PeerGone() bool {
 		default:
 		}
 	}
-	if h.cmd != nil && h.exited != nil {
+	if h.transport != nil && h.exited != nil {
 		select {
 		case <-h.exited:
 			return true
