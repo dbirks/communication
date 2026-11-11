@@ -706,6 +706,12 @@ function AnswerProse({
       ? lines
       : lines.map((line) => (line.glyph === "✓" ? { ...line, glyph: "·" as const } : line));
   const firstSteps = chunks.findIndex((chunk) => chunk.type === "steps");
+  // A turn that asks a question may carry NO text half at all (the card is the
+  // whole reply — the deployed exercise's `asdf qwer` turn, 2026-11-11). The
+  // prose element still stood then, and its empty box read as a void between
+  // the person's own words and the `used …` line. Nothing to say, nothing
+  // drawn — unless the saved draft's step list is what this turn owes.
+  if (chunks.length === 0 && draftId === null) return null;
   const draftList = (key?: string | number): ReactElement => (
     <DraftStepList
       key={key}
@@ -808,15 +814,30 @@ const JUDGE_WORD: Record<"allowed" | "asked" | "unavailable", string> = {
 const DISCLOSED_TOOL_NAMES = 2;
 
 /**
+ * A call the server refused because no such tool exists (the model named
+ * something the app does not have — the deployed exercise logged
+ * `used UserQuery, workflow.list +3` on 2026-11-11). It ran nothing, so it is
+ * not part of what the turn looked at; it keeps its own row in the expansion,
+ * where the refusal and its reason stand.
+ */
+function neverRanAsUnknownTool(call: AssistantAnswerPayload["tool_calls"][number]): boolean {
+  return call.ok === false && call.reason === "unknown_tool";
+}
+
+/**
  * The folded disclosure line: `used workflow.list · judge allowed`,
  * `used run.nodes, palette.search`, `used a, b +2`. The names are the tools
  * themselves in the order the turn called them (a tool called twice is named
  * once — the list is what was looked at, and the expansion carries every
- * call); the count is what the names do not spell out.
+ * call); the count is what the names do not spell out. A call refused as
+ * `unknown_tool` earns no name here (see `neverRanAsUnknownTool`); when a turn
+ * did NOTHING else the refusals stand alone, so the line never reads `used `.
  */
 export function toolDisclosureLine(calls: AssistantAnswerPayload["tool_calls"]): string {
+  const sources = calls.filter((call) => !neverRanAsUnknownTool(call));
+  const named = sources.length > 0 ? sources : calls;
   const names: string[] = [];
-  for (const call of calls) if (!names.includes(call.name)) names.push(call.name);
+  for (const call of named) if (!names.includes(call.name)) names.push(call.name);
   const shown = names.slice(0, DISCLOSED_TOOL_NAMES).join(", ");
   const rest = names.length - DISCLOSED_TOOL_NAMES;
   const verdicts: AssistantToolCallJudge[] = [];
@@ -853,6 +874,12 @@ function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"]
  * a wire row carrying anything else reads as no verdict. */
 function ToolRow({ call }: { call: AssistantAnswerPayload["tool_calls"][number] }) {
   const judge = judgeOf(call);
+  // The server's own summary already says `Not executed: <reason>`, so the
+  // reason tag repeats the same snake_case code a second time (deployed
+  // exercise 2026-11-11, prompt 6: `Not executed: unknown_tool  unknown_tool`).
+  // The tag earns its place only when the summary does not already carry it.
+  const reason = call.ok ? null : (call.reason ?? null);
+  const reasonShown = reason !== null && !call.summary.toLowerCase().includes(reason.toLowerCase());
   return (
     <li
       data-testid="assistant-tool-row"
@@ -872,9 +899,7 @@ function ToolRow({ call }: { call: AssistantAnswerPayload["tool_calls"][number] 
         </span>
       ) : null}
       <span style={{ flex: "1 1 auto", minWidth: 0 }}>{call.summary}</span>
-      {!call.ok && call.reason ? (
-        <span className="flex-shrink-0 text-st-failed-tag-fg">{call.reason}</span>
-      ) : null}
+      {reasonShown ? <span className="flex-shrink-0 text-st-failed-tag-fg">{reason}</span> : null}
     </li>
   );
 }

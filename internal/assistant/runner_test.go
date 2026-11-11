@@ -721,6 +721,30 @@ func TestConversationSystemPromptActsOnEditRequests(t *testing.T) {
 	}
 }
 
+// Deployed exercise 2026-11-11 (prompt 8, "Open the Operations page"): the
+// answer said "Opened the Operations page." while the screen never moved —
+// ui.navigate only puts the page one click away (ADR-0050 Decision 7), so the
+// prompt must say the jump button is the offer, never a completed navigation.
+func TestConversationSystemPromptSaysNavigationIsOnlyAnOffer(t *testing.T) {
+	for _, want := range []string{
+		"ui.navigate only PUTS THE PAGE ONE CLICK AWAY",
+		"never write that you opened, reached or navigated to a page",
+	} {
+		if !strings.Contains(conversationSystemPrompt, want) {
+			t.Fatalf("the conversation system prompt must keep a completed navigation out of the answer, missing %q", want)
+		}
+	}
+	spec := ""
+	for _, tool := range newJudgeRunner(t, nil).allToolSpecs() {
+		if tool.Function.Name == wireName("ui.navigate") {
+			spec = tool.Function.Description
+		}
+	}
+	if !strings.Contains(spec, "jump button") {
+		t.Fatalf("ui.navigate must describe itself as the jump button the person uses, got %q", spec)
+	}
+}
+
 // --- the guard remark the 2f reply leaked --------------------------------
 
 // The runner's system prompt must say, in as many words, that the

@@ -186,6 +186,17 @@ describe("MessageList", () => {
     expect(screen.queryAllByTestId("assistant-question-option").length).toBeGreaterThan(0);
   });
 
+  // Deployed exercise 2026-11-11 (`asdf qwer`): a turn that answers with ONLY a
+  // question card carries no text half, and the prose element still stood — an
+  // empty block that read as a void between the person's own words and the
+  // `used ui.question` line. The card is the reply; the void is not.
+  it("draws no empty answer block when the turn is only a question card", () => {
+    renderMessages([answerRow({ answer_markdown: "   " }), questionMessage()]);
+    expect(screen.queryByTestId("assistant-answer")).toBeNull();
+    expect(screen.getByTestId("assistant-question")).toBeTruthy();
+    expect(screen.getByTestId("assistant-messages").textContent).toContain("Stricter how?");
+  });
+
   it("numbers the question cards from the transcript and inks the tapped answer (2f)", () => {
     const second = (): AssistantMessage => ({
       ...questionMessage(),
@@ -1441,5 +1452,63 @@ describe("the tool disclosure line names the tools (walk-through finding 8)", ()
     const details = screen.getByTestId("assistant-tools") as HTMLElement;
     expect(details.querySelector("summary")?.textContent).toBe("used run.list");
     expect(within(details).getAllByTestId("assistant-tool-row")).toHaveLength(2);
+  });
+
+  // Deployed exercise 2026-11-11 (prompt 6): the model named a tool the app
+  // does not have, the server refused it `unknown_tool`, and the folded line
+  // still claimed `used UserQuery, workflow.list +3` — a tool that ran nothing
+  // has no business being named as something the turn looked at. The refusal
+  // keeps its row; the folded line does not carry the invented name.
+  it("does not name a call the server refused as an unknown tool", () => {
+    renderMessages([
+      answerRow({
+        tool_calls: [
+          call("UserQuery", { ok: false, reason: "unknown_tool", summary: "Not executed" }),
+          call("workflow.list"),
+          call("project.list"),
+          call("run.list"),
+        ],
+      }),
+    ]);
+    const details = screen.getByTestId("assistant-tools") as HTMLElement;
+    expect(details.querySelector("summary")?.textContent).toBe(
+      "used workflow.list, project.list +1",
+    );
+    // Every call is still accounted for in the expansion, refusal included.
+    const rows = within(details).getAllByTestId("assistant-tool-row");
+    expect(rows).toHaveLength(4);
+    expect(rows[0].textContent).toContain("UserQuery");
+  });
+
+  // …and the refusal says it once: the server's summary already reads
+  // `Not executed: unknown_tool`, so the raw code rode the row twice.
+  it("says a refusal's reason once, and still tags a call whose summary says nothing", () => {
+    renderMessages([
+      answerRow({
+        tool_calls: [
+          call("repo.check", {
+            ok: false,
+            reason: "unknown_tool",
+            summary: "Not executed: unknown_tool",
+          }),
+          call("run.start", { ok: false, reason: "awaiting_approval", summary: "waits for you" }),
+        ],
+      }),
+    ]);
+    const rows = within(screen.getByTestId("assistant-tools")).getAllByTestId("assistant-tool-row");
+    expect(rows[0].textContent).toBe("used repo.checkNot executed: unknown_tool");
+    expect(rows[1].textContent).toBe("used run.startwaits for youawaiting_approval");
+  });
+
+  // …and a turn that did NOTHING but name tools that do not exist still says
+  // what it named rather than folding to an empty `used `.
+  it("still names the calls when every one of them was an unknown tool", () => {
+    renderMessages([
+      answerRow({
+        tool_calls: [call("UserQuery", { ok: false, reason: "unknown_tool" })],
+      }),
+    ]);
+    const details = screen.getByTestId("assistant-tools") as HTMLElement;
+    expect(details.querySelector("summary")?.textContent).toBe("used UserQuery");
   });
 });
