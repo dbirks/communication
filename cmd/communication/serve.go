@@ -2027,6 +2027,14 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		api.WithRecapGenerator(api.BuildCatchUpRecapGenerator(api.CatchUpRecapDeps{
 			Broker: asstBroker,
 			Logger: d.API.Logger,
+		})),
+		// ADR-0081's headline: the same broker, asked in the BACKGROUND by the
+		// brief read and answered from a 5-minute per-(reader, window, digest)
+		// cache. The brief's lists never wait on it, so this route buys no
+		// completion in front of a browser and carries no assistant throttle.
+		api.WithCatchUpHeadlineGenerator(api.BuildCatchUpHeadlineGenerator(api.CatchUpHeadlineDeps{
+			Broker: asstBroker,
+			Logger: d.API.Logger,
 		})))
 
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*

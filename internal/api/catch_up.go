@@ -582,6 +582,10 @@ type catchUpHandlers struct {
 	gen CatchUpGeneratorTrigger
 	// recapGen is nil on the same deployment, and the POST route is then 503.
 	recapGen CatchUpRecapGenerator
+	// headlines is the ADR-0081 brief headline's cache and in-flight guard, nil
+	// until WithCatchUpHeadlineGenerator hands it a model (internal/api/
+	// catch_up_brief.go owns both halves; this is only the field it hangs from).
+	headlines *catchUpBriefHeadlines
 }
 
 // --- handlers ---------------------------------------------------------

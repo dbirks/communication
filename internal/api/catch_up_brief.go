@@ -15,10 +15,11 @@ package api
 //     `numbers` (ADR-0081 § Security/privacy). There is no 403 anywhere here:
 //     naming a foreign project narrows the answer, it never widens it and it
 //     never confirms the project exists;
-//   - the model is not on this path at all. `headline` ships as
-//     {"text":"","state":"unavailable"} and `by_project` as [] until the
-//     generator task fills them, and the page renders the sections either way
-//     — a fake narrative is worse than none (ADR-0078);
+//   - the model is not on the READ path. The lists ship the instant the store
+//     answers; the headline is attached beside them as `ready` (cached),
+//     `pending` (generation started in the background on this read) or
+//     `unavailable` (no model, or a refusal), and the page renders the sections
+//     in every case — a fake narrative is worse than none (ADR-0078);
 //   - the windows are the closed vocabulary `15m|1h|6h|24h|2d|7d|unseen`, and
 //     the row cap FOLLOWS the window (5 / 8 / 10) with the remainder counted in
 //     `omitted`, so a 7-day question costs more than a 15-minute one but never
@@ -31,11 +32,18 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dbirks/communication/internal/assistant"
@@ -67,9 +75,10 @@ const (
 	CatchUpChangeMember     = "member_added"
 )
 
-// The headline states. This file only ever writes `unavailable`: the generator
-// task owns the other two, and the page already has to render a brief whose
-// model never answered (ADR-0081 § The model's job).
+// The headline states. `unavailable` is what an assembly ships with before the
+// generator has anything to say; the other two are written by the headline
+// attachment below, and the page already has to render a brief whose model never
+// answered (ADR-0081 § The model's job).
 const (
 	CatchUpHeadlineReady       = "ready"
 	CatchUpHeadlinePending     = "pending"
@@ -102,8 +111,10 @@ type CatchUpBriefWindow struct {
 }
 
 // CatchUpBriefHeadline is the model's one sentence beside the lists.
-// `state` is ready|pending|unavailable; an unavailable headline is an honest
-// empty `text`, never a placeholder the page would read as news.
+// `state` is ready (the cache holds a validated answer), pending (this read
+// started the generation in the background) or unavailable (no model, or a
+// refusal); an unavailable or pending headline carries an honest empty `text`,
+// never a placeholder the page would read as news.
 type CatchUpBriefHeadline struct {
 	Text  string `json:"text"`
 	State string `json:"state"`
@@ -220,9 +231,10 @@ type CatchUpBriefNumbers struct {
 	Commits       int                        `json:"commits"`
 }
 
-// CatchUpBriefProjectLine is the model's per-project line; it is produced only
-// for a 24h-or-longer window with activity in two or more projects, and this
-// file always serves an empty list (the generator task fills it).
+// CatchUpBriefProjectLine is the model's per-project line: it is produced only
+// for a 24h-or-longer window with rows in two or more projects (the generator
+// drops the rest), and the chip beside the line is always the server's own,
+// taken from this read's rows — never from the cached line's id alone.
 type CatchUpBriefProjectLine struct {
 	Project CatchUpProjectChip `json:"project"`
 	Line    string             `json:"line"`
@@ -638,10 +650,13 @@ func catchUpBriefRunTitle(n CatchUpBriefRunNode) string {
 
 // --- the route --------------------------------------------------------
 
-// brief answers GET /api/v1/catch-up/brief. It is a pure read: no visit is
-// stamped, no generation is scheduled, and no model is called — the sidebar and
-// the page may ask it as often as they like, which is exactly why the recap's
-// POST stays throttled while this GET is not.
+// brief answers GET /api/v1/catch-up/brief. The LISTS are a pure read: no visit
+// is stamped, and nothing on this path waits on a model, which is why the
+// sidebar and the page may ask it as often as they like while the recap's POST
+// stays throttled. The one thing a model adds is attached beside those lists —
+// served from the cache when one holds it, scheduled in the background when this
+// read is the first to ask (state `pending`), and honestly absent otherwise
+// (ADR-0081 § The model's job).
 func (h *catchUpHandlers) brief(w http.ResponseWriter, r *http.Request) {
 	const action = "catchup.brief.read"
 	c, ok := h.caller(w, r, action)
@@ -671,8 +686,22 @@ func (h *catchUpHandlers) brief(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, action, err)
 		return
 	}
+	// The headline is the one part of the answer that needs a model, so it is
+	// attached rather than waited on: a reader never loses the lists because a
+	// gateway is slow, and never sees a headline the checks refused.
+	h.attachHeadline(r, c, &out)
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// attachHeadline is the read's one touchpoint with the headline cache, and it is
+// a no-op on a deployment with no model: the brief keeps the `unavailable` the
+// assembler wrote.
+func (h *catchUpHandlers) attachHeadline(r *http.Request, c Caller, brief *CatchUpBrief) {
+	if h.headlines == nil {
+		return
+	}
+	h.headlines.attachHeadline(r.Context(), c, brief)
 }
 
 // parseBriefScope reads `window` and `projects`. An unknown window is a 400
@@ -697,4 +726,423 @@ func (h *catchUpHandlers) parseBriefScope(w http.ResponseWriter, r *http.Request
 	}
 	scope.Window = key
 	return scope, true
+}
+
+// --- the headline generator (ADR-0081 § The model's job) --------------
+
+// CatchUpHeadlineGenerator is the seam the brief asks for its one sentence: the
+// brief the server just assembled goes in, a validated headline and its
+// per-project lines come out, and every failure is a refusal this file turns
+// into `state: "unavailable"`. It is deliberately NOT a request the browser
+// waits on: the lists are the answer, and a headline that arrives on the next
+// read of the same brief is still the headline the ADR promised.
+type CatchUpHeadlineGenerator interface {
+	// Configured reports whether this deployment can generate at all. Unset is
+	// the honest absence: `unavailable`, never a placeholder sentence.
+	Configured() bool
+	GenerateCatchUpHeadline(ctx context.Context,
+		brief CatchUpBrief) (assistant.CatchUpHeadline, error)
+}
+
+// CatchUpHeadlineModel is the assistant face the generator speaks through — the
+// broker the tour, recap and notes generators share (ADR-0034), so a deployment
+// has one egress and one cost site.
+type CatchUpHeadlineModel = assistant.CatchUpHeadlineModel
+
+// CatchUpHeadlineDeps is the builder's wiring: the broker, and a logger for the
+// refusals (a dropped headline is invisible on the page, so it says so in the
+// log).
+type CatchUpHeadlineDeps struct {
+	Broker *assistant.Broker
+	Logger *slog.Logger
+}
+
+// catchUpHeadlineArm is the api-side adapter: it owns the brief→block mapping so
+// the assistant never imports this package's shape (the dependency runs the
+// other way, and `internal/domain`-style purity is the repo's rule).
+type catchUpHeadlineArm struct {
+	model CatchUpHeadlineModel
+	log   *slog.Logger
+}
+
+// NewCatchUpHeadlineGenerator returns nil when there is no model — the honest
+// absence the recap builder states for its own route.
+func NewCatchUpHeadlineGenerator(model CatchUpHeadlineModel) CatchUpHeadlineGenerator {
+	if model == nil {
+		return nil
+	}
+	return &catchUpHeadlineArm{model: model, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+// BuildCatchUpHeadlineGenerator returns the brief's model arm, or nil when this
+// deployment has no egress.
+func BuildCatchUpHeadlineGenerator(deps CatchUpHeadlineDeps) CatchUpHeadlineGenerator {
+	if deps.Broker == nil {
+		return nil
+	}
+	g := NewCatchUpHeadlineGenerator(deps.Broker)
+	if g == nil || !g.Configured() {
+		return nil
+	}
+	if a, ok := g.(*catchUpHeadlineArm); ok && deps.Logger != nil {
+		a.log = deps.Logger
+	}
+	return g
+}
+
+func (a *catchUpHeadlineArm) Configured() bool { return a != nil && a.model != nil }
+
+func (a *catchUpHeadlineArm) GenerateCatchUpHeadline(ctx context.Context,
+	brief CatchUpBrief) (assistant.CatchUpHeadline, error) {
+	if !a.Configured() {
+		return assistant.CatchUpHeadline{}, assistant.ErrNotConfigured
+	}
+	return assistant.GenerateCatchUpHeadline(ctx, a.model, catchUpHeadlineData(brief))
+}
+
+// catchUpHeadlineData maps the served brief to what the model may be shown: the
+// rows, the numbers, the window — and whether the window is wide enough for a
+// per-project line at all.
+//
+// The width is measured on the interval the brief ANSWERED rather than on the
+// key that asked: `unseen` may span five minutes or five days, and a per-project
+// line about a five-minute absence is the noise ADR-0081's 24h floor exists to
+// keep out. The store already resolved the interval, so this is a comparison,
+// not a second window table.
+func catchUpHeadlineData(b CatchUpBrief) assistant.CatchUpHeadlineBriefData {
+	d := assistant.CatchUpHeadlineBriefData{
+		WindowKey:    b.Window.Key,
+		Since:        b.Window.Since,
+		Until:        b.Window.Until,
+		ProjectLines: !b.Window.Until.Before(b.Window.Since.Add(assistant.CatchUpHeadlineByProjectMinWindow)),
+	}
+	for _, n := range b.NeedsYou {
+		d.NeedsYou = append(d.NeedsYou, assistant.CatchUpHeadlineRow{
+			Title: n.Title, Kind: n.Kind,
+			Project: n.Project.Name, ProjectID: n.Project.ID,
+		})
+	}
+	for _, r := range b.RunningNow {
+		d.Running = append(d.Running, assistant.CatchUpHeadlineRow{
+			Title: r.Title, Step: r.Step,
+			Project: r.Project.Name, ProjectID: r.Project.ID,
+		})
+	}
+	for _, sh := range b.Shipped {
+		d.Shipped = append(d.Shipped, assistant.CatchUpHeadlineRow{
+			Title: sh.Title, Kind: sh.Kind,
+			Project: sh.Project.Name, ProjectID: sh.Project.ID,
+		})
+	}
+	for _, br := range b.Broke {
+		// `kind` carries the error class here: "test" or "infra" is the sentence
+		// the headline needs to call a failure what it is, and the row's own kind
+		// word is already in the section name.
+		d.Broke = append(d.Broke, assistant.CatchUpHeadlineRow{
+			Title: br.Title, Kind: br.ErrorClass,
+			Project: br.Project.Name, ProjectID: br.Project.ID,
+			StillFailing: br.StillFailing, Failures: br.Failures,
+		})
+	}
+	for _, hu := range b.HeadsUp {
+		d.HeadsUp = append(d.HeadsUp, assistant.CatchUpHeadlineRow{
+			Title: hu.Title, Signal: hu.Signal,
+			Project: hu.Project.Name, ProjectID: hu.Project.ID,
+		})
+	}
+	for _, ch := range b.Changes {
+		// A change row carries no project chip (CatchUpBriefChange has none), so
+		// it cannot support a by_project line and does not pretend to.
+		d.Changes = append(d.Changes, assistant.CatchUpHeadlineRow{Title: ch.Title, Kind: ch.Kind})
+	}
+	d.Numbers = assistant.CatchUpHeadlineCounts{
+		RunsSucceeded:    b.Numbers.Runs.Succeeded,
+		RunsFailed:       b.Numbers.Runs.Failed,
+		RunsCancelled:    b.Numbers.Runs.Cancelled,
+		RunsRunning:      b.Numbers.Runs.Running,
+		ApprovalsDecided: b.Numbers.Approvals.Decided,
+		ApprovalsPending: b.Numbers.Approvals.Pending,
+		ThreadsActive:    b.Numbers.ThreadsActive,
+		PRs:              b.Numbers.PRs,
+		Commits:          b.Numbers.Commits,
+	}
+	return d
+}
+
+// --- the headline cache (ADR-0081 § The model's job: cached 5 minutes) --
+
+const (
+	// CatchUpHeadlineCacheTTL is how long one reader's headline is reused for the
+	// same brief digest. Past it, the next read starts a fresh generation.
+	CatchUpHeadlineCacheTTL = 5 * time.Minute
+	// catchUpHeadlineLease is how long a `pending` entry may sit before another
+	// read is allowed to consider it stale. It is LONGER than the model call's own
+	// deadline, which is what makes "at most one in-flight generation per key"
+	// true rather than merely intended: a call that overruns its deadline is
+	// already settling when the lease expires.
+	catchUpHeadlineLease = 45 * time.Second
+	// catchUpHeadlineCallTimeout bounds one generation, background or not: the
+	// page may not be waiting, but a hung gateway still may not hold a slot.
+	catchUpHeadlineCallTimeout = 40 * time.Second
+	// catchUpHeadlinePruneEvery bounds the sweep that keeps the cache from
+	// growing with every digest a busy reader ever produced. One pass per this
+	// many attaches is amortised noise next to a model call.
+	catchUpHeadlinePruneEvery = 64
+)
+
+// catchUpBriefHeadlines is the in-process headline cache: one entry per
+// (reader, window, brief digest), each either an answer, an in-flight generation
+// or a refusal. It is per-replica state and holds nothing authoritative — losing
+// it costs one completion, which is why it is a sync.Map rather than a table.
+type catchUpBriefHeadlines struct {
+	gen CatchUpHeadlineGenerator
+	log *slog.Logger
+	// now is injectable so a test can age an entry out instead of sleeping.
+	now     func() time.Time
+	entries sync.Map // string -> *catchUpHeadlineEntry
+	// attaches counts reads for the prune cadence.
+	attaches atomic.Int64
+}
+
+type catchUpHeadlineEntry struct {
+	mu       sync.Mutex
+	state    string
+	text     string
+	lines    []assistant.CatchUpHeadlineProjectLine
+	inFlight bool
+	// startedAt is when the current generation began; expires is when this entry
+	// stops being reusable (a settled answer's TTL, an in-flight one's lease).
+	startedAt time.Time
+	expires   time.Time
+}
+
+func newCatchUpBriefHeadlines(gen CatchUpHeadlineGenerator, log *slog.Logger) *catchUpBriefHeadlines {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &catchUpBriefHeadlines{gen: gen, log: log, now: time.Now}
+}
+
+// WithCatchUpHeadlineGenerator hands GET /catch-up/brief its headline. Without
+// it the route serves the lists and `unavailable`, which is the deployment the
+// ADR calls the honest one.
+func WithCatchUpHeadlineGenerator(g CatchUpHeadlineGenerator) CatchUpOption {
+	return catchUpOptionFunc(func(h *catchUpHandlers) {
+		if g != nil && g.Configured() {
+			h.headlines = newCatchUpBriefHeadlines(g, h.srvLogger())
+		}
+	})
+}
+
+// attachHeadline fills `headline` (and `by_project`) on a brief that was just
+// assembled. It never blocks on a completion and never fails the read: the three
+// states are the whole surface, and the sections are already correct.
+func (hs *catchUpBriefHeadlines) attachHeadline(ctx context.Context, c Caller, brief *CatchUpBrief) {
+	if hs == nil || brief == nil || hs.gen == nil || !hs.gen.Configured() {
+		return // leave the honest `unavailable` the assembler wrote
+	}
+	if catchUpHeadlineData(*brief).Empty() {
+		// Nothing happened: the sentence is a fact the read established, and a
+		// gateway is never paid for it (ADR-0081 § The model's job).
+		brief.Headline = CatchUpBriefHeadline{
+			Text: assistant.CatchUpHeadlineQuietText, State: CatchUpHeadlineReady,
+		}
+		brief.ByProject = []CatchUpBriefProjectLine{}
+		return
+	}
+	key := catchUpHeadlineKey(c, *brief)
+	if hs.attaches.Add(1)%catchUpHeadlinePruneEvery == 0 {
+		hs.prune(hs.now())
+	}
+	entry, start := hs.begin(key, hs.now())
+	if start {
+		go hs.generate(ctx, *brief, entry)
+	}
+	entry.mu.Lock()
+	state, text := entry.state, entry.text
+	lines := append([]assistant.CatchUpHeadlineProjectLine(nil), entry.lines...)
+	entry.mu.Unlock()
+	brief.Headline = CatchUpBriefHeadline{State: state}
+	if state == CatchUpHeadlineReady {
+		brief.Headline.Text = text
+		brief.ByProject = catchUpBriefProjectLines(*brief, lines)
+	}
+}
+
+// begin takes (or reuses) one key's entry and reports whether THIS caller owns
+// the generation it just scheduled.
+func (hs *catchUpBriefHeadlines) begin(key string,
+	now time.Time) (*catchUpHeadlineEntry, bool) {
+	actual, loaded := hs.entries.LoadOrStore(key, &catchUpHeadlineEntry{})
+	entry, ok := actual.(*catchUpHeadlineEntry)
+	if !ok { // not reachable; treat it as absent rather than panicking on a read
+		entry = &catchUpHeadlineEntry{}
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	// A generation in flight is never doubled, and a fresh entry — answer or
+	// refusal — is reused for the rest of its TTL. A refused headline is retried
+	// only once the refusal ages out, so a broken model costs one completion per
+	// TTL per digest, not one per page load.
+	if loaded && entry.expires.After(now) {
+		return entry, false
+	}
+	// The one exception to "never doubled": a call is bounded by its own deadline,
+	// which is well inside one lease, so an entry still marked in flight FOUR
+	// leases later is a generation that never settled (a panic in a path the
+	// recover did not cover, a runtime.Goexit). Leaving the reader on `pending`
+	// forever would be the worse bug, and by now the stuck call has been cancelled
+	// whether or not it noticed.
+	if loaded && entry.inFlight && now.Before(entry.startedAt.Add(4*catchUpHeadlineLease)) {
+		return entry, false
+	}
+	entry.state = CatchUpHeadlinePending
+	entry.text = ""
+	entry.lines = nil
+	entry.inFlight = true
+	entry.startedAt = now
+	entry.expires = now.Add(catchUpHeadlineLease)
+	return entry, true
+}
+
+// generate settles one entry. It runs on a detached context: the reader's page
+// moved on, and the answer is worth having for the next read of this brief.
+func (hs *catchUpBriefHeadlines) generate(reqCtx context.Context, brief CatchUpBrief,
+	entry *catchUpHeadlineEntry) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			hs.settle(entry, assistant.CatchUpHeadline{},
+				fmt.Errorf("catch up: the headline generator panicked: %v", rec), brief.Window.Key)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), catchUpHeadlineCallTimeout)
+	defer cancel()
+	head, err := hs.gen.GenerateCatchUpHeadline(ctx, brief)
+	hs.settle(entry, head, err, brief.Window.Key)
+}
+
+func (hs *catchUpBriefHeadlines) settle(entry *catchUpHeadlineEntry, head assistant.CatchUpHeadline,
+	err error, window string) {
+	now := hs.now()
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	entry.inFlight = false
+	entry.startedAt = time.Time{}
+	entry.expires = now.Add(CatchUpHeadlineCacheTTL)
+	if err != nil {
+		entry.state, entry.text, entry.lines = CatchUpHeadlineUnavailable, "", nil
+		hs.log.Warn("catch up: the brief headline was refused; the page renders the sections alone",
+			"window", window, "error", err.Error())
+		return
+	}
+	entry.state, entry.text, entry.lines = CatchUpHeadlineReady, head.Text, head.ByProject
+}
+
+// prune drops what has expired. It is a bound on memory, not a correctness rule:
+// begin() already re-starts an expired entry it finds.
+func (hs *catchUpBriefHeadlines) prune(now time.Time) {
+	hs.entries.Range(func(k, v any) bool {
+		entry, ok := v.(*catchUpHeadlineEntry)
+		if !ok {
+			hs.entries.Delete(k)
+			return true
+		}
+		entry.mu.Lock()
+		stale := !entry.inFlight && !entry.expires.After(now)
+		entry.mu.Unlock()
+		if stale {
+			hs.entries.Delete(k)
+		}
+		return true
+	})
+}
+
+// catchUpHeadlineKey is the cache identity: reader, window and the digest of the
+// brief they are looking at. Two readers never share a headline (the briefs are
+// scoped differently and the sentence is addressed to one person), and one reader
+// with a changed brief never reuses the old sentence.
+func catchUpHeadlineKey(c Caller, brief CatchUpBrief) string {
+	sum := sha256.Sum256(catchUpBriefDigest(brief))
+	return c.UserID + "\x00" + brief.Window.Key + "\x00" + hex.EncodeToString(sum[:])
+}
+
+// catchUpBriefDigest is sha256 over the brief's own JSON with the model's halves
+// removed: `headline` and `by_project` are the thing being cached, so they can
+// never be part of their own key.
+//
+// `window.since`/`window.until` are removed too, and that is deliberate: they are
+// the read's clock, not the data. Left in, every page load one second later would
+// be a new digest, every digest a new completion, and the 5-minute cache the ADR
+// asks for would never hit at all. What is being asked about is still in the key
+// — the window `key` names it, and the cache key carries that.
+func catchUpBriefDigest(brief CatchUpBrief) []byte {
+	clone := brief
+	clone.Headline = CatchUpBriefHeadline{}
+	clone.ByProject = nil
+	clone.Window = CatchUpBriefWindow{Key: brief.Window.Key}
+	blob, err := json.Marshal(clone)
+	if err != nil {
+		// Not reachable for a value this package just marshalled for the wire.
+		// A constant stands in so the cache degrades to "no reuse" (its digest
+		// never matches a real one) rather than to a shared key.
+		return []byte("catch up: the brief cannot be digested")
+	}
+	return blob
+}
+
+// catchUpBriefProjectLines re-attaches the model's lines to the chips THIS read
+// carries. A line whose project is no longer in the brief is dropped rather than
+// rendered with a chip invented from a cached id.
+func catchUpBriefProjectLines(brief CatchUpBrief,
+	lines []assistant.CatchUpHeadlineProjectLine) []CatchUpBriefProjectLine {
+	out := []CatchUpBriefProjectLine{}
+	if len(lines) == 0 {
+		return out
+	}
+	chips := catchUpBriefChips(brief)
+	for _, l := range lines {
+		chip, ok := chips[l.ProjectID]
+		if !ok || strings.TrimSpace(l.Line) == "" {
+			continue
+		}
+		out = append(out, CatchUpBriefProjectLine{Project: chip, Line: l.Line})
+	}
+	return out
+}
+
+// catchUpBriefChips is the project index the by_project lines are keyed against:
+// every chip the brief itself served, from every section that carries one.
+func catchUpBriefChips(brief CatchUpBrief) map[string]CatchUpProjectChip {
+	chips := map[string]CatchUpProjectChip{}
+	add := func(c CatchUpProjectChip) {
+		if c.ID != "" {
+			chips[c.ID] = c
+		}
+	}
+	for _, n := range brief.NeedsYou {
+		add(n.Project)
+	}
+	for _, r := range brief.RunningNow {
+		add(r.Project)
+	}
+	for _, s := range brief.Shipped {
+		add(s.Project)
+	}
+	for _, b := range brief.Broke {
+		add(b.Project)
+	}
+	for _, h := range brief.HeadsUp {
+		add(h.Project)
+	}
+	return chips
+}
+
+// srvLogger is the deployment's logger, or nil for a handler assembled without a
+// server — which newCatchUpBriefHeadlines turns into a discard handle rather than
+// a nil dereference in a test.
+func (h *catchUpHandlers) srvLogger() *slog.Logger {
+	if h == nil || h.srv == nil {
+		return nil
+	}
+	return h.srv.logger
 }
