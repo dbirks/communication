@@ -60,9 +60,9 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [x] Seed realistic fixtures (runs, conversations, approvals, failures and
       merges) for four windows: a few minutes, an hour, a day and several
       days. Add a 7-day window too. Evidence: 15ca227 (catch_up_seed*_test.go, TestCatchUpSeed{15m,1h,1d,3d,7d}).
-- [ ] (Progress) Brief assembler and route: 0cc463f (catch_up_brief_test.go, real-DB
+- [x] (Progress) Brief assembler and route: 0cc463f (catch_up_brief_test.go, real-DB
       catch_up_brief_test.go incl. non-member scoping). The seeder (catchup-seed2), headline
-      (catchup-headline), chat tools (catchup-tools) and page (catchup-ui) are queued.
+      (catchup-headline), chat tools (catchup-tools) and page (catchup-ui) all landed: 15ca227, 5f94289, ab16ee4, 9d82339.
 - [x] Add one integration test per window. Evidence: 576a388 TestCatchUpBriefOverSeeded/{15m,1h,1d,3d,7d} with
       goldens in internal/store/postgres/testdata/catch_up_brief/. It found and fixed heads_up being empty.
 - [x] Polish (from the 1d golden): running_now step reads "/implement" (leading slash from the instance key), and
@@ -76,8 +76,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 
 - [x] Finding (deployed): Operations lists 35 dead worker pods above the one live
       worker. Covered by the section 8 redesign (2faa0a0).
-- [ ] Finding: CI audit failed on GO-2026-6859 (net/http). Bumped Go to 1.27.4 in
-      ceafd03; confirm CI is green.
+- [x] Finding: CI audit failed on GO-2026-6859 (net/http). Bumped Go to 1.27.4 in
+      ceafd03; confirm CI is green. CI 43025622975 on 3d564fb succeeded, govulncheck included.
 
 - [x] Finding (deployed): New profile with launcher Pi defaults to permission `ask`, which can
       never run ("permission mode ask needs a prompting mode for launcher pi"). The UI can't
