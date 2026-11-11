@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +29,10 @@ const (
 	// chunks racing the turn result are not lost.
 	DefaultQuiesce = 200 * time.Millisecond
 	// DefaultPermissionTTL bounds how long a human prompt stays actionable.
-	DefaultPermissionTTL  = 2 * time.Minute
+	// It is the human-scale window (docs/testing/claude-ask-mode-2026-11-11):
+	// two minutes was a machine timeout wearing a human's job, so the default
+	// is ten and the operator can move it with COMMUNICATION_WORKER_PERMISSION_TTL.
+	DefaultPermissionTTL  = 10 * time.Minute
 	DefaultPermissionPoll = 500 * time.Millisecond
 	// DefaultMaxChunkBytes bounds one conversation.message.agent row; a
 	// longer flush is split into ordered chunks.
@@ -39,12 +44,16 @@ const (
 
 // TurnConfig tunes the loop; zero values take the defaults above.
 type TurnConfig struct {
-	LeaseTTL        time.Duration
-	RenewInterval   time.Duration
-	ClaimInterval   time.Duration
-	CancelPoll      time.Duration
-	IdleFlush       time.Duration
-	Quiesce         time.Duration
+	LeaseTTL      time.Duration
+	RenewInterval time.Duration
+	ClaimInterval time.Duration
+	CancelPoll    time.Duration
+	IdleFlush     time.Duration
+	Quiesce       time.Duration
+	// PermissionTTL at its zero value comes from EnvPermissionTTL, then
+	// DefaultPermissionTTL; the env value is validated against
+	// Min/MaxPermissionTTL at startup (a programmatically set value —
+	// tests, embedders — is trusted as-is).
 	PermissionTTL   time.Duration
 	PermissionPoll  time.Duration
 	MaxChunkBytes   int
@@ -59,7 +68,58 @@ type TurnConfig struct {
 	AskModeID func(launcherID string) string
 }
 
-func (c TurnConfig) normalise() TurnConfig {
+// EnvPermissionTTL names the operator knob for the human approval window:
+// a Go duration (e.g. "30m"), clamped to Min..MaxPermissionTTL. An
+// unparseable or out-of-range value is a startup error naming the variable —
+// a worker that silently widened or narrowed its own approval window is how
+// a "nobody answered" policy stops being one.
+const EnvPermissionTTL = "COMMUNICATION_WORKER_PERMISSION_TTL"
+
+// Min and MaxPermissionTTL bound the operator-configurable approval window:
+// below 30 s no human can react, above 1 h the turn is parked past any
+// reasonable wait and the agent's session is better spent elsewhere.
+const (
+	MinPermissionTTL = 30 * time.Second
+	MaxPermissionTTL = time.Hour
+)
+
+// ParsePermissionTTL resolves one COMMUNICATION_WORKER_PERMISSION_TTL value:
+// empty (unset or blank) takes DefaultPermissionTTL; anything else must be a
+// Go duration within Min..MaxPermissionTTL, and every error names the
+// variable so a failing worker's log says which knob to fix.
+func ParsePermissionTTL(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultPermissionTTL, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration: %w", EnvPermissionTTL, raw, err)
+	}
+	if d < MinPermissionTTL || d > MaxPermissionTTL {
+		return 0, fmt.Errorf("%s %s is outside %s..%s", EnvPermissionTTL, d, MinPermissionTTL, MaxPermissionTTL)
+	}
+	return d, nil
+}
+
+// normalise fills the cadence defaults and resolves the permission window
+// (zero → EnvPermissionTTL → DefaultPermissionTTL), rejecting a window
+// outside Min..MaxPermissionTTL. withDefaults is the same without the env
+// read or the refusal, for callers that only borrow the chunking cadence.
+func (c TurnConfig) normalise() (TurnConfig, error) {
+	raw := c.PermissionTTL
+	c = c.withDefaults()
+	if raw <= 0 {
+		d, err := ParsePermissionTTL(os.Getenv(EnvPermissionTTL))
+		if err != nil {
+			return c, err
+		}
+		c.PermissionTTL = d
+	}
+	return c, nil
+}
+
+func (c TurnConfig) withDefaults() TurnConfig {
 	if c.LeaseTTL <= 0 {
 		c.LeaseTTL = DefaultLeaseTTL
 	}
@@ -223,8 +283,12 @@ func NewTurnLoop(cfg TurnConfig, store TurnStore, spawn domain.AgentSessionFacto
 	if workerID == nil {
 		return nil, errors.New("worker: turn loop requires a worker-id provider")
 	}
+	cfg, err := cfg.normalise()
+	if err != nil {
+		return nil, fmt.Errorf("worker: turn loop config: %w", err)
+	}
 	l := &TurnLoop{
-		cfg:    cfg.normalise(),
+		cfg:    cfg,
 		store:  store,
 		spawn:  spawn,
 		work:   work,

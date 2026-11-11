@@ -26,6 +26,7 @@ import {
   type ChangeEvent,
   type FormEvent,
   type ReactNode,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -96,6 +97,99 @@ export function controllerCopy(
       : "Controlled by another member";
   }
   return NO_CONTROLLER_LABEL;
+}
+
+/**
+ * The blocked-on-you line (docs/testing/claude-ask-mode-2026-11-11 proposal 1).
+ *
+ * A prompt whose only sign is a card below the agent's streaming text is a
+ * prompt nobody sees; while the conversation resource carries a pending
+ * permission (`pending_permissions`, live-invalidated by the event stream),
+ * the control surface the person already looks at says so: what is asked,
+ * how long is left, and a `Review` act that lands them on the card. Past the
+ * deadline the same line states the lapse (`Approval expired`) until the
+ * refetch takes the pending row away — the honest past-tense of "the window
+ * ran out", not a silent disappearance.
+ */
+
+/** `mm:ss` for the countdown — whole seconds, floored, clamped at zero. */
+export function approvalCountdown(msLeft: number): string {
+  const total = Math.max(0, Math.floor(msLeft / 1000));
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+/** The 1 s clock the countdown rides: no timer at all while nothing is open. */
+function useSecondTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+/** Focus the transcript card for one request: scroll it into view and land
+ * the caret on it (the li wears `tabIndex={-1}`). Absent — the transcript
+ * scrolled it out of the retained window, or another surface has it — the
+ * act is a no-op rather than an error: the badge and the title count still
+ * say "find me". */
+function focusPermissionCard(requestId: string): void {
+  const card = document.querySelector<HTMLElement>(
+    `[data-permission-request-id="${CSS.escape(requestId)}"]`,
+  );
+  if (!card) return;
+  if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "center" });
+  card.focus();
+}
+
+export function PermissionWaitingLine({ session }: { session: ConversationSession }) {
+  // `pending_permissions` is oldest-first on the wire; the row closest to its
+  // deadline is the one the countdown and the Review name.
+  const pending =
+    session.data?.pending_permissions?.find((request) => request.status === "pending") ?? null;
+  const deadlineAt = pending?.deadline_at ?? null;
+  const now = useSecondTick(pending !== null);
+  if (!pending) return null;
+  const deadline = deadlineAt === null ? null : Date.parse(deadlineAt);
+  const expired = deadline !== null && Number.isFinite(deadline) && now >= deadline;
+  const mmss =
+    deadline !== null && Number.isFinite(deadline) ? approvalCountdown(deadline - now) : null;
+  return (
+    <div
+      data-testid="permission-waiting-line"
+      role="status"
+      className="flex w-full basis-full flex-wrap items-center gap-x-2 font-mono text-[11px]"
+    >
+      {expired ? (
+        <span data-testid="permission-waiting-state" className="text-muted">
+          Approval expired
+        </span>
+      ) : (
+        <span data-testid="permission-waiting-state" className="text-accent-text">
+          Waiting for your approval
+          <span aria-hidden="true"> · </span>
+          {pending.tool_title}
+          {mmss !== null ? (
+            <>
+              <span aria-hidden="true"> · </span>
+              <span data-testid="permission-waiting-countdown">{mmss} left</span>
+            </>
+          ) : null}
+        </span>
+      )}
+      <button
+        type="button"
+        data-testid="permission-review"
+        className="text-accent-text underline underline-offset-4 hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        onClick={() => focusPermissionCard(pending.id)}
+      >
+        Review
+      </button>
+    </div>
+  );
 }
 
 /**
@@ -298,6 +392,7 @@ export function AgentConversationControls({
           {actions}
         </div>
       )}
+      <PermissionWaitingLine session={session} />
       {confirmOpen && confirmTakeover && !isController ? (
         <TakeControlCard
           step={stepName ?? "the current step"}

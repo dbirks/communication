@@ -63,7 +63,7 @@ func (a *AgentTurn) attemptTranscript(ctx context.Context, c AttemptClaim, conv 
 // transcriptCfg is the M2 cadence: the same chunk and preview bounds, so an
 // attempt's transcript rows are bounded exactly like a conversation's.
 func (a *AgentTurn) transcriptCfg() TurnConfig {
-	return a.Transcript.normalise()
+	return a.Transcript.withDefaults()
 }
 
 func (a *AgentTurn) sinkClock() Clock {

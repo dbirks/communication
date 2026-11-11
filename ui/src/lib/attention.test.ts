@@ -10,7 +10,14 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
-import { ATTENTION_TITLE_CLAMP, attentionTitle, useProjectAttention } from "./attention";
+import {
+  ATTENTION_TITLE_CLAMP,
+  attentionTitle,
+  needsYou,
+  pendingPermissionCount,
+  useAttentionDocumentTitle,
+  useProjectAttention,
+} from "./attention";
 import { mockFetch, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 
 /** The live board's second card, verbatim: a lead-in and the whole plan. */
@@ -113,5 +120,82 @@ describe("useProjectAttention refresh contract", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(requestsTo(requests, APPROVALS_PATH, "GET")).toHaveLength(1);
+  });
+});
+
+/**
+ * The two findability rules from the ask-mode diagnosis
+ * (docs/testing/claude-ask-mode-2026-11-11 proposal 2): the needs-you count
+ * includes the pending ACP prompts the fan-out already reads, and the same
+ * count rides the document title so a background tab can say "someone is
+ * waiting".
+ */
+describe("needsYou — prompts waiting on a person count", () => {
+  const convo = (pendingPermissions: number) =>
+    ({
+      project: projectFixture,
+      conversation: { id: `c-${pendingPermissions}` },
+      pendingPermissions,
+    }) as never;
+
+  it("sums gates, stalls and pending permissions", () => {
+    expect(
+      needsYou({
+        decisions: [1, 2] as never,
+        stalled: [3] as never,
+        conversations: [convo(2), convo(0), convo(1)],
+      }),
+    ).toBe(6);
+  });
+
+  it("adds nothing when no detail reported a prompt", () => {
+    expect(
+      needsYou({ decisions: [1] as never, stalled: [] as never, conversations: [convo(0)] }),
+    ).toBe(1);
+  });
+
+  it("counts the fan-out's prompts on their own", () => {
+    expect(pendingPermissionCount([convo(3), convo(0), convo(2)] as never)).toBe(5);
+    expect(pendingPermissionCount([])).toBe(0);
+  });
+});
+
+describe("useAttentionDocumentTitle", () => {
+  const original = document.title;
+
+  afterEach(() => {
+    document.title = original;
+  });
+
+  function mountTitle(n: number | null) {
+    document.title = "Communication";
+    return renderHook(({ count }: { count: number | null }) => useAttentionDocumentTitle(count), {
+      initialProps: { count: n },
+    });
+  }
+
+  it("prefixes with the count while it is positive and restores it at zero", () => {
+    const { rerender, unmount } = mountTitle(2);
+    expect(document.title).toBe("(2) Communication");
+    rerender({ count: 0 });
+    expect(document.title).toBe("Communication");
+    rerender({ count: 3 });
+    expect(document.title).toBe("(3) Communication");
+    unmount();
+    expect(document.title).toBe("Communication");
+  });
+
+  it("treats an in-flight (null) count as nothing waiting", () => {
+    const { unmount } = mountTitle(null);
+    expect(document.title).toBe("Communication");
+    unmount();
+  });
+
+  it("never stacks prefixes on a title that already carries one", () => {
+    document.title = "(9) Communication";
+    const { unmount } = renderHook(() => useAttentionDocumentTitle(1));
+    expect(document.title).toBe("(1) Communication");
+    unmount();
+    expect(document.title).toBe("Communication");
   });
 });

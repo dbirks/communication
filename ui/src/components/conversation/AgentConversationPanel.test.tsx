@@ -32,16 +32,18 @@ import {
   otherUserId,
   projectFixture,
   mockFetch,
+  permissionRequestFixture,
   repositoryId,
   requestsTo,
   turnFixture,
   turnId,
   type RouteStub,
 } from "../../test/fakes";
-import type { Conversation } from "../../api/types";
+import type { Conversation, PermissionRequest } from "../../api/types";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -824,5 +826,104 @@ describe("the composer's / skill and # issue affordances (design 2e/1h)", () => 
     const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "#" } });
     expect(screen.queryByTestId("composer-issue-menu")).toBeNull();
+  });
+});
+
+/**
+ * The blocked-on-you line (docs/testing/claude-ask-mode-2026-11-11 proposal 1):
+ * while the conversation resource carries a pending permission, the control
+ * surface says what is asked and how long is left, in the accent colour, and
+ * `Review` lands the reader — and the keyboard — on the card itself. Past the
+ * deadline the line owns the lapse (`Approval expired`, muted) instead of
+ * vanishing and letting the harness's "Tool use aborted" speak for it.
+ */
+describe("permission waiting line in the control surface (ask-mode fix 1)", () => {
+  // Relative to the run: the line must be in its WAITING state when `Review`
+  // is clicked, not the post-deadline one.
+  const deadline = new Date(Date.now() + 9 * 60_000).toISOString();
+  const pending: PermissionRequest = {
+    ...permissionRequestFixture,
+    deadline_at: deadline,
+  };
+  const withPending: Conversation = {
+    ...conversationFixture,
+    pending_permissions: [pending],
+  };
+
+  it("counts the window down second by second and names the lapse at zero", async () => {
+    // The clock is fake from before mount: the component's 1 s interval must
+    // ride the fake timers (a real interval would never hear them advance),
+    // so the data load is flushed by advancing the same clock.
+    const base = new Date("2026-10-14T18:09:01Z");
+    const countdownPending: PermissionRequest = {
+      ...permissionRequestFixture,
+      deadline_at: new Date(base.getTime() + 59_000).toISOString(),
+    };
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(base);
+      renderPanel(
+        dock(),
+        routes({ ...conversationFixture, pending_permissions: [countdownPending] }),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const state = screen.getByTestId("permission-waiting-state");
+      expect(state.textContent).toContain("Waiting for your approval");
+      expect(state.textContent).toContain(countdownPending.tool_title);
+      expect(state.className).toContain("text-accent-text");
+      expect(screen.getByTestId("permission-waiting-countdown").textContent).toBe("00:59 left");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(screen.getByTestId("permission-waiting-countdown").textContent).toBe("00:58 left");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(57_000);
+      });
+      expect(screen.getByTestId("permission-waiting-countdown").textContent).toBe("00:01 left");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(screen.getByTestId("permission-waiting-state").textContent).toBe("Approval expired");
+      expect(screen.getByTestId("permission-waiting-state").className).toContain("text-muted");
+      expect(screen.queryByTestId("permission-waiting-countdown")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Review scrolls to and focuses the pending card", async () => {
+    renderPanel(dock(), routes(withPending));
+    await screen.findByTestId("permission-waiting-line");
+
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.permission.requested", {
+          permission_request_id: pending.id,
+          title: pending.tool_title,
+          kind: pending.tool_kind,
+          tool_call_id: pending.tool_call_id,
+          options: pending.options,
+          deadline_at: deadline,
+        }),
+      );
+    });
+    const card = await screen.findByTestId("permission-card");
+    expect(document.activeElement).not.toBe(card.closest("li"));
+
+    fireEvent.click(screen.getByTestId("permission-review"));
+    expect(document.activeElement).toBe(card.closest("li"));
+  });
+
+  it("draws nothing while no permission is pending", async () => {
+    renderPanel(dock(), routes(conversationFixture));
+    await screen.findByTestId("dock-open-conversation");
+    expect(screen.queryByTestId("permission-waiting-line")).toBeNull();
   });
 });

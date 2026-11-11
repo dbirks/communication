@@ -223,7 +223,10 @@ at the plain `:main` image cannot run agent turns (§ 1). The env-name list must
 `COMMUNICATION_MODEL_CHAT_MODELS` (lines 466-467), `CLAUDE_CONFIG_DIR` (line 470) — and it must NOT
 include `COMMUNICATION_AGENT_EGRESS_ALLOW`, which the manifest does not set, so the agent-turn
 allowlist is the shipped default `api.anthropic.com` (`internal/sandbox/nono/egress.go:68`, read by
-`internal/worker/agentturn.go:263-279`).
+`internal/worker/agentturn.go:263-279`). An env-name list for a worker whose approval window was
+overridden would additionally show `COMMUNICATION_WORKER_PERMISSION_TTL` (Go duration; default
+`10m`, min `30s`, max `1h`; an invalid value stops the worker at startup) — the manifest does not
+set it, so every deployed worker answers prompts on the shipped default window.
 
 The init container that decides whether `agent.acp` is live at all prints its own verdict (a shell
 `echo` in the manifest, not a Go log string — `communication.yaml:425,427`):

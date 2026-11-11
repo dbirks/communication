@@ -14,9 +14,10 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import Transcript from "./Transcript";
+import Transcript, { permissionWindowLabel } from "./Transcript";
 import { projectTranscript } from "../api/transcript";
 import { conversationEvent, turnFixture, turnId } from "../test/fakes";
+import type { TranscriptItem } from "../api/transcript";
 import { nameLookup, resolveName } from "../api/names";
 import type { ConversationTurn, EventEnvelope } from "../api/types";
 
@@ -271,5 +272,120 @@ describe("an agent message with no words draws nothing (deployed finding 2026-11
     const row = screen.getByTestId("transcript-item");
     expect(within(row).getByTestId("agent-speaker").textContent).toContain("Pi ·");
     expect(row.textContent).toContain("run pnpm test");
+  });
+});
+
+/**
+ * The expired prompt explains itself (docs/testing/claude-ask-mode-2026-11-11
+ * proposal 3): a closed `status: expired` chip alone read as "the tool
+ * failed", and the agent wrote it down against itself. The card now states
+ * the rule — nobody answered inside the window the worker opened with, so
+ * the agent was told no. The window is the row's own arithmetic
+ * (`deadline_at − requested_at`), so the sentence names THIS deployment's
+ * TTL without the UI ever reading worker config.
+ */
+describe("PermissionCard expired copy (ask-mode fix 3)", () => {
+  const requestId = "01987a72-3333-7000-8000-abcdef987654";
+  const permissionOptions = [
+    { option_id: "allow-once", label: "Yes", kind: "allow_once" },
+    { option_id: "reject", label: "No", kind: "reject_once" },
+  ];
+
+  function frames(deadlineAt?: string): EventEnvelope[] {
+    return [
+      conversationEvent(
+        "conversation.permission.requested",
+        {
+          permission_request_id: requestId,
+          title: "git ls-files",
+          kind: "execute",
+          options: permissionOptions,
+          ...(deadlineAt ? { deadline_at: deadlineAt } : {}),
+        },
+        { occurred_at: "2026-10-14T18:00:00Z" },
+      ),
+      conversationEvent(
+        "conversation.permission.decided",
+        { permission_request_id: requestId, status: "expired" },
+        { occurred_at: "2026-10-14T18:10:01Z" },
+      ),
+    ];
+  }
+
+  function renderFrames(events: EventEnvelope[]) {
+    const items = projectTranscript(events, nameOf).items;
+    render(
+      <Transcript
+        items={items}
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    return items;
+  }
+
+  it("names the window it gave and what the lapse decided", () => {
+    renderFrames(frames("2026-10-14T18:10:00Z"));
+    expect(screen.getByTestId("permission-expired-copy").textContent).toBe(
+      "Nobody answered within 10 minutes, so the agent was told no.",
+    );
+  });
+
+  it("stays honest when the frames carry no deadline to measure", () => {
+    renderFrames(frames());
+    expect(screen.queryByTestId("permission-expired-copy")).toBeNull();
+  });
+
+  it("permissionWindowLabel reads the window in whole units, and only when both stamps exist", () => {
+    const base: Extract<TranscriptItem, { kind: "permission" }> = {
+      kind: "permission",
+      id: "e1",
+      turnId: turnId,
+      requestId: "r1",
+      title: "t",
+      toolKind: "",
+      options: [],
+      status: "expired",
+      decisionOptionId: null,
+      decidedBy: null,
+      deadlineAt: null,
+    };
+    expect(
+      permissionWindowLabel({
+        ...base,
+        requestedAt: "2026-10-14T18:00:00Z",
+        deadlineAt: "2026-10-14T18:00:30Z",
+      }),
+    ).toBe("30 seconds");
+    expect(
+      permissionWindowLabel({
+        ...base,
+        requestedAt: "2026-10-14T18:00:00Z",
+        deadlineAt: "2026-10-14T19:00:00Z",
+      }),
+    ).toBe("1 hour");
+    // Sub-second journal drift on a 2-minute window still says "2 minutes".
+    expect(
+      permissionWindowLabel({
+        ...base,
+        requestedAt: "2026-10-14T16:12:20.406Z",
+        deadlineAt: "2026-10-14T16:14:20Z",
+      }),
+    ).toBe("2 minutes");
+    expect(permissionWindowLabel({ ...base, requestedAt: "2026-10-14T18:00:00Z" })).toBeNull();
+    expect(permissionWindowLabel({ ...base, deadlineAt: "2026-10-14T18:10:00Z" })).toBeNull();
+    // A deadline before the request is not a window; it gets no sentence.
+    expect(
+      permissionWindowLabel({
+        ...base,
+        requestedAt: "2026-10-14T18:10:00Z",
+        deadlineAt: "2026-10-14T18:00:00Z",
+      }),
+    ).toBeNull();
   });
 });

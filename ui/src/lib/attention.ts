@@ -15,7 +15,7 @@
  * which is why the prompt read is a second fan-out narrowed to
  * `has_active_turn === true`.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch, problemOf } from "../api/client";
 import { queryKeys, type RefetchOptions } from "../api/queries";
@@ -297,9 +297,46 @@ export function attentionByProject(
   return views;
 }
 
-/** What makes a project "need someone": an open gate or a run that stopped. */
-export function needsYou(view: Pick<ProjectAttentionView, "decisions" | "stalled">): number {
-  return view.decisions.length + view.stalled.length;
+/** What makes a project "need someone": an open gate, a run that stopped, or
+ * an ACP prompt still waiting on its controller. The prompts count is the
+ * fan-out `useProjectAttention` already reads (0 whenever the detail was never
+ * fetched, so a count never invents a prompt the wire did not show); a badge
+ * that ignored them is how an unanswered ask hides inside a thread someone is
+ * expected to open blind (docs/testing/claude-ask-mode-2026-11-11 proposal 2). */
+export function needsYou(
+  view: Pick<ProjectAttentionView, "decisions" | "stalled" | "conversations">,
+): number {
+  return view.decisions.length + view.stalled.length + pendingPermissionCount(view.conversations);
+}
+
+/** The sum of the fan-out's per-conversation pending-prompt counts. */
+export function pendingPermissionCount(
+  conversations: readonly Pick<ConversationItem, "pendingPermissions">[],
+): number {
+  return conversations.reduce((sum, item) => sum + item.pendingPermissions, 0);
+}
+
+/**
+ * Prefix the document title with `(n) ` while n > 0, so a tab in the back of
+ * a stack says "something here waits on you" without anyone opening it. The
+ * base title is whatever the page carried before the prefix (never the
+ * prefixed string), and unmounting restores it — the hook leaves no residue
+ * when the sidebar it rides goes away.
+ */
+export function useAttentionDocumentTitle(count: number | null | undefined): void {
+  const base = useRef<string | null>(null);
+  useEffect(() => {
+    if (base.current === null) base.current = document.title.replace(/^\(\d+\)\s*/, "");
+    const n = count ?? 0;
+    document.title = n > 0 ? `(${n}) ${base.current}` : base.current;
+    return () => {
+      // Restore the unprefixed title, then forget it: the next mount (or the
+      // StrictMode double-invoke) re-reads it from a title this hook is no
+      // longer holding.
+      if (base.current !== null) document.title = base.current;
+      base.current = null;
+    };
+  }, [count]);
 }
 
 /**

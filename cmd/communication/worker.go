@@ -45,6 +45,10 @@ environment:
   COMMUNICATION_DATABASE_URL     required, postgres connection string
   COMMUNICATION_WORKER_NAME      worker identity (default: hostname)
   COMMUNICATION_WORKER_HEARTBEAT heartbeat interval (default "10s")
+  COMMUNICATION_WORKER_PERMISSION_TTL
+                                 how long a permission prompt stays open for
+                                 its controller (Go duration, default "10m",
+                                 min "30s", max "1h"; invalid = startup error)
   COMMUNICATION_WORKER_CAPACITY  concurrent attempts this worker claims and
                                  publishes into workers.capacity (default "1",
                                  max "16" — the workers.capacity CHECK, M4

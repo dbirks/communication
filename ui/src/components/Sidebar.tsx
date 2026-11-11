@@ -73,6 +73,7 @@ import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { FLAG_RANK, useSidebarFlags } from "../lib/sidebarFlags";
+import { useAttentionDocumentTitle } from "../lib/attention";
 import { Mark } from "./ds/Mark";
 import { Popover, POPOVER_WIDTH_PX } from "./ds/Popover";
 import NewConversationDialog from "./NewConversationDialog";
@@ -945,6 +946,10 @@ export default function Sidebar({
   const { prefs, update } = useLayoutPrefs();
   const me = useMe();
   const flags = useSidebarFlags();
+  // Ask-mode fix proposal 2: the tab title carries the same needs-you count
+  // the Today badge wears, so a prompt waiting in a background tab is
+  // findable from the tab strip alone.
+  useAttentionDocumentTitle(flags.inbox.needsYou);
   // Finding 02: the Workflows/Agents rows count themselves off the same
   // reads the pages use (see the nav block in the expanded column).
   const pipelines = usePipelines();

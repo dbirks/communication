@@ -279,6 +279,33 @@ export function optionTestid(option: PermissionOption, taken: Set<string>): stri
   return `permission-option-${option.option_id}`;
 }
 
+/** Whole-unit label for the expired card's sentence: "30 seconds", "2 minutes",
+ * "1 hour" — the nearest unit that divides the window, so a 10-minute default
+ * reads "10 minutes" and never "600 seconds". */
+function windowLabel(ms: number): string {
+  const say = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds % 3600 === 0) return say(seconds / 3600, "hour");
+  if (seconds % 60 === 0) return say(seconds / 60, "minute");
+  return say(seconds, "second");
+}
+
+/**
+ * The approval window an expired prompt was given, in words, or `null` when
+ * the card cannot honestly state one (a frame missing `requested_at` or the
+ * deadline). The worker opens the row with `deadline_at = requested_at +
+ * PermissionTTL`, so the two journal stamps carry the deployment's TTL
+ * without the UI ever reading worker config.
+ */
+export function permissionWindowLabel(
+  item: Extract<TranscriptItem, { kind: "permission" }>,
+): string | null {
+  if (!item.deadlineAt || !item.requestedAt) return null;
+  const ms = Date.parse(item.deadlineAt) - Date.parse(item.requestedAt);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return windowLabel(ms);
+}
+
 function PermissionCard({
   item,
   canDecide,
@@ -309,8 +336,11 @@ function PermissionCard({
   return (
     // The row carries the request id so a reader (test or human) can pin THIS
     // card across the pending→decided transition instead of matching on title
-    // text, which two turns of the same prompt can share.
-    <li data-testid="transcript-item" data-permission-request-id={item.requestId}>
+    // text, which two turns of the same prompt can share. The id doubles as
+    // the scroll target the thread header's `Review` button focuses — the li
+    // takes programmatic focus (`tabIndex={-1}`) so a keyboard reader lands on
+    // the ask itself, not wherever the scroll happened to park.
+    <li data-testid="transcript-item" data-permission-request-id={item.requestId} tabIndex={-1}>
       {/* Handoff rule 05: a title bar is the state's strong color only while the
           panel needs action, i.e. only for an open request. A decided, expired
           or cancelled prompt is a closed record — gray bar, state as a chip. */}
@@ -352,6 +382,18 @@ function PermissionCard({
               }`
             : ""}
         </p>
+
+        {/* The expiry names its own rule (docs/testing/claude-ask-mode-2026-11-11
+            proposal 3): a closed `status: expired` chip reads as a tool failure,
+            not as "the human window lapsed". The window is the card's own
+            arithmetic — the worker opened the prompt at `requested_at` with
+            `deadline_at = requested_at + PermissionTTL` — so the sentence says
+            what THIS deployment's rule was without the UI knowing its config. */}
+        {item.status === "expired" && permissionWindowLabel(item) ? (
+          <p className="mt-1 text-[12.5px] text-ink" data-testid="permission-expired-copy">
+            Nobody answered within {permissionWindowLabel(item)}, so the agent was told no.
+          </p>
+        ) : null}
 
         {open && canDecide ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">

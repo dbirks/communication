@@ -101,7 +101,11 @@ export function sidebarFlagsFromAttention(
   }
   return {
     inbox: {
-      needsYou: needsYou({ decisions: attention.decisions, stalled: attention.stalled }),
+      needsYou: needsYou({
+        decisions: attention.decisions,
+        stalled: attention.stalled,
+        conversations: attention.conversations,
+      }),
       failed: attention.stalled.length,
     },
     board: { running: attention.running.length },

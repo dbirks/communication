@@ -118,6 +118,11 @@ export type TranscriptItem =
       decisionOptionId: string | null;
       decidedBy: string | null;
       deadlineAt: string | null;
+      /** `occurred_at` of the `conversation.permission.requested` frame. The
+       * worker set `deadline_at = requested + its PermissionTTL`, so
+       * `deadline_at − requested_at` is the approval window the expired card
+       * can name without knowing the worker's configuration. */
+      requestedAt?: string;
     }
   | {
       kind: "system";
@@ -786,6 +791,7 @@ export function projectTranscript(
           decisionOptionId: null,
           decidedBy: null,
           deadlineAt: str(payload, "deadline_at") || null,
+          requestedAt: at,
         };
         push(item);
         if (requestId) permissions.set(requestId, item);
