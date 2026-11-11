@@ -51,6 +51,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 
 ## 4. Catch-up
 - [ ] Interrogate the prompt and the tool set, then rewrite them so the output
+      (Audit: docs/research/2026-11-catch-up-audit.md. Design: ADR-0081 c549320.)
       is what someone needs to get back up to speed.
 - [ ] Seed realistic fixtures (runs, conversations, approvals, failures and
       merges) for four windows: a few minutes, an hour, a day and several
@@ -111,6 +112,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Kubernetes mode: the worker orchestrates per-attempt agent pods with
       nono inside them, using minimal RBAC and network policy. Check this
       against the research in `docs/` (commit f918881) and write an ADR.
+      ADR-0082 ffc7149; research docs/research/2026-11-k8s-run-modes.md.
 - [ ] Ship a deliberately simple Helm chart with minimal boilerplate.
 - [ ] Test it in kind: install, run a pipeline that spawns an agent pod, and
       check that RBAC least privilege holds. Wire it into CI if that's cheap.
