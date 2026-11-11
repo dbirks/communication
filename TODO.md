@@ -119,6 +119,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       a writable CODEX_HOME on the worker plus a one-time `codex login --device-auth`
       inside the pod that the user approves in a browser. The worker needs the user
       for that step.
+      Prepared: home-k8s 3d0ecf7 (persistent CODEX_HOME PVC plus OpenAI egress); the command is in docs/home-cluster.md
+      "Codex login". BLOCKED ON THE USER: run that command once and approve the device code.
 
 ## 7. Identity
 - [x] The bottom-left user menu shows the avatar and name from the tsidp OIDC
