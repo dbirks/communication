@@ -30,6 +30,16 @@ export type CatchUpItem = components["schemas"]["CatchUpItem"];
 export type CatchUpProjectChip = components["schemas"]["CatchUpProjectChip"];
 export type CatchUpRefs = components["schemas"]["CatchUpRefs"];
 export type CatchUpRecap = components["schemas"]["CatchUpRecap"];
+export type CatchUpBrief = components["schemas"]["CatchUpBrief"];
+export type CatchUpBriefHeadline = components["schemas"]["CatchUpBriefHeadline"];
+export type CatchUpBriefNeed = components["schemas"]["CatchUpBriefNeed"];
+export type CatchUpBriefRunning = components["schemas"]["CatchUpBriefRunning"];
+export type CatchUpBriefShipped = components["schemas"]["CatchUpBriefShipped"];
+export type CatchUpBriefBroke = components["schemas"]["CatchUpBriefBroke"];
+export type CatchUpBriefHeadsUp = components["schemas"]["CatchUpBriefHeadsUp"];
+export type CatchUpBriefChange = components["schemas"]["CatchUpBriefChange"];
+export type CatchUpBriefNumbers = components["schemas"]["CatchUpBriefNumbers"];
+export type CatchUpBriefProjectLine = components["schemas"]["CatchUpBriefProjectLine"];
 export type CatchUpVisitSuggestion = components["schemas"]["CatchUpVisitSuggestion"];
 export type CatchUpStop = components["schemas"]["CatchUpStop"];
 export type CatchUpImportance = CatchUpStop["importance"];
@@ -37,21 +47,38 @@ export type CatchUpEvidence = NonNullable<CatchUpStop["evidence"]>[number];
 export type CatchUpDecision = components["schemas"]["CatchUpDecision"];
 export type CatchUpReplyResult = components["schemas"]["CatchUpReplyResult"];
 
-/** The window chips the page owns; "unseen" sends no `since` at all. */
-export type CatchUpWindow = "unseen" | "6h" | "24h" | "2d" | "7d";
-export const CATCH_UP_WINDOWS: readonly CatchUpWindow[] = ["unseen", "6h", "24h", "2d", "7d"];
+/**
+ * The window chips the page owns; "unseen" sends no `since` at all.
+ * ADR-0081 added the two short keys — `15m` is what makes "the last few
+ * minutes" askable — and the chips show all seven, shortest first, with
+ * "unseen" last as the default the page opens on.
+ */
+export type CatchUpWindow = "unseen" | "15m" | "1h" | "6h" | "24h" | "2d" | "7d";
+export const CATCH_UP_WINDOWS: readonly CatchUpWindow[] = [
+  "15m",
+  "1h",
+  "6h",
+  "24h",
+  "2d",
+  "7d",
+  "unseen",
+];
 
-const WINDOW_HOURS: Record<Exclude<CatchUpWindow, "unseen">, number> = {
-  "6h": 6,
-  "24h": 24,
-  "2d": 48,
-  "7d": 168,
+/** Window lengths in MINUTES: `15m` is not expressible in whole hours, and a
+ * fractional-hour table would make `windowSince`'s output depend on rounding. */
+const WINDOW_MINUTES: Record<Exclude<CatchUpWindow, "unseen">, number> = {
+  "15m": 15,
+  "1h": 60,
+  "6h": 360,
+  "24h": 1_440,
+  "2d": 2_880,
+  "7d": 10_080,
 };
 
 /** RFC 3339 instant `now - window` — the `since` the list read filters on. */
 export function windowSince(window: CatchUpWindow, now: Date = new Date()): string | undefined {
   if (window === "unseen") return undefined;
-  return new Date(now.getTime() - WINDOW_HOURS[window] * 3_600_000).toISOString();
+  return new Date(now.getTime() - WINDOW_MINUTES[window] * 60_000).toISOString();
 }
 
 /** The filters every catch-up read shares. */
@@ -92,6 +119,8 @@ export const catchUpKeys = {
   tour: (filters: CatchUpFilters, offset: number) =>
     ["catch-up", "tour", filters.projects ?? [], filters.window ?? "unseen", offset] as const,
   recap: (filters: CatchUpFilters) => ["catch-up", "recap", filters.projects ?? []] as const,
+  brief: (filters: CatchUpFilters) =>
+    ["catch-up", "brief", filters.projects ?? [], filters.window ?? "unseen"] as const,
   visitSuggestion: ["catch-up", "visit-suggestion"] as const,
 };
 
@@ -180,6 +209,42 @@ export function useCatchUpTour(filters: CatchUpFilters = {}, offset = 0, enabled
     },
     enabled,
     retry: false,
+  });
+}
+
+/** How long a `pending` headline waits before the page asks the server again
+ * (ADR-0081 § The model's job: the headline is generated asynchronously, so a
+ * reader who opens the page while it is being written sees it land). */
+export const CATCH_UP_BRIEF_REFETCH_MS = 20_000;
+
+/** The brief read's own query string: the window KEY, not a `since` instant
+ * (ADR-0081 resolves `unseen` from the reader's last visit SERVER-side). */
+function briefQuery(window: CatchUpWindow, projects: string[]): string {
+  const params = new URLSearchParams();
+  params.set("window", window);
+  if (projects.length > 0) params.set("projects", projects.join(","));
+  return `?${params.toString()}`;
+}
+
+/**
+ * `GET /api/v1/catch-up/brief?window=&projects=` — ADR-0081's deterministic
+ * "what you missed": the sections the SERVER assembled (gates waiting on this
+ * reader, work in flight, shipped rows, failures and whether they are still
+ * failing, must-know signals, setup changes, the numbers) plus the model's
+ * headline, which only ever cites those rows.
+ *
+ * The read is a pure GET — it never starts generation and carries no visit
+ * stamp — and it is the page's own read, not the badge's, so it polls only
+ * while the headline is `pending` (`CATCH_UP_BRIEF_REFETCH_MS`). A brief that
+ * fails to load takes its own blocks off the page and says so; the stories
+ * below it come from other reads and still stand.
+ */
+export function useCatchUpBrief(window: CatchUpWindow, projects: string[] = []) {
+  return useQuery({
+    queryKey: catchUpKeys.brief({ window, projects }),
+    queryFn: () => apiFetch<CatchUpBrief>(`/api/v1/catch-up/brief${briefQuery(window, projects)}`),
+    refetchInterval: (query) =>
+      query.state.data?.headline?.state === "pending" ? CATCH_UP_BRIEF_REFETCH_MS : false,
   });
 }
 

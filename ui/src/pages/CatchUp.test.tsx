@@ -7,13 +7,15 @@
  * "See more" pages the tour, and the rest panel's writes reach the seen
  * endpoints.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { setCsrfToken } from "../api/client";
 import { meFixture, mockFetch, type RouteStub } from "../test/fakes";
 import CatchUp from "./CatchUp";
+import { CATCH_UP_BRIEF_REFETCH_MS } from "../api/catchup";
+import { fullBrief, pendingBrief, quietBrief } from "../components/catchup/briefFixtures";
 
 const paymentsId = "01987a90-0000-7000-8000-111111111111";
 const webId = "01987a90-0000-7000-8000-222222222222";
@@ -512,5 +514,130 @@ describe("/catch-up", () => {
     ]);
     const banner = await screen.findByTestId("catchup-error");
     expect(banner.textContent).toContain("Retry");
+  });
+});
+
+/* ------------------------------------------------------------- ADR-0081 brief
+ * The brief block over the page: it reads its OWN route with the window chip's
+ * key, sits ABOVE the stories it shares the page with, and shows the sections
+ * the server assembled in the server's own order. A row's AGE is the brief
+ * components' own contract (BriefSection.test.tsx, BriefNeedsYou.test.tsx),
+ * asserted there against a fixed clock; the page passes the real one.
+ */
+const briefRoute = (body: unknown, status = 200): RouteStub => ({
+  path: "/api/v1/catch-up/brief",
+  body,
+  ...(status === 200 ? {} : { status }),
+});
+
+describe("/catch-up brief (ADR-0081)", () => {
+  it("offers all seven windows and asks the brief for the chip's own key", async () => {
+    const { fetchMock } = mount([briefRoute(fullBrief)]);
+    await screen.findByTestId("catchup-brief");
+    for (const window of ["15m", "1h", "6h", "24h", "2d", "7d", "unseen"]) {
+      expect(screen.getByTestId(`catchup-window-${window}`)).toBeDefined();
+    }
+    const first = urlsFor(fetchMock, "/api/v1/catch-up/brief")[0]!;
+    expect(first).toContain("window=unseen");
+    // The brief route takes the KEY; only the list read takes a `since`.
+    expect(first).not.toContain("since=");
+
+    fireEvent.click(screen.getByTestId("catchup-window-15m"));
+    await waitFor(() => {
+      expect(
+        urlsFor(fetchMock, "/api/v1/catch-up/brief").some((url) => url.includes("window=15m")),
+      ).toBe(true);
+    });
+    // The list read moves with it: fifteen minutes of `since`, not a day.
+    await waitFor(() => {
+      const itemsUrl = urlsFor(fetchMock, "/api/v1/catch-up/items").at(-1)!;
+      const since = new URL(itemsUrl.replace(/^\//, "http://x/")).searchParams.get("since");
+      expect(since).not.toBeNull();
+      const minutes = (Date.now() - new Date(since as string).getTime()) / 60_000;
+      expect(minutes).toBeGreaterThan(14);
+      expect(minutes).toBeLessThan(17);
+    });
+  });
+
+  it("dots the window the reader's own visits suggest", async () => {
+    mount([briefRoute(fullBrief)]);
+    await screen.findByTestId("catchup-brief");
+    // The suggestion stub proposes 24h — the dot sits there and nowhere else.
+    expect(screen.getByTestId("catchup-window-24h-suggested")).toBeDefined();
+    expect(screen.queryByTestId("catchup-window-unseen-suggested")).toBeNull();
+  });
+
+  it("draws needs-you in the server's order, the section counts, and the numbers", async () => {
+    mount([briefRoute(fullBrief)]);
+    const brief = await screen.findByTestId("catchup-brief");
+    const rows = within(brief).getAllByTestId(/^catchup-brief-need-/);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.textContent).toContain("Alert routing: one tree or two?");
+    expect(rows[2]?.textContent).toContain("Rotate the payments webhook secret");
+    // A PR row says opened, never merged: the ref is the run's own claim.
+    expect(brief.textContent).toContain("opened by ravi");
+    expect(brief.textContent).not.toContain("merged");
+    // The head counts the rows the cap cut, and names them on the right.
+    const shipped = screen.getByTestId("catchup-brief-shipped");
+    expect(shipped.textContent).toContain("SHIPPED");
+    expect(shipped.textContent).toContain("and 4 more");
+    expect(brief.textContent).toContain("12 succeeded · 3 failed");
+    expect(screen.getByTestId("catchup-brief-running_now").textContent).toContain("RUNNING NOW");
+    expect(screen.getByTestId("catchup-brief-heads_up").textContent).toContain("PUSH TO MAIN");
+  });
+
+  it("puts the brief above the stories, which keep their own label", async () => {
+    mount([briefRoute(fullBrief)]);
+    const brief = await screen.findByTestId("catchup-brief");
+    const label = await screen.findByTestId("catchup-stories-label");
+    expect(label.textContent).toBe("Stories");
+    // Document order is the design's order: brief, then the label, then cards.
+    const position = brief.compareDocumentPosition(label);
+    // eslint-disable-next-line no-bitwise
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("hides the sections that received no rows and says the quiet one", async () => {
+    mount([briefRoute({ ...quietBrief, headline: { text: "Quiet here.", state: "ready" } })]);
+    await screen.findByTestId("catchup-brief-quiet");
+    for (const key of ["running_now", "shipped", "broke", "heads_up", "changes"]) {
+      expect(screen.queryByTestId(`catchup-brief-${key}`)).toBeNull();
+    }
+    expect(screen.queryByTestId("catchup-brief-needs-you")).toBeNull();
+    expect(screen.queryByTestId("catchup-brief-numbers")).toBeNull();
+    expect(screen.getByTestId("catchup-brief-quiet").textContent).toBe(
+      "Quiet stretch: nothing changed in the projects you follow.",
+    );
+  });
+
+  it("shows the headline skeleton while the model writes, and no quiet line", async () => {
+    mount([briefRoute(pendingBrief)]);
+    const pending = await screen.findByTestId("catchup-brief-headline-pending");
+    expect(pending.textContent).toContain("writing headline…");
+    // "Quiet stretch" is a conclusion, and the model has not reached one yet.
+    expect(screen.queryByTestId("catchup-brief-quiet")).toBeNull();
+    /* The interval the page polls a pending headline on is ADR-0081's own
+     * number — 20 s, the gap between "the model answers in seconds" and a
+     * reader who has already clicked elsewhere. `useCatchUpBrief` applies it as
+     * a `refetchInterval` predicate over the answer's headline state, so a
+     * ready or unavailable brief costs no repeat read at all. */
+    expect(CATCH_UP_BRIEF_REFETCH_MS).toBe(20_000);
+  });
+
+  it("renders the sections alone when this server has no model", async () => {
+    mount([briefRoute({ ...fullBrief, headline: { text: "", state: "unavailable" } })]);
+    await screen.findByTestId("catchup-brief");
+    expect(screen.queryByTestId("catchup-brief-headline")).toBeNull();
+    expect(screen.queryByTestId("catchup-brief-headline-pending")).toBeNull();
+    // The lists are the answer either way.
+    expect(screen.getByTestId("catchup-brief-shipped").textContent).toContain("SHIPPED");
+  });
+
+  it("a brief the server cannot answer leaves the stories standing on their own", async () => {
+    mount([briefRoute(notFound, 404)]);
+    await screen.findByTestId("catchup-card-1");
+    expect(screen.queryByTestId("catchup-brief")).toBeNull();
+    // No quiet line either: an unread brief is not a window with nothing in it.
+    expect(screen.queryByTestId("catchup-brief-quiet")).toBeNull();
   });
 });
