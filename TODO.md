@@ -172,17 +172,20 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       agents in nono sandboxes in-process. Document it and make sure it works. Evidence:
       docs/run-modes.md, compose.single.yml (7e33017); kind single install is ready and nono
       reports Landlock fs+net (docs/testing/kind-run-2026-11-11.md).
-- [ ] Kubernetes mode: the worker orchestrates per-attempt agent pods with
+- [x] Kubernetes mode: the worker orchestrates per-attempt agent pods with
       nono inside them, using minimal RBAC and network policy. Check this
       against the research in `docs/` (commit f918881) and write an ADR.
-      ADR-0082 ffc7149; research docs/research/2026-11-k8s-run-modes.md.
+      ADR-0082 ffc7149; research docs/research/2026-11-k8s-run-modes.md. Evidence: 8436088 + 910c493 (internal/sandbox/k8s),
+      docs/testing/kind-run-2026-11-11-kubernetes.md: S1 in-pod nono verdict (Landlock ABI 6), S2 ACP over pods/exec, S4 Secret GC.
 - [x] (Progress) The acp.Transport seam is in 9d138e1; the pod launcher is in 8436088 (internal/sandbox/k8s tests, -race).
 - [x] Ship a deliberately simple Helm chart with minimal boilerplate. Evidence: 7e33017
       (deploy/helm/communication; helm lint and template are clean for ci/single, split-local and split-kubernetes).
-- [ ] Test it in kind: install, run a pipeline that spawns an agent pod, and
+- [x] Test it in kind: install, run a pipeline that spawns an agent pod, and
       check that RBAC least privilege holds. Wire it into CI if that's cheap.
 
-## 10. Pi as an agent in the deployed env
+## 10. Pi as an agent in the deployed env Evidence: 910c493, kind 51/51 checks
+      (docs/testing/kind-run-2026-11-11-kubernetes.md), helm-owned RBAC can-i checks. CI wiring: the kind tests run
+      locally via scripts/kind/test.sh (the kind build tag is kept out of normal CI).
 - [x] Register pi as an agent (ACP adapter or launcher), pointed at the
       Collective with `qwen3-8-flash-next`.
       Progress: the `pi` launcher already exists (ADR-0059, pi-acp 0.0.34, in the
@@ -238,10 +241,11 @@ that can be attached to different ACP agent setups. Today the spec
       doesn't carry COMMUNICATION_MODEL_CHAT_*. Either give serve those env vars in home-k8s or have the worker
       report its models in its heartbeat. Fixed via GitOps: home-k8s serve env (model and base URL, no key).
 
-- [ ] Finding (8436088): env-mode secret values can ride inside the pods/exec command, which the API server may
+- [x] Finding (8436088): env-mode secret values can ride inside the pods/exec command, which the API server may
       write to audit logs. Fix: an env-file wrapper (k8s-pod2 queued).
 
-## CI and Acceptance notes
+## CI and Acceptance notes Fixed: 910c493 (pod-exec
+      env-file wrapper; transporter_test asserts no value appears in the exec request).
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
 - [ ] Acceptance 42975520340 (7ddec9d) failed m4 core-a (C1c, C9g, C10c) and github-loop (issue #650 run
       failed) while 4–5 pi workers saturated the Collective (429 "backend at capacity" in worker
