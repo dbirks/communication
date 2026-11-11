@@ -277,5 +277,12 @@ describe("SKILLS panel — attached collections", () => {
       { collection_id: "c-matt", revision: 1 },
       { collection_id: "c-pstack", revision: 2 },
     ]);
+    // Deployed finding: a set with no target is refused as a partial pin, so the
+    // write carries the target and clears the stale digest.
+    const full = JSON.parse(
+      requestsTo(requests, `/api/v1/agent-profiles/${profile.id}`, "PATCH")[0].body ?? "{}",
+    ) as { apm_target?: string; apm_lock_digest?: string | null };
+    expect(full.apm_target).toBeTruthy();
+    expect(full.apm_lock_digest).toBeNull();
   });
 });

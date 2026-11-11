@@ -79,9 +79,23 @@ export function ProfileSkills({ profile, canWrite }: ProfileSkillsProps) {
 
   async function writePins(next: APMCollectionPin[]) {
     invalidateCollections(queryClient);
-    await patch.mutateAsync({ apm_collections: next, version: profile.version }).catch(() => {
-      /* the problem renders below; the version CAS is the server's call */
-    });
+    // A set with no target is a partial pin the server refuses (checkAPMPin),
+    // and a changed set invalidates any recorded digest. So every write carries
+    // the target (the profile's own, else the launcher's tree) and clears the
+    // digest; the operator re-locks. Deployed finding 2026-11-11.
+    const hasPins = next.length > 0 || Boolean(profile.apm_package_ref);
+    const target = profile.apm_target ?? defaultApmTarget(profile.launcher_id);
+    await patch
+      .mutateAsync({
+        apm_collections: next,
+        ...(hasPins
+          ? { apm_target: target, apm_lock_digest: null }
+          : { apm_target: null, apm_lock_digest: null }),
+        version: profile.version,
+      })
+      .catch(() => {
+        /* the problem renders below; the version CAS is the server's call */
+      });
   }
 
   function move(index: number, delta: -1 | 1) {
@@ -431,3 +445,10 @@ function AttachCollectionDialog({
 }
 
 export default ProfileSkills;
+
+/** The APM tree a launcher reads its skills from (ADR-0084: pi stages to agent-skills). */
+export function defaultApmTarget(launcherId: string): "claude" | "codex" | "agent-skills" {
+  if (launcherId === "codex") return "codex";
+  if (launcherId === "pi") return "agent-skills";
+  return "claude";
+}
