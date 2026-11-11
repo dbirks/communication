@@ -107,11 +107,11 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       (ADR-0040).
       Evidence: deployed thread 01a1cb61-a0a0-7be3-a48e-977724baf370 (Claude Code profile, Sandbox) completed a turn
       (stop_reason end_turn) on the worker's COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE subscription token.
-- [ ] Finding: in that thread, Claude's Bash calls came back "Tool use aborted" three times under permission `ask`.
+- [x] Finding: in that thread, Claude's Bash calls came back "Tool use aborted" three times under permission `ask`.
       Either the prompts never reached the controller in the UI, or they timed out. Investigate the permission
       prompt path for claude threads.
       Diagnosed in 6b88747 (docs/testing/claude-ask-mode-2026-11-11.md): the prompts expired at the worker's 2-minute
-      permission TTL. The UX fix (header countdown, badge, 10m TTL knob) is queued as ask-ux.
+      permission TTL. The UX fix (header countdown, badge, 10m TTL knob) landed in 3e91324 (permission_ttl_test.go, AgentConversationPanel.test.tsx, attention.test.ts).
 - [ ] Put the Codex subscription's `~/.codex` auth into a SOPS secret (the
       user approved this) and mount it for the worker the way the Claude token
       is mounted.
