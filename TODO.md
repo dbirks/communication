@@ -192,11 +192,13 @@ that can be attached to different ACP agent setups. Today the spec
       item. A profile references one or more collections; the worker resolves
       them into one APM manifest and lock per attempt and records the digest.
       Cover ordering and conflict rules and per-launcher targeting. Evidence: ADR-0084, 62c7d48.
-- [ ] (Backend done: 1d69498, apm_collections_test.go, apmcollections_test.go, flatten_test.go; the UI is queued as apm-coll-ui)
+- [ ] (Backend 1d69498, UI cac3525 + 0ba4ecd, evidence ~/.cache/pi-orch/communication/evidence/apm-coll-ui/. Still to do:
+      the spec test 7 isolation test (apm-isolation queued), and a real lock of a seeded collection on the deployed worker.)
 - [ ] Implement it: a collections CRUD API, the UI in Library or Agents for
       attaching collections to an agent profile, and worker resolution with
       tests (spec test 7: two different skill sets, isolated between sessions).
-- [ ] Rebase the section 6 templates (Matt Pocock, poteto) on collections.
+- [x] Rebase the section 6 templates (Matt Pocock, poteto) on collections. Their headers name the seeded collections
+      (a31da6a), and 00033 seeds them (1d69498).
 
 - [x] Deployed check at 3d564fb (2026-11-11): palette centered over the full-page assistant, nav collapsed to the
       rail, 48px heads, "Don't ask" pill, speech and decision models configured. Evidence:
