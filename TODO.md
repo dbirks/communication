@@ -68,7 +68,9 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [x] Polish (from the 1d golden): running_now step reads "/implement" (leading slash from the instance key), and
       a run that opened a PR also appears as a separate commit row in shipped. Fold the commit into its PR row.
       Done: 1f6d9b9.
-- [ ] Add an LLM-graded or snapshot eval of usefulness.
+- [x] Add an LLM-graded or snapshot eval of usefulness. Evidence: TestCatchUpUsefulnessEval (gated), with the runs in
+      docs/testing/catch-up-eval.md. The first runs FAILED (mean 4.12) on recovered failures being called failing;
+      fixed in 2a408d5; the final run PASSES with mean 5.00 over 25 scores (qwen3-8-flash-next as model and judge).
 - [x] Keep a single depth for now, with no gauge. The Catch up page renders the brief: 9d82339,
       ~/.cache/pi-orch/communication/evidence/catchup-ui/catchup-brief-1440x900.png, CatchUp.test.tsx.
 
