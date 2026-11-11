@@ -89,9 +89,22 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       Fixed: 0c60ab7 (profiles.test.ts).
 
 ## 5. Assistant end-to-end exercise
-- [ ] Run Playwright against the real model and hunt for errors and visual or
+- [x] Run Playwright against the real model and hunt for errors and visual or
       UX nonsense. Log each finding here as a box.
+      Evidence: dd65618, docs/testing/assistant-exercise-2026-11-11.md (20 prompts: 13 OK, 2 WRONG, 2 UGLY, 3 BROKEN;
+      screenshots in ~/.cache/pi-orch/communication/evidence/assistant-exercise/).
 - [ ] Fix every finding and add a regression test for each.
+  - [x] UGLY 6 and 19 and the WRONG copy on 8: fixed in dd65618 (runner_test.go, MessageList.test.tsx).
+  - [ ] F-3: the how-to corpus trips the secret scanner ("token: `credential.create`"), so the GitHub-credential
+        journey is refused 3/3.
+  - [ ] F-4: the 30 s per-completion timeout is too tight for fan-out turns.
+  - [ ] F-5: a raw Go error string is shown for mid-turn refusals.
+  - [ ] F-6: execution_mode says "inprocess" on a split deployment; the chat model block lacks endpoint_host and key_set;
+        workflow.list has no timestamps.
+  - [ ] F-1: ui.navigate never moves the client.
+  - [ ] F-2 and F-7: there is no way to list agent threads ("no Pi activity" while two Pi threads exist), plus a
+        run-versus-thread vocabulary pass.
+  - [ ] Re-run prompts 4, 5, 8, 11, 15 and 18 on the deployed app after these land.
 
 ## 6. Workflows page and templates
 - [x] Give the Workflows page a visual and UX pass. Evidence: a31da6a, ~/.cache/pi-orch/communication/evidence/workflows-pass/workflows-1440x900.png,
