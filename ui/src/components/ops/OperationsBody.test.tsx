@@ -424,6 +424,65 @@ describe("Operations panels", () => {
     expect(screen.getByTestId("identity-secrets-link").getAttribute("href")).toBe("/projects");
   });
 
+  /**
+   * ADR-0083: `COMMUNICATION_OIDC_PROVIDERS_FILE` leaves `issuer_host` empty on
+   * the pre-fix overview, so the panel said “no issuer host” about a deployment
+   * with several working providers. It now lists them — one line each, in the
+   * order the sign-in chooser draws them.
+   */
+  it("lists one line per sign-in provider when the deployment offers several", async () => {
+    const data = overview();
+    data.identity = {
+      provider: "oidc",
+      issuer_host: "idp.example.ts.net",
+      dev_login: false,
+      providers: [
+        { id: "tailnet", label: "Tailscale", issuer_host: "idp.example.ts.net" },
+        { id: "work", label: "Microsoft (E-gineering)", issuer_host: "login.microsoftonline.com" },
+      ],
+    } as SystemOverview["identity"];
+    await renderOps({ [OVERVIEW_PATH]: { body: data } });
+
+    const rows = await screen.findAllByTestId("identity-provider");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Tailscale · idp.example.ts.net",
+      "Microsoft (E-gineering) · login.microsoftonline.com",
+    ]);
+    // The panel says who signs in, and the provider list IS that answer — no
+    // second “OIDC · …” line under it.
+    expect((await screen.findByTestId("identity-signin")).textContent).toBe(
+      "Tailscale · idp.example.ts.netMicrosoft (E-gineering) · login.microsoftonline.com",
+    );
+  });
+
+  it("prints a provider with no parsable issuer as the gap it is", async () => {
+    const data = overview();
+    data.identity = {
+      provider: "oidc",
+      issuer_host: "",
+      dev_login: false,
+      providers: [{ id: "tailnet", label: "Tailscale", issuer_host: "" }],
+    } as SystemOverview["identity"];
+    await renderOps({ [OVERVIEW_PATH]: { body: data } });
+
+    const rows = await screen.findAllByTestId("identity-provider");
+    expect(rows.map((row) => row.textContent)).toEqual(["Tailscale · no issuer host"]);
+  });
+
+  it("keeps the single sign-in line for a replica that names no provider list", async () => {
+    const data = overview();
+    data.identity = {
+      provider: "oidc",
+      issuer_host: "idp.beluga-wyvern.ts.net",
+      dev_login: false,
+      providers: [],
+    } as SystemOverview["identity"];
+    await renderOps({ [OVERVIEW_PATH]: { body: data } });
+
+    const rows = await screen.findAllByTestId("identity-provider");
+    expect(rows.map((row) => row.textContent)).toEqual(["OIDC · idp.beluga-wyvern.ts.net"]);
+  });
+
   it("warns in words when sign-in is the dev login", async () => {
     const data = overview();
     data.identity = { provider: "dev", issuer_host: "", dev_login: true };

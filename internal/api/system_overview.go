@@ -122,8 +122,17 @@ type SystemOverviewDeps struct {
 	// the only one this build has, "oidc".
 	IdentityProvider string
 	// IssuerURL is the raw COMMUNICATION_OIDC_ISSUER. It is reduced to a bare
-	// host on the way out and never echoed in full.
+	// host on the way out and never echoed in full. Under ADR-0083's providers
+	// file it is "" — the issuers live in the file — which is exactly why
+	// SignInProviders exists: with only this field, a multi-provider deployment
+	// answered the identity row with an empty host.
 	IssuerURL string
+	// SignInProviders is the deployment's provider list (id, label, issuer) as
+	// `auth.Config.SignInProviders()` answers it, in configuration order — the
+	// same rows `GET /auth/providers` prints, each issuer reduced to a host on
+	// the way out. Empty means this replica was not wired with the list, and the
+	// identity row then falls back to IssuerURL alone.
+	SignInProviders []SignInProvider
 	// DevLogin is the deployment's answer to "is there a signed-in identity
 	// that did not come from the IdP?". No route in this build offers one, so
 	// serve passes false; the field exists because the row must not guess.
@@ -220,10 +229,25 @@ type SystemOverviewServer struct {
 // nothing else, so no path, query or userinfo can ride out with it.
 // `dev_login` is the honest "no": this build has no identity that bypasses the
 // IdP, and the page says so instead of letting an operator infer it.
+//
+// `providers` is the ADR-0083 truth a single `issuer_host` could not carry: one
+// entry per configured provider, in configuration order. `issuer_host` stays —
+// the first provider's host — for the consumers that predate the list.
 type SystemOverviewIdentity struct {
-	Provider   string `json:"provider"`
+	Provider   string                           `json:"provider"`
+	IssuerHost string                           `json:"issuer_host"`
+	Providers  []SystemOverviewIdentityProvider `json:"providers"`
+	DevLogin   bool                             `json:"dev_login"`
+}
+
+// SystemOverviewIdentityProvider is one sign-in row: the id a login URL names,
+// the label the chooser prints, and the issuer's bare host. No client id, no
+// secret, no discovery path — the operations page is an operator's read of the
+// deployment, not a second copy of its configuration.
+type SystemOverviewIdentityProvider struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
 	IssuerHost string `json:"issuer_host"`
-	DevLogin   bool   `json:"dev_login"`
 }
 
 // SystemOverviewStorage is where bytes live. Both members are names, never
@@ -321,6 +345,38 @@ const defaultWorkerHeartbeat = 10 * time.Second
 // identityProviderOIDC is the only login path this build offers.
 const identityProviderOIDC = "oidc"
 
+// SignInProvider is one entry of the deployment's identity provider list as
+// this package needs it: the id, the label and the raw issuer URL. It lives
+// here rather than in internal/api/auth because `auth` imports this package (it
+// writes its problems with it) and this package may not import `auth` back: the
+// overview takes the list as plain data, and `auth.Config.SignInProviders()` is
+// the accessor that produces it.
+type SignInProvider struct {
+	ID     string
+	Label  string
+	Issuer string
+}
+
+// signInProviders reduces the deployment's provider list to the rows the
+// identity panel prints, in configuration order — `[]`, never null, so the
+// reader has one shape to handle. An entry whose issuer this build cannot parse
+// (or names no issuer at all) keeps its id and label with an empty host: the
+// operator then sees the provider they configured and the honest gap, rather
+// than a row that silently vanished.
+func (s *SystemOverviewService) signInProviders() []SystemOverviewIdentityProvider {
+	out := make([]SystemOverviewIdentityProvider, 0, len(s.deps.SignInProviders))
+	for _, p := range s.deps.SignInProviders {
+		id := strings.TrimSpace(p.ID)
+		label := strings.TrimSpace(p.Label)
+		if id == "" && label == "" {
+			continue
+		}
+		host, _ := assistantEndpointHost(p.Issuer)
+		out = append(out, SystemOverviewIdentityProvider{ID: id, Label: label, IssuerHost: host})
+	}
+	return out
+}
+
 // replicaStartedAt is when this process began: package init is the earliest
 // timestamp a binary can honestly claim about itself.
 var replicaStartedAt = time.Now().UTC()
@@ -389,8 +445,9 @@ func (s *SystemOverviewService) Overview(ctx context.Context, c Caller) (SystemO
 			StartedAt:     replicaStartedAt,
 		},
 		Identity: SystemOverviewIdentity{
-			Provider: strings.TrimSpace(s.deps.IdentityProvider),
-			DevLogin: s.deps.DevLogin,
+			Provider:  strings.TrimSpace(s.deps.IdentityProvider),
+			Providers: s.signInProviders(),
+			DevLogin:  s.deps.DevLogin,
 		},
 		Storage: SystemOverviewStorage{
 			ArtifactBackend: strings.TrimSpace(s.deps.ArtifactBackend),
@@ -403,6 +460,12 @@ func (s *SystemOverviewService) Overview(ctx context.Context, c Caller) (SystemO
 	}
 	if host, ok := assistantEndpointHost(s.deps.IssuerURL); ok {
 		out.Identity.IssuerHost = host
+	}
+	// The compatibility member is the first provider's host: under the providers
+	// file `IssuerURL` is empty, and a reader that only knows `issuer_host` must
+	// still name an issuer rather than nothing.
+	if out.Identity.IssuerHost == "" && len(out.Identity.Providers) > 0 {
+		out.Identity.IssuerHost = out.Identity.Providers[0].IssuerHost
 	}
 
 	counts, err := s.secretCounts(ctx, c)

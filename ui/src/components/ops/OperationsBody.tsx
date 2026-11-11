@@ -29,6 +29,7 @@ import {
   useSystemOverview,
 } from "../../api/queries";
 import { useSystemScheduler } from "../../api/runs";
+import type { components } from "../../api/schema";
 import type { Health, Readiness, Worker, WorkerSandboxStatus } from "../../api/types";
 import {
   ENFORCEMENT_COPY,
@@ -722,8 +723,69 @@ export function SandboxPanel({ sandbox, online, nameOf, onlineIds }: SandboxPane
 
 /* -------------------------------------------------- identity & storage */
 
+/** One sign-in provider, as the overview's identity member names it. */
+export type IdentityProviderRow = components["schemas"]["SystemOverviewIdentityProvider"];
+
+/**
+ * The provider rows of one identity member, in configuration order.
+ *
+ * Read off the wire rather than off `api/overview.ts`'s hand-written
+ * `identity` type: that module documents its shapes as the temporary home of
+ * the overview body, and `identity.providers` is now in `api/openapi.yaml` (the
+ * generated `SystemOverviewIdentity` is the authority). A replica that predates
+ * the member answers without it, so this is `[]` — and the panel falls back to
+ * the single `issuer_host` line rather than claiming there is no sign-in.
+ */
+export function identityProvidersOf(identity: unknown): IdentityProviderRow[] {
+  if (!identity || typeof identity !== "object") return [];
+  const raw = (identity as { providers?: unknown }).providers;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): IdentityProviderRow[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const row = entry as { id?: unknown; label?: unknown; issuer_host?: unknown };
+    const id = typeof row.id === "string" ? row.id : "";
+    const label = typeof row.label === "string" ? row.label : "";
+    const host = typeof row.issuer_host === "string" ? row.issuer_host : "";
+    // A row with neither an id nor a label names nothing: print no line for it.
+    if (!id && !label) return [];
+    return [{ id, label, issuer_host: host }];
+  });
+}
+
 export interface IdentityStoragePanelProps {
   overview: ReturnType<typeof useSystemOverview>;
+}
+
+/**
+ * The SIGN-IN row's body: one line per provider the deployment signs people in
+ * with (ADR-0083), in configuration order — `Tailscale · idp.example.ts.net` —
+ * the single `OIDC · <host>` line this panel has always printed when the wire
+ * names no list, and the dev login's warning instead of both.
+ */
+function SignInLines({ identity }: { identity: SystemOverview["identity"] }) {
+  if (identity.dev_login) return <>Dev login (local only)</>;
+  const providers = identityProvidersOf(identity);
+  if (providers.length === 0) {
+    return (
+      <span className="block" data-testid="identity-provider">
+        OIDC · {identity.issuer_host || "no issuer host"}
+      </span>
+    );
+  }
+  return (
+    <>
+      {providers.map((provider) => (
+        <span
+          key={provider.id || provider.label}
+          className="block"
+          data-testid="identity-provider"
+          data-provider-id={provider.id}
+        >
+          {provider.label || "Sign-in"} · {provider.issuer_host || "no issuer host"}
+        </span>
+      ))}
+    </>
+  );
 }
 
 /**
@@ -761,9 +823,7 @@ export function IdentityStoragePanel({ overview }: IdentityStoragePanelProps) {
               className={`text-[13px] ${data.identity.dev_login ? "text-st-waiting-tag-fg" : "text-ink"}`}
               data-testid="identity-signin"
             >
-              {data.identity.dev_login
-                ? "Dev login (local only)"
-                : `OIDC · ${data.identity.issuer_host || "no issuer host"}`}
+              <SignInLines identity={data.identity} />
             </dd>
           </div>
           <div>

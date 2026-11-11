@@ -421,6 +421,66 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
       "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
     );
   });
+
+  /**
+   * Deployed finding 2026-11-11: `COMMUNICATION_ASSISTANT_MODEL` named a model
+   * the collective had offline. The ask used to fail as `malformed_completion`
+   * (and, before the retry fix, after three attempts); the server now names the
+   * cause `model_unavailable`, and the thread says what is actually true — the
+   * model is not there, and the fix is an admin's, on Operations → Models. So
+   * the line carries that jump, and does NOT tell the person to try again.
+   */
+  it("names a missing model as missing, with the jump an admin can act on", async () => {
+    stubFetch(() =>
+      json(
+        {
+          type: "https://communication.dev/errors/assistant-degraded",
+          title: "Assistant unavailable",
+          status: 503,
+          detail: "The assistant's model (david-birks/qwen3-8-27b) is not available right now.",
+          degraded: "model_unavailable",
+        },
+        503,
+      ),
+    );
+    const seen: string[] = ["/"];
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route
+              path="*"
+              element={
+                <>
+                  <LocationNames paths={seen} />
+                  <AssistantPopover />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: "what is failing?" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain(
+      "The assistant's model isn't available right now. An admin can check Settings → Operations → Models.",
+    );
+    // Not the transient line: a second ask cannot fix a model that is off.
+    expect(line.textContent).not.toContain("try again");
+    // And not the old blame-the-answer reading, in either wording.
+    expect(line.textContent).not.toMatch(/malformed|didn.t answer|not a completion/i);
+
+    fireEvent.click(within(line).getByTestId("assistant-error-link"));
+    await waitFor(() => expect(seen[seen.length - 1]).toBe("/settings/operations"));
+  });
 });
 
 /** 2f acceptance review: `Make a workflow…` opens the assistant PANEL at its

@@ -16,6 +16,11 @@ import QuestionCard from "./QuestionCard";
 import { SetupMessage, ToolRuleLine } from "./SetupChecklist";
 import { draftStepRows, openDraftIdOf } from "./draftSteps";
 import { AnswerLinks } from "./links";
+import {
+  MODEL_UNAVAILABLE,
+  MODEL_UNAVAILABLE_LINK_LABEL,
+  MODEL_UNAVAILABLE_ROUTE,
+} from "./failureCopy";
 import type {
   AssistantAnswerPayload,
   AssistantMessage,
@@ -162,7 +167,27 @@ export function MessageList({
                       className="m-0 flex max-w-full items-start gap-[5px] rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
                     >
                       <IconX size={11} stroke={2} aria-hidden className="mt-[3px] shrink-0" />
-                      <span>{message.local.error ?? "The assistant could not answer."}</span>
+                      <span>
+                        {message.local.error ?? "The assistant could not answer."}
+                        {/* Deployed finding 2026-11-11: the one failure a retry
+                            cannot fix — the model this deployment points at is
+                            not there. The line says so; the jump is where an
+                            admin repoints it (same `onGo` the answer's links
+                            use, so the panel keeps standing). */}
+                        {message.local.degraded === MODEL_UNAVAILABLE ? (
+                          <>
+                            {" "}
+                            <button
+                              type="button"
+                              data-testid="assistant-error-link"
+                              onClick={() => onGo(MODEL_UNAVAILABLE_ROUTE)}
+                              className="cursor-pointer bg-transparent p-0 text-[inherit] text-accent-text underline"
+                            >
+                              {MODEL_UNAVAILABLE_LINK_LABEL}
+                            </button>
+                          </>
+                        ) : null}
+                      </span>
                     </p>
                     <Button
                       variant="primary"

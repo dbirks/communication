@@ -340,17 +340,103 @@ func TestCompleteRetriesModelReload404UntilSuccess(t *testing.T) {
 	ep := newRetryEndpoint(t,
 		retryOutcome{status: http.StatusNotFound, body: `{"error":{"message":"the model is currently loading, retry later"}}`},
 		retryOutcome{status: 0, body: `{"choices":[{"message":{"content":"the answer"},"finish_reason":"stop"}]}`})
-	ans, bad := retryBroker(t, ep, (&fakeSleeper{}).sleep).complete(context.Background(), chatRequest{Model: DefaultModel})
-	if bad != nil {
-		t.Fatalf("complete failed after a reload retry: %+v", bad)
+	_, bad := retryBroker(t, ep, (&fakeSleeper{}).sleep).complete(context.Background(), chatRequest{Model: DefaultModel})
+	if bad == nil {
+		t.Fatal("expected a 404 to fail the turn")
 	}
-	if ans.Text != "the answer" {
-		t.Fatalf("answer = %q", ans.Text)
+	// Contract changed 2026-11-11: a 404 is `model_unavailable` answered once.
+	// The retry this replaces cost ~8s and still failed the turn, and a 404
+	// carries no promise that the model will be there on attempt 2.
+	if bad.Code != FailModelUnavailable || bad.Status != http.StatusServiceUnavailable {
+		t.Fatalf("bad = %+v, want model_unavailable / http %d", bad, http.StatusServiceUnavailable)
 	}
-	if got := atomic.LoadInt64(&ep.calls); got != 2 {
-		t.Fatalf("completion calls = %d, want 2 (one reload retry)", got)
+	if got := atomic.LoadInt64(&ep.calls); got != 1 {
+		t.Fatalf("completion calls = %d, want 1 (a 404 is never retried)", got)
 	}
 }
+
+// TestCompleteOfflineModelIsModelUnavailableNotMalformed is the deployed repro
+// (2026-11-11, COMMUNICATION_ASSISTANT_MODEL pointed at an offline Collective
+// model): the endpoint answered 404 with its own words, the broker retried three
+// times and the person was told `malformed_completion`. The refusal is now the
+// model's own name and fact, after one attempt.
+func TestCompleteOfflineModelIsModelUnavailableNotMalformed(t *testing.T) {
+	ep := newRetryEndpoint(t, retryOutcome{
+		status: http.StatusNotFound,
+		body:   `{"error":{"message":"model \"david-birks/qwen3-8-27b\" is not currently available","type":"not_found_error"}}`,
+	})
+	sleep := &fakeSleeper{}
+	b := retryBroker(t, ep, sleep.sleep)
+
+	_, bad := b.complete(context.Background(), chatRequest{Model: "david-birks/qwen3-8-27b"})
+	if bad == nil {
+		t.Fatal("expected the offline model to fail the turn")
+	}
+	if bad.Code != FailModelUnavailable {
+		t.Fatalf("code = %q, want %s (detail %q)", bad.Code, FailModelUnavailable, bad.Detail)
+	}
+	if bad.Status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", bad.Status, http.StatusServiceUnavailable)
+	}
+	want := "The assistant's model (david-birks/qwen3-8-27b) is not available right now."
+	if bad.Detail != want {
+		t.Fatalf("detail = %q, want %q", bad.Detail, want)
+	}
+	if got := atomic.LoadInt64(&ep.calls); got != 1 {
+		t.Fatalf("completion calls = %d, want 1 (no retries for a 404)", got)
+	}
+	sleep.mu.Lock()
+	defer sleep.mu.Unlock()
+	if len(sleep.delays) != 0 {
+		t.Fatalf("backoff waits = %v, want none", sleep.delays)
+	}
+}
+
+// TestCompleteOfflineModelRefusalOn5xxIsNotRetriedEither: a gateway that puts
+// the same model-specific refusal behind a 502 is still saying the model is not
+// there, which a retry cannot fix — unlike a bare 5xx whose message names only
+// its own outage (TestCompleteGivesUpAfterThreeAttempts keeps that one retrying
+// as model_unreachable).
+func TestCompleteOfflineModelRefusalOn5xxIsNotRetriedEither(t *testing.T) {
+	ep := newRetryEndpoint(t, retryOutcome{
+		status: http.StatusBadGateway,
+		body:   `{"error":{"message":"the requested model is not available","type":"server_error"}}`,
+	})
+	_, bad := retryBroker(t, ep, (&fakeSleeper{}).sleep).complete(context.Background(), chatRequest{Model: DefaultModel})
+	if bad == nil {
+		t.Fatal("expected the offline model to fail the turn")
+	}
+	if bad.Code != FailModelUnavailable {
+		t.Fatalf("code = %q, want %s (detail %q)", bad.Code, FailModelUnavailable, bad.Detail)
+	}
+	if got := atomic.LoadInt64(&ep.calls); got != 1 {
+		t.Fatalf("completion calls = %d, want 1 (a refusal naming the model is not transient)", got)
+	}
+}
+
+// TestCompleteOfflineModelRefusalOn200Envelope: some gateways answer the
+// refusal with a 200. The code is the model's own name, not the generic
+// "reported an error" line a 200 envelope otherwise gets.
+func TestCompleteOfflineModelRefusalOn200Envelope(t *testing.T) {
+	ep := newRetryEndpoint(t, retryOutcome{
+		status: http.StatusOK,
+		body:   `{"error":{"message":"model is not found","type":"invalid_request_error"}}`,
+	})
+	_, bad := retryBroker(t, ep, (&fakeSleeper{}).sleep).complete(context.Background(), chatRequest{Model: DefaultModel})
+	if bad == nil {
+		t.Fatal("expected the offline model to fail the turn")
+	}
+	if bad.Code != FailModelUnavailable {
+		t.Fatalf("code = %q, want %s (detail %q)", bad.Code, FailModelUnavailable, bad.Detail)
+	}
+	if got := atomic.LoadInt64(&ep.calls); got != 1 {
+		t.Fatalf("completion calls = %d, want 1", got)
+	}
+}
+
+// TestCompleteDoesNotRetryNonRetryableStatus is the counter-example the new
+// code must not swallow: a 400 that says nothing about the model stays
+// `malformed_completion`.
 
 func TestCompleteDoesNotRetry404WhenModelIsAddressable(t *testing.T) {
 	ep := newRetryEndpoint(t, retryOutcome{status: http.StatusNotFound, body: `{"error":{"message":"unknown model"}}`})
@@ -360,6 +446,11 @@ func TestCompleteDoesNotRetry404WhenModelIsAddressable(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&ep.calls); got != 1 {
 		t.Fatalf("completion calls = %d, want 1 (no retry for a plain 404)", got)
+	}
+	// A 404 on the completions path means this endpoint has no answer for this
+	// model, whatever the envelope's phrasing: the honest code is the model's.
+	if bad.Code != FailModelUnavailable {
+		t.Fatalf("code = %q, want %s (detail %q)", bad.Code, FailModelUnavailable, bad.Detail)
 	}
 }
 

@@ -3174,6 +3174,32 @@ export interface components {
       /** @description Send back as the `X-CSRF-Token` header on every mutation. */
       csrf_token: string;
     };
+    /**
+     * SystemOverviewIdentity
+     * @description The `identity` member of `GET /api/v1/system/overview` — the operations page's read of how this deployment signs people in. Only its identity section is documented here: the rest of that route's body (`server`, `models`, `secrets`, `storage`, `workers`) is still carried by the hand-written types in `ui/src/api/overview.ts`, which alias this member instead of restating it. Nothing in this object can hold a credential: an issuer is reduced to its bare host, and no client id or discovery path leaves the process.
+     */
+    SystemOverviewIdentity: {
+      /** @description The login path this replica offers — `oidc`, the only one this build has — never a provider id from the list below. */
+      provider: string;
+      /** @description Host of the issuer this replica signs in with, kept for readers that predate the provider list: with ADR-0083's `COMMUNICATION_OIDC_PROVIDERS_FILE` it is the FIRST provider's host, and `""` only when no issuer is configured or none of them parses. */
+      issuer_host: string;
+      /** @description The providers this deployment signs people in with, in configuration order — the same rows the sign-in chooser prints, and `[]` (never null) for a deployment with no provider list beyond the issuer in the environment. A single-provider deployment still lists the one row. */
+      providers: components["schemas"]["SystemOverviewIdentityProvider"][];
+      /** @description Whether a signed-in identity can bypass the identity provider. No route in this build offers one, so the honest answer is `false`. */
+      dev_login: boolean;
+    };
+    /**
+     * SystemOverviewIdentityProvider
+     * @description One identity provider as the operations page names it: the id a login URL carries (`/auth/login?provider=<id>`), the label the chooser prints, and the issuer's bare host. Never a client id, a secret or a discovery path — the page is an operator's read of the deployment, not a second copy of its configuration.
+     */
+    SystemOverviewIdentityProvider: {
+      /** @description The provider's slug (`default` for a provider synthesized from the single-issuer environment variables). */
+      id: string;
+      /** @description What the sign-in chooser says for this provider: the configured label, else the kind's name (`Tailscale`, `Microsoft Entra ID`), else the issuer host. The two surfaces read one function, so they cannot disagree. */
+      label: string;
+      /** @description Host of this provider's issuer, or `""` when it names none or one this build cannot parse — the row stays, with the gap visible. */
+      issuer_host: string;
+    };
     /** Organization */
     Organization: {
       /** Format: uuid */
@@ -6333,7 +6359,7 @@ export interface components {
      * @description The `Problem` shape plus `degraded`, so the UI branches on a code: the palette keeps the jump list working and shows one inline line.
      */
     AssistantProblem: components["schemas"]["Problem"] & {
-      /** @description Stable cause: `assistant_not_configured`, `model_unreachable`, `model_timeout`, `malformed_completion`, `model_call_cap_exceeded`, `tool_cap_exceeded` or `secret_in_request`. */
+      /** @description Stable cause: `assistant_not_configured`, `model_unreachable`, `model_unavailable` (the endpoint says THIS model is not there — a 404 or a `not currently available` / `not found` refusal, after one attempt), `model_timeout`, `malformed_completion`, `model_call_cap_exceeded`, `tool_cap_exceeded` or `secret_in_request`. */
       degraded: string;
     };
     /**

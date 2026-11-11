@@ -294,7 +294,7 @@ func TestSystemOverviewShape(t *testing.T) {
 	view := decodeBody(t, rec)
 	prjWantFields(t, secMarshal(t, view), "identity", "models", "secrets", "server", "storage", "workers")
 	prjWantFields(t, secMarshal(t, view["server"]), "commit", "replica", "schema_version", "started_at", "version")
-	prjWantFields(t, secMarshal(t, view["identity"]), "dev_login", "issuer_host", "provider")
+	prjWantFields(t, secMarshal(t, view["identity"]), "dev_login", "issuer_host", "provider", "providers")
 	prjWantFields(t, secMarshal(t, view["storage"]), "artifact_backend", "preview_host")
 	prjWantFields(t, secMarshal(t, view["secrets"]), "mounts", "projects", "secrets")
 	prjWantFields(t, secMarshal(t, view["workers"]), "offline", "online", "stale_after_seconds")
@@ -317,6 +317,12 @@ func TestSystemOverviewShape(t *testing.T) {
 	identity := view["identity"].(map[string]any)
 	if identity["provider"] != "oidc" || identity["issuer_host"] != "idp.beluga-wyvern.ts.net" || identity["dev_login"] != false {
 		t.Errorf("identity = %v, want oidc / the bare issuer host / dev_login false", identity)
+	}
+	// A deployment wired the pre-ADR-0083 way (one issuer in the environment,
+	// no provider list) still answers `providers` — as the empty list, not null,
+	// so the page has one shape to render.
+	if provs, ok := identity["providers"].([]any); !ok || len(provs) != 0 {
+		t.Errorf("identity.providers = %v, want [] for an env-only deployment", identity["providers"])
 	}
 
 	storage := view["storage"].(map[string]any)
@@ -377,6 +383,64 @@ func TestSystemOverviewShape(t *testing.T) {
 		t.Fatal(err)
 	} else if !strings.Contains(string(raw), `"key_set":null`) {
 		t.Errorf("worker_chat key_set = %v, want JSON null", wc["key_set"])
+	}
+}
+
+// TestSystemOverviewIdentityListsProviders is the ADR-0083 gap: a deployment
+// that signs people in through COMMUNICATION_OIDC_PROVIDERS_FILE has no
+// COMMUNICATION_OIDC_ISSUER, so `issuer_host` was "" and the operations page
+// printed “OIDC · no issuer host” over a deployment with three working
+// providers. The identity row now carries the list, and `issuer_host` keeps its
+// meaning as the first provider's host for readers that predate it.
+func TestSystemOverviewIdentityListsProviders(t *testing.T) {
+	t.Parallel()
+	deps := ovConfig()
+	deps.IssuerURL = "" // what serve actually carries under the providers file
+	deps.SignInProviders = []SignInProvider{
+		{ID: "tailscale", Label: "Tailscale", Issuer: "https://idp.example.ts.net"},
+		{ID: "entra", Label: "Microsoft Entra ID", Issuer: "https://login.microsoftonline.com/tenant/v2.0"},
+		// An issuer this build cannot parse keeps its row with an empty host:
+		// the operator sees the provider they configured and the honest gap.
+		{ID: "local", Label: "Single sign-on", Issuer: "not-a-url"},
+	}
+	f := ovFixtureFor(t, newOVStore(), &ovWorkers{}, deps, "u-1", false)
+
+	rec := f.get(t, "/api/v1/system/overview")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	identity := decodeBody(t, rec)["identity"].(map[string]any)
+	prjWantFields(t, secMarshal(t, identity), "dev_login", "issuer_host", "provider", "providers")
+
+	raw, _ := json.Marshal(identity["providers"])
+	var rows []SystemOverviewIdentityProvider
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("providers = %s: %v", raw, err)
+	}
+	want := []SystemOverviewIdentityProvider{
+		{ID: "tailscale", Label: "Tailscale", IssuerHost: "idp.example.ts.net"},
+		{ID: "entra", Label: "Microsoft Entra ID", IssuerHost: "login.microsoftonline.com"},
+		{ID: "local", Label: "Single sign-on", IssuerHost: ""},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("providers = %s, want %d rows", raw, len(want))
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("providers[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+	// The compatibility member is the FIRST provider's host — the row a
+	// pre-ADR-0083 reader prints — and no issuer URL, path or client id rides
+	// out with any of this.
+	if identity["issuer_host"] != "idp.example.ts.net" {
+		t.Errorf("issuer_host = %v, want the first provider's host", identity["issuer_host"])
+	}
+	body := rec.Body.String()
+	for _, leak := range []string{"login.microsoftonline.com/tenant", "not-a-url", ovChatKey, ovDecisionKey} {
+		if strings.Contains(body, leak) {
+			t.Errorf("body leaked %q: %s", leak, body)
+		}
 	}
 }
 

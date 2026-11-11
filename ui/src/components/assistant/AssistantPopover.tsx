@@ -59,6 +59,15 @@ import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
 import { assistantTransientErrorLine, problemOf } from "../../api/client";
 import {
+  failureLineOf,
+  failureLineRoute,
+  isModelUnavailable,
+  MODEL_UNAVAILABLE,
+  MODEL_UNAVAILABLE_LINE,
+  MODEL_UNAVAILABLE_LINK_LABEL,
+  type FailureLine,
+} from "./failureCopy";
+import {
   assistantContextOf,
   assistantNotConfigured,
   degradedOf,
@@ -295,6 +304,12 @@ function failureLine(error: unknown, failed: "question" | "decision" = "question
   if (assistantNotConfigured(error)) {
     return "The assistant isn't configured on this server — your question was not sent.";
   }
+  // Deployed finding 2026-11-11: with the model offline the ask used to read as
+  // a broken answer. It is not one, and a second ask will not fix it, so this
+  // cause names the screen where an admin repoints the model.
+  if (isModelUnavailable(error)) {
+    return MODEL_UNAVAILABLE_LINE;
+  }
   if (failed === "question" && STEP_CAP_CAUSES.includes(degradedOf(error) ?? "")) {
     return "The assistant hit its step limit before answering — nothing was saved; send again.";
   }
@@ -415,7 +430,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     (choice?.conversationId ?? null) === null,
   );
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<FailureLine | null>(null);
   /**
    * assistant-lost-ask: an ask the composer never held (the palette carries
    * its question straight to the POST) that failed to send — handed back to
@@ -623,7 +638,14 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           setMessages((current) =>
             current.map((message) =>
               message.id === localId
-                ? { ...message, local: { state: "failed", error: line } }
+                ? {
+                    ...message,
+                    local: {
+                      state: "failed",
+                      error: line,
+                      degraded: isModelUnavailable(error) ? MODEL_UNAVAILABLE : null,
+                    },
+                  }
                 : message,
             ),
           );
@@ -862,7 +884,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           ...result.filter((row) => row.id !== messageId),
         ]);
       } catch (error) {
-        setSendError(failureLine(error, "decision"));
+        setSendError(failureLineOf(error, failureLine(error, "decision")));
       }
     })();
   };
@@ -876,7 +898,20 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       data-testid="assistant-error"
       className="m-0 max-w-full rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
     >
-      {sendError}
+      {sendError.text}
+      {failureLineRoute(sendError.cause) ? (
+        <>
+          {" "}
+          <button
+            type="button"
+            data-testid="assistant-error-link"
+            onClick={() => navigate(failureLineRoute(sendError.cause) ?? "")}
+            className="cursor-pointer bg-transparent p-0 text-[inherit] text-accent-text underline"
+          >
+            {MODEL_UNAVAILABLE_LINK_LABEL}
+          </button>
+        </>
+      ) : null}
     </p>
   ) : null;
 

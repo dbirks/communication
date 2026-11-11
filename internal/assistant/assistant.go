@@ -85,6 +85,14 @@ type Failure struct {
 const (
 	FailModelUnreachable = "model_unreachable"
 	FailModelTimeout     = "model_timeout"
+	// FailModelUnavailable is the endpoint saying THIS model is not there: a
+	// 404 from an OpenAI-compatible server, or an error envelope whose message
+	// names the model as not available / not found. It is a different fact from
+	// `model_unreachable` (the server answered nothing useful at all) and from
+	// `malformed_completion` (the server answered, and what it answered was
+	// junk): an operator fixes the first by pointing
+	// COMMUNICATION_ASSISTANT_MODEL at a model that is up.
+	FailModelUnavailable = "model_unavailable"
 	FailBadModelResponse = "malformed_completion"
 	FailCallCap          = "model_call_cap_exceeded"
 	FailToolCap          = "tool_cap_exceeded"

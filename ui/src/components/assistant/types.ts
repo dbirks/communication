@@ -187,6 +187,13 @@ export interface AssistantMessageLocal {
   state: "pending" | "failed";
   /** The honest failure line, shown under the bubble when `failed`. */
   error?: string | null;
+  /**
+   * The server's stable `degraded` cause for that line (`model_unavailable`),
+   * or null/absent when the failure named none. Client-only like the rest of
+   * this marker: it is what lets the row under a failed ask also draw the one
+   * jump whose fix is not a retry (`failureCopy.ts`).
+   */
+  degraded?: string | null;
 }
 
 /** One transcript row (`GET /assistant/conversations/{id}/messages`). */

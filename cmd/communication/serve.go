@@ -1961,6 +1961,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		DecisionAPIKey:  d.Decision.APIKey,
 		WorkerChat:      d.WorkerChat,
 		IssuerURL:       d.Auth.Issuer,
+		SignInProviders: d.Auth.SignInProviders(),
 		ArtifactBackend: api.ArtifactBackendName(d.M3.ArtifactBytes),
 		PreviewHost:     d.M3.PreviewHost,
 		Workers:         postgres.APIWorkerStore{R: &postgres.WorkerRegistry{Pool: d.Pool}, HeartbeatInterval: d.WorkerHeartbeat},

@@ -98,14 +98,19 @@ type modelAnswer struct {
 
 // complete issues ONE POST, retried on transient upstream conditions — any
 // HTTP 5xx (gateway/upstream failure: 500, 502, 503, 504 …), HTTP 429, the
-// model loading/unavailable error envelope (the 404 "the model was reloading"
-// turn-killer and the gateway-style error envelope some endpoints answer even
-// on a 200) — plus connection errors: up to MaxAttempts attempts with
+// model loading/reloading error envelope some endpoints answer even on a 200 —
+// plus connection errors: up to MaxAttempts attempts with
 // exponential backoff and jitter (Retry-After honoured, capped by
 // RetryBackoffMaxSeconds), never past the per-call deadline or the caller's
 // context. The user-facing error after the last attempt is the one a single
 // attempt would have produced, and answers that are not transient (other 4xx,
-// malformed envelopes) are never retried. Every assistant egress path — the
+// malformed envelopes) are never retried — and an endpoint that says the MODEL
+// is not available (a 404, or an error envelope naming it `not currently
+// available` / `not found`) is not transient either: it is `model_unavailable`,
+// answered after one attempt (deployed finding 2026-11-11: an offline model was
+// retried three times and then reported as `malformed_completion`, which blames
+// the answer for an outage nobody had to sit through twice more). Every
+// assistant egress path — the
 // ask loop, the conversation runner, draft proposals and their re-ask, the
 // approval summaries and interpretations — goes through this one loop.
 func (b *Broker) complete(ctx context.Context, req chatRequest) (modelAnswer, *Failure) {
@@ -198,27 +203,53 @@ func (b *Broker) completeOnce(ctx context.Context, req chatRequest, attempt int)
 		_, bad := parseCompletion(resp.StatusCode, raw, b.EndpointHost())
 		return modelAnswer{}, bad, retryAfter, true
 	}
+	// Named before the generic parse so the refusal keeps its own words: a 404
+	// (or an error envelope that says the model is not available) is the
+	// deployment pointing at a model that is not up, not a malformed answer.
+	if modelUnavailableRefusal(resp.StatusCode, raw) {
+		return modelAnswer{}, b.modelUnavailableFailure(req.Model), 0, false
+	}
 	ans, bad := parseCompletion(resp.StatusCode, raw, b.EndpointHost())
 	return ans, bad, 0, false
+}
+
+// modelUnavailableFailure is the one honest sentence `model_unavailable`
+// carries: the model's own name, and the fact that it is not there. The detail
+// is what the UI shows behind its own copy, so it names the model rather than
+// an HTTP code, and never the endpoint's key.
+func (b *Broker) modelUnavailableFailure(model string) *Failure {
+	if model == "" {
+		model = b.cfg.Model
+	}
+	if model == "" {
+		model = DefaultModel
+	}
+	return failure(FailModelUnavailable,
+		fmt.Sprintf("The assistant's model (%s) is not available right now.", model),
+		http.StatusServiceUnavailable)
 }
 
 // transientRetry reports whether a completion answered with a transient
 // upstream condition should be attempted again, and how long to wait before the
 // next attempt (1-based `attempt` numbers the backoff). Retriable: any 5xx
 // (gateway/upstream failure — a plain 500 and a 504 are the same outage as a
-// 502/503), 429 (rate limited), and the model loading/unavailable error
-// envelope: the 404 "model was reloading" turn-killer, and the gateway-style
-// error envelope some endpoints answer even on a 200. Transport-level failures
+// 502/503), 429 (rate limited), and the model loading/reloading error envelope
+// some endpoints answer even on a 200. Transport-level failures
 // are retried by the caller. Any other 4xx is a rejected request, not a
-// transient condition, and never retried; neither is a malformed completion.
+// transient condition, and never retried; neither is a malformed completion,
+// nor a refusal that names the model itself as unavailable (see
+// modelUnavailableRefusal — retried or not, that one is `model_unavailable`).
 func transientRetry(status int, raw []byte, retryAfter string, attempt int) (time.Duration, bool) {
+	// A model the endpoint says is not there does not come back between attempt 1
+	// and attempt 3, and a 404 never does: refuse fast so the person can re-ask
+	// or an operator can switch the model (deployed finding 2026-11-11).
+	if modelUnavailableRefusal(status, raw) {
+		return 0, false
+	}
 	switch {
 	case status >= http.StatusInternalServerError, status == http.StatusTooManyRequests:
 		return retryAfterOrBackoff(retryAfter, attempt), true
 	case status >= 400:
-		if status == http.StatusNotFound && modelUnavailable(string(raw)) {
-			return retryAfterOrBackoff(retryAfter, attempt), true
-		}
 		return 0, false
 	}
 	if modelUnavailable(string(raw)) {
@@ -272,9 +303,58 @@ func retryAfterDelay(header string) (time.Duration, bool) {
 	return 0, false
 }
 
-// modelUnavailable reports whether a 404 completion refusal means the model is
-// not currently available (e.g. reloading) — retryable — rather than a bad
-// request. The refusal travels in the gateway-style error envelope.
+// modelUnavailableRefusal reports whether the endpoint refused because THIS
+// model is not there, in words the deployment can act on:
+//
+//   - any 404 on the chat-completions path. An OpenAI-compatible server 404s a
+//     model it does not serve, and the offline Collective answers 404 with
+//     `{"error":{"message":"model \"x\" is not currently available","type":"not_found_error"}}`;
+//     a wrong path is also a 404, and "this endpoint cannot answer for that
+//     model" is the honest reading of both — `malformed_completion` blamed the
+//     request pipeline for what is a deployment/config outage;
+//   - any status (4xx or 5xx included, unlike the broad `modelUnavailable`
+//     reload markers below) whose error envelope message names the model as not
+//     available / not found.
+//
+// It is deliberately narrow: the transientRetry policy keeps treating a plain
+// 5xx ("upstream unavailable") and a "the model is loading" envelope as
+// retryable conditions, so this reads the model-specific words only.
+func modelUnavailableRefusal(status int, raw []byte) bool {
+	if status == http.StatusNotFound {
+		return true
+	}
+	return modelNotFoundMessage(raw)
+}
+
+// modelNotFoundMessage reports whether a completion error envelope says the
+// model itself could not be found or is not available — the offline-model
+// refusal (`is not currently available`, `not_found_error`), not a gateway that
+// merely calls its own outage "unavailable".
+func modelNotFoundMessage(raw []byte) bool {
+	var env struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.Error == nil {
+		return false
+	}
+	joined := strings.ToLower(env.Error.Message + " " + env.Error.Type)
+	for _, marker := range []string{"not currently available", "not available", "not found", "not_found"} {
+		if strings.Contains(joined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// modelUnavailable reports whether a completion refusal means the model is
+// not currently loadable (e.g. reloading) — a transient condition on the
+// gateway-style 200 envelope — rather than a bad request. The 404 that used to
+// lean on this now answers `model_unavailable` after one attempt
+// (modelUnavailableRefusal): the deployed failure was an offline model, and
+// retrying it three times only delayed the honest sentence.
 func modelUnavailable(raw string) bool {
 	var env struct {
 		Error *struct {
