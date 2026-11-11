@@ -31,10 +31,11 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [x] Note for the user: the ASR model is `david-birks/qwen3-asr-1-7b` (alias
       `qwen3-asr-1-7b`). Also wired as COMMUNICATION_SPEECH_MODEL, with a decision model
       (qwen3-8-flash-next): home-k8s eaa77a2.
-- [ ] Make the assistant's failure mode clearer: an offline model should
+- [x] Make the assistant's failure mode clearer: an offline model should
       surface as "model unavailable", not `malformed_completion`.
 
-## 2. Assistant UI
+## 2. Assistant UI Fixed: 6b88747 (model_unavailable,
+      model_retry_test.go, AssistantPopover.test.tsx).
 - [x] When a thread opens in the sidebar, its top bar is flush with the top.
       Evidence: 7f2de80 (the dock is fixed at y=0 even on a scrolled page; every head is 48px), ~/.cache/pi-orch/communication/evidence/asst-fullpage/c-dock-pinned-top-scrolled300.png, AssistantPanel.test.tsx.
 - [x] No-decision-model state: remove "fixed table decides" and write copy
@@ -109,6 +110,8 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Finding: in that thread, Claude's Bash calls came back "Tool use aborted" three times under permission `ask`.
       Either the prompts never reached the controller in the UI, or they timed out. Investigate the permission
       prompt path for claude threads.
+      Diagnosed in 6b88747 (docs/testing/claude-ask-mode-2026-11-11.md): the prompts expired at the worker's 2-minute
+      permission TTL. The UX fix (header countdown, badge, 10m TTL knob) is queued as ask-ux.
 - [ ] Put the Codex subscription's `~/.codex` auth into a SOPS secret (the
       user approved this) and mount it for the worker the way the Claude token
       is mounted.
@@ -134,10 +137,11 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       tsidp plus Azure Entra). Evidence: ADR-0083, 4985dee.
 - [x] Implement the provider abstraction if it's small. Evidence: a04e05c (providers_test.go: entra admit,
       tid/oid subject, state-provider binding; auth_test.go two IdPs; Login.test.tsx).
-- [ ] Follow-up: the Operations overview's sign-in row reads "" when a provider list is configured
+- [x] Follow-up: the Operations overview's sign-in row reads "" when a provider list is configured
       (it uses d.Auth.Issuer). It should list the providers.
 
-## 8. Operations
+## 8. Operations Fixed: 6b88747 (identity.providers,
+      system_overview_test.go, OperationsBody.test.tsx).
 - [x] Redesign Operations (currently a 14-line page) into a useful operations
       and settings page: health, workers, queue, models, secrets status and
       integrations. Evidence: 8e9d604 (overview plus probe API, system_overview_test.go), 2faa0a0 (UI,
