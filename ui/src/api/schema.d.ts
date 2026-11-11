@@ -83,6 +83,59 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/auth/providers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Which identity providers can sign you in
+     * @description The login chooser's only read (ADR-0083). Public — it is what the
+     *     sign-in page renders before anyone is authenticated — and it says no
+     *     more than which buttons to draw: the issuer URL, the client id and every
+     *     secret stay server-side.
+     *
+     *     One entry per configured provider, in configuration order. A deployment
+     *     that sets only the single-issuer environment variables sees exactly one
+     *     entry, `{"id": "default", "label": "OIDC"}`, and the sign-in page draws
+     *     exactly the one button it drew before ADR-0083.
+     */
+    get: operations["listLoginProviders"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/auth/callback/{provider}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Complete OIDC login at one named provider
+     * @description Identical to `/auth/callback`, for a deployment whose identity provider
+     *     must register a distinct redirect URI per provider (an Entra app
+     *     registration, for instance). `provider` must be the id the handshake was
+     *     started with: a callback whose URL names a different provider than the
+     *     stored state is a cross-provider replay and answers the same fixed `400`
+     *     as an unknown state, without redeeming the code anywhere.
+     */
+    get: operations["authCallbackForProvider"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/auth/callback": {
     parameters: {
       query?: never;
@@ -96,6 +149,9 @@ export interface paths {
      *
      *     1. Look up `state` in `oidc_login_states`; it must be unused and at most
      *        10 minutes old, and is consumed in the same transaction (single use).
+     *        The state names the identity provider the handshake was started for
+     *        (`provider_id`, NULL meaning `default`), which is what the rest of
+     *        this handler exchanges the code against.
      *     2. Exchange the code (verifying `code_verifier`), then verify the ID token
      *        issuer, audience and `nonce`.
      *     3. Upsert the user by `(issuer, subject)`. Display name is the first of
@@ -178,6 +234,39 @@ export interface paths {
      * @description Users of the caller's organization, in `display_name` order. Used by the add-member picker. M1 has no pagination on this route; everyone in the organization is returned.
      */
     get: operations["listUsers"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/users/{userId}/avatar": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * A member's stored profile photo
+     * @description The profile photo of a provider that cannot be hot-linked (ADR-0083):
+     *     Microsoft Graph answers `/me/photo/$value` only with the signer's bearer
+     *     token, so the bytes are stored here and served from this origin — which
+     *     is what keeps the app CSP at `img-src 'self'` for Entra users while
+     *     tsidp and generic providers keep pointing `avatar_url` at an https URL.
+     *
+     *     `users.avatar_url` for such a user is exactly this path. The body is
+     *     type-sniffed on write and admits jpeg, png or webp only, capped at
+     *     256 KiB; the response's `Content-Type` is that sniff, never what the
+     *     upstream claimed.
+     *
+     *     Any signed-in member may read any member's photo: the same people can
+     *     already see the face wherever the app lists users. A user with no stored
+     *     photo is `404`, which the UI draws as initials.
+     */
+    get: operations["getUserAvatar"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2975,9 +3064,9 @@ export interface components {
       display_name: string;
       /** @description From the OIDC `email` claim; null when the provider did not supply it. */
       email: string | null;
-      /** @description The identity provider's `picture` claim as released at the last login (migration 00031) — an absolute `https://` URL, or `"` when the provider released none or released a non-https one. It is a cache of a claim the provider owns: it changes when the person changes their profile there, never from this app. Display-only — it authorizes nothing. */
+      /** @description The identity provider's `picture` claim as released at the last login (migration 00031) — an absolute `https://` URL, the same-origin path of `GET /api/v1/users/{userId}/avatar` when the provider's photo had to be stored here (Entra, ADR-0083), or `"` when the provider released none or released an unusable one. It is a cache of a claim the provider owns: it changes when the person changes their profile there, never from this app. Display-only — it authorizes nothing. */
       avatar_url?: string;
-      /** @description Host (and port, when non-default) of the configured OIDC issuer, so the Profile page can name where the person signed in. The full issuer URL and the client id stay server-side. */
+      /** @description Host (and port, when non-default) of the configured OIDC issuer, so the Profile page can name where the person signed in. The full issuer URL and the client id stay server-side. With an ADR-0083 provider list of more than one entry this is `"`: the login records an issuer, not a provider id, so which of several providers a person used is not this row's to claim. */
       issuer_host?: string;
       is_org_admin: boolean;
       organization: components["schemas"]["Organization"];
@@ -3242,6 +3331,24 @@ export interface components {
     MemberList: {
       items: components["schemas"]["Member"][];
     };
+    /**
+     * LoginProvider
+     * @description One sign-in option (`GET /auth/providers`, ADR-0083). `id` is the stable slug used in `/auth/login?provider=` and `/auth/callback/{id}`; `label` is the text the chooser prints. Nothing else about a provider — its issuer, its client, its secrets — crosses this route.
+     */
+    LoginProvider: {
+      /**
+       * @example tailnet
+       * @example work
+       * @example default
+       */
+      id: string;
+      /**
+       * @example Tailscale
+       * @example Microsoft (E-gineering)
+       * @example OIDC
+       */
+      label: string;
+    };
     /** UserList */
     UserList: {
       items: components["schemas"]["User"][];
@@ -3315,7 +3422,7 @@ export interface components {
       /** @description Registry id (M2 seeds `claude` and `codex`) — the executable argv the worker spawns, no shell expansion. */
       launcher_id: string;
       /**
-       * @description `ask` sends every ACP permission prompt to the current controller. `preapproved_within_sandbox` may only be set once an enforced sandbox is verified for that launcher (`04` "Permission policy", ADR-0009); both M2 seeds are `ask`. `deny` rejects prompts outright. `autonomous_within_sandbox` (ADR-0069) is the mode of a launcher that never asks (pi-acp sends no `session/request_permission`): it makes **no** review claim — nothing is asked and no verdict row is produced — and may only be set beside `sandbox_enforcement: required`, because its promise is "runs without asking; the sandbox is the boundary".
+       * @description `ask` sends every ACP permission prompt to the current controller. `preapproved_within_sandbox` may only be set once an enforced sandbox is verified for that launcher (`04` "Permission policy", ADR-0009); both M2 seeds are `ask`. `deny` rejects prompts outright. `autonomous_within_sandbox` (ADR-0069) is the mode of a launcher that never asks (pi-acp sends no `session/request_permission`): it makes **no** review claim — nothing is asked and no verdict row is produced — and may only be set beside `sandbox_enforcement: required`, because its promise is "runs without asking; the sandbox is the boundary". No request body names a mode; the create route in `POST /api/v1/agent-profiles` writes it for a launcher whose registry entry records no verified prompting mode (ADR-0069 amendment 2026-11-11), which is the operator's own action, not a client choosing it            it makes **no** review claim — nothing is asked and no verdict row is produced — and may only be set beside `sandbox_enforcement: required`, because its promise is "runs without asking; the sandbox is the boundary".
        * @enum {string}
        */
       permission_mode: "ask" | "preapproved_within_sandbox" | "deny" | "autonomous_within_sandbox";
@@ -7409,6 +7516,12 @@ export interface components {
     };
   };
   parameters: {
+    /** @description Which configured identity provider to start the handshake with (ADR-0083). Optional when exactly one provider is configured; required to mean a specific one when several are. An unknown id is `400`. */
+    LoginProviderIdQuery: string;
+    /** @description The provider id this callback's `state` was minted for. */
+    LoginProviderIdPath: string;
+    /** @description The user whose profile photo to read. */
+    UserIdPath: string;
     /** @description Same-origin relative path to resume after login (must start with `/` and not with `//`). Anything else is treated as `/`. */
     ReturnTo: string;
     /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
@@ -7552,6 +7665,8 @@ export interface operations {
       query?: {
         /** @description Same-origin relative path to resume after login (must start with `/` and not with `//`). Anything else is treated as `/`. */
         return_to?: components["parameters"]["ReturnTo"];
+        /** @description Which configured identity provider to start the handshake with (ADR-0083). Optional when exactly one provider is configured; required to mean a specific one when several are. An unknown id is `400`. */
+        provider?: components["parameters"]["LoginProviderIdQuery"];
       };
       header?: never;
       path?: never;
@@ -7559,7 +7674,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Redirect to the identity provider's authorization endpoint. */
+      /** @description Redirect to the identity provider's authorization endpoint — or, when several providers are configured and none is named, to the sign-in page (`/login?return_to=…`) so the browser can pick one. */
       302: {
         headers: {
           "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
@@ -7567,7 +7682,88 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description `provider` names an identity provider this deployment does not configure. No login state is written. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
       503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  listLoginProviders: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The providers a visitor may sign in with. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description Always `no-store` — the list changes only on a restart. */
+          "Cache-Control"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          /**
+           * @example [
+           *       {
+           *         "id": "tailnet",
+           *         "label": "Tailscale"
+           *       },
+           *       {
+           *         "id": "work",
+           *         "label": "Microsoft (E-gineering)"
+           *       }
+           *     ]
+           */
+          "application/json": components["schemas"]["LoginProvider"][];
+        };
+      };
+    };
+  };
+  authCallbackForProvider: {
+    parameters: {
+      query: {
+        /** @description Authorization code from the identity provider. */
+        code: string;
+        /** @description Opaque anti-CSRF state generated by `/auth/login`. */
+        state: string;
+      };
+      header?: never;
+      path: {
+        /** @description The provider id this callback's `state` was minted for. */
+        provider: components["parameters"]["LoginProviderIdPath"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Login complete; redirects to the original `return_to` path. Sets the `communication_session` cookie. */
+      302: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Unknown, used, expired state — or a state minted for a different provider than this URL names. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
     };
   };
   authCallback: {
@@ -7658,6 +7854,45 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+    };
+  };
+  getUserAvatar: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The user whose profile photo to read. */
+        userId: components["parameters"]["UserIdPath"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The stored photo. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description A quoted `sha256-` digest of the bytes. `If-None-Match` with it answers `304`. */
+          ETag?: string;
+          /** @description Always `private, max-age=3600`: a face is one person's, so no shared cache may hold it, and it is refreshed at most on a login. */
+          "Cache-Control"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "image/jpeg": string;
+          "image/png": string;
+          "image/webp": string;
+        };
+      };
+      /** @description The client's `If-None-Match` matched the stored photo. */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
     };
   };
   getMyPreferences: {

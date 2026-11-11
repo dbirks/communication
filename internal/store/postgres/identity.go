@@ -37,6 +37,13 @@ type User struct {
 	IsOrgAdmin bool
 }
 
+// defaultLoginProviderID is the provider id of the single-issuer deployment
+// synthesized from the environment (ADR-0083). It is spelled out again here
+// because internal/api/auth imports this package, not the reverse; the auth
+// package's DefaultProviderID is the authority, and the round trip through
+// SaveLoginState/TakeLoginState keeps the two meanings aligned.
+const defaultLoginProviderID = "default"
+
 // LoginState is one in-flight OIDC Authorization Code + PKCE handshake. It
 // lives in the database so a login started on one API replica can complete on
 // another (ADR-0012 §6).
@@ -45,7 +52,13 @@ type LoginState struct {
 	CodeVerifier string
 	Nonce        string
 	ReturnTo     string
-	ExpiresAt    time.Time
+	// ProviderID is the identity provider this handshake was started for, which
+	// is what lets the callback refuse a code from a different provider
+	// (ADR-0083). It is never empty on a state this package reads back: the
+	// column's NULL (migration 00032) means the `default` provider synthesized
+	// from the single-issuer environment variables.
+	ProviderID string
+	ExpiresAt  time.Time
 }
 
 // IdentityStore reads and writes users, OIDC identities, sessions and login
@@ -257,10 +270,16 @@ func (s *IdentityStore) SaveLoginState(ctx context.Context, st LoginState) error
 	if returnTo == "" {
 		returnTo = "/"
 	}
+	// The `default` provider is stored as NULL, so an env-only deployment's rows
+	// look exactly as they did before the column existed (migration 00032).
+	var providerID any = st.ProviderID
+	if st.ProviderID == "" || st.ProviderID == defaultLoginProviderID {
+		providerID = nil
+	}
 	if _, err := s.Pool.Exec(ctx, `
-		INSERT INTO oidc_login_states (state, code_verifier, nonce, return_to, expires_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		st.State, st.CodeVerifier, st.Nonce, returnTo, st.ExpiresAt); err != nil {
+		INSERT INTO oidc_login_states (state, code_verifier, nonce, return_to, provider_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5::text, $6)`,
+		st.State, st.CodeVerifier, st.Nonce, returnTo, providerID, st.ExpiresAt); err != nil {
 		return fmt.Errorf("postgres: save login state: %w", err)
 	}
 	return nil
@@ -280,8 +299,9 @@ func (s *IdentityStore) TakeLoginState(ctx context.Context, state string) (Login
 	err := s.Pool.QueryRow(ctx, `
 		DELETE FROM oidc_login_states
 		WHERE state = $1 AND expires_at > now()
-		RETURNING state, code_verifier, nonce, return_to, expires_at`, state).
-		Scan(&st.State, &st.CodeVerifier, &st.Nonce, &st.ReturnTo, &st.ExpiresAt)
+		RETURNING state, code_verifier, nonce, return_to,
+			COALESCE(provider_id, '`+defaultLoginProviderID+`'), expires_at`, state).
+		Scan(&st.State, &st.CodeVerifier, &st.Nonce, &st.ReturnTo, &st.ProviderID, &st.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LoginState{}, fmt.Errorf("postgres: login state: %w", ErrNotFound)
 	}

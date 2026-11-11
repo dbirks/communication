@@ -164,11 +164,28 @@ environment:
                                         the default, never a startup refusal —
                                         the family rule of the two knobs
                                         above.
-  COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
+  COMMUNICATION_OIDC_ISSUER             required UNLESS
+                                        COMMUNICATION_OIDC_PROVIDERS_FILE names
+                                        a list; issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
-  COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
+  COMMUNICATION_OIDC_CLIENT_ID          required UNLESS
+                                        COMMUNICATION_OIDC_PROVIDERS_FILE names
+                                        a list; OAuth2 client id
   COMMUNICATION_OIDC_CLIENT_SECRET      optional; empty means public + PKCE
-  COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS  OIDC subjects that become org admins
+  COMMUNICATION_OIDC_PROVIDERS_FILE     optional path (ADR-0083) to a YAML list
+                                        of identity providers — tsidp, Entra ID
+                                        and generic side by side, each with its
+                                        own client_secret_file. When it is set,
+                                        the sign-in page offers one button per
+                                        provider, and the three variables above
+                                        stop being required. An Entra provider
+                                        with no allowed_tenants, a client secret
+                                        written in the file itself, or a
+                                        duplicate provider id is a startup
+                                        refusal. The file is read once, at boot.
+  COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS  OIDC subjects that become org admins;
+                                        with a provider list, the
+                                        provider:subject form also works
   COMMUNICATION_COOKIE_SECURE           Secure cookie flag (default "true")
   COMMUNICATION_WORKER_HEARTBEAT        optional; must match the workers' own
                                         heartbeat interval, because it sets how
