@@ -113,7 +113,10 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [x] Add a simple Profile page. Evidence: 1a3fc5b, /profile, Profile.test.tsx.
 - [x] Write an ADR for an extensible multi-provider OIDC layer (Tailscale
       tsidp plus Azure Entra). Evidence: ADR-0083, 4985dee.
-- [ ] Implement the provider abstraction if it's small. (Brief oidc-providers is queued.)
+- [x] Implement the provider abstraction if it's small. Evidence: a04e05c (providers_test.go: entra admit,
+      tid/oid subject, state-provider binding; auth_test.go two IdPs; Login.test.tsx).
+- [ ] Follow-up: the Operations overview's sign-in row reads "" when a provider list is configured
+      (it uses d.Auth.Issuer). It should list the providers.
 
 ## 8. Operations
 - [x] Redesign Operations (currently a 14-line page) into a useful operations
