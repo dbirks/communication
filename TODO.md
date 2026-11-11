@@ -102,8 +102,13 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       flatten_test.go) plus the template docs/samples/home/pstack-feature.yaml (a31da6a). Not gstack.
 - [x] Template: implement, then review with Codex. Evidence: docs/samples/home/implement-then-codex-review.yaml
       (fails closed without a Codex login).
-- [ ] Wire the Claude subscription through the existing OAuth token
+- [x] Wire the Claude subscription through the existing OAuth token
       (ADR-0040).
+      Evidence: deployed thread 01a1cb61-a0a0-7be3-a48e-977724baf370 (Claude Code profile, Sandbox) completed a turn
+      (stop_reason end_turn) on the worker's COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE subscription token.
+- [ ] Finding: in that thread, Claude's Bash calls came back "Tool use aborted" three times under permission `ask`.
+      Either the prompts never reached the controller in the UI, or they timed out. Investigate the permission
+      prompt path for claude threads.
 - [ ] Put the Codex subscription's `~/.codex` auth into a SOPS secret (the
       user approved this) and mount it for the worker the way the Claude token
       is mounted.
@@ -149,8 +154,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       nono inside them, using minimal RBAC and network policy. Check this
       against the research in `docs/` (commit f918881) and write an ADR.
       ADR-0082 ffc7149; research docs/research/2026-11-k8s-run-modes.md.
-- [ ] (Progress) The acp.Transport seam is in 9d138e1 (transport_test.go; -race green). The pod launcher
-      (k8s-pod) and the chart plus kind script (helm-chart) are queued.
+- [x] (Progress) The acp.Transport seam is in 9d138e1; the pod launcher is in 8436088 (internal/sandbox/k8s tests, -race).
 - [x] Ship a deliberately simple Helm chart with minimal boilerplate. Evidence: 7e33017
       (deploy/helm/communication; helm lint and template are clean for ci/single, split-local and split-kubernetes).
 - [ ] Test it in kind: install, run a pipeline that spawns an agent pod, and
@@ -194,11 +198,14 @@ that can be attached to different ACP agent setups. Today the spec
       item. A profile references one or more collections; the worker resolves
       them into one APM manifest and lock per attempt and records the digest.
       Cover ordering and conflict rules and per-launcher targeting. Evidence: ADR-0084, 62c7d48.
-- [ ] (Backend 1d69498, UI cac3525 + 0ba4ecd, evidence ~/.cache/pi-orch/communication/evidence/apm-coll-ui/. Still to do:
-      the spec test 7 isolation test (apm-isolation queued), and a real lock of a seeded collection on the deployed worker.)
-- [ ] Implement it: a collections CRUD API, the UI in Library or Agents for
+- [x] (Backend 1d69498, UI cac3525 + 0ba4ecd, evidence ~/.cache/pi-orch/communication/evidence/apm-coll-ui/; spec test 7
+      isolation 10503b3 TestTwoCollectionSetsStageIntoIsolatedCheckouts.)
+- [x] Implement it: a collections CRUD API, the UI in Library or Agents for
       attaching collections to an agent profile, and worker resolution with
       tests (spec test 7: two different skill sets, isolated between sessions).
+      Evidence: 1d69498 (API, worker flatten and lock), cac3525 (UI), 10503b3 (test 7).
+- [ ] Real lock of a seeded collection on the deployed worker (apm 0.34.0 in the image): lock "Matt Pocock skills"
+      on a profile in the deployed app and record the digest.
 - [x] Rebase the section 6 templates (Matt Pocock, poteto) on collections. Their headers name the seeded collections
       (a31da6a), and 00033 seeds them (1d69498).
 
@@ -208,6 +215,9 @@ that can be attached to different ACP agent setups. Today the spec
 - [x] Finding (deployed): the Operations "Workflow model steps" row reads "no model id · not set up" because serve
       doesn't carry COMMUNICATION_MODEL_CHAT_*. Either give serve those env vars in home-k8s or have the worker
       report its models in its heartbeat. Fixed via GitOps: home-k8s serve env (model and base URL, no key).
+
+- [ ] Finding (8436088): env-mode secret values can ride inside the pods/exec command, which the API server may
+      write to audit logs. Fix: an env-file wrapper (k8s-pod2 queued).
 
 ## CI and Acceptance notes
 - [x] CI `go` failure TestAllowedRoutesMirrorUIRoutes (from 1a3fc5b /profile) fixed in 2971a35.
