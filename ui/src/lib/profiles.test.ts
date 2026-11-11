@@ -11,6 +11,7 @@ import {
   hasVerifiedWorker,
   launcherEntry,
   nonoObserved,
+  permissionModeLabel,
   sandboxChip,
   type Launcher,
   type LauncherCapability,
@@ -158,5 +159,21 @@ describe("capabilityCell", () => {
 describe("duplicateName", () => {
   it("names the copy after its source", () => {
     expect(duplicateName("Claude Code")).toBe("Claude Code copy");
+  });
+});
+
+describe("permissionModeLabel (ADR-0069)", () => {
+  it("says the boundary for the mode that makes no review claim", () => {
+    // The enum is the wire's; what a reader needs is the mode's one promise.
+    expect(permissionModeLabel("autonomous_within_sandbox")).toBe(
+      "autonomous (sandbox is the boundary)",
+    );
+  });
+
+  it("prints every other recorded mode's own name", () => {
+    // No invented words for a mode whose contract is the contract's.
+    for (const mode of ["ask", "deny", "preapproved_within_sandbox"]) {
+      expect(permissionModeLabel(mode)).toBe(mode);
+    }
   });
 });

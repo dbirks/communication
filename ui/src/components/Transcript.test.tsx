@@ -213,3 +213,63 @@ describe("agent replies read as markdown (rcn-3d round 14)", () => {
     expect(row.textContent).not.toContain("first fix\\n");
   });
 });
+
+describe("an agent message with no words draws nothing (deployed finding 2026-11-11)", () => {
+  function renderItems(events: EventEnvelope[]) {
+    const items = projectTranscript(events, nameOf).items;
+    render(
+      <Transcript
+        items={items}
+        agentName="Pi"
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    return items;
+  }
+
+  it("draws no speaker block for a whitespace-only agent message", () => {
+    // The deployed thread: pi's chunks while the model retried were only
+    // "\n\n", and the page printed an empty "Pi · 06:45:07 UTC" header — a
+    // block that said nothing, in an aria-live list that announced it.
+    const items = renderItems([
+      conversationEvent(
+        "conversation.message.user",
+        { submitted_by: authorId, text: "Summarize the README" },
+        { global_seq: 1 },
+      ),
+      conversationEvent(
+        "conversation.message.agent",
+        { text: "\n\n", final: false },
+        { global_seq: 2 },
+      ),
+    ]);
+    // The fold still keeps the item: the "writing…" state and the
+    // ended-without-an-answer line both read it. The view just draws nothing.
+    expect(items.map((item) => item.kind)).toEqual(["user", "agent"]);
+    expect(screen.getAllByTestId("transcript-item")).toHaveLength(1);
+    expect(screen.queryByTestId("agent-speaker")).toBeNull();
+    expect(screen.queryByText("writing…")).toBeNull();
+    expect(screen.getByTestId("transcript").textContent).not.toContain("Pi ·");
+  });
+
+  it("draws the answer as soon as it has a word in it", () => {
+    // The other half: this is an empty-block rule, not a rule about pi's
+    // answers. Text that is not only whitespace renders as it always did.
+    renderItems([
+      conversationEvent(
+        "conversation.message.agent",
+        { text: "The README says: run pnpm test.", final: true },
+        { global_seq: 3 },
+      ),
+    ]);
+    const row = screen.getByTestId("transcript-item");
+    expect(within(row).getByTestId("agent-speaker").textContent).toContain("Pi ·");
+    expect(row.textContent).toContain("run pnpm test");
+  });
+});

@@ -3,14 +3,16 @@ package api
 // The writable half of the agent profile surface (ADR-0030): the POST/PATCH
 // routes mounted beside the M2 listing in RegisterConversations.
 //
-// Two things are deliberately not writable here:
+// Two things are deliberately not CLIENT-writable here:
 //
-//   - permission_mode. 'ask' is the column default and the only mode an
-//     unverified launcher may have (04-agent-runtime.md "Permission policy",
-//     ADR-0009); preapproved_within_sandbox needs sandbox evidence for that
-//     launcher, which lives in docs/compatibility/, not in a request body.
-//   - the sandbox / workspace / commit axes. They are separate grant decisions
-//     with separate evidence.
+//   - permission_mode. No body member names it (unknown fields are a 400).
+//     'ask' is the column default and the only mode an unverified launcher may
+//     have (04-agent-runtime.md "Permission policy", ADR-0009);
+//     preapproved_within_sandbox needs sandbox evidence for that launcher,
+//     which lives in docs/compatibility/, not in a request body. The one place
+//     the route itself resolves a mode is ADR-0069's never-asks launcher, below.
+//   - the workspace / commit axes. They are separate grant decisions with
+//     separate evidence.
 //
 // What IS writable is the APM pin: all three columns at once (a locked pin —
 // the operator recorded a digest), just the ref + target (an UNLOCKED pin,
@@ -20,6 +22,16 @@ package api
 // pin that is not locked is not a partial success — it is a launch-time refusal
 // for somebody else's conversation. The store refuses the partial shapes and
 // the handler does the same, before either touches a database.
+//
+// One launch axis the route does resolve, because nobody else can (ADR-0069
+// amendment 2026-11-11): a launcher whose registry entry names no verified
+// prompting mode can never honour `ask`, and every turn of an `ask` profile on
+// it fails closed at launch. Such a profile is created in
+// `autonomous_within_sandbox` + `sandbox_enforcement=required` — and only by
+// the organization admin, who IS the operator in this deployment. The mode is
+// still never a request-body field (`AgentProfileCreateInput` resolves it
+// server-side, and DecodeJSON refuses unknown members); the pair rule is the
+// store's and the database's again.
 
 import (
 	"encoding/json"
@@ -29,6 +41,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/dbirks/communication/internal/agent/acp"
 )
 
 // Profile write errors: the api-side sentinels the store adapter maps onto. The
@@ -86,7 +100,23 @@ const (
 	// autonomous_within_sandbox without sandbox_enforcement 'required'
 	// (ADR-0069).
 	ProfileCodePermissionModeInvalid = "permission_mode_invalid"
+	// ProfileCodeLauncherNeedsOperator: the launcher has no verified prompting
+	// mode, so its profile can only run autonomous_within_sandbox — a mode the
+	// operator declares, and a caller without the organization's library role is
+	// not the operator (ADR-0069 amendment 2026-11-11).
+	ProfileCodeLauncherNeedsOperator = "launcher_needs_operator"
 )
+
+// launcherNeverAsks reports whether the launcher registry says this launcher
+// cannot be made to prompt — the entry exists and names no asking mode
+// (`AskModeID == ""`, internal/agent/acp/launchers.go, observed in
+// docs/compatibility/ACP.md). An id the registry does not carry is NOT "never
+// asks": absence is not evidence, and a profile naming an unknown launcher
+// keeps today's `ask` default and the launch gate's own refusal.
+func launcherNeverAsks(launcherID string) bool {
+	l, ok := acp.LookupLauncher(launcherID)
+	return ok && l.AskModeID == ""
+}
 
 // AgentProfileCreateInput is POST /api/v1/agent-profiles' body.
 type AgentProfileCreateInput struct {
@@ -96,6 +126,15 @@ type AgentProfileCreateInput struct {
 	// transcript divider renders after the profile name. Absent or "" names
 	// no model (the harness default).
 	Model string `json:"model,omitempty"`
+	// PermissionMode and SandboxEnforcement are NOT request-body fields
+	// (`json:"-"` plus DecodeJSON's DisallowUnknownFields: a body naming either
+	// is a 400, exactly as it was before they existed). They are the launch axes
+	// the HANDLER resolved for this request — autonomous_within_sandbox +
+	// required for a launcher with no verified prompting mode, empty (the column
+	// defaults) for every other launcher — carried to the store, which re-checks
+	// the pair and the caller's role (ADR-0069 amendment 2026-11-11).
+	PermissionMode     string `json:"-"`
+	SandboxEnforcement string `json:"-"`
 }
 
 // AgentProfileAPMPatch is PATCH /api/v1/agent-profiles/{profileId}'s body. A nil
@@ -166,10 +205,31 @@ func (h *cnvHandlers) createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !c.IsOrgAdmin {
+		// A never-asks launcher is refused with its OWN reason before the generic
+		// library-role 403: "you need the library role" is true of every write,
+		// while the fact the caller needs is that even the library role would only
+		// land a profile that runs autonomously (ADR-0069 amendment 2026-11-11).
+		// A prompting launcher keeps the 403 unchanged.
+		if launcherNeverAsks(body.LauncherID) {
+			h.profileDenied(w, r, c, "", "profile.create",
+				"the launcher has no verified prompting mode: only the organization's admin may declare autonomous_within_sandbox")
+			profProblem(w, ProfileCodeLauncherNeedsOperator,
+				"This launcher has no verified prompting mode, so its profile can only run autonomous_within_sandbox — a mode the organization's admin (the operator) declares, not a member (ADR-0069). Ask an admin to create this profile, or choose a launcher that asks before acting.")
+			return
+		}
 		h.profileDenied(w, r, c, "", "profile.create", "the library role is required")
 		WriteProblem(w, http.StatusForbidden, "Forbidden",
 			"Creating an agent profile requires the organization's library role.")
 		return
+	}
+	// ADR-0069 amendment 2026-11-11: the admin clicking `New profile` IS the
+	// operator, and `ask` on a launcher that cannot prompt is a profile whose
+	// every turn fails closed. Resolve the honest pair here, server-side; the
+	// store re-checks the pair and the role, and migration 00025's CHECK is the
+	// backstop under both.
+	if launcherNeverAsks(body.LauncherID) {
+		body.PermissionMode = "autonomous_within_sandbox"
+		body.SandboxEnforcement = "required"
 	}
 	profile, err := h.profiles.CreateAgentProfile(r.Context(), c, body)
 	if err != nil {
@@ -337,6 +397,8 @@ func profProblemTitle(code string) string {
 		return "Invalid Profile Model"
 	case ProfileCodePermissionModeInvalid:
 		return "Invalid Permission Mode"
+	case ProfileCodeLauncherNeedsOperator:
+		return "Launcher Needs an Operator"
 	default:
 		return "Validation Failed"
 	}

@@ -70,6 +70,9 @@ none of them.
   the seed/GitOps SQL route, e.g. `docs/compatibility/probes/m4/seed*.sh`,
   where `COMMUNICATION_LAB_LAUNCHER=pi` now seeds
   `autonomous_within_sandbox` + `sandbox_enforcement=required`).
+  *(Superseded for the create path by "Amendment 2026-11-11" below: an
+  organization admin's create of a launcher with no verified prompting mode
+  resolves this mode server-side — it is still never a request-body field.)*
 * **UI wording (for the UI brief):** profile chip and run/thread transcript —
   `pi · runs without asking · sandboxed`. The transcript must not render a
   permission divider for a mode that produces none, and must not label tool
@@ -105,6 +108,33 @@ provider config is configured (`Launcher.WriteProviderConfig`):
   the same allowlist as the attempt path (before this change it silently used
   the shipped default only, ignoring the operator env the ADR-0035 text
   assigns to the whole agent-turn kind).
+
+## Amendment 2026-11-11 — the admin who creates a profile IS the operator
+
+Deployed finding: `New profile` with launcher `pi` wrote the `ask` column
+default, so the profile existed and could never run — every turn failed closed
+with "permission mode ask needs a prompting mode for launcher pi; none is
+verified". The "seed/GitOps SQL route" above assumed the person declaring the
+mode was never the person pressing a button; in this product they are the same
+person, because creating an agent profile already requires the organization's
+library role.
+
+So `POST /api/v1/agent-profiles` now resolves the mode for that caller: when the
+launcher's registry entry names no verified prompting mode
+(`AskModeID == ""`, `internal/agent/acp/launchers.go`), an org admin's create
+lands `permission_mode = autonomous_within_sandbox` with
+`sandbox_enforcement = required`, frozen as the profile's version 1 (the history
+row's note names the resolution). A caller without the role is refused `422`
+with the new code `launcher_needs_operator` rather than handed a profile that
+can never run; the mode is still not a body member, `ask`/`deny`/
+`preapproved_within_sandbox` on a never-asks launcher stay fail-closed at launch,
+and the pair rule (autonomous only beside `required`: DB CHECK, store 422,
+launch gate) is unchanged and still checked three times. An id the registry does
+not carry is not "never asks" — absence is not evidence, and it keeps the `ask`
+default. The app says the same thing in the same words: the dialog reads
+`autonomous · sandbox: required`, and a profile detail reads
+`permission: autonomous (sandbox is the boundary)`.
+
 
 ## Consequences
 
@@ -143,6 +173,16 @@ a union of two operator facts, not a widening by anything a project edits.
   provider config (`internal/agent/acp`: rendered `models.json` carries base
   URL + model and **no key value**; settings pin written; merge rules), egress
   (provider host appears in the resolved allowlist; `open` unchanged).
+* Unit (2026-11-11 amendment): `internal/api`'s `TestCreateAgentProfileNeverAsksLauncher`
+  (admin pi create resolves the pair; a member gets `launcher_needs_operator`; a
+  prompting launcher and an unregistered id keep `ask`; a body naming
+  `permission_mode` is still a 400) and the real-Postgres
+  `TestAgentProfileCreateWritesResolvedLaunchAxes` (the pair + mode grammar at the
+  store, the version-1 snapshot + note and the `agent.profile.created` payload naming
+  the mode, a non-admin caller refused in the store itself, "" axes meaning the
+  defaults); UI: `suggestProfileName`, `permissionModeLabel`, the dialog's
+  autonomous copy, the whitespace-only agent block and the no-answer end line
+  (vitest).
 * Host observation (2026-10-24, this machine, pi 1.4.0): models.json alone →
   `pi -p hi` reached `api.openai.com` (401); with the settings pin →
   "Connection error" against the configured (unreachable) host. Source of the

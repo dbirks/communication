@@ -426,3 +426,136 @@ func TestRestoreAgentProfileVersionStaleIs409(t *testing.T) {
 		t.Fatalf("stale restore = %d, want 409 (%s)", rec.Code, rec.Body)
 	}
 }
+
+// TestCreateAgentProfileNeverAsksLauncher is ADR-0069's 2026-11-11 amendment at
+// the HTTP edge. A launcher whose registry entry names no verified prompting mode
+// (`pi`: AskModeID "", internal/agent/acp/launchers.go) cannot honour `ask` —
+// every turn of an `ask` profile on it fails closed at launch ("permission mode
+// ask needs a prompting mode for launcher pi; none is verified", the deployed
+// defect of 2026-11-11). The organization admin who clicks `New profile` IS the
+// operator, so the route resolves autonomous_within_sandbox + required for that
+// admin; a plain member is refused with the reason rather than handed a profile
+// that can never run. Neither axis is ever a body member.
+func TestCreateAgentProfileNeverAsksLauncher(t *testing.T) {
+	t.Run("an admin's pi profile is created autonomous + required", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, profAdminCaller("admin"))
+
+		rec := profSend(t, s, http.MethodPost, profURL, map[string]string{
+			"name": "Pi Autonomous", "launcher_id": "pi",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST /agent-profiles (pi) = %d, want 201 (%s)", rec.Code, rec.Body)
+		}
+		var view AgentProfileView
+		if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body)
+		}
+		if view.PermissionMode != "autonomous_within_sandbox" {
+			t.Errorf("permission_mode = %q, want autonomous_within_sandbox: ask can never run on pi (ADR-0069)", view.PermissionMode)
+		}
+		if len(store.profileCreated) != 1 {
+			t.Fatalf("store saw %d creates, want 1", len(store.profileCreated))
+		}
+		in := store.profileCreated[0]
+		if in.PermissionMode != "autonomous_within_sandbox" || in.SandboxEnforcement != "required" {
+			t.Errorf("resolved axes = (%q, %q), want (autonomous_within_sandbox, required)",
+				in.PermissionMode, in.SandboxEnforcement)
+		}
+	})
+
+	t.Run("a prompting launcher keeps the column default", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, profAdminCaller("admin"))
+		rec := profSend(t, s, http.MethodPost, profURL, map[string]string{
+			"name": "Claude Reviewed", "launcher_id": "claude",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST = %d, want 201 (%s)", rec.Code, rec.Body)
+		}
+		in := store.profileCreated[0]
+		if in.PermissionMode != "" || in.SandboxEnforcement != "" {
+			t.Errorf("claude resolved (%q, %q), want the column defaults ('' = ask/required): the autonomy carve-out is only for a launcher that cannot prompt",
+				in.PermissionMode, in.SandboxEnforcement)
+		}
+	})
+
+	t.Run("a launcher the registry does not carry is not 'never asks'", func(t *testing.T) {
+		// Absence is not evidence: an unknown id keeps today's `ask` default and
+		// the launch gate's own refusal, exactly as before this amendment.
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, profAdminCaller("admin"))
+		rec := profSend(t, s, http.MethodPost, profURL, map[string]string{
+			"name": "Gemini Reviewed", "launcher_id": "gemini",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST = %d, want 201 (%s)", rec.Code, rec.Body)
+		}
+		if in := store.profileCreated[0]; in.PermissionMode != "" {
+			t.Errorf("unregistered launcher resolved %q, want '' (ask)", in.PermissionMode)
+		}
+	})
+
+	t.Run("a member is refused with the reason, not a profile that cannot run", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA)) // signed in, not an org admin
+
+		rec := profSend(t, s, http.MethodPost, profURL, map[string]string{
+			"name": "Member Pi", "launcher_id": "pi",
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("POST (pi) as a member = %d, want 422 (%s)", rec.Code, rec.Body)
+		}
+		code, typ := profDecodeProblemCode(t, rec)
+		if code != ProfileCodeLauncherNeedsOperator {
+			t.Errorf("code = %q, want %q", code, ProfileCodeLauncherNeedsOperator)
+		}
+		if typ != "https://communication.dev/errors/"+ProfileCodeLauncherNeedsOperator {
+			t.Errorf("type = %q", typ)
+		}
+		var problem struct {
+			Detail string `json:"detail"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+			t.Fatalf("decode problem: %v (%s)", err, rec.Body)
+		}
+		if !strings.Contains(problem.Detail, "autonomous_within_sandbox") {
+			t.Errorf("detail must name the mode a member cannot declare: %s", problem.Detail)
+		}
+		if !strings.Contains(problem.Detail, "admin") {
+			t.Errorf("detail must name who may declare it: %s", problem.Detail)
+		}
+		if len(store.profileCreated) != 0 {
+			t.Errorf("store saw %d creates; a member may not declare the operator's mode", len(store.profileCreated))
+		}
+		if len(store.denied) != 1 || store.denied[0].action != "profile.create" {
+			t.Errorf("denials = %+v, want one project-less profile.create row", store.denied)
+		}
+
+		// The same member on a launcher that CAN prompt keeps today's 403: the
+		// 422 is the launcher-specific reason, never a replacement for the role.
+		rec = profSend(t, s, http.MethodPost, profURL, map[string]string{
+			"name": "Member Claude", "launcher_id": "claude",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("POST (claude) as a member = %d, want 403 (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("neither launch axis is a body member", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, profAdminCaller("admin"))
+		req := httptest.NewRequest(http.MethodPost, profURL, strings.NewReader(
+			`{"name":"Self Declared","launcher_id":"claude","permission_mode":"autonomous_within_sandbox"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://localhost:8080")
+		req.Header.Set(HeaderCSRFToken, "csrf-token-value")
+		rec := do(t, s, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST naming permission_mode = %d, want 400 (%s)", rec.Code, rec.Body)
+		}
+		if len(store.profileCreated) != 0 {
+			t.Errorf("store saw %+v; the mode is never client input", store.profileCreated)
+		}
+	})
+}

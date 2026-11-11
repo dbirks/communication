@@ -421,6 +421,33 @@ const RETRY_SERIES_BASE = "Retrying the model…";
  */
 const RETRY_ATTEMPT_LINE = /^Retrying \(attempt \d+\/\d+, waiting \d+s\)(…|\.\.\.)$/;
 
+/** The series' total after the slash, in either spelling the launcher uses
+ * (`Retrying (attempt 3/3, waiting 8s)…` and the shorter
+ * `Retrying (attempt 3/3…)`). The count is the worker's own, never a guess. */
+const RETRY_ATTEMPT_TOTAL = /attempt\s+\d+\s*\/\s*(\d+)/;
+
+/**
+ * The end-of-turn line for a turn whose model retries ran out with nothing said
+ * (deployed finding 2026-11-11, the pi thread whose README summary never came).
+ *
+ * The journal said `conversation.turn.completed`, so the transcript printed
+ * "Turn completed" over an empty answer: the agent's whole message stream was
+ * whitespace, and the retry-status notices are the evidence of WHY. Saying
+ * "completed" there is a claim the turn made no — nobody got an answer, and the
+ * model was unavailable. The retry count is the series' own total when the
+ * launcher named one; with no count in the lines the sentence says no number.
+ */
+export function noAnswerAfterRetries(retries: number): string {
+  const count = retries > 0 ? ` (${retries} ${retries === 1 ? "retry" : "retries"})` : "";
+  return `Turn ended without an answer — the model was unavailable${count}.`;
+}
+
+/** Agent text worth an answer: an empty stream and a whitespace-only one both
+ * left the reader with nothing, which is what the "no answer" line is for. */
+function agentAnswered(item: Extract<TranscriptItem, { kind: "agent" }> | undefined): boolean {
+  return Boolean(item && item.text.trim() !== "");
+}
+
 /** The collapsed line's words: the base plus the attempt count the fold saw. */
 export function retrySeriesWords(attempts: number): string {
   if (attempts <= 0) return RETRY_SERIES_BASE;
@@ -569,6 +596,14 @@ export function projectTranscript(
   const thoughtByTurn = new Map<string, Extract<TranscriptItem, { kind: "thought" }>>();
   const tools = new Map<string, Extract<TranscriptItem, { kind: "tool" }>>();
   const permissions = new Map<string, Extract<TranscriptItem, { kind: "permission" }>>();
+  /**
+   * The model-retry series seen per turn: a key exists for every turn that
+   * streamed at least one `agent_retry` notice, and the value is the highest
+   * attempt total those lines named (0 when none named one). It is what lets a
+   * completed turn with no answer say the model was unavailable instead of
+   * pretending the turn finished well (see `noAnswerAfterRetries`).
+   */
+  const retriedTurns = new Map<string, number>();
   const seen = new Set<number>();
   let throughSeq = 0;
 
@@ -822,6 +857,17 @@ export function projectTranscript(
           }
         }
         const line = systemLine(event, payload, nameOf, agentName);
+        if (line?.noticeKind === "agent_retry" && turnId) {
+          // Record the series for the turn BEFORE the collapse: the muted line
+          // the reader sees says "Retrying the model…", while the end-of-turn
+          // line needs to know the retry happened and how many attempts the
+          // launcher named.
+          const named = RETRY_ATTEMPT_TOTAL.exec(str(payload, "text"));
+          retriedTurns.set(
+            turnId,
+            Math.max(retriedTurns.get(turnId) ?? 0, named ? Number(named[1]) : 0),
+          );
+        }
         if (line?.noticeKind === "agent_retry") {
           // The launcher's retry status lines collapse into ONE muted line:
           // a run of consecutive agent_retry notices is one retry series, and
@@ -848,15 +894,25 @@ export function projectTranscript(
           }
           break;
         }
-        if (line)
+        if (line) {
+          // A completed turn that retried the model and never said a word did
+          // not complete in any sense a reader cares about: the last line names
+          // what the journal shows (retry status, then no agent text) rather
+          // than printing "Turn completed" over an empty answer.
+          const retries =
+            turnEvent === "completed" && turnId && retriedTurns.has(turnId)
+              ? (retriedTurns.get(turnId) ?? 0)
+              : null;
+          const answered = agentAnswered(turnId ? agentByTurn.get(turnId) : undefined);
           push({
             kind: "system",
             id: event.event_id,
-            text: line.text,
+            text: retries !== null && !answered ? noAnswerAfterRetries(retries) : line.text,
             ...(line.raw ? { raw: line.raw } : {}),
             ...(line.noticeKind ? { noticeKind: line.noticeKind } : {}),
             at,
           });
+        }
         break;
       }
     }

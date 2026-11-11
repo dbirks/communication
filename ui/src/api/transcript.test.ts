@@ -25,6 +25,11 @@ function frames(...pairs: Array<[string, Record<string, unknown>, number?]>): Ev
   ) as EventEnvelope[];
 }
 
+/** The muted system lines in order — the reading line of a turn's end is the last. */
+function systemLineTexts(transcript: ReturnType<typeof projectTranscript>): string[] {
+  return transcript.items.flatMap((item) => (item.kind === "system" ? [item.text] : []));
+}
+
 describe("projectTranscript", () => {
   it("renders a user prompt and merges streamed agent chunks into one message", () => {
     const transcript = projectTranscript(
@@ -883,6 +888,68 @@ describe("the transcript's system notes (conversation.notice)", () => {
       "Retrying the model… (1 attempt)",
       "Retrying the model… (2 attempts)",
     ]);
+  });
+
+  it("says the model was unavailable when a retried turn completed with nothing said", () => {
+    // Deployed finding 2026-11-11 (the pi thread whose README summary never
+    // appeared): the model's retries ran out, the agent's whole message stream
+    // was whitespace, and the turn still ended `completed` — so the transcript's
+    // last line printed "Turn completed" over an empty answer. The retry notices
+    // are the journal's own evidence of why, and the line now says it.
+    const transcript = projectTranscript(
+      frames(
+        ["conversation.notice", { kind: "agent_retry", text: "Retrying (attempt 1/3…)" }],
+        ["conversation.notice", { kind: "agent_retry", text: "Retrying (attempt 3/3…)" }],
+        ["conversation.notice", { kind: "agent_retry", text: "Retry finished, resuming." }],
+        ["conversation.turn.completed", { stop_reason: "end_turn" }],
+      ),
+    );
+    expect(systemLineTexts(transcript).at(-1)).toBe(
+      "Turn ended without an answer — the model was unavailable (3 retries).",
+    );
+    // The machine's word stays where it was: the tooltip, not the reading line.
+    const completed = transcript.items.at(-1);
+    expect(completed?.kind === "system" && completed.raw).toBe("stop_reason end_turn");
+
+    // The same turn with the whitespace answer the deployed stream really
+    // carried: still no answer, still the honest line.
+    const blank = projectTranscript(
+      frames(
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 1/3, waiting 2s)…" },
+        ],
+        ["conversation.message.agent", { text: "\n\n", final: false }],
+        ["conversation.turn.completed", { stop_reason: "end_turn" }],
+      ),
+    );
+    expect(systemLineTexts(blank).at(-1)).toBe(
+      "Turn ended without an answer — the model was unavailable (3 retries).",
+    );
+  });
+
+  it("keeps 'Turn completed' when the retried turn did answer, or when nothing retried", () => {
+    // The retry series is only the story when there is no answer to read. An
+    // agent that retried and then replied completed, and says so.
+    const answered = projectTranscript(
+      frames(
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 1/3, waiting 2s)…" },
+        ],
+        ["conversation.notice", { kind: "agent_retry", text: "Retry finished, resuming." }],
+        ["conversation.message.agent", { text: "OK", final: true }],
+        ["conversation.turn.completed", { stop_reason: "end_turn" }],
+      ),
+    );
+    expect(systemLineTexts(answered).at(-1)).toBe("Turn completed");
+
+    // A completed turn with no retry notices keeps the same line: the new
+    // sentence is derived from the journal's own retry notices, never guessed.
+    const plain = projectTranscript(
+      frames(["conversation.turn.completed", { stop_reason: "end_turn" }]),
+    );
+    expect(systemLineTexts(plain)).toEqual(["Turn completed"]);
   });
 
   it("never puts a notice's text in the agent's mouth", () => {

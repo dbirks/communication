@@ -7,7 +7,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import NewProfileDialog from "./NewProfileDialog";
+import NewProfileDialog, { suggestProfileName } from "./NewProfileDialog";
 import type { AgentProfile, Secret, SystemSandbox } from "../../api/types";
 import type { Launcher } from "../../lib/profiles";
 import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
@@ -200,9 +200,13 @@ describe("NewProfileDialog (5b)", () => {
 
   it("creates the selected profile and calls onCreated with the created row", async () => {
     const { requests, onCreated, onClose } = mount();
-    // No step → the suggestion is the agent name + a unique n.
-    expect((screen.getByTestId("agents-new-name-input") as HTMLInputElement).value).toBe(
-      "Claude Code · 2",
+    // No step, and the organization already has a profile named "Claude Code":
+    // the suggestion is the agent name with a collision number (once the
+    // profile list has settled — before it does, nothing is known to be taken).
+    await waitFor(() =>
+      expect((screen.getByTestId("agents-new-name-input") as HTMLInputElement).value).toBe(
+        "Claude Code · 2",
+      ),
     );
     const submit = screen.getByTestId("agents-new-submit") as HTMLButtonElement;
     await waitFor(() => expect(submit.disabled).toBe(false));
@@ -313,5 +317,101 @@ describe("NewProfileDialog (5b)", () => {
     expect(onCreated).not.toHaveBeenCalled();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("suggestProfileName (deployed finding 2026-11-11)", () => {
+  it("suggests the bare agent name when nothing has that name", () => {
+    // The defect: a fresh organization with no Pi profile was prefilled
+    // "Pi · 2", which reads as though a Pi profile already existed. The number
+    // is a collision marker, not a suffix.
+    expect(suggestProfileName("Pi", undefined, new Set<string>([]))).toBe("Pi");
+    expect(suggestProfileName("Pi", undefined, new Set(["Claude Code"]))).toBe("Pi");
+  });
+
+  it("adds · 2 only on a real collision, and counts up from there", () => {
+    expect(suggestProfileName("Pi", undefined, new Set(["Pi"]))).toBe("Pi · 2");
+    expect(suggestProfileName("Pi", undefined, new Set(["Pi", "Pi · 2"]))).toBe("Pi · 3");
+  });
+
+  it("reads a name that differs only in case as the collision it is", () => {
+    // The unique index is case-sensitive; a person is not. A profile named
+    // "pi" still blocks the suggestion "Pi".
+    expect(suggestProfileName("Pi", undefined, new Set(["pi"]))).toBe("Pi · 2");
+    expect(suggestProfileName("Claude Code", undefined, new Set(["  CLAUDE CODE "]))).toBe(
+      "Claude Code · 2",
+    );
+  });
+
+  it("keeps the step in the name and numbers only the collision", () => {
+    expect(suggestProfileName("Pi", "docs_review", new Set(["Pi"]))).toBe("Pi · docs_review");
+    expect(suggestProfileName("Pi", "docs_review", new Set(["Pi · docs_review"]))).toBe(
+      "Pi · docs_review · 2",
+    );
+  });
+});
+
+describe("NewProfileDialog: a launcher that never asks (ADR-0069)", () => {
+  /** C5 with pi registered: the card is selectable, so its copy is on screen. */
+  function mountPiRegistered() {
+    const registered = {
+      launchers: launchers.launchers.map((entry) =>
+        entry.id === "pi" ? { ...entry, registered: true, workers_online: 1 } : entry,
+      ),
+    };
+    const { requests } = mockFetch([
+      { path: "/api/v1/me", body: { ...meFixture, is_org_admin: true } },
+      { path: "/api/v1/agent-profiles", method: "GET", body: { items: existing } },
+      { path: "/api/v1/agent-profiles", method: "POST", status: 201, body: created },
+      { path: "/api/v1/launchers", body: registered },
+      { path: "/api/v1/system/sandbox", body: sandbox },
+      { path: "/api/v1/projects", body: { items: [projectFixture] } },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/secrets`,
+        method: "GET",
+        body: { secrets: [secret] },
+      },
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NewProfileDialog open onClose={vi.fn()} onCreated={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    return requests;
+  }
+
+  it("says why pi runs autonomously and prints the mode it will be created in", async () => {
+    mountPiRegistered();
+    const piCard = await screen.findByTestId("new-profile-card-pi");
+    const piRadio = within(piCard).getByRole("radio") as HTMLInputElement;
+    await waitFor(() => expect(piRadio.disabled).toBe(false));
+    fireEvent.click(piRadio);
+    await waitFor(() => expect(piRadio.checked).toBe(true));
+    // The status chip is the mode the create path actually writes (server-side,
+    // from the launcher registry), not `permission ask` for a profile whose
+    // every turn would fail closed at launch.
+    await waitFor(() =>
+      expect(screen.getByTestId("new-profile-defaults-line").textContent).toBe(
+        "autonomous · sandbox: required",
+      ),
+    );
+    expect(screen.getByTestId("new-profile-autonomous").textContent).toBe(
+      'Pi never asks before acting, so it runs as "autonomous within the sandbox": nono is the boundary.',
+    );
+    expect(screen.queryByText(/permission ask/)).toBeNull();
+  });
+
+  it("keeps the ask wording for a launcher that can prompt", async () => {
+    mountPiRegistered();
+    // claude is the default card and it has a verified prompting mode.
+    await waitFor(() =>
+      expect(screen.getByTestId("new-profile-defaults-line").textContent).toBe(
+        "permission ask · sandbox: required · verified",
+      ),
+    );
+    expect(screen.queryByTestId("new-profile-autonomous")).toBeNull();
   });
 });

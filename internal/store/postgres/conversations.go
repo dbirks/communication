@@ -3779,7 +3779,8 @@ func (a APIConversationStore) CreateAgentProfile(ctx context.Context, c api.Call
 	if err != nil {
 		return api.AgentProfileView{}, err
 	}
-	profile, err := s.CreateAgentProfile(ctx, prjAPICaller(c), in.Name, in.LauncherID, in.Model)
+	profile, err := s.CreateAgentProfile(ctx, prjAPICaller(c), in.Name, in.LauncherID, in.Model,
+		in.PermissionMode, in.SandboxEnforcement)
 	if err != nil {
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}

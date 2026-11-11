@@ -400,3 +400,51 @@ describe("the versioned save re-reads the HISTORY (ADR-0058)", () => {
     );
   }, 20000);
 });
+
+describe("ProfileDetail — the permission axis in words (ADR-0069)", () => {
+  /** The detail as the agents page renders it: the row plus its evidence reads. */
+  function renderDetail(profile: AgentProfile) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ProfileDetail
+            profile={profile}
+            canWrite={false}
+            launchers={launcherFixture.launchers}
+            sandbox={sandboxFixture}
+            apmOpen={false}
+            onApmToggle={() => {}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("says the boundary for the mode a never-asks launcher runs under", () => {
+    // The deployed pi profile (created autonomous by the server, ADR-0069's
+    // 2026-11-11 amendment): the enum alone told a reader nothing about what
+    // keeps the turn safe.
+    renderDetail({
+      ...claudeProfile,
+      id: "01987a71-pi00-7000-8000-abcdef012345",
+      name: "Pi Autonomous",
+      launcher_id: "pi",
+      permission_mode: "autonomous_within_sandbox",
+    });
+    const label = screen.getByTestId("agent-permission-01987a71-pi00-7000-8000-abcdef012345");
+    expect(label.textContent).toBe("permission: autonomous (sandbox is the boundary)");
+    // The claim is the sandbox, so the tooltip says who wrote it: nobody did
+    // from a request body.
+    expect(label.getAttribute("title")).toContain("no verified prompting mode");
+  });
+
+  it("prints a prompting launcher's mode unchanged", () => {
+    renderDetail({ ...claudeProfile, permission_mode: "ask" });
+    expect(screen.getByTestId(`agent-permission-${claudeProfile.id}`).textContent).toBe(
+      "permission: ask",
+    );
+  });
+});

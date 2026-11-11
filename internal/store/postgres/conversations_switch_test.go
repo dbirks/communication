@@ -28,7 +28,7 @@ func cnvSwitchProfile(t *testing.T, f *cnvFixture, orgID, model string) CnvProfi
 	t.Helper()
 	name := fmt.Sprintf("switch-codex-%s", migFixtureToken(t))
 	p, err := f.store.CreateAgentProfile(testCtx(t), Caller{UserID: f.alice, OrganizationID: orgID, IsOrgAdmin: true},
-		name, "codex", model)
+		name, "codex", model, "", "")
 	if err != nil {
 		t.Fatalf("CreateAgentProfile(%s): %v", name, err)
 	}
@@ -265,7 +265,7 @@ func TestConversationAgentSwitchForeignProfile400(t *testing.T) {
 	// A real profile of ANOTHER organization.
 	other, err := f.store.CreateAgentProfile(ctx,
 		Caller{UserID: f.mallory, OrganizationID: f.elseOrg, IsOrgAdmin: true},
-		fmt.Sprintf("switch-foreign-%s", migFixtureToken(t)), "claude", "")
+		fmt.Sprintf("switch-foreign-%s", migFixtureToken(t)), "claude", "", "", "")
 	if err != nil {
 		t.Fatalf("foreign profile: %v", err)
 	}

@@ -140,3 +140,15 @@ export function duplicateName(name: string): string {
 export function enforcementWord(enforcement: "required" | "permissive-dev" | "disabled"): string {
   return ENFORCEMENT_COPY[enforcement].word;
 }
+
+/**
+ * The permission axis in words (ADR-0069). `autonomous_within_sandbox` is the
+ * mode of a launcher that never asks, and its whole claim is the boundary — so
+ * the label says the claim instead of the enum: `autonomous (sandbox is the
+ * boundary)`. Every other recorded mode prints its own wire name: the app has no
+ * better words for `preapproved_within_sandbox` than the contract's, and
+ * inventing some would dress up a review story the row does not carry.
+ */
+export function permissionModeLabel(mode: string): string {
+  return mode === "autonomous_within_sandbox" ? "autonomous (sandbox is the boundary)" : mode;
+}

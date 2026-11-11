@@ -470,7 +470,14 @@ export default function Transcript({
               </li>
             );
           }
-          case "agent":
+          case "agent": {
+            // A whitespace-only agent message draws nothing (deployed finding
+            // 2026-11-11: pi's chunks were only "\n\n" while the model retried,
+            // and the thread printed an empty "Pi · 06:45:07 UTC" header). The
+            // fold keeps the item — the "writing…" state and the
+            // "ended without an answer" line both read it — the view just does
+            // not render an empty block.
+            if (item.text.trim() === "") return null;
             return (
               <li key={item.id} data-testid="transcript-item" className="px-1 py-1">
                 {/* 6d's speaker block: an initials box, then a mono who/when line,
@@ -501,6 +508,7 @@ export default function Transcript({
                 <AgentMessageBody text={item.text} />
               </li>
             );
+          }
           case "thought":
             return (
               <li

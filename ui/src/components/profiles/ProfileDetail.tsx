@@ -48,6 +48,7 @@ import {
   enforcementWord,
   hasVerifiedWorker,
   launcherEntry,
+  permissionModeLabel,
   sandboxChip,
   type Launcher,
   type SystemSandbox,
@@ -177,9 +178,13 @@ export default function ProfileDetail({
           <span
             className="font-mono text-[11px] text-faint"
             data-testid={`agent-permission-${profile.id}`}
-            title="not writable: ask is the only mode an unverified launcher may have"
+            title={
+              profile.permission_mode === "autonomous_within_sandbox"
+                ? "not writable from a request body: the create path wrote it because this launcher has no verified prompting mode, and nono is the boundary (ADR-0069)"
+                : "not writable: ask is the only mode an unverified launcher may have"
+            }
           >
-            permission: {profile.permission_mode}
+            permission: {permissionModeLabel(profile.permission_mode)}
           </span>
           <Chip chip={chip} testid={`profile-chip-detail-${profile.id}`} />
         </div>

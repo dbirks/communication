@@ -334,7 +334,7 @@ func TestAgentProfileAPMRefusals(t *testing.T) {
 			t.Fatalf("non-admin store patch err = %v, want ErrProfileForbidden", err)
 		}
 		_, err = f.store.CreateAgentProfile(ctx,
-			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false}, f.profWName("ghost"), "claude", "")
+			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false}, f.profWName("ghost"), "claude", "", "", "")
 		if !errors.Is(err, ErrProfileForbidden) {
 			t.Fatalf("non-admin store create err = %v, want ErrProfileForbidden", err)
 		}
@@ -554,4 +554,132 @@ func TestAgentProfileWriteFeedsTheWorkerRead(t *testing.T) {
 	if axes.APMPackageRef != "" || axes.APMLockDigest != "" {
 		t.Errorf("cleared profile still stages: %+v", axes)
 	}
+}
+
+// TestAgentProfileCreateWritesResolvedLaunchAxes is ADR-0069's 2026-11-11
+// amendment against real PostgreSQL: the create path can carry the launch axes
+// the API resolved (never a request body — see internal/api/agent_profiles_test.go),
+// the pair rule is the store's own and the database's, the mode is frozen in the
+// version snapshot the create appends, and a non-admin caller cannot thread an
+// operator-declared mode through the store even if some future handler forgot to
+// check the role.
+func TestAgentProfileCreateWritesResolvedLaunchAxes(t *testing.T) {
+	f := profWSetup(t)
+	ctx := testCtx(t)
+
+	t.Run("autonomous + required lands and is recorded in the history", func(t *testing.T) {
+		prof, err := f.api.CreateAgentProfile(ctx, f.caller(f.alice, true),
+			api.AgentProfileCreateInput{
+				Name: f.profWName("axes-ok"), LauncherID: "pi",
+				PermissionMode: "autonomous_within_sandbox", SandboxEnforcement: "required",
+			})
+		if err != nil {
+			t.Fatalf("create (autonomous + required): %v", err)
+		}
+		if prof.PermissionMode != "autonomous_within_sandbox" {
+			t.Errorf("view mode = %q, want autonomous_within_sandbox", prof.PermissionMode)
+		}
+		var mode, enforcement string
+		if err := f.pool.QueryRow(ctx,
+			`SELECT permission_mode, sandbox_enforcement FROM agent_profiles WHERE id = $1::uuid`, prof.ID).
+			Scan(&mode, &enforcement); err != nil {
+			t.Fatal(err)
+		}
+		if mode != "autonomous_within_sandbox" || enforcement != "required" {
+			t.Errorf("row = (%q, %q), want (autonomous_within_sandbox, required)", mode, enforcement)
+		}
+		// The choice is a version like any other write: the frozen snapshot names
+		// the mode, and the note says the server resolved it.
+		var snapshot []byte
+		var note *string
+		if err := f.pool.QueryRow(ctx,
+			`SELECT snapshot, note FROM agent_profile_versions WHERE profile_id = $1::uuid AND version = 1`, prof.ID).
+			Scan(&snapshot, &note); err != nil {
+			t.Fatalf("read the create's version row: %v", err)
+		}
+		var snap AgentProfileSnapshot
+		if err := json.Unmarshal(snapshot, &snap); err != nil {
+			t.Fatalf("decode snapshot: %v", err)
+		}
+		if snap.PermissionMode != "autonomous_within_sandbox" {
+			t.Errorf("version 1 snapshot mode = %q, want autonomous_within_sandbox", snap.PermissionMode)
+		}
+		if note == nil || !strings.Contains(*note, "autonomous_within_sandbox") ||
+			!strings.Contains(*note, "never from the request body") {
+			t.Errorf("version note = %v, want the resolved-mode explanation naming the mode", note)
+		}
+		// The journal row names the mode too, so a reader of the event stream sees
+		// what was created rather than inferring it from the row.
+		var eventMode string
+		if err := f.pool.QueryRow(ctx,
+			`SELECT payload->>'permission_mode' FROM domain_events
+			  WHERE type = $1 AND organization_id = $2::uuid AND payload->>'profile_id' = $3`,
+			events.TypeAgentProfileCreated, f.orgID, prof.ID).Scan(&eventMode); err != nil {
+			t.Fatalf("read the created event: %v", err)
+		}
+		if eventMode != "autonomous_within_sandbox" {
+			t.Errorf("agent.profile.created permission_mode = %q, want autonomous_within_sandbox", eventMode)
+		}
+	})
+
+	t.Run("the pair rule and the mode grammar are the store's own", func(t *testing.T) {
+		// autonomous without required enforcement: the mode claims a boundary this
+		// profile does not have, so it is a named 422 and nothing lands.
+		for _, tc := range []struct{ label, mode, enforcement, want string }{
+			{"wrong pair", "autonomous_within_sandbox", "disabled", ProfileCodePermissionModeInvalid},
+			{"unrecorded mode", "yolo", "required", ProfileCodePermissionModeInvalid},
+		} {
+			_, err := f.store.CreateAgentProfile(ctx,
+				Caller{UserID: f.alice, OrganizationID: f.orgID, IsOrgAdmin: true},
+				f.profWName("axes-bad-"+tc.label), "pi", "", tc.mode, tc.enforcement)
+			var problem *AgentProfileProblem
+			if !errors.As(err, &problem) || problem.Code != tc.want {
+				t.Errorf("%s: err = %v, want code %q", tc.label, err, tc.want)
+			}
+		}
+		var n int
+		if err := f.pool.QueryRow(ctx,
+			`SELECT count(*) FROM agent_profiles WHERE organization_id = $1::uuid AND name LIKE 'profw-' || $2 || '-axes-bad-%'`,
+			f.orgID, f.token).Scan(&n); err != nil || n != 0 {
+			t.Errorf("refused creates landed %d rows (err %v), want 0", n, err)
+		}
+	})
+
+	t.Run("a non-admin caller cannot declare the operator's mode", func(t *testing.T) {
+		// The handler refuses this with launcher_needs_operator before the store;
+		// this is the same refusal stated where it cannot be forgotten — the last
+		// thing between a request and the column.
+		_, err := f.store.CreateAgentProfile(ctx,
+			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false},
+			f.profWName("axes-member"), "pi", "", "autonomous_within_sandbox", "required")
+		var problem *AgentProfileProblem
+		if !errors.As(err, &problem) || problem.Code != ProfileCodeLauncherNeedsOperator {
+			t.Fatalf("non-admin autonomous create err = %v, want code %q", err, ProfileCodeLauncherNeedsOperator)
+		}
+		var n int
+		if err := f.pool.QueryRow(ctx,
+			`SELECT count(*) FROM agent_profiles WHERE name = $1`, f.profWName("axes-member")).Scan(&n); err != nil || n != 0 {
+			t.Errorf("member's autonomous create landed %d rows (err %v), want 0", n, err)
+		}
+	})
+
+	t.Run("no resolved axes means today's column defaults", func(t *testing.T) {
+		prof, err := f.api.CreateAgentProfile(ctx, f.caller(f.alice, true),
+			api.AgentProfileCreateInput{Name: f.profWName("axes-default"), LauncherID: "claude"})
+		if err != nil {
+			t.Fatalf("create (no axes resolved): %v", err)
+		}
+		if prof.PermissionMode != "ask" {
+			t.Errorf("mode = %q, want ask: a prompting launcher keeps the column default (ADR-0009)", prof.PermissionMode)
+		}
+		var note *string
+		if err := f.pool.QueryRow(ctx,
+			`SELECT note FROM agent_profile_versions WHERE profile_id = $1::uuid AND version = 1`, prof.ID).
+			Scan(&note); err != nil {
+			t.Fatal(err)
+		}
+		if note != nil {
+			t.Errorf("version note = %q, want NULL — an ordinary create has nothing to explain", *note)
+		}
+	})
 }

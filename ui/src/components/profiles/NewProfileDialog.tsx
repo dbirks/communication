@@ -19,10 +19,14 @@
  *   one PATCH after the create — an unlocked pin is ref + target with no digest.
  *   The lock itself is offered by the profile page (`Lock it`), which POSTs the
  *   worker-side resolve.
- * - Defaults bar: only claims that hold for profiles today —
- *   `permission_mode` is always `ask` (ADR-0009) and the sandbox wording
- *   reflects what the live workers actually report (ADR-0035: the egress
- *   allowlist is worker-level, so nothing is claimed about it here).
+ * - Defaults bar: only claims that hold for profiles today — `permission_mode`
+ *   is `ask` for a launcher that can prompt (ADR-0009), and
+ *   `autonomous · sandbox: required` for one that cannot (ADR-0069 + its
+ *   2026-11-11 amendment: `pi` never asks, so `ask` would fail closed on every
+ *   turn and the admin creating the profile IS the operator declaring the mode);
+ *   the sandbox wording reflects what the live workers actually report
+ *   (ADR-0035: the egress allowlist is worker-level, so nothing is claimed
+ *   about it here).
  *
  * The dialog owns the write path. On success (the POST — and the APM /
  * account follow-ups when given) it hands the created row to the caller
@@ -81,6 +85,17 @@ const CORE_IDS = new Set(CORE_AGENTS.map((agent) => agent.id));
 /** The built-in registry (`launchers.go`) always carries exactly these. */
 const BUILTIN_IDS = new Set(["claude", "codex"]);
 
+/**
+ * The launchers the create path writes in `autonomous_within_sandbox`
+ * (ADR-0069 + its 2026-11-11 amendment): a registry entry whose launcher has no
+ * verified prompting mode, so `ask` would fail closed on every turn. Mirrors
+ * `AskModeID == ""` in `internal/agent/acp/launchers.go` — the launcher list API
+ * carries recorded capability cells, not the asking mode, so this is the copy
+ * half of one server-side rule (and `pi` is a core card, never an "other"
+ * option). Wording is only ever shown for an id named here.
+ */
+const NEVER_ASKS_IDS = new Set(["pi"]);
+
 const OTHER = "other";
 
 export default function NewProfileDialog(props: NewProfileDialogProps) {
@@ -135,23 +150,27 @@ function sandboxWord(sandbox: SystemSandbox | null | undefined): string {
   return ENFORCEMENT_COPY[workers[0].enforcement]?.word ?? workers[0].enforcement;
 }
 
-/** `<Agent> · <forStep>`, or `<Agent> · <n>` when there is no step. */
+/**
+ * `<Agent> · <forStep>`, or `<Agent>` when there is no step — with a `· <n>`
+ * suffix ONLY when that name is actually taken. The organization's unique index
+ * is case-sensitive but a person reads "Pi" and "pi" as the same name, so the
+ * collision test is case-insensitive (finding 2026-11-11: a fresh org with no Pi
+ * profile was prefilled "Pi · 2", which read as though a Pi profile already
+ * existed). The suggestion is a starting point, always editable.
+ */
 export function suggestProfileName(
   agentDisplay: string,
   forStep: string | undefined,
   taken: ReadonlySet<string>,
 ): string {
-  if (forStep) {
-    let candidate = `${agentDisplay} · ${forStep}`;
-    let n = 2;
-    while (taken.has(candidate)) candidate = `${agentDisplay} · ${forStep} · ${n++}`;
-    return candidate;
-  }
+  const base = forStep ? `${agentDisplay} · ${forStep}` : agentDisplay;
+  const collisions = new Set([...taken].map((name) => name.trim().toLowerCase()));
+  if (!collisions.has(base.toLowerCase())) return base;
   for (let n = 2; n <= 99; n++) {
-    const candidate = `${agentDisplay} · ${n}`;
-    if (!taken.has(candidate)) return candidate;
+    const candidate = `${base} · ${n}`;
+    if (!collisions.has(candidate.toLowerCase())) return candidate;
   }
-  return `${agentDisplay} · copy`;
+  return `${base} · copy`;
 }
 
 function DialogBody({
@@ -207,6 +226,12 @@ function DialogBody({
   );
   const suggestedName = suggestProfileName(selectedAgent.display, forStep, takenNames);
   const nameValue = nameTouched ? name : suggestedName;
+  // ADR-0069 amendment 2026-11-11: for a launcher that never asks, the server
+  // creates the profile in autonomous_within_sandbox + sandbox required — the
+  // dialog says so instead of printing `permission ask` for a profile that is
+  // not one.
+  const neverAsks = NEVER_ASKS_IDS.has(selectedLauncherId);
+  const neverAsksName = selectedAgent.display;
 
   const apmRefFilled = apmRef.trim() !== "";
   const apmTargetFilled = apmTarget !== "";
@@ -617,10 +642,18 @@ function DialogBody({
 
           {/* Defaults — only claims that hold for profiles today. */}
           <Alert state="done" barTone="pale" testid="new-profile-defaults">
-            <span className="font-mono text-[12px]">
-              permission ask · sandbox: {sandboxWord(sandbox.data ?? null)}
+            <span className="font-mono text-[12px]" data-testid="new-profile-defaults-line">
+              {neverAsks
+                ? "autonomous · sandbox: required"
+                : `permission ask · sandbox: ${sandboxWord(sandbox.data ?? null)}`}
             </span>
           </Alert>
+          {neverAsks ? (
+            <p className="text-[12px] text-muted" data-testid="new-profile-autonomous">
+              {neverAsksName} never asks before acting, so it runs as "autonomous within the
+              sandbox": nono is the boundary.
+            </p>
+          ) : null}
 
           {submitError ? <FormError error={submitError} testid="agents-new-problem" /> : null}
 

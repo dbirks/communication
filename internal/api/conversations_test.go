@@ -1661,6 +1661,12 @@ func (f *cnvFakeStore) CreateAgentProfile(_ context.Context, c Caller, in AgentP
 		}
 	}
 	view := f.createdProfile(in.Name, in.LauncherID)
+	// The store-side answer mirrors the real one (ADR-0069 amendment 2026-11-11):
+	// the launch axes the handler resolved land on the row, "" keeps the column
+	// default the fake already prints (`ask`).
+	if in.PermissionMode != "" {
+		view.PermissionMode = in.PermissionMode
+	}
 	f.profiles = append(f.profiles, view)
 	f.profileCreated = append(f.profileCreated, in)
 	return view, nil

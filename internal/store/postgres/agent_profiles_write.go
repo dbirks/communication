@@ -86,6 +86,22 @@ const (
 	// refused at the write, not discovered at launch (mirrors the DB CHECKs
 	// from migration 00025).
 	ProfileCodePermissionModeInvalid = "permission_mode_invalid"
+	// ProfileCodeLauncherNeedsOperator: the requested launcher's registry entry
+	// has no verified prompting mode, so the only mode its profile can honestly
+	// carry is autonomous_within_sandbox (ADR-0069 + its 2026-11-11 amendment),
+	// and declaring that mode is the operator's action — a caller without the
+	// organization's admin role is refused rather than handed a profile whose
+	// every turn fails closed at launch.
+	ProfileCodeLauncherNeedsOperator = "launcher_needs_operator"
+)
+
+// The launch axes' column defaults (migrations 00003/00004), named here so the
+// create path and the API handler agree on what "the request resolved nothing"
+// means. `ask` is still the mode a prompting launcher gets.
+const (
+	ProfileModeAsk                     = "ask"
+	ProfileModeAutonomousWithinSandbox = "autonomous_within_sandbox"
+	ProfileSandboxEnforcementRequired  = "required"
 )
 
 // AgentProfileProblem is a refused profile write that knows *why* in a
@@ -281,17 +297,26 @@ func (s *CnvStore) cnvPool() (*pgxpool.Pool, error) {
 	return s.Pool, nil
 }
 
-// CreateAgentProfile inserts a launch descriptor. permission_mode is not a
-// parameter: 'ask' is the only mode a profile with no verified enforced sandbox
-// may have (04-agent-runtime.md "Permission policy", ADR-0009), and the column
-// default supplies it. The APM triple is not a parameter either — a new profile
-// stages nothing until a PATCH records a verified pin, so the create path cannot
-// write a pin nobody has digested yet.
+// CreateAgentProfile inserts a launch descriptor. The APM triple is not a
+// parameter — a new profile stages nothing until a PATCH records a verified pin,
+// so the create path cannot write a pin nobody has digested yet.
+//
+// permissionMode/sandboxEnforcement are the launch axes the SERVER resolved
+// (ADR-0069 amendment 2026-11-11): "" means "write nothing, take the column
+// default" — `ask` and `required`, what a prompting launcher gets and the only
+// mode an unverified launcher may have (04-agent-runtime.md "Permission policy",
+// ADR-0009). autonomous_within_sandbox arrives only from the API's own
+// resolution for a launcher with no verified prompting mode; no request body
+// names either axis (DecodeJSON refuses unknown fields), and the pair rule is
+// checked here as well as by migration 00025's CHECK. A mode other than `ask`
+// additionally requires the caller to BE the organization admin in the store's
+// own terms (launcher_needs_operator), so no future caller can thread an
+// operator-declared mode through a non-admin caller.
 //
 // The admin check is the INSERT's WHERE clause: a caller who is not an
 // organization admin matches zero rows and gets ErrProfileForbidden out of the
 // zero-row branch below, not a row.
-func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launcherID, model string) (CnvProfile, error) {
+func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launcherID, model, permissionMode, sandboxEnforcement string) (CnvProfile, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvProfile{}, err
 	}
@@ -305,6 +330,20 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	if len(model) > 200 {
 		return CnvProfile{}, profileRefused(ProfileCodeModelInvalid, "model must be at most 200 characters.")
 	}
+	mode, enforcement := permissionMode, sandboxEnforcement
+	if mode == "" {
+		mode = ProfileModeAsk
+	}
+	if enforcement == "" {
+		enforcement = ProfileSandboxEnforcementRequired
+	}
+	if err := checkAgentProfilePermissionMode(mode, enforcement); err != nil {
+		return CnvProfile{}, err
+	}
+	if mode != ProfileModeAsk && !c.IsOrgAdmin {
+		return CnvProfile{}, profileRefused(ProfileCodeLauncherNeedsOperator,
+			"This launcher has no verified prompting mode, so its profile runs as autonomous_within_sandbox — a mode only the organization's admin (the operator) may declare (ADR-0069).")
+	}
 	pool, err := s.cnvPool()
 	if err != nil {
 		return CnvProfile{}, err
@@ -316,12 +355,16 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var p CnvProfile
+	// COALESCE, not NULLIF: the two axes are NOT NULL columns with defaults, and
+	// an explicit NULL in the SELECT list would violate the NOT NULL constraint
+	// instead of falling back to the default.
 	err = tx.QueryRow(ctx, `
-		INSERT INTO agent_profiles (organization_id, name, launcher_id, model)
-		SELECT $1::uuid, $2, $3, NULLIF($4, '')
+		INSERT INTO agent_profiles (organization_id, name, launcher_id, model, permission_mode, sandbox_enforcement)
+		SELECT $1::uuid, $2, $3, NULLIF($4, ''), COALESCE(NULLIF($6, ''), 'ask'), COALESCE(NULLIF($7, ''), 'required')
 		WHERE $5::boolean
 		RETURNING `+cnvProfileColumns,
-		c.OrganizationID, strings.TrimSpace(name), launcherID, strings.TrimSpace(model), c.IsOrgAdmin).
+		c.OrganizationID, strings.TrimSpace(name), launcherID, strings.TrimSpace(model), c.IsOrgAdmin,
+		permissionMode, sandboxEnforcement).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt, &p.Version,
 			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
@@ -355,11 +398,22 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	if err != nil {
 		return CnvProfile{}, fmt.Errorf("postgres: encode agent profile version snapshot: %w", err)
 	}
+	// The version row records the mode in its snapshot like any other write; when
+	// the mode is the operator-declared one, the note says WHY, so a reader of
+	// the history can tell "an admin chose autonomous_within_sandbox for a
+	// never-asks launcher" from a row that arrived through the seed/SQL route.
+	var versionNote *string
+	if mode != ProfileModeAsk {
+		note := fmt.Sprintf(
+			"created with permission_mode %q and sandbox_enforcement %q: the server resolved both from the launcher registry, never from the request body (ADR-0069 amendment 2026-11-11)",
+			mode, enforcement)
+		versionNote = &note
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO agent_profile_versions
 			(profile_id, organization_id, version, snapshot, created_by, created_at, note)
 		VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5, now(), $6)`,
-		p.ID, p.OrganizationID, p.Version, snapshot, c.UserID, nil); err != nil {
+		p.ID, p.OrganizationID, p.Version, snapshot, c.UserID, versionNote); err != nil {
 		return CnvProfile{}, fmt.Errorf("postgres: append agent profile version %d: %w", p.Version, err)
 	}
 
