@@ -642,7 +642,9 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
   const versions = useAgentProfileVersions(profile.id);
   const [staleNowVersion, setStaleNowVersion] = useState<number | null>(null);
   const [ref, setRef] = useState(profile.apm_package_ref ?? "");
-  const [target, setTarget] = useState<"claude" | "codex" | "agent-skills">(profile.apm_target ?? "claude");
+  const [target, setTarget] = useState<"claude" | "codex" | "agent-skills">(
+    profile.apm_target ?? "claude",
+  );
   const [digest, setDigest] = useState(profile.apm_lock_digest ?? "");
 
   const trimmedRef = ref.trim();
@@ -725,7 +727,9 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           <Select
             id={`agents-target-${profile.id}`}
             value={target}
-            onChange={(event) => setTarget(event.target.value as "claude" | "codex" | "agent-skills")}
+            onChange={(event) =>
+              setTarget(event.target.value as "claude" | "codex" | "agent-skills")
+            }
             className="w-auto"
             data-testid={`agents-target-select-${profile.id}`}
           >
