@@ -129,15 +129,18 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       token language (spec in ~/.cache/pi-orch/communication/tasks/ops-ui.md).
 
 ## 9. Two run modes: single container and Kubernetes native
-- [ ] Simple mode: one container or Go binary runs serve plus worker, with
-      agents in nono sandboxes in-process. Document it and make sure it works.
+- [x] Simple mode: one container or Go binary runs serve plus worker, with
+      agents in nono sandboxes in-process. Document it and make sure it works. Evidence:
+      docs/run-modes.md, compose.single.yml (7e33017); kind single install is ready and nono
+      reports Landlock fs+net (docs/testing/kind-run-2026-11-11.md).
 - [ ] Kubernetes mode: the worker orchestrates per-attempt agent pods with
       nono inside them, using minimal RBAC and network policy. Check this
       against the research in `docs/` (commit f918881) and write an ADR.
       ADR-0082 ffc7149; research docs/research/2026-11-k8s-run-modes.md.
 - [ ] (Progress) The acp.Transport seam is in 9d138e1 (transport_test.go; -race green). The pod launcher
       (k8s-pod) and the chart plus kind script (helm-chart) are queued.
-- [ ] Ship a deliberately simple Helm chart with minimal boilerplate.
+- [x] Ship a deliberately simple Helm chart with minimal boilerplate. Evidence: 7e33017
+      (deploy/helm/communication; helm lint and template are clean for ci/single, split-local and split-kubernetes).
 - [ ] Test it in kind: install, run a pipeline that spawns an agent pod, and
       check that RBAC least privilege holds. Wire it into CI if that's cheap.
 
