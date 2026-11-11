@@ -59,6 +59,11 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Add an LLM-graded or snapshot eval of usefulness.
 - [ ] Keep a single depth for now, with no gauge.
 
+- [ ] Finding (deployed): Operations lists 35 dead worker pods above the one live
+      worker. Covered by the section 8 redesign.
+- [ ] Finding: CI audit failed on GO-2026-6859 (net/http). Bumped Go to 1.27.4 in
+      ceafd03; confirm CI is green.
+
 ## 5. Assistant end-to-end exercise
 - [ ] Run Playwright against the real model and hunt for errors and visual or
       UX nonsense. Log each finding here as a box.
@@ -77,6 +82,13 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Put the Codex subscription's `~/.codex` auth into a SOPS secret (the
       user approved this) and mount it for the worker the way the Claude token
       is mounted.
+      Finding 2026-11-11: this machine has NO Codex login (`codex login status` →
+      "Not logged in", no ~/.codex/auth.json), so there is nothing to copy. Also, a
+      copied ChatGPT login shares one rotating refresh token with wherever else it is
+      used, which goes stale like the Claude login did (docs/home-cluster.md). Plan:
+      a writable CODEX_HOME on the worker plus a one-time `codex login --device-auth`
+      inside the pod that the user approves in a browser. The worker needs the user
+      for that step.
 
 ## 7. Identity
 - [ ] The bottom-left user menu shows the avatar and name from the tsidp OIDC
@@ -106,6 +118,9 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 ## 10. Pi as an agent in the deployed env
 - [ ] Register pi as an agent (ACP adapter or launcher), pointed at the
       Collective with `qwen3-8-flash-next`.
+      Progress: the `pi` launcher already exists (ADR-0059, pi-acp 0.0.34, in the
+      worker image). Worker env and the key file were wired in home-k8s 253c8be.
+      Still to do: a Pi agent profile in the deployed app.
 - [ ] Deploy it to home-k8s and complete one real run with pi (run ID).
 
 ## 11. APM collections attached to agent profiles
