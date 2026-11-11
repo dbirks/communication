@@ -129,12 +129,19 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       check that RBAC least privilege holds. Wire it into CI if that's cheap.
 
 ## 10. Pi as an agent in the deployed env
-- [ ] Register pi as an agent (ACP adapter or launcher), pointed at the
+- [x] Register pi as an agent (ACP adapter or launcher), pointed at the
       Collective with `qwen3-8-flash-next`.
       Progress: the `pi` launcher already exists (ADR-0059, pi-acp 0.0.34, in the
       worker image). Worker env and the key file were wired in home-k8s 253c8be.
-      Still to do: a Pi agent profile in the deployed app.
-- [ ] Deploy it to home-k8s and complete one real run with pi (run ID).
+      Done: Pi profile 01a1c904 in the deployed app, set by operator SQL to
+      autonomous_within_sandbox + required (ADR-0069).
+- [x] Deploy it to home-k8s and complete one real run with pi (run ID). Evidence: thread
+      01a1c958-a99d-7433-a947-a4a5c1c5856b, turn 01a1c958-a99e-73ae-a6c5-6abb91ca3b29 status
+      completed (it ran ls and read in the nono sandbox on the deployed worker), screenshot
+      /tmp/claude-1000/-home-david-dev-eg-llm-collective/03ca2e2d-7f08-4df0-8426-d927c41b5773/scratchpad/pi-thread-done.png.
+- [ ] Finding: the completed Pi turn shows tool calls and "Turn completed" but NO agent reply
+      text, so the README summary never appears. Find whether pi-acp's agent_message_chunk is
+      dropped, or the model ended with no text after "Retrying the model… (3 attempts)".
 
 ## 11. APM collections attached to agent profiles
 User's vision: named APM collections (bundles of skills, instructions and MCP)
