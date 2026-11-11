@@ -55,13 +55,16 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
 - [ ] Interrogate the prompt and the tool set, then rewrite them so the output
       (Audit: docs/research/2026-11-catch-up-audit.md. Design: ADR-0081 c549320.)
       is what someone needs to get back up to speed.
-- [ ] Seed realistic fixtures (runs, conversations, approvals, failures and
+- [x] Seed realistic fixtures (runs, conversations, approvals, failures and
       merges) for four windows: a few minutes, an hour, a day and several
-      days. Add a 7-day window too.
+      days. Add a 7-day window too. Evidence: 15ca227 (catch_up_seed*_test.go, TestCatchUpSeed{15m,1h,1d,3d,7d}).
 - [ ] (Progress) Brief assembler and route: 0cc463f (catch_up_brief_test.go, real-DB
       catch_up_brief_test.go incl. non-member scoping). The seeder (catchup-seed2), headline
       (catchup-headline), chat tools (catchup-tools) and page (catchup-ui) are queued.
-- [ ] Add one integration test per window.
+- [x] Add one integration test per window. Evidence: 576a388 TestCatchUpBriefOverSeeded/{15m,1h,1d,3d,7d} with
+      goldens in internal/store/postgres/testdata/catch_up_brief/. It found and fixed heads_up being empty.
+- [ ] Polish (from the 1d golden): running_now step reads "/implement" (leading slash from the instance key), and
+      a run that opened a PR also appears as a separate commit row in shipped. Fold the commit into its PR row.
 - [ ] Add an LLM-graded or snapshot eval of usefulness.
 - [ ] Keep a single depth for now, with no gauge.
 
