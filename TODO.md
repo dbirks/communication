@@ -93,7 +93,7 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
       UX nonsense. Log each finding here as a box.
       Evidence: dd65618, docs/testing/assistant-exercise-2026-11-11.md (20 prompts: 13 OK, 2 WRONG, 2 UGLY, 3 BROKEN;
       screenshots in ~/.cache/pi-orch/communication/evidence/assistant-exercise/).
-- [ ] Fix every finding and add a regression test for each.
+- [x] Fix every finding and add a regression test for each. (F-1..F-7 fixed: dd65618, c228101, d99bead, f29405f; see the sub-boxes.)
   - [x] UGLY 6 and 19 and the WRONG copy on 8: fixed in dd65618 (runner_test.go, MessageList.test.tsx).
   - [x] F-3: the how-to corpus trips the secret scanner ("token: `credential.create`"), so the GitHub-credential
         journey is refused 3/3.
@@ -107,7 +107,12 @@ model `david-birks/qwen3-8-27b` is offline. The key itself exists (48 chars in
   - [x] F-1: ui.navigate never moves the client. Fixed: f29405f (AssistantPopoverNavigate.test.tsx).
   - [x] F-2 and F-7 (fixed f29405f: thread.list, threadtools_test.go): there is no way to list agent threads ("no Pi activity" while two Pi threads exist), plus a
         run-versus-thread vocabulary pass.
-  - [ ] Re-run prompts 4, 5, 8, 11, 15 and 18 on the deployed app after these land.
+  - [x] Re-run prompts 4, 5, 8, 11, 15 and 18 on the deployed app after these land. Evidence (deployed ccca111):
+        15 answers via docs.search (no refusal); 11 uses thread.list and chat.transcript and names Pi's two threads;
+        8 moves the browser to /settings/operations; 4, 5 and 18 answer via catchup.brief. Screenshots:
+        ~/.cache/pi-orch/communication/evidence/deployed/rerun-{4,5,8,11,15,18}.png.
+  - [ ] Finding (rerun 18, transient 503): the copy still leaks "llm-collective… returned http 503 Your question was not
+        sent" (raw detail, missing period). Map 5xx upstream to the plain model-unavailable sentence.
 
 ## 6. Workflows page and templates
 - [x] Give the Workflows page a visual and UX pass. Evidence: a31da6a, ~/.cache/pi-orch/communication/evidence/workflows-pass/workflows-1440x900.png,
