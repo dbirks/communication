@@ -90,10 +90,11 @@ import {
  * (`pages/Workflow.tsx`): a tab sits on the header's bottom border, the
  * active one is inked and bold.
  */
-export function WorkflowsTabs({ active }: { active: "workflows" | "steps" }) {
+export function WorkflowsTabs({ active }: { active: "workflows" | "steps" | "collections" }) {
   const tabs = [
     { key: "workflows", label: "Workflows", to: routes.workflows() },
     { key: "steps", label: "Steps", to: routes.steps() },
+    { key: "collections", label: "Collections", to: "/workflows/collections" },
   ] as const;
   return (
     <nav

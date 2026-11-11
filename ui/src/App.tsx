@@ -61,6 +61,7 @@ const Projects = lazy(() => import("./pages/Projects"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const ProfilePage = lazy(() => import("./pages/Profile"));
 const Steps = lazy(() => import("./pages/Steps"));
+const Collections = lazy(() => import("./pages/Collections"));
 const Threads = lazy(() => import("./pages/Threads"));
 // The assistant's full page (handoff §1): a real route so the URL is shareable
 // and the sidebar stays; the conversation engine is mounted by `Shell` and
@@ -379,6 +380,24 @@ export default function App() {
             element={
               <RequireAuth>
                 <Steps />
+              </RequireAuth>
+            }
+          />
+          {/* ADR-0084: the Collections tab and one collection's editor, same
+            static-over-dynamic placement as the Steps routes. */}
+          <Route
+            path="/workflows/collections"
+            element={
+              <RequireAuth>
+                <Collections />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/workflows/collections/:id"
+            element={
+              <RequireAuth>
+                <Collections />
               </RequireAuth>
             }
           />

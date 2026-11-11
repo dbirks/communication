@@ -11,8 +11,9 @@
  * - ACCOUNT: the secrets whose `allowed_agent_profile_ids` allowlist names
  *   this profile, by slug only. The value is never shown (ADR-0018: there
  *   is no API that returns one).
- * - FROM APM PACKAGE: the pinned triple plus the pin form the old single
- *   page had (moved, not rewritten — every testid travels).
+ * - SKILLS (ADR-0030 + ADR-0084): the ordered collection attachments, the
+ *   pinned extra-package triple plus the pin form the old single page had
+ *   (moved, not rewritten — every testid travels).
  * - USED BY: `GET /api/v1/agent-profiles/{profileId}/usage` — the workflows
  *   that reference this profile in their latest published revision or an open
  *   draft, with the honest empty, loading and error states.
@@ -37,6 +38,7 @@ import {
 } from "../../api/queries";
 import type { AgentProfileAPMPatch } from "../../api/queries";
 import { useApmLockStatus, usePostApmLock } from "../../api/useApmLock";
+import { ProfileSkills } from "../collections/ProfileSkills";
 import { agentProfileVersionsKey, useAgentProfileVersions } from "../../api/useProfileVersions";
 import ProfileHistory from "./ProfileHistory";
 import { ENFORCEMENT_COPY } from "../../api/sandbox";
@@ -299,7 +301,7 @@ export default function ProfileDetail({
       </Panel>
 
       <Panel
-        title="FROM APM PACKAGE"
+        title="SKILLS"
         headingId={`profile-apm-${profile.id}`}
         headingLevel={3}
         meta={
@@ -315,6 +317,13 @@ export default function ProfileDetail({
           ) : undefined
         }
       >
+        <ProfileSkills profile={profile} canWrite={canWrite} />
+        <p
+          className="border-t border-line px-[10px] pt-2 font-mono text-[10px] uppercase tracking-[.06em] text-faint"
+          data-testid={`agent-apm-extra-label-${profile.id}`}
+        >
+          Extra package
+        </p>
         {pinned ? (
           <div className="space-y-1 p-[10px] font-mono text-[11px]">
             <span className="text-ink-2" data-testid={`agent-apm-ref-${profile.id}`}>
