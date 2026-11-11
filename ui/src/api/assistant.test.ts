@@ -7,11 +7,14 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  appPathFromTargetRef,
   assistantContextOf,
   assistantNotConfigured,
   mapAssistantMessage,
   mapAssistantMessageList,
+  navigateTargetOf,
 } from "./assistant";
+import type { AssistantMessage as LocalMessage } from "../components/assistant/types";
 import { ApiError } from "./client";
 import type { components } from "./schema";
 
@@ -281,5 +284,103 @@ describe("assistantNotConfigured", () => {
     expect(assistantNotConfigured(new ApiError(notConfigured as never, notConfigured))).toBe(true);
     expect(assistantNotConfigured(new ApiError(timedOut as never, timedOut))).toBe(false);
     expect(assistantNotConfigured(new Error("boom"))).toBe(false);
+  });
+});
+
+/**
+ * Finding F-1 (docs/testing/assistant-exercise-2026-11-11.md): ADR-0050
+ * Decision 7 says the CLIENT performs a `ui.navigate`, and the turn's
+ * `navigate` change row carries the route in `target_ref`. These two helpers are
+ * the client's half of that: the shape re-check, and picking the ONE navigation
+ * a turn asked for. The server owns the route ALLOWLIST
+ * (`internal/assistant/routes.go`); the client's check is that the row names a
+ * same-origin relative app path at all — an absolute URL, a protocol-relative
+ * host or a path with a control character in it is nothing to move the screen
+ * for, whatever the transcript claims.
+ */
+describe("appPathFromTargetRef", () => {
+  it("accepts an app route the server's allowlist could have written", () => {
+    expect(appPathFromTargetRef("/ops")).toBe("/ops");
+    expect(appPathFromTargetRef("/p/01PROJECT/threads/t-9")).toBe("/p/01PROJECT/threads/t-9");
+    // A deep link keeps its query and fragment: same origin, still this app.
+    expect(appPathFromTargetRef("/runs/r-1?tab=steps")).toBe("/runs/r-1?tab=steps");
+    expect(appPathFromTargetRef("/assistant")).toBe("/assistant");
+  });
+
+  it("refuses anything that would leave the app", () => {
+    for (const ref of [
+      "https://evil.example/ops",
+      "http://localhost:18080/ops",
+      "//evil.example/ops",
+      "/\\evil.example",
+      "javascript:alert(1)",
+      "ops",
+      "",
+      "   ",
+      "/ops\nX-Evil: 1",
+      "/ops /../../",
+      "/a\tb",
+    ]) {
+      expect(appPathFromTargetRef(ref)).toBeNull();
+    }
+    expect(appPathFromTargetRef(null)).toBeNull();
+    expect(appPathFromTargetRef(undefined)).toBeNull();
+    expect(appPathFromTargetRef(42 as unknown as string)).toBeNull();
+  });
+});
+
+describe("navigateTargetOf", () => {
+  function nav(id: string, target: string): LocalMessage {
+    const row = mapAssistantMessage(
+      wireRow("change", {
+        kind: "change",
+        change_id: id,
+        change_kind: "navigate",
+        target_ref: target,
+        summary: `Navigated to ${target}`,
+        undoable: false,
+      }),
+    );
+    if (row === null) throw new Error(`the navigate row for ${id} would not render`);
+    return row;
+  }
+  function user(): LocalMessage {
+    const row = mapAssistantMessage(wireRow("user", { kind: "user", text: "hi" }));
+    if (row === null) throw new Error("the user row would not render");
+    return row;
+  }
+
+  it("names nothing for a turn that did not navigate", () => {
+    expect(navigateTargetOf([user()])).toBeNull();
+    expect(navigateTargetOf([])).toBeNull();
+  });
+
+  it("skips every OTHER change kind — only `navigate` moves the client", () => {
+    const mapped = mapAssistantMessage(
+      wireRow("change", {
+        kind: "change",
+        change_id: "c-1",
+        change_kind: "draft_edit",
+        target_ref: "draft:d-1",
+        summary: "Edited draft",
+        undoable: true,
+      }),
+    );
+    if (mapped === null) throw new Error("the draft_edit row would not render");
+    expect(navigateTargetOf([mapped])).toBeNull();
+  });
+
+  it("takes the first performable navigation and still reports every change id", () => {
+    const target = navigateTargetOf([user(), nav("c-1", "/ops"), nav("c-2", "/workflows")]);
+    expect(target?.target).toBe("/ops");
+    expect(target?.changeId).toBe("c-1");
+    expect(target?.changeIds).toEqual(["c-1", "c-2"]);
+  });
+
+  it("passes over a target the client will not perform", () => {
+    const target = navigateTargetOf([nav("c-1", "https://evil.example/ops"), nav("c-2", "/ops")]);
+    expect(target?.target).toBe("/ops");
+    // BOTH ids are reported, so the refused one can never navigate on a re-read.
+    expect(target?.changeIds).toEqual(["c-1", "c-2"]);
   });
 });

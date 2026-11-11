@@ -1807,6 +1807,13 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			S:       &postgres.CatchUpStore{Pool: d.Pool},
 			Denials: projectStore,
 		},
+		// Deployed finding F-2 (docs/testing/assistant-exercise-2026-11-11.md):
+		// thread.list answers from the SAME cross-project conversation read the
+		// /threads page is mounted with (ADR-0047), one store, one membership
+		// predicate — the page and the chat cannot disagree about which threads
+		// exist. A handle over the pool, so building it twice builds nothing
+		// twice.
+		Threads: postgres.APICrossProjectStore{Pool: d.Pool},
 		Config: api.AssistantConfig{
 			BaseURL: d.Assistant.BaseURL,
 			APIKey:  d.Assistant.APIKey,

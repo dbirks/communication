@@ -53,8 +53,14 @@ type AssistantDeps struct {
 	// assistant's catchup.brief tool answers from it, so the page and the chat
 	// model read one assembled fact set. Nil is the honest absence: the tool is
 	// then not announced at all, rather than announced and refused.
-	Brief  CatchUpBriefStore
-	Config AssistantConfig
+	Brief CatchUpBriefStore
+	// Threads is the assistant's thread.list read: the SAME cross-project
+	// conversation list GET /api/v1/conversations serves the /threads page
+	// with (ADR-0047), so a thread answer and the page cannot disagree about
+	// which threads exist. Nil is the honest absence — the tool is then not
+	// announced at all, the same rule as the brief above.
+	Threads assistantThreadReader
+	Config  AssistantConfig
 }
 
 // The narrow read surfaces ADR-0034's six tools need. Deliberately methods-only
@@ -77,6 +83,14 @@ type (
 	}
 	assistantProfileReader interface {
 		ListAgentProfiles(ctx context.Context, c Caller) ([]AgentProfileView, error)
+	}
+	// assistantThreadReader is the /threads page's own read: the caller's
+	// conversations across every project they belong to, scoped in the store's
+	// SQL (a project the caller is not in contributes no rows). The tool needs
+	// no cursor and no limit of its own — assistantThreadFetchLimit is the
+	// server's page, and the tool's cap is the smaller one.
+	assistantThreadReader interface {
+		ListVisibleConversations(ctx context.Context, c Caller, limit int, cursor string) ([]ConversationSummaryView, string, error)
 	}
 	// assistantDraftAccess is the gate the draft-proposals route applies:
 	// the caller's own read of the draft row. The write predicate the store
@@ -111,10 +125,9 @@ func BuildAssistantBroker(deps AssistantDeps, logger *slog.Logger) (*assistant.B
 	// only when it IS wired is what keeps the tool off the announced set when
 	// it is not (assistant.announcedToolOrder), so a model is never told to ask
 	// for a brief this deployment cannot assemble.
-	var handle assistant.Store = store
-	if deps.Brief != nil {
-		handle = assistantBriefStore{assistantStore: store, brief: deps.Brief}
-	}
+	// Each optional read is announced only over the handle that can answer it
+	// (assistant.announcedToolOrder), so the type is chosen by what is wired.
+	handle := assistantStoreHandle(store, deps)
 	return assistant.New(assistant.Config{
 		BaseURL: deps.Config.BaseURL,
 		APIKey:  deps.Config.APIKey,
@@ -347,6 +360,82 @@ func (a assistantBriefStore) CatchUpBrief(ctx context.Context, c assistant.Calle
 		return nil, asstStoreErr(err)
 	}
 	return asstJSON(brief)
+}
+
+// assistantThreadStore is the v1 store handle plus the caller's thread read,
+// and assistantBriefThreadStore is the same plus the ADR-0081 brief. There is
+// one TYPE PER COMBINATION on purpose: the assistant decides which optional
+// reads to announce by what its store handle can ANSWER
+// (assistant.announcedToolOrder is a type assertion), and a wrapper that
+// embedded the Store INTERFACE would promote only Store's own methods and
+// silently unannounce catchup.brief on a deployment that wired both reads —
+// which is exactly what serve wires. The combinations are pinned by
+// internal/api/assistant_threads_test.go.
+type assistantThreadStore struct {
+	assistantStore
+	threads assistantThreadReader
+}
+
+type assistantBriefThreadStore struct {
+	assistantBriefStore
+	threads assistantThreadReader
+}
+
+var (
+	_ assistant.ThreadListReader   = assistantThreadStore{}
+	_ assistant.ThreadListReader   = assistantBriefThreadStore{}
+	_ assistant.CatchUpBriefReader = assistantBriefThreadStore{}
+)
+
+// assistantStoreHandle is the broker's store handle for ONE deployment: the six
+// v1 reads, plus each optional read whose service is wired, in the type that
+// answers exactly those reads and no others.
+func assistantStoreHandle(store assistantStore, deps AssistantDeps) assistant.Store {
+	switch {
+	case deps.Brief != nil && deps.Threads != nil:
+		return assistantBriefThreadStore{
+			assistantBriefStore: assistantBriefStore{assistantStore: store, brief: deps.Brief},
+			threads:             deps.Threads,
+		}
+	case deps.Brief != nil:
+		return assistantBriefStore{assistantStore: store, brief: deps.Brief}
+	case deps.Threads != nil:
+		return assistantThreadStore{assistantStore: store, threads: deps.Threads}
+	default:
+		return store
+	}
+}
+
+// assistantThreadFetchLimit is how deep the thread.list read goes: one page of
+// the cross-project list (the store caps it at 200 and orders newest first),
+// which is several times the 30 threads the tool may answer with, so the
+// project / launcher / window filters after it have rows left to keep. It is
+// not a dump — the rows are projected onto the tool's documented fields before
+// the registry's byte cap sees them (assistant.compactThreadRow).
+const assistantThreadFetchLimit = 100
+
+// listAgentThreadsAs answers assistant.ThreadListReader off a wired reader: the
+// cross-project thread list the /threads page reads, no scope filter (the tool
+// owns the filters), through the same membership predicate in the store's SQL
+// the route uses. Both combination types share it so their answers cannot drift.
+func listAgentThreadsAs(reader assistantThreadReader, ctx context.Context,
+	c assistant.Caller) (json.RawMessage, error) {
+	if reader == nil {
+		return nil, assistant.ErrNotFound
+	}
+	items, _, err := reader.ListVisibleConversations(ctx, asstCaller(c), assistantThreadFetchLimit, "")
+	if err != nil {
+		return nil, asstStoreErr(err)
+	}
+	return asstJSON(emptyIfNil(items))
+}
+
+func (a assistantThreadStore) ListAgentThreads(ctx context.Context, c assistant.Caller) (json.RawMessage, error) {
+	return listAgentThreadsAs(a.threads, ctx, c)
+}
+
+func (a assistantBriefThreadStore) ListAgentThreads(ctx context.Context, c assistant.Caller) (json.RawMessage, error) {
+	return listAgentThreadsAs(a.threads, ctx, c)
 }
 
 func asstCaller(c assistant.Caller) Caller {

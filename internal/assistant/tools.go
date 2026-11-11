@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -62,16 +63,20 @@ var toolOrder = []string{"project.list", "run.list", "run.nodes", "approval.pend
 // never announced, so the model is not told to ask for it. Every name here is
 // in toolRegistry AND in the closed class table (trust.go) — tools_test.go
 // pins all three against each other.
-var optionalToolOrder = []string{"catchup.brief"}
+var optionalToolOrder = []string{"catchup.brief", "thread.list"}
 
 // announcedToolOrder is the registry order for ONE broker: the six v1 reads,
 // then any optional read this store answers.
 func announcedToolOrder(store Store) []string {
 	order := append([]string(nil), toolOrder...)
 	brief, _ := store.(CatchUpBriefReader)
+	threads, _ := store.(ThreadListReader)
 	for _, name := range optionalToolOrder {
-		if name == "catchup.brief" && brief == nil {
+		switch {
+		case name == "catchup.brief" && brief == nil:
 			continue // no brief reader wired: the tool is not announced
+		case name == "thread.list" && threads == nil:
+			continue // no thread reader wired: the tool is not announced
 		}
 		order = append(order, name)
 	}
@@ -217,6 +222,40 @@ var toolRegistry = func() map[string]tool {
 			id := args["pipeline_id"].(string)
 			return []Link{{Label: "Open pipeline " + short(id), Href: "/workflows/" + id}}
 		})
+
+	// thread.list is the deployed exercise's finding F-2
+	// (docs/testing/assistant-exercise-2026-11-11.md): "What did Pi do in the
+	// Sandbox project?" was answered from run.list — which sees no agent thread
+	// at all — about a project whose two most recent visible artefacts WERE Pi
+	// threads. The read is the /threads page's own (the cross-project
+	// conversation list, ADR-0047), so the answer and the page cannot disagree,
+	// and the rows are projected onto the handful of fields a thread answer is
+	// written from. Announced only over a store that answers ThreadListReader.
+	addEx("thread.list", "The caller's agent threads (one-off threads with an agent like Pi, Claude Code or Codex), newest first. Use for 'what did <agent> do', 'what threads are running'. Optional project_id keeps one project, optional since (an RFC 3339 timestamp or a window key: 15m|1h|6h|24h|2d|7d) keeps the recent ones, optional launcher (pi|claude|codex — the launcher an agent profile runs on) keeps one agent's. Each row: id, title, project, agent_profile, launcher, status (running|queued|interrupted|idle|completed), updated_at and its link under /threads/. At most 30 threads.",
+		map[string]any{
+			"project_id": stringArg("optional project id from project.list; empty reads across the caller's projects"),
+			"since":      stringArg("optional: an RFC 3339 timestamp or one of 15m|1h|6h|24h|2d|7d"),
+			"launcher":   stringArg("optional launcher name — pi, claude, codex — the launcher behind the thread's agent profile"),
+		}, nil,
+		func(t *turn, args map[string]any) (json.RawMessage, error) {
+			return t.listThreads(args)
+		},
+		func(_ *turn, _ map[string]any, rows []map[string]any) []Link {
+			// The rows carry their own `link` (the thread page the /threads list
+			// itself links at, ui/src/lib/routes.ts thread()), so the jump row
+			// opens the same screen the person would click and every href still
+			// passes the allowlist in exec.
+			return linksFromRows(rows, func(row map[string]any) (Link, bool) {
+				href := field(row, "link")
+				if href == "" {
+					return Link{}, false
+				}
+				return Link{
+					Label: "Open " + fallback(field(row, "title"), "thread "+short(field(row, "id"))),
+					Href:  href,
+				}, true
+			})
+		}, nil, validateThreadList, maxThreadListResultBytes)
 
 	add("palette.search", "Search the app's navigation index — the top-level pages (today, threads, workflows, steps, agents, operations, settings) plus the caller's own projects, pipelines, runs and agent profiles — for a name or fragment.",
 		map[string]any{"needle": stringArg("case-insensitive substring to match")}, []string{"needle"},
@@ -753,6 +792,288 @@ func pendingGates(raw []map[string]any, names projectIndex) []map[string]any {
 	}
 	return kept
 }
+
+// --- thread.list: the caller's agent threads ----------------------------
+
+// ThreadListReader is the assistant's seam to the caller's agent threads. Like
+// CatchUpBriefReader it is deliberately NOT a method of Store: the thread list
+// is the /threads surface's read (the ADR-0047 cross-project conversation
+// list), and a deployment that mounted the assistant without it must not
+// announce a read it cannot serve — announcedToolOrder gates on this face and
+// exec refuses the call as `unknown_tool` with zero store calls when the tool
+// was never announced.
+//
+// The membership rule is the store's, not this package's: the read answers only
+// rows from projects the caller is a member of, and the rows travel here as that
+// route's own JSON, unfiltered — the project, the window and the launcher are
+// this tool's filters, and the two NAMES the page resolves client-side (the
+// project's and the agent profile's) this tool joins from reads of its own.
+type ThreadListReader interface {
+	// ListAgentThreads returns the caller's agent threads exactly as GET
+	// /api/v1/conversations serves them to that caller: newest first, one page,
+	// every project they belong to.
+	ListAgentThreads(ctx context.Context, c Caller) (json.RawMessage, error)
+}
+
+// errNoThreadList is the honest absence behind a call the deployment cannot
+// answer (the same rule as errNoCatchUpBrief): reason `unavailable`, not
+// `not_found` — nothing is being hidden from the caller, the replica simply
+// does not serve the read.
+var errNoThreadList = errors.New("assistant: this deployment serves no agent thread list")
+
+// threadRowCap bounds one thread.list answer: enough to answer "what threads
+// are running" for a team's working week, few enough that the tool stays a
+// list and not a dump (run.list's rule at half the size — a thread is a
+// conversation, and nobody reads thirty conversation summaries in one answer).
+const threadRowCap = 30
+
+// maxThreadListResultBytes is thread.list's payload budget: threadRowCap rows
+// of the projected shape (one timestamp, one title, four short names) measured
+// at ~200 bytes each is ~6 KiB, so the registry's 2 KiB default would cut the
+// list the tool PROMISES — the same reason maxCatchUpChatResultBytes exists,
+// stated at this tool's own definition rather than borrowing the ADR-0081
+// constant. It is a bound the code owns, not one a response can widen.
+const maxThreadListResultBytes = 8192
+
+// threadStatusWords is the thread answer's status vocabulary — the SAME words
+// the /threads list wears for the same row. The wire's conversation status is
+// active|idle|disconnected|archived, and the page renders it through
+// ui/src/components/ds/states.ts (CONVERSATION_STATE → STATES[].word: active
+// → running, idle → queued, disconnected → interrupted), with the row's own
+// rule that an open chat with nothing attached says `idle`, not the queued
+// `pending` row (ThreadListPane, rcn-6 review 1). An archived thread is one
+// the team finished with, and the fifth word of the answer's vocabulary is
+// `completed`; the archive itself is what the page calls it.
+var threadStatusWords = map[string]string{
+	"active":       "running",
+	"idle":         "idle",
+	"disconnected": "interrupted",
+	"archived":     "completed",
+}
+
+// threadStatusWord is one row's status in the /threads words. A row that
+// answers `idle` while a turn is still queued is the `pending` row the page
+// draws under LIVE — work waiting on a worker, which is what `queued` means —
+// so the turn flag is read before the status table.
+func threadStatusWord(row map[string]any) string {
+	status := strings.ToLower(field(row, "status"))
+	if status == "idle" && threadHasActiveTurn(row) {
+		return "queued"
+	}
+	if word, ok := threadStatusWords[status]; ok {
+		return word
+	}
+	return "unknown"
+}
+
+// threadHasActiveTurn reads the row's `has_active_turn` boolean (the wire
+// member the /threads pane reads the same way).
+func threadHasActiveTurn(row map[string]any) bool {
+	turn, ok := row["has_active_turn"].(bool)
+	return ok && turn
+}
+
+// threadRowFields is the row shape thread.list DOCUMENTS. The route's row is
+// far wider (the control triple, the run link, the repository derivation, the
+// last agent line, the creator) and none of it is what "what did Pi do" is
+// answered from; at the registry's byte cap the wide row would buy the model
+// a handful of the threads it was asked to list (compactRunRow's reasoning).
+// `origin` is kept because it is the one field that says whether a thread is
+// a person's one-off chat or a run's step, which is what F-7's vocabulary
+// question turns on.
+var threadRowFields = []string{"id", "title", "project_id", "origin", "updated_at"}
+
+// threadLink is the row's own destination — the thread page, the same route the
+// /threads list links at. It is written by the server (never by the model) and
+// passes the link allowlist like every other derived href.
+func threadLink(id string) string {
+	if id == "" {
+		return ""
+	}
+	return "/threads/" + id
+}
+
+// listThreads answers thread.list. The read is the /threads page's own
+// cross-project list — one call, made with the caller, whose SQL holds the
+// membership predicate — and every filter after it is the tool's: the project,
+// the window and the launcher the caller asked to keep. A thread under a
+// project the caller is not in contributes nothing, because the read never
+// returns it; the launcher filter needs the agent profile behind the thread,
+// which is why the profile list is read too (the same read profile.list and
+// the /threads pane's `agent · project` line make).
+func (t *turn) listThreads(args map[string]any) (json.RawMessage, error) {
+	reader, ok := t.b.store.(ThreadListReader)
+	if !ok || reader == nil {
+		return nil, errNoThreadList
+	}
+	since, err := catchUpWindowSince(strArg(args, "since"), time.Now())
+	if err != nil {
+		return nil, err
+	}
+	projectID := strArg(args, "project_id")
+	launcher := strings.ToLower(strArg(args, "launcher"))
+
+	raw, err := reader.ListAgentThreads(t.ctx, t.caller)
+	if err != nil {
+		return nil, err
+	}
+	// The launcher half of the answer is the profile behind the thread, and the
+	// caller's own profile list is where both the /threads pane and profile.list
+	// read it. A failed read costs the launcher and profile name, not the
+	// threads (listRuns' rule for the project names below).
+	profiles, _ := t.agentProfiles()
+	// The project name is the other half of "which project was that" — the
+	// /threads pane resolves it from the project list exactly the same way
+	// (its `project / repository · agent` meta line), and a failed read costs
+	// the name, not the threads.
+	names, namesErr := t.projectNames()
+
+	kept := make([]map[string]any, 0, len(rows(raw)))
+	for _, row := range rows(raw) {
+		// Membership, belt to the read's braces: the cross-project list scopes
+		// itself in SQL (ADR-0047), and a thread under a project this caller
+		// cannot list is dropped here too rather than answered with — the same
+		// predicate run.list fans over. A project.list that FAILED says nothing
+		// about membership, so the rule is off then (the rows the scoped read
+		// returned still answer, named by id).
+		if namesErr == nil {
+			if _, visible := names.byID[field(row, "project_id")]; !visible {
+				continue
+			}
+		}
+		if projectID != "" && field(row, "project_id") != projectID {
+			continue
+		}
+		if launcher != "" && !threadMatchesLauncher(row, profiles, launcher) {
+			continue
+		}
+		if !threadInWindow(row, since) {
+			continue
+		}
+		kept = append(kept, compactThreadRow(row, profiles, names.byID[field(row, "project_id")]))
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		ti, _ := parseRowTime(field(kept[i], "updated_at"))
+		tj, _ := parseRowTime(field(kept[j], "updated_at"))
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return field(kept[i], "id") < field(kept[j], "id")
+	})
+	if len(kept) > threadRowCap {
+		kept = kept[:threadRowCap]
+	}
+	return json.Marshal(kept)
+}
+
+// agentProfiles is the caller's agent-profile list in the shape the thread rows
+// need it: id → {name, launcher}. (The list read is the same scoped call
+// profile.list answers with; membership is the store's rule, not this one.)
+func (t *turn) agentProfiles() (map[string]map[string]any, error) {
+	raw, err := t.b.store.ListAgentProfiles(t.ctx, t.caller)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]map[string]any{}
+	for _, profile := range rows(raw) {
+		id := field(profile, "id")
+		if id == "" {
+			continue
+		}
+		out[id] = profile
+	}
+	return out, nil
+}
+
+// threadMatchesLauncher keeps a thread whose agent profile runs on the named
+// launcher. A thread whose profile the caller cannot read (or that names no
+// profile at all) matches no launcher filter — the tool refuses to guess which
+// harness an unreadable profile was, and an unreadable row is not evidence of
+// the launcher the caller asked about.
+func threadMatchesLauncher(row map[string]any, profiles map[string]map[string]any, launcher string) bool {
+	profile, ok := profiles[field(row, "agent_profile_id")]
+	if !ok {
+		return false
+	}
+	return strings.ToLower(field(profile, "launcher_id")) == launcher
+}
+
+// threadInWindow keeps a row whose last activity is at or after the bound. A
+// row with no clock is kept (runInWindow's rule): the route serialized no
+// timestamp for it, which is not evidence the thread is old.
+func threadInWindow(row map[string]any, since time.Time) bool {
+	if since.IsZero() {
+		return true
+	}
+	at, ok := parseRowTime(field(row, "updated_at"))
+	if !ok {
+		return true
+	}
+	return !at.Before(since)
+}
+
+// compactThreadRow projects one route row onto threadRowFields and writes the
+// four names a thread answer is made of: the status in the /threads words, the
+// project it lives under, the agent profile's name and its launcher. The launcher is named only when
+// the profile behind the thread is readable, so the payload never invents a
+// harness for a profile the caller cannot see.
+func compactThreadRow(row map[string]any, profiles map[string]map[string]any, project string) map[string]any {
+	out := make(map[string]any, len(threadRowFields)+4)
+	for _, key := range threadRowFields {
+		value, ok := row[key]
+		if !ok || value == nil {
+			continue
+		}
+		if s, isString := value.(string); isString && strings.TrimSpace(s) == "" {
+			continue // an absent field stays absent: the model invents nothing
+		}
+		out[key] = value
+	}
+	out["status"] = threadStatusWord(row)
+	if href := threadLink(field(row, "id")); href != "" {
+		out["link"] = href
+	}
+	if name := strings.TrimSpace(bounded(project, 80)); name != "" {
+		out["project"] = name
+	}
+	if profile, ok := profiles[field(row, "agent_profile_id")]; ok {
+		if name := field(profile, "name"); name != "" {
+			out["agent_profile"] = bounded(name, 80)
+		}
+		if launcher := field(profile, "launcher_id"); launcher != "" {
+			out["launcher"] = bounded(launcher, 40)
+		}
+	}
+	return out
+}
+
+// validateThreadList bounds thread.list's launcher the way validateRunList
+// bounds a run status: the word must be a bare launcher id (pi, claude,
+// codex), because a model that sends "the Pi agent" would be answered an
+// empty list it would report as an empty week. The launcher id set is
+// deployment data, not a closed vocabulary here, so only the SHAPE is checked
+// (internal/api/launchers.go owns the ids, and this package may not import it).
+func validateThreadList(args map[string]any) error {
+	if since, _ := args["since"].(string); strings.TrimSpace(since) != "" {
+		if _, err := catchUpWindowSince(since, time.Now()); err != nil {
+			return err
+		}
+	}
+	launcher, _ := args["launcher"].(string)
+	launcher = strings.TrimSpace(launcher)
+	if launcher == "" {
+		return nil
+	}
+	if !launcherID.MatchString(launcher) {
+		return errors.New(`launcher must be a launcher id — pi, claude, codex — letters, digits, "-" and "_" only`)
+	}
+	return nil
+}
+
+// launcherID is the shape of a launcher id (the ids internal/api/launchers.go
+// serves are [a-z0-9_-]; the pattern accepts either case and the filter
+// lower-cases).
+var launcherID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 // projectNames is the caller's own project list in both shapes: the map the
 // rows are labelled from, and the fan the cross-project reads walk. It is the

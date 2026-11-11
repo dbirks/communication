@@ -178,6 +178,16 @@ func execSummary(name string, args map[string]any, raw json.RawMessage) string {
 		}
 	case "pipeline.revisions":
 		s = fmt.Sprintf("Listed %d published revisions for pipeline %s", n, short(strArg(args, "pipeline_id")))
+	case "thread.list":
+		// The transparency line says THREAD, the /threads page's word (finding
+		// F-7): a person reading the disclosure should not learn a new noun.
+		if launcher := strArg(args, "launcher"); launcher != "" {
+			s = fmt.Sprintf("Listed %d threads from launcher %s", n, bounded(launcher, 32))
+		} else if project := strArg(args, "project_id"); project != "" {
+			s = fmt.Sprintf("Listed %d threads for project %s", n, short(project))
+		} else {
+			s = fmt.Sprintf("Listed %d agent threads across the caller's projects", n)
+		}
 	case "palette.search":
 		s = fmt.Sprintf("Found %d matches for %q", n, bounded(strArg(args, "needle"), 60))
 	case "catchup.brief":

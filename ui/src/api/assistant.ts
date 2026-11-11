@@ -74,6 +74,77 @@ export function assistantNotConfigured(error: unknown): boolean {
   return degradedOf(error) === ASSISTANT_NOT_CONFIGURED;
 }
 
+// ---------------------------------------------------------------------------
+// ui.navigate, client side (ADR-0050 Decision 7, deployed finding F-1).
+//
+// The ADR's sentence is the rule: `ui.navigate` takes a server-validated route
+// and **the client performs the navigation** — presentation of an
+// already-authorized state, never DOM automation. The server logs the turn's
+// navigation as an `assistant_changes` row of kind `navigate` whose `target_ref`
+// IS the route; until now nothing in this surface read that row, so the answer
+// said the page was opened while the screen stayed put.
+//
+// The server validated the route against its own allowlist
+// (`internal/assistant/routes.go`); the client re-checks the SHAPE — a
+// same-origin relative app path — so a `target_ref` that reached the wire from
+// an older build, a forged transcript row or an absolute URL navigates nothing.
+// The jump row under the answer stays either way: it is the fallback when the
+// person (or a screen reader) would rather move the page themselves.
+
+/**
+ * One `navigate` change's destination as a path this router may perform, or
+ * null when the row names nothing the client will move the page to. The check
+ * is deliberately narrow: a single leading `/`, never a protocol-relative
+ * `//host` or a `\host` (which browsers resolve to a network path), no
+ * whitespace or control character a header could hide behind, and no scheme.
+ */
+export function appPathFromTargetRef(targetRef: string | null | undefined): string | null {
+  if (typeof targetRef !== "string") return null;
+  const path = targetRef.trim();
+  if (path.length === 0 || !path.startsWith("/")) return null;
+  // A protocol-relative or UNC-shaped path is a DIFFERENT origin; a backslash
+  // is the same thing wearing a browser's normalisation.
+  if (path.startsWith("//") || path.startsWith("/\\")) return null;
+  // No whitespace, no backslash, no control character anywhere: each one ends
+  // the path at a point the router (or a header) would not expect it, which is
+  // how a `target_ref` that LOOKS same-origin stops being one.
+  if (/\s|\\/.test(path)) return null;
+  for (const character of path) {
+    if ((character.codePointAt(0) as number) < 0x20) return null;
+  }
+  return path;
+}
+
+/** One turn's navigation: the change row that authorised it and the path to
+ * perform. Exported as a pair so the caller can key its once-only Set on the
+ * server's own id, not on a path two turns could share. */
+export interface TurnNavigation {
+  changeId: string;
+  target: string;
+  /** Every `navigate` change row the turn carried, performable or not — the
+   * caller records all of them so a re-delivered batch navigates nothing. */
+  changeIds: string[];
+}
+
+/**
+ * The navigation one arriving turn asked for: the FIRST `navigate` change row
+ * whose `target_ref` the client may perform, or null. A turn whose model
+ * called `ui.navigate` twice moves the screen to the page it asked for first
+ * — the second keeps its jump row rather than flashing past.
+ */
+export function navigateTargetOf(rows: readonly LocalMessage[]): TurnNavigation | null {
+  const changeIds: string[] = [];
+  let target: TurnNavigation | null = null;
+  for (const row of rows) {
+    if (row.payload.kind !== "change" || row.payload.change_kind !== "navigate") continue;
+    changeIds.push(row.payload.change_id);
+    if (target !== null) continue;
+    const path = appPathFromTargetRef(row.payload.target_ref);
+    if (path !== null) target = { changeId: row.payload.change_id, target: path, changeIds };
+  }
+  return target === null ? null : { ...target, changeIds };
+}
+
 export interface AssistantAskInput {
   question: string;
   /** The UI's current route; `project_id` is read off it when it carries one. */

@@ -79,6 +79,7 @@ import {
 import {
   assistantContextOf,
   assistantNotConfigured,
+  navigateTargetOf,
   degradedOf,
   useAssistantChanges,
   useAssistantConversations,
@@ -554,6 +555,46 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * workflow draft is about) — it rides the post body's context, never the
    * visible text.
    */
+  /**
+   * F-1 (deployed exercise 2026-11-11, docs/testing/assistant-exercise-2026-11-11.md):
+   * ADR-0050 Decision 7 says the CLIENT performs a `ui.navigate`, and the turn
+   * logs it as a `navigate` change row whose `target_ref` is the route. Nothing
+   * here read that row, so the answer said "Opened the Operations page." over a
+   * screen that had not moved. Now: when a turn's rows arrive carrying a
+   * navigation the client may perform (api/assistant.ts `navigateTargetOf`
+   * re-checks the shape), this surface performs it — ONCE per change id, held
+   * in a Set so a re-delivered batch, an Undo of the change, or the same thread
+   * opened again cannot move the page a second time.
+   *
+   * What is deliberately NOT here: the transcript READ (`useAssistantMessages`)
+   * never passes through this function, so replaying an old thread does not
+   * navigate anything — the person was asking about last week's work, not
+   * asking to leave this page. And the jump row under the answer stays: it is
+   * the fallback when the person would rather choose the moment, and the only
+   * way to the page when the target was refused above.
+   *
+   * The three sizes need no branch of their own. The popover is independent of
+   * the route, so it stays open over the destination; the side panel keeps its
+   * docked mode for the same reason; and on `/assistant` the route effect above
+   * already drops a full page back to the popover the moment the URL changes,
+   * which is what `Exit full page` does — so navigating IS exiting to the
+   * target.
+   */
+  const navigatedChanges = useRef<Set<string>>(new Set());
+  const performNavigation = useCallback(
+    (rows: AssistantMessage[]) => {
+      const navigation = navigateTargetOf(rows);
+      if (navigation === null) return;
+      // ONCE, keyed by the change row's own id: the id is the server's, so a
+      // re-delivered batch (a Retry that echoed the same rows, the same thread
+      // opened twice in one session) cannot move the page again.
+      if (navigatedChanges.current.has(navigation.changeId)) return;
+      for (const changeId of navigation.changeIds) navigatedChanges.current.add(changeId);
+      navigate(navigation.target);
+    },
+    [navigate],
+  );
+
   const localSeq = useRef(0);
   /**
    * The first message gives a conversation its title (ADR-0050 decision 2), so
@@ -652,6 +693,10 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
               : [{ ...optimistic, local: undefined }];
             return [...rest, ...head, ...result];
           });
+          // F-1: the turn asked to open a page, so the screen moves to it —
+          // after the rows are on screen, which is what makes the answer's own
+          // words ("Opened the Operations page.") true as the person reads them.
+          performNavigation(result);
           // The turn may have named the conversation: the header title and the
           // thread column read it from this list.
           queryClient.invalidateQueries({ queryKey: ASSISTANT_THREADS_KEY });
@@ -691,6 +736,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       mode,
       post,
       location.pathname,
+      performNavigation,
       retireFailedAsks,
     ],
   );
@@ -911,6 +957,9 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           // updated copy; the same row must not stand on screen twice.
           ...result.filter((row) => row.id !== messageId),
         ]);
+        // The rows a confirmed turn appended are that turn's result, so a
+        // navigation they carry is performed exactly as a plain turn's is.
+        performNavigation(result);
       } catch (error) {
         setSendError(failureLineOf(error, failureLine(error, "decision")));
       }

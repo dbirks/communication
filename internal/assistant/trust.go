@@ -58,6 +58,7 @@ var toolClasses = map[string]ToolClass{
 	"pipeline.revisions": ClassRead,
 	"palette.search":     ClassRead,
 	"catchup.brief":      ClassRead,
+	"thread.list":        ClassRead,
 	"draft.get":          ClassRead,
 	"workflow.draft":     ClassRead,
 	"chat.transcript":    ClassRead,

@@ -721,17 +721,31 @@ func TestConversationSystemPromptActsOnEditRequests(t *testing.T) {
 	}
 }
 
-// Deployed exercise 2026-11-11 (prompt 8, "Open the Operations page"): the
-// answer said "Opened the Operations page." while the screen never moved —
-// ui.navigate only puts the page one click away (ADR-0050 Decision 7), so the
-// prompt must say the jump button is the offer, never a completed navigation.
-func TestConversationSystemPromptSaysNavigationIsOnlyAnOffer(t *testing.T) {
+// Deployed exercise 2026-11-11 (prompt 8, "Open the Operations page") had the
+// opposite fault twice over. First the answer said "Opened the Operations page."
+// while nothing moved; the exercise's own fix then wrote the prompt to FORBID
+// that sentence, which was honest only while the client performed no
+// navigation. Finding F-1 closed the behaviour (ADR-0050 Decision 7: the CLIENT
+// navigates), so the prompt now says the truth of the new flow — this turn's
+// ui.navigate DOES move the screen, and only a turn that called it may say so.
+// The jump button survives as the person's own door.
+func TestConversationSystemPromptSaysTheClientPerformsNavigation(t *testing.T) {
 	for _, want := range []string{
-		"ui.navigate only PUTS THE PAGE ONE CLICK AWAY",
-		"never write that you opened, reached or navigated to a page",
+		"the client moves the screen to that page as your answer arrives",
+		"A page you did not navigate to this turn is NOT open",
 	} {
 		if !strings.Contains(conversationSystemPrompt, want) {
-			t.Fatalf("the conversation system prompt must keep a completed navigation out of the answer, missing %q", want)
+			t.Fatalf("the conversation system prompt must tie the claim to a navigation this turn performed, missing %q", want)
+		}
+	}
+	// The old prohibition is gone: it would keep a true sentence out of the
+	// answer, and the deployed run graded that as an answer that did not answer.
+	for _, forbidden := range []string{
+		"never write that you opened, reached or navigated to a page",
+		"ui.navigate only PUTS THE PAGE ONE CLICK AWAY",
+	} {
+		if strings.Contains(conversationSystemPrompt, forbidden) {
+			t.Fatalf("the prompt still carries the pre-F-1 workaround %q", forbidden)
 		}
 	}
 	spec := ""
@@ -741,7 +755,27 @@ func TestConversationSystemPromptSaysNavigationIsOnlyAnOffer(t *testing.T) {
 		}
 	}
 	if !strings.Contains(spec, "jump button") {
-		t.Fatalf("ui.navigate must describe itself as the jump button the person uses, got %q", spec)
+		t.Fatalf("ui.navigate must still name the jump button that stays as the fallback, got %q", spec)
+	}
+	if !strings.Contains(spec, "moves their screen to that page") {
+		t.Fatalf("ui.navigate must describe what the client now does, got %q", spec)
+	}
+}
+
+// Finding F-7: the /threads page, Today's Running-now band and the assistant
+// disagreed about what a queued or interrupted agent thread IS, because the
+// assistant's only thread-shaped noun was "run". The prompt now names the
+// distinction, the tool behind it and the status words the page shows.
+func TestConversationSystemPromptSaysThreadsAreThreads(t *testing.T) {
+	for _, want := range []string{
+		`A THREAD is a one-off chat with an agent`,
+		`thread.list reads the caller's threads`,
+		`running, queued, interrupted, idle, completed`,
+		`an empty run list is NOT an empty thread`,
+	} {
+		if !strings.Contains(conversationSystemPrompt, want) {
+			t.Fatalf("the conversation system prompt must keep threads out of the run vocabulary, missing %q", want)
+		}
 	}
 }
 
