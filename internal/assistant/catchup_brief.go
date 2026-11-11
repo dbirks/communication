@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -106,6 +107,10 @@ type CatchUpHeadlineRow struct {
 	Step         string
 	Failures     int
 	StillFailing bool
+	// State is a broke row's outcome in words — "still failing" or "fixed" —
+	// so a recovered failure can never read as a live one (the eval's finding:
+	// an omitted false still_failing left the model guessing).
+	State string
 }
 
 // CatchUpHeadlineCounts is the numbers block: the arithmetic the old recap had
@@ -173,6 +178,21 @@ type CatchUpHeadline struct {
 var errCatchUpHeadlineOwedMissing = errors.New(
 	"the answer's first sentence does not name the oldest thing waiting on the reader")
 
+// errCatchUpHeadlineFixedAsFailing is the second re-askable defect: the answer
+// quotes a pipeline from the fixed list in a sentence that calls it failing or
+// broken. The usefulness eval caught the model doing exactly this even with the
+// recovered rows in their own section, so the rule is checked, not hoped for.
+var errCatchUpHeadlineFixedAsFailing = errors.New(
+	"the answer calls a recovered (fixed) pipeline failing; say it was fixed, or leave it out")
+
+// catchUpHeadlineFailingWords and catchUpHeadlineRecoveredWords decide whether a
+// sentence describes a failure as live.
+var (
+	catchUpHeadlineFailingWords   = regexp.MustCompile(`(?i)\b(fail(s|ing|ed)?|broken|red|down|erroring)\b`)
+	catchUpHeadlineRecoveredWords = regexp.MustCompile(`(?i)\b(fixed|recovered|green|passing|resolved)\b`)
+	catchUpHeadlineSentenceSplit  = regexp.MustCompile(`[.!?;]\s+`)
+)
+
 // GenerateCatchUpHeadline writes the headline over an assembled brief. It asks
 // the model once, or twice when the first answer broke the one rule that can be
 // repaired by saying so, and returns a typed refusal otherwise. A nil model is
@@ -210,7 +230,7 @@ func GenerateCatchUpHeadline(ctx context.Context, model CatchUpHeadlineModel,
 	if reason == nil {
 		return head, nil
 	}
-	if !errors.Is(reason, errCatchUpHeadlineOwedMissing) {
+	if !errors.Is(reason, errCatchUpHeadlineOwedMissing) && !errors.Is(reason, errCatchUpHeadlineFixedAsFailing) {
 		return CatchUpHeadline{}, catchUpHeadlineRefusal(reason)
 	}
 	// The one defect worth a second completion: an answer that forgot the
@@ -275,6 +295,7 @@ headline rules:
 - Be specific: use counts from numbers and name work by its exact title in double quotes, copied from the DATA block. Never paraphrase a title, never invent a number, a person, a branch, a PR or a project.
 - If needs_you is non-empty, the first sentence must say how many things wait on the reader and name the oldest.
 - If something is still failing, say so and name it.
+- broke lists only what is STILL failing. fixed lists failures that recovered in the window: good news, never call them broken or failing.
 - If nothing happened, say exactly: Quiet stretch: nothing changed in the projects you follow.
 by_project rules:
 - Only when the window is 24h or longer AND two or more projects have rows; otherwise an empty array.
@@ -332,6 +353,7 @@ type catchUpHeadlineDataRow struct {
 	Step         string `json:"step,omitempty"`
 	Failures     int    `json:"failures,omitempty"`
 	StillFailing bool   `json:"still_failing,omitempty"`
+	State        string `json:"state,omitempty"`
 }
 
 // catchUpHeadlineData is the block, in the order the model is told to read it:
@@ -339,14 +361,17 @@ type catchUpHeadlineDataRow struct {
 // running. The JSON key names stay the brief's own, so the section names in the
 // prompt and the names in the block are one vocabulary.
 type catchUpHeadlineData struct {
-	Window   catchUpHeadlineWindowRow  `json:"window"`
-	NeedsYou []catchUpHeadlineDataRow  `json:"needs_you"`
-	Broke    []catchUpHeadlineDataRow  `json:"broke"`
-	HeadsUp  []catchUpHeadlineDataRow  `json:"heads_up"`
-	Shipped  []catchUpHeadlineDataRow  `json:"shipped"`
-	Changes  []catchUpHeadlineDataRow  `json:"changes"`
-	Running  []catchUpHeadlineDataRow  `json:"running_now"`
-	Numbers  catchUpHeadlineNumbersRow `json:"numbers"`
+	Window   catchUpHeadlineWindowRow `json:"window"`
+	NeedsYou []catchUpHeadlineDataRow `json:"needs_you"`
+	Broke    []catchUpHeadlineDataRow `json:"broke"`
+	HeadsUp  []catchUpHeadlineDataRow `json:"heads_up"`
+	Shipped  []catchUpHeadlineDataRow `json:"shipped"`
+	// Fixed holds the broke rows that recovered: kept apart so a recovered
+	// failure cannot be read as a live one (the usefulness eval's finding).
+	Fixed   []catchUpHeadlineDataRow  `json:"fixed"`
+	Changes []catchUpHeadlineDataRow  `json:"changes"`
+	Running []catchUpHeadlineDataRow  `json:"running_now"`
+	Numbers catchUpHeadlineNumbersRow `json:"numbers"`
 }
 
 // catchUpHeadlineSection is one section of the block: the name the prompt calls
@@ -366,6 +391,7 @@ var catchUpHeadlineSections = []catchUpHeadlineSection{
 	{"broke", "B", func(d *catchUpHeadlineData) *[]catchUpHeadlineDataRow { return &d.Broke }},
 	{"heads_up", "H", func(d *catchUpHeadlineData) *[]catchUpHeadlineDataRow { return &d.HeadsUp }},
 	{"shipped", "S", func(d *catchUpHeadlineData) *[]catchUpHeadlineDataRow { return &d.Shipped }},
+	{"fixed", "F", func(d *catchUpHeadlineData) *[]catchUpHeadlineDataRow { return &d.Fixed }},
 	{"changes", "C", func(d *catchUpHeadlineData) *[]catchUpHeadlineDataRow { return &d.Changes }},
 	{"running_now", "R", func(d *catchUpHeadlineData) *[]catchUpHeadlineDataRow { return &d.Running }},
 }
@@ -375,7 +401,7 @@ var catchUpHeadlineSections = []catchUpHeadlineSection{
 // order backwards, with the two lists the sentence does not rank — changes and
 // running work — placed after the shipped rows and before the risky ones).
 // needs_you is absent, on purpose.
-var catchUpHeadlineDropOrder = []string{"shipped", "changes", "running_now", "heads_up", "broke"}
+var catchUpHeadlineDropOrder = []string{"fixed", "shipped", "changes", "running_now", "heads_up", "broke"}
 
 // catchUpHeadlineSectionFor returns one section by key, or nil for a name the
 // block does not have.
@@ -407,7 +433,8 @@ func catchUpHeadlineBlock(brief CatchUpHeadlineBriefData) (string, *catchUpRecap
 		NeedsYou: catchUpHeadlineRows(brief.NeedsYou),
 		Running:  catchUpHeadlineRows(brief.Running),
 		Shipped:  catchUpHeadlineRows(brief.Shipped),
-		Broke:    catchUpHeadlineRows(brief.Broke),
+		Broke:    catchUpHeadlineRows(catchUpHeadlineBrokeRows(brief.Broke, true)),
+		Fixed:    catchUpHeadlineRows(catchUpHeadlineBrokeRows(brief.Broke, false)),
 		HeadsUp:  catchUpHeadlineRows(brief.HeadsUp),
 		Changes:  catchUpHeadlineRows(brief.Changes),
 		Numbers: catchUpHeadlineNumbersRow{
@@ -507,6 +534,7 @@ func catchUpHeadlineRows(in []CatchUpHeadlineRow) []catchUpHeadlineDataRow {
 			Step:         clip(r.Step, catchUpHeadlineStepMaxChars),
 			Failures:     r.Failures,
 			StillFailing: r.StillFailing,
+			State:        r.State,
 		})
 	}
 	return out
@@ -576,10 +604,10 @@ func parseCatchUpHeadline(raw string) (CatchUpHeadline, error) {
 				return CatchUpHeadline{}, errors.New(
 					"the answer carries a by_project line with no project id or no text")
 			}
-			if n := utf8.RuneCountInString(line); n > CatchUpHeadlineLineMaxChars {
-				return CatchUpHeadline{}, fmt.Errorf(
-					"the answer's by_project line is %d characters, over the %d it may hold",
-					n, CatchUpHeadlineLineMaxChars)
+			if utf8.RuneCountInString(line) > CatchUpHeadlineLineMaxChars {
+				// An over-long project line is dropped, not fatal: losing the
+				// whole headline over one line was the eval's second finding.
+				continue
 			}
 			head.ByProject = append(head.ByProject, CatchUpHeadlineProjectLine{ProjectID: id, Line: line})
 		}
@@ -636,6 +664,18 @@ func validateCatchUpHeadline(head CatchUpHeadline, brief CatchUpHeadlineBriefDat
 		// never a re-echo of model prose (the recap's refusal reason).
 		return head, fmt.Errorf("%w (%q)", errCatchUpHeadlineOwedMissing, oldest)
 	}
+	for _, r := range brief.Broke {
+		if r.StillFailing {
+			continue
+		}
+		for _, sentence := range catchUpHeadlineSentenceSplit.Split(head.Text, -1) {
+			if catchUpHeadlineNames(r.Title, sentence) &&
+				catchUpHeadlineFailingWords.MatchString(sentence) &&
+				!catchUpHeadlineRecoveredWords.MatchString(sentence) {
+				return head, fmt.Errorf("%w (%q)", errCatchUpHeadlineFixedAsFailing, r.Title)
+			}
+		}
+	}
 	return head, nil
 }
 
@@ -678,3 +718,15 @@ func catchUpHeadlineRepairTurn(user, raw, reason string) string {
 }
 
 func joinSpaces(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// catchUpHeadlineBrokeRows splits the brief's broke section: still failing rows
+// stay in broke, recovered ones go to the block's own fixed list.
+func catchUpHeadlineBrokeRows(rows []CatchUpHeadlineRow, stillFailing bool) []CatchUpHeadlineRow {
+	out := []CatchUpHeadlineRow{}
+	for _, r := range rows {
+		if r.StillFailing == stillFailing {
+			out = append(out, r)
+		}
+	}
+	return out
+}

@@ -352,6 +352,14 @@ func cuParseJudgeAnswer(raw string) (cuEvalScore, error) {
 	if err != nil {
 		return cuEvalScore{}, err
 	}
+	// A judge that talks around its object is still graded: take the outermost
+	// {...} and turn raw newlines into spaces (the second eval run lost two
+	// windows to leading prose and to a raw newline inside "why"). The scores
+	// themselves are still parsed strictly below.
+	if i, j := strings.Index(s, "{"), strings.LastIndex(s, "}"); i >= 0 && j > i {
+		s = s[i : j+1]
+	}
+	s = strings.NewReplacer("\r\n", " ", "\n", " ").Replace(s)
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.DisallowUnknownFields()
 	var a struct {

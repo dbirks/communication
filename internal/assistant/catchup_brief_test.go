@@ -213,14 +213,34 @@ func TestCatchUpHeadlineAnswerMustBeExactlyOneObject(t *testing.T) {
 		"over length":    `{"headline":"` + long + `","by_project":[]}`,
 		"line no text":   `{"headline":"2 wait: \"Rate limiter gate\".","by_project":[{"project_id":"prj-1"}]}`,
 		"line no id":     `{"headline":"2 wait: \"Rate limiter gate\".","by_project":[{"line":"All quiet here."}]}`,
-		"line too long": `{"headline":"2 wait: \"Rate limiter gate\".","by_project":[{"project_id":"prj-1",` +
-			`"line":"` + strings.Repeat("y", CatchUpHeadlineLineMaxChars+1) + `"}]}`,
 	}
 	for name, raw := range cases {
 		m, brief := newHeadline(raw)
 		if _, err := GenerateCatchUpHeadline(context.Background(), m, brief); err == nil {
 			t.Errorf("%s: answer %q was accepted", name, raw)
 		}
+	}
+}
+
+// An over-long by_project line is dropped, and the headline survives: losing the
+// whole headline over one line was the usefulness eval's second finding.
+func TestCatchUpHeadlineOverLongProjectLineIsDroppedNotFatal(t *testing.T) {
+	raw := `{"headline":"2 wait: \"Rate limiter gate\".","by_project":[{"project_id":"prj-1",` +
+		`"line":"` + strings.Repeat("y", CatchUpHeadlineLineMaxChars+1) + `"}]}`
+	m, brief := newHeadline(raw)
+	got, err := GenerateCatchUpHeadline(context.Background(), m, brief)
+	if err != nil {
+		t.Fatalf("an over-long project line refused the headline: %v", err)
+	}
+	if got.Text == "" || len(got.ByProject) != 0 {
+		t.Fatalf("got %+v, want the headline kept and the long line dropped", got)
+	}
+}
+
+// A recovered failure is labelled in words so the model can't call it failing.
+func TestCatchUpHeadlineBlockLabelsBrokeRowState(t *testing.T) {
+	if !strings.Contains(catchUpHeadlineSystemPrompt, `fixed lists failures that recovered`) {
+		t.Fatal("the prompt lost the fixed-state rule")
 	}
 }
 
@@ -572,5 +592,35 @@ func TestCatchUpHeadlineQuotingAShownProjectIsNotInvention(t *testing.T) {
 		` \"Quantum Lab\".","by_project":[]}`)
 	if _, err := GenerateCatchUpHeadline(context.Background(), m2, brief2); err == nil {
 		t.Error("a headline naming a project the block never showed was accepted")
+	}
+}
+
+// A headline that calls a recovered pipeline failing is re-asked once, then
+// refused (the usefulness eval's 24h finding).
+func TestCatchUpHeadlineFixedPipelineCalledFailingIsReAsked(t *testing.T) {
+	brief := CatchUpHeadlineBriefData{
+		WindowKey: "24h",
+		Broke: []CatchUpHeadlineRow{{
+			Title: "payments-api CI", Project: "payments-api", ProjectID: "prj-1",
+			Failures: 2, StillFailing: false, State: "fixed",
+		}},
+	}
+	bad := `{"headline":"CI is failing in \"payments-api CI\".","by_project":[]}`
+	good := `{"headline":"\"payments-api CI\" failed twice and was fixed.","by_project":[]}`
+	head, _, _, _, err := catchUpHeadlineBlock(brief)
+	if err != nil || head == "" {
+		t.Fatalf("block: %v", err)
+	}
+	m := &headlineModel{answers: []string{bad, good}}
+	got, err := GenerateCatchUpHeadline(context.Background(), m, brief)
+	if err != nil {
+		t.Fatalf("re-ask did not recover: %v", err)
+	}
+	if !strings.Contains(got.Text, "was fixed") || m.calls != 2 {
+		t.Fatalf("got %q after %d calls, want the repaired answer after 2", got.Text, m.calls)
+	}
+	m = &headlineModel{answers: []string{bad, bad}}
+	if _, err := GenerateCatchUpHeadline(context.Background(), m, brief); err == nil {
+		t.Fatal("a headline that keeps calling a fixed pipeline failing was accepted")
 	}
 }

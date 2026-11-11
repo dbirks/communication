@@ -143,6 +143,18 @@ failure is not the headline's shape, it is one fact the block never sent.
 
 <!-- catch-up-eval:results:start -->
 
+## Run 2026-11-11 16:10 UTC — model `qwen3-8-flash-next`, judge `qwen3-8-flash-next`
+
+| window | headline | needs_you | still_failing | no_invention | priority | concise | why |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 15m | 1 item awaits your action: "Rotate the payments webhook secret". "Add idempotency keys to refunds" was merged and "Fix flaky checkout test" is in progress. | 5 | 5 | 5 | 5 | 5 | The headline correctly prioritizes the pending approval, accurately lists the shipped PR and running task, avoids inventing details, and is concise. |
+| 1h | 1 item needs your approval: "Rotate the payments webhook secret". "Add idempotency keys to refunds" shipped. | 5 | 5 | 5 | 5 | 5 | The headline correctly identifies the single pending approval and the shipped PR, prioritizes the action item, accurately reflects that no tests are currently failing (the previous failure was fixed), and contains no invented details while remaining concise. |
+| 24h-1d | 1 approval awaits you: "Rotate the payments webhook secret". Check risky pushes "Pin the shared lint config on main" and "Backfill the ledger accounts". | 5 | 5 | 5 | 5 | 5 | The headline correctly identifies the single item needing user action, accurately reports no active failures, avoids inventing facts, prioritizes the approval over risky heads-ups, and remains concise. |
+| 2d-3d | 2 items wait on you: start with "Alert routing: one tree or two?". "payments-api CI" and "web-app CI" recovered, and "Add idempotency keys to refunds" shipped. | 5 | 5 | 5 | 5 | 5 | The headline accurately prioritizes the two items waiting on the reader, correctly notes that the CI failures are resolved (none still failing), and maintains strict factual adherence and conciseness. |
+| 7d | 2 items await your action, starting with "Alert routing: one tree or two?". Payments CI failures have recovered. | 5 | 5 | 5 | 5 | 5 | The headline correctly counts the two pending items, prioritizes them, notes that failures are resolved (accurate since still_failing is false for all), and remains concise and accurate. |
+
+Model `qwen3-8-flash-next`, judge `qwen3-8-flash-next`; mean 5.00 over 25 graded scores; rule: mean ≥ 4.0 with no criterion at 1 — **PASS**.
+
 ## Run 2026-11-11 16:02 UTC — model `qwen3-8-flash-next`, judge `qwen3-8-27b-amd`
 
 | window | headline | needs_you | still_failing | no_invention | priority | concise | why |

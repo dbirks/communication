@@ -925,6 +925,7 @@ func catchUpHeadlineData(b CatchUpBrief) assistant.CatchUpHeadlineBriefData {
 			Title: br.Title, Kind: br.ErrorClass,
 			Project: br.Project.Name, ProjectID: br.Project.ID,
 			StillFailing: br.StillFailing, Failures: br.Failures,
+			State: catchUpBriefBrokeState(br.StillFailing),
 		})
 	}
 	for _, hu := range b.HeadsUp {
@@ -1228,4 +1229,13 @@ func (h *catchUpHandlers) srvLogger() *slog.Logger {
 		return nil
 	}
 	return h.srv.logger
+}
+
+// catchUpBriefBrokeState is a broke row's outcome in the words the headline
+// block carries (ADR-0081 eval, docs/testing/catch-up-eval.md).
+func catchUpBriefBrokeState(stillFailing bool) string {
+	if stillFailing {
+		return "still failing"
+	}
+	return "fixed"
 }
