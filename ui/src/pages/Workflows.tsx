@@ -241,7 +241,9 @@ function StarterCard({
         {blank ? BLANK_CARD_LINE : template.description}
       </span>
       {chain ? (
-        <span className="mt-auto block w-full min-w-0 truncate pt-[8px] font-mono text-[11px] text-faint">{chain}</span>
+        <span className="mt-auto block w-full min-w-0 truncate pt-[8px] font-mono text-[11px] text-faint">
+          {chain}
+        </span>
       ) : null}
       {chips.length > 0 || template.needs.length > 0 ? (
         <span className="mt-[8px] flex flex-wrap gap-[4px]">
