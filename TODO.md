@@ -142,7 +142,7 @@ that can be attached to different ACP agent setups. Today the spec
 - [x] Write an ADR with a design for "collections" as a first-class library
       item. A profile references one or more collections; the worker resolves
       them into one APM manifest and lock per attempt and records the digest.
-      Cover ordering and conflict rules and per-launcher targeting.
+      Cover ordering and conflict rules and per-launcher targeting. Evidence: ADR-0084, 62c7d48.
 - [ ] Implement it: a collections CRUD API, the UI in Library or Agents for
       attaching collections to an agent profile, and worker resolution with
       tests (spec test 7: two different skill sets, isolated between sessions).
