@@ -85,7 +85,7 @@ export function setupRowsOf(status: AssistantSystemStatus): SetupRow[] {
       : {
           state: "warn",
           label: "No decision model",
-          meta: "fixed table decides",
+          meta: "built-in rules flag risky changes",
           action: { label: "Set up", prompt: "how do I set up the decision model?" },
         },
   );

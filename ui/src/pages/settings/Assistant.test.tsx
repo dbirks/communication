@@ -192,11 +192,11 @@ describe("Settings → Assistant decision model line", () => {
     );
   });
 
-  it("says the fixed table decides when none is set up", async () => {
+  it("says built-in rules flag risky changes when none is set up", async () => {
     mount([{ path: STATUS_PATH, body: statusBare() }]);
     await waitFor(() =>
       expect(screen.getByTestId("settings-assistant-decision-model").textContent).toBe(
-        "Decision model: none set up · the fixed table decides",
+        "Decision model: none set up · built-in rules flag risky changes",
       ),
     );
   });

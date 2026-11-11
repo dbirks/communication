@@ -14,9 +14,9 @@ describe("types (ADR-0050 mirror)", () => {
   });
 
   it("maps trust levels to the lowercase pill labels from the shots", () => {
-    expect(trustPillLabel("ask_all")).toBe("ask every change");
-    expect(trustPillLabel("ask_risky")).toBe("ask when risky");
-    expect(trustPillLabel("no_ask")).toBe("don't ask");
+    expect(trustPillLabel("ask_all")).toBe("Ask every change");
+    expect(trustPillLabel("ask_risky")).toBe("Ask when risky");
+    expect(trustPillLabel("no_ask")).toBe("Don't ask");
   });
 
   it("says what each level does, and promises no undo anywhere (§4)", () => {

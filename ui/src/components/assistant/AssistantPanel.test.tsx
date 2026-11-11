@@ -151,7 +151,7 @@ describe("AssistantPanel (popover)", () => {
     expect(header.textContent).not.toContain("▾");
     expect(header.textContent).not.toContain("Recent");
     // Handoff §1: the trust pill lives in the composer box, not the header.
-    expect(screen.getByTestId("assistant-pill").textContent).toContain("ask when risky");
+    expect(screen.getByTestId("assistant-pill").textContent).toContain("Ask when risky");
     expect(
       screen.getByTestId("assistant-panel-header").contains(screen.getByTestId("assistant-pill")),
     ).toBe(false);

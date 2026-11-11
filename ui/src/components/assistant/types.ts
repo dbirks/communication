@@ -251,15 +251,15 @@ export const TRUST_LEVELS: ReadonlyArray<{
 /** Default trust level (ADR-0050 Decision 4: `ask_risky` is the default). */
 export const DEFAULT_TRUST_LEVEL: TrustLevel = "ask_risky";
 
-/** Lowercase label shown on the composer pill (e.g. `ask when risky`). */
+/** Sentence-case label shown on the composer pill (e.g. `Ask when risky`), matching its sibling pills. */
 export function trustPillLabel(level: TrustLevel): string {
   switch (level) {
     case "ask_all":
-      return "ask every change";
+      return "Ask every change";
     case "ask_risky":
-      return "ask when risky";
+      return "Ask when risky";
     case "no_ask":
-      return "don't ask";
+      return "Don't ask";
   }
 }
 

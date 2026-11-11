@@ -21,7 +21,7 @@ describe("TrustPill", () => {
   it("shows the current level in lowercase with the Tabler chevron (no ▾ glyph)", () => {
     render(<TrustPill value="ask_risky" onChange={() => {}} />);
     const pill = screen.getByTestId("assistant-pill");
-    expect(pill.textContent).toContain("ask when risky");
+    expect(pill.textContent).toContain("Ask when risky");
     expect(pill.textContent).not.toContain("▾");
     expect(pill.querySelector("svg")).toBeTruthy();
     expect(pill.getAttribute("aria-expanded")).toBe("false");
@@ -75,9 +75,9 @@ describe("TrustPill", () => {
 
   it("labels every level the handoff way", () => {
     render(<TrustPill value="ask_all" onChange={() => {}} />);
-    expect(screen.getByTestId("assistant-pill").textContent).toContain("ask every change");
+    expect(screen.getByTestId("assistant-pill").textContent).toContain("Ask every change");
     render(<TrustPill value="no_ask" onChange={() => {}} />);
-    expect(screen.getAllByTestId("assistant-pill")[1].textContent).toContain("don't ask");
+    expect(screen.getAllByTestId("assistant-pill")[1].textContent).toContain("Don't ask");
   });
 
   it("opens a menu with the three levels and radio semantics", () => {

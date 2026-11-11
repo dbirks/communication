@@ -73,7 +73,7 @@ describe("SetupChecklist", () => {
     expect(seen.map((row) => [row.textContent, stateOf(row)])).toEqual([
       ["Chat modelqwen3-8-flash-next", "ok"],
       ["No speech modelSet up", "todo"],
-      ["No decision modelfixed table decidesSet up", "warn"],
+      ["No decision modelbuilt-in rules flag risky changesSet up", "warn"],
       ["No workers online", "warn"],
       ["No GitHub credentialSet up", "warn"],
       ["No projects yetAdd one", "todo"],

@@ -342,7 +342,7 @@ describe("the page-context button and menu (handoff §3)", () => {
 describe("the trust menu (handoff §4)", () => {
   it("lists the three levels with the handoff's exact copy and no undo promise", () => {
     renderComposer();
-    expect(screen.getByTestId("assistant-pill").textContent).toContain("ask when risky");
+    expect(screen.getByTestId("assistant-pill").textContent).toContain("Ask when risky");
     fireEvent.click(screen.getByTestId("assistant-pill"));
     const menu = screen.getByTestId("assistant-pill-menu");
     expect(menu.textContent).toContain("Ask before every changeYou confirm every change.");

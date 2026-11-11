@@ -151,7 +151,7 @@ function DecisionModelLine() {
     >
       {judge.configured
         ? `Decision model: ${judge.model} · if it's down, it asks you`
-        : "Decision model: none set up · the fixed table decides"}
+        : "Decision model: none set up · built-in rules flag risky changes"}
     </p>
   );
 }
