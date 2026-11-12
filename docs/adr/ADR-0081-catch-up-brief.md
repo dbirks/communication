@@ -44,7 +44,7 @@ The vocabulary becomes `15m | 1h | 6h | 24h | 2d | 7d | unseen`. 15m covers "the
 
 - The `unseen` window starts at the reader's last catch-up visit. If there is no visit, it starts 7d ago.
 - The page's chips show all seven windows. The suggested chip keeps the existing median-gap rule, extended
-  downwards: a gap under 2h suggests `1h`, and a gap under 30m suggests `15m`.
+  downwards: a median gap under 2h suggests `1h`. Visits less than 10 minutes apart count as one sitting before the median is taken, so a burst of reloads never makes a daily reader look like a minute-by-minute one; `15m` is a chip the reader picks, never a default.
 
 ### `GET /api/v1/catch-up/brief?window=<w>[&projects=<id,...>]`
 Every list is scoped to the caller's member projects, using the same authorization as `run.list` and

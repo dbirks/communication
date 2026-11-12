@@ -544,7 +544,11 @@ func TestCatchUpVisitWindowBands(t *testing.T) {
 		// daily reader, and opening their page on 24 hours buries the one thing
 		// they might have missed under a day of already-known work.
 		{"hourly", []time.Time{older(time.Hour), older(2 * time.Hour), older(3 * time.Hour)}, CatchUpWindowOneHour},
-		{"every few minutes", []time.Time{older(4 * time.Minute), older(10 * time.Minute), older(16 * time.Minute)}, CatchUpWindowFifteenMin},
+		// A burst of reloads is one sitting (catchUpSessionGap), so a daily
+		// reader who opened the page five times this minute is still daily — the
+		// emulator's 8a journey (five daily stamps plus its own page loads).
+		{"daily with a burst of reloads", []time.Time{older(time.Minute), older(2 * time.Minute), older(3 * time.Minute),
+			older(4 * time.Minute), older(24 * time.Hour), older(48 * time.Hour), older(72 * time.Hour), older(96 * time.Hour)}, CatchUpWindowDaily},
 		{"daily", []time.Time{older(2 * time.Hour), older(26 * time.Hour), older(50 * time.Hour)}, CatchUpWindowDaily},
 		{"every other day", []time.Time{older(40 * time.Hour), older(88 * time.Hour), older(136 * time.Hour)}, CatchUpWindowTwoDay},
 		{"three days", []time.Time{older(60 * time.Hour), older(132 * time.Hour)}, CatchUpWindowTwoDay},
@@ -555,6 +559,10 @@ func TestCatchUpVisitWindowBands(t *testing.T) {
 		if got.Window == nil || *got.Window != tc.want {
 			t.Errorf("%s: window = %v, want %s", tc.name, got.Window, tc.want)
 		}
+	}
+	// Visits that are all one sitting carry no interval at all.
+	if got := catchUpSuggestion([]time.Time{older(4 * time.Minute), older(10 * time.Minute), older(13 * time.Minute)}, now); got.Window != nil {
+		t.Errorf("one sitting: window = %v, want null", *got.Window)
 	}
 	if got := catchUpSuggestion(nil, now); got.Window != nil {
 		t.Errorf("no visits: window = %v, want null", *got.Window)

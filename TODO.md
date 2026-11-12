@@ -287,6 +287,14 @@ that can be attached to different ACP agent setups. Today the spec
       w-full min-w-0 truncate). (c) The W7 Ops gate looked for the old QUEUE labels ("attempts queued"…); the gate
       and its unit tests now use the redesigned terms (1634 gate-logic tests OK). github-loop now passes.
 
+- [x] Acceptance 43113231419 (31c2569) attempt 1: the emulator's 8a journey failed. The extended suggestion rule
+      read a burst of page loads as a minute-by-minute reader ("five daily stamps", visits_per_week=12, suggested
+      something other than 24h). Fixed: visits under 10 minutes apart are one sitting, and 15m is never a default
+      (TestCatchUpVisitWindowBands "daily with a burst of reloads", ADR-0081 updated). The other failures in that
+      run (lab-e2e 4, fence C4e, core-a C1c/C9g/C10c) were all real-model agent turns hitting the Collective at
+      capacity: 429 "backend at capacity" on direct probes at the time, and harness logs saying "never recovered its
+      provider transport".
+
 ## Done when
 - [ ] Every box above is checked with evidence.
 - [ ] CI and Acceptance are green on the final SHA.

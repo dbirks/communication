@@ -1354,6 +1354,10 @@ const (
 	CatchUpWindowOneHour    = "1h"
 )
 
+// catchUpSessionGap is the shortest gap between two visits that counts as two
+// separate sittings for the suggestion.
+const catchUpSessionGap = 10 * time.Minute
+
 // catchUpSuggestion infers the window from the reader's own visit
 // stamps, newest first as the store returns them. Fewer than two visits is no
 // interval at all, so `window` is null and the UI keeps whatever it was told to
@@ -1367,9 +1371,22 @@ func catchUpSuggestion(visits []time.Time, now time.Time) CatchUpVisitSuggestion
 	}
 	ordered := append([]time.Time(nil), visits...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].After(ordered[j]) })
-	gaps := make([]time.Duration, 0, len(ordered)-1)
-	for i := 1; i < len(ordered); i++ {
-		gap := ordered[i-1].Sub(ordered[i])
+	// Visits closer together than catchUpSessionGap are one sitting (a reload,
+	// a second tab, a click away and back), not separate catch-ups: collapsing
+	// them keeps a burst of page loads from dragging a daily reader's median
+	// down to minutes (the emulator's 8a journey caught exactly that).
+	sessions := []time.Time{ordered[0]}
+	for _, v := range ordered[1:] {
+		if sessions[len(sessions)-1].Sub(v) >= catchUpSessionGap {
+			sessions = append(sessions, v)
+		}
+	}
+	if len(sessions) < 2 {
+		return CatchUpVisitSuggestion{Window: nil, VisitsPerWeek: perWeek}
+	}
+	gaps := make([]time.Duration, 0, len(sessions)-1)
+	for i := 1; i < len(sessions); i++ {
+		gap := sessions[i-1].Sub(sessions[i])
 		if gap < 0 {
 			gap = 0
 		}
@@ -1379,11 +1396,11 @@ func catchUpSuggestion(visits []time.Time, now time.Time) CatchUpVisitSuggestion
 	median := gaps[len(gaps)/2]
 	name := CatchUpWindowWeekly
 	switch {
-	// ADR-0081's downward arms: an engineer who checks in every few minutes is
-	// not a daily reader, and opening their page on 24 hours buries the one
-	// thing they might have missed under a day of already-known work.
-	case median < 30*time.Minute:
-		name = CatchUpWindowFifteenMin
+	// ADR-0081's downward arm: an engineer who checks in every hour or so is not
+	// a daily reader, and opening their page on 24 hours buries the one thing
+	// they might have missed under a day of already-known work. (15m stays a
+	// chip the reader picks; sittings are at least catchUpSessionGap apart, so
+	// a median under 30 minutes is too thin a signal to default to it.)
 	case median < 2*time.Hour:
 		name = CatchUpWindowOneHour
 	case median < 36*time.Hour:
