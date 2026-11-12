@@ -205,7 +205,7 @@ jobs:
       # IS the pins (any version bump in worker/Dockerfile changes it).
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -217,7 +217,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
@@ -405,7 +405,7 @@ jobs:
       # GitHub release CDN. Verification (sha256sum -c) is unchanged.
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -417,7 +417,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
@@ -677,7 +677,7 @@ jobs:
       # them — a CDN 504 mid-loop no longer resets a pass's clock.
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -689,7 +689,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
@@ -803,7 +803,7 @@ jobs:
       # Worker-image build hardening (see lab-e2e's identical step).
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -815,7 +815,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}

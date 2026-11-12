@@ -120,7 +120,7 @@ jobs:
       # "Install pinned apm (real APM resolve tests)").
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -132,7 +132,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
@@ -701,7 +701,7 @@ jobs:
       # worker behind a profile, so neither builds the worker image.
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -713,7 +713,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
