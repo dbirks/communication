@@ -319,6 +319,15 @@ that can be attached to different ACP agent setups. Today the spec
       single failure in that group, with no add-a-repo error; I didn't capture its output, and I'm treating it
       as model noise.
 
+- [ ] Acceptance 43152289714 (nightly, 6db2e14) failed assistant-handoff:434 (credentials answer). The model called
+      credential.list, then ui.navigate to the secrets page, and ended on "I've opened the Secrets page…" without
+      naming the credential, despite the prompt rule from 934d380 (also seen in 42799969404). Owner decision: re-ask
+      on unanswered turns. When a turn ends on an empty reply, or only on a navigation acknowledgement after a
+      question, the server sends one fixed nudge and runs one more model step (internal/assistant/reask.go,
+      RunTurn; reask_test.go and runner_test.go cover credentials→navigate→re-ask, empty→re-ask, a navigate
+      request with no re-ask, a normal answer, one re-ask at most, and the exhausted-budget case). The same commit
+      makes the thread.list fixture rows relative to now: the test hard-coded 2026-11-11 and broke the next day.
+
 ## Done when
 - [ ] Every box above is checked with evidence.
 - [ ] CI and Acceptance are green on the final SHA.

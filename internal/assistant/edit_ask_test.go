@@ -190,7 +190,8 @@ func TestRunnerNudgeStillGatesUnderAskAll(t *testing.T) {
 func TestFailedTurnRollsBackAppliedDraftEdits(t *testing.T) {
 	model := newFakeModel(t,
 		step{toolCalls: []toolCallRequest{editApplyCall()}},
-		step{text: ""}, // the post-edit completion carried no answer: the turn fails
+		step{text: ""}, // the post-edit completion carried no answer: one re-ask
+		step{text: ""}, // the re-asked reply carried none either: the turn fails
 	)
 	draft := newFakeDraftService()
 	r := newMatrixRunner(t, model, draft, nil)

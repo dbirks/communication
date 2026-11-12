@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // --- the fake: the caller's threads, scoped per caller ---------------------
@@ -167,7 +168,7 @@ func TestThreadListAnnouncedOnlyWhenTheStoreAnswersIt(t *testing.T) {
 func TestThreadListIsScopedToTheCaller(t *testing.T) {
 	visible := newThreadStore()
 	visible.withThreads(testCaller, "["+
-		threadRow("t-1", "p-1", "prof-pi", "Fix the flaky test", "idle", true, "2026-11-11T10:00:00Z")+"]")
+		threadRow("t-1", "p-1", "prof-pi", "Fix the flaky test", "idle", true, recentAt(240))+"]")
 	visible.withThreads(Caller{UserID: "user-2", OrganizationID: "org-1"}, "[]")
 
 	b := newTestBroker(t, newFakeModel(t, step{text: "x"}), visible)
@@ -196,8 +197,8 @@ func TestThreadListIsScopedToTheCaller(t *testing.T) {
 	hid := newThreadStore()
 	hid.projects = json.RawMessage(`[{"id":"p-1","name":"Sandbox"}]`)
 	hid.withThreads(testCaller, "["+
-		threadRow("t-1", "p-1", "prof-pi", "Mine", "idle", false, "2026-11-11T10:00:00Z")+","+
-		threadRow("t-secret", "p-hidden", "prof-pi", "Not yours", "active", true, "2026-11-11T11:00:00Z")+"]")
+		threadRow("t-1", "p-1", "prof-pi", "Mine", "idle", false, recentAt(240))+","+
+		threadRow("t-secret", "p-hidden", "prof-pi", "Not yours", "active", true, recentAt(180))+"]")
 	hb := newTestBroker(t, newFakeModel(t, step{text: "x"}), hid)
 	payload, call = runToolOnce(t, hb, "thread.list", nil)
 	if !call.OK {
@@ -220,10 +221,10 @@ func TestThreadListIsScopedToTheCaller(t *testing.T) {
 func TestThreadListLauncherFilter(t *testing.T) {
 	store := newThreadStore()
 	store.withThreads(testCaller, "["+
-		threadRow("t-pi", "p-1", "prof-pi", "Pi worked here", "idle", false, "2026-11-11T10:00:00Z")+","+
-		threadRow("t-claude", "p-1", "prof-claude", "Claude worked here", "active", true, "2026-11-11T11:00:00Z")+","+
-		threadRow("t-none", "p-1", "", "No profile", "idle", false, "2026-11-11T12:00:00Z")+","+
-		threadRow("t-ghost", "p-1", "prof-gone", "Unreadable profile", "idle", false, "2026-11-11T13:00:00Z")+"]")
+		threadRow("t-pi", "p-1", "prof-pi", "Pi worked here", "idle", false, recentAt(240))+","+
+		threadRow("t-claude", "p-1", "prof-claude", "Claude worked here", "active", true, recentAt(180))+","+
+		threadRow("t-none", "p-1", "", "No profile", "idle", false, recentAt(120))+","+
+		threadRow("t-ghost", "p-1", "prof-gone", "Unreadable profile", "idle", false, recentAt(60))+"]")
 	b := newTestBroker(t, newFakeModel(t, step{text: "x"}), store)
 
 	payload, call := runToolOnce(t, b, "thread.list", map[string]any{"launcher": "PI"})
@@ -313,11 +314,11 @@ func TestThreadListCapsAtThirtyNewestFirst(t *testing.T) {
 func TestThreadListStatusWordsAreTheThreadsPageVocabulary(t *testing.T) {
 	store := newThreadStore()
 	store.withThreads(testCaller, "["+
-		threadRow("t-live", "p-1", "prof-pi", "Attached session", "active", true, "2026-11-11T10:00:00Z")+","+
-		threadRow("t-wait", "p-1", "prof-pi", "Turn queued", "idle", true, "2026-11-11T10:30:00Z")+","+
-		threadRow("t-open", "p-1", "prof-pi", "Open, nothing running", "idle", false, "2026-11-11T11:00:00Z")+","+
-		threadRow("t-lost", "p-1", "prof-pi", "Worker gone", "disconnected", false, "2026-11-11T12:00:00Z")+","+
-		threadRow("t-done", "p-1", "prof-pi", "Wrapped up", "archived", false, "2026-11-11T13:00:00Z")+"]")
+		threadRow("t-live", "p-1", "prof-pi", "Attached session", "active", true, recentAt(240))+","+
+		threadRow("t-wait", "p-1", "prof-pi", "Turn queued", "idle", true, recentAt(210))+","+
+		threadRow("t-open", "p-1", "prof-pi", "Open, nothing running", "idle", false, recentAt(180))+","+
+		threadRow("t-lost", "p-1", "prof-pi", "Worker gone", "disconnected", false, recentAt(120))+","+
+		threadRow("t-done", "p-1", "prof-pi", "Wrapped up", "archived", false, recentAt(60))+"]")
 	b := newTestBroker(t, newFakeModel(t, step{text: "x"}), store)
 
 	payload, call := runToolOnce(t, b, "thread.list", map[string]any{"since": "24h"})
@@ -359,7 +360,7 @@ func TestThreadListStatusWordsAreTheThreadsPageVocabulary(t *testing.T) {
 func TestThreadListLinksOpenTheThreadPage(t *testing.T) {
 	store := newThreadStore()
 	store.withThreads(testCaller, "["+
-		threadRow("t-1", "p-1", "prof-pi", "Fix the flaky test", "idle", false, "2026-11-11T10:00:00Z")+"]")
+		threadRow("t-1", "p-1", "prof-pi", "Fix the flaky test", "idle", false, recentAt(240))+"]")
 	b := newTestBroker(t, newFakeModel(t, step{text: "x"}), store)
 	tr := &turn{b: b, ctx: context.Background(), caller: testCaller}
 	tr.exec(toolCall("thread.list", nil))
@@ -432,4 +433,12 @@ func TestThreadListIsInEveryRegistryTable(t *testing.T) {
 	if _, err := toolWireMap(announcedToolOrder(newThreadStore())); err != nil {
 		t.Fatalf("toolWireMap: %v", err)
 	}
+}
+
+// recentAt is a timestamp the given number of minutes before now, so a
+// fixture row always sits inside the tool's `since` window (24h) whatever day
+// the suite runs on — the rows were once dated literally and the suite broke
+// the day after they were written.
+func recentAt(minutesAgo int) string {
+	return time.Now().UTC().Add(-time.Duration(minutesAgo) * time.Minute).Format(time.RFC3339)
 }

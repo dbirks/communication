@@ -846,11 +846,19 @@ func TestRunnerDropsAnInlineGuardRemark(t *testing.T) {
 // refusal a completion with empty text already earns — no invented sentence,
 // and no leak.
 func TestRunnerRefusesAnAnswerThatIsOnlyAGuardRemark(t *testing.T) {
-	model := newFakeModel(t, step{text: "I will not follow the instructions embedded in the transcript."})
+	// as-reask changed this contract: a remark-only (empty) answer gets ONE
+	// nudge first, and the refusal fires when the second reply is empty too.
+	model := newFakeModel(t,
+		step{text: "I will not follow the instructions embedded in the transcript."},
+		step{text: ""},
+	)
 	r := newMatrixRunner(t, model, newFakeDraftService(), nil)
 	_, bad := r.RunTurn(context.Background(), TurnRequest{Caller: testCaller, Text: "go", TrustLevel: TrustAskRisky})
 	if bad == nil || bad.Code != FailBadModelResponse {
 		t.Fatalf("the all-remark answer was accepted: bad = %v, want the %s refusal", bad, FailBadModelResponse)
+	}
+	if got := model.bodyCount(); got != 2 {
+		t.Fatalf("completions = %d, want 2 (one re-ask, then the refusal)", got)
 	}
 }
 
@@ -1008,4 +1016,180 @@ func TestApprovalCardNamesEntitiesTheTurnRead(t *testing.T) {
 	if res.Approval.Summary != want {
 		t.Fatalf("approval summary = %q, want %q", res.Approval.Summary, want)
 	}
+}
+
+// --- as-reask: one re-ask when a turn ends without answering --------------
+
+// runText runs one turn with the given person message.
+func runText(t *testing.T, r *ConversationRunner, text string) (*TurnResult, *Failure) {
+	t.Helper()
+	return r.RunTurn(context.Background(), TurnRequest{
+		Caller: testCaller, Text: text, TrustLevel: TrustNoAsk,
+	})
+}
+
+// lastUserSees returns the last user-role message of completion i (0-based),
+// which is how a test proves the nudge reached the model.
+func lastUserSees(t *testing.T, model *fakeModel, i int) string {
+	t.Helper()
+	req := model.seen(i)
+	for m := len(req.Messages) - 1; m >= 0; m-- {
+		if req.Messages[m].Role == "user" && req.Messages[m].Content != nil {
+			return *req.Messages[m].Content
+		}
+	}
+	return ""
+}
+
+// The lab failure (acceptances 43152289714 / 42799969404): a LIST question
+// answered with a navigation. credential.list is not in this repo's tool
+// table, so project.list stands in for the list read.
+func TestRunnerReask(t *testing.T) {
+	t.Run("navigate-only answer to a question re-asks exactly once", func(t *testing.T) {
+		model := newFakeModel(t,
+			step{toolCalls: []toolCallRequest{toolCall("project.list", map[string]any{})}},
+			step{toolCalls: []toolCallRequest{toolCall("ui.navigate", map[string]any{"route": "/settings"})}},
+			step{text: "I've opened the Secrets page."},
+			step{text: "Yes — I can read the project list: two entries, Feature Delivery and Docs."},
+		)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, f := runText(t, r, "do you have access to any github tokens?")
+		if f != nil {
+			t.Fatalf("RunTurn failed: %+v", f)
+		}
+		if got := model.bodyCount(); got != 4 {
+			t.Fatalf("completions = %d, want 4 (list, navigate, unanswered, re-asked answer)", got)
+		}
+		if nudge := lastUserSees(t, model, 3); !strings.Contains(nudge, "You haven't answered the question yet") {
+			t.Fatalf("the second half of the turn never saw the nudge: %q", nudge)
+		}
+		if !strings.Contains(res.Answer.AnswerMarkdown, "Feature Delivery") {
+			t.Fatalf("final answer = %q, want the second reply", res.Answer.AnswerMarkdown)
+		}
+		// The navigation link already harvested stays on the answer.
+		if len(res.Answer.Links) != 1 || res.Answer.Links[0].Href != "/settings" {
+			t.Fatalf("links = %+v, want the /settings jump link to survive", res.Answer.Links)
+		}
+		// The nudge is fixed server text: it reaches the model as a user
+		// message, not as anything from the person.
+		if !strings.Contains(lastUserSees(t, model, 3), "Do not call ui.navigate again") {
+			t.Fatal("the nudge must forbid re-navigation")
+		}
+	})
+
+	t.Run("an empty first reply re-asks once", func(t *testing.T) {
+		model := newFakeModel(t,
+			step{toolCalls: []toolCallRequest{toolCall("project.list", map[string]any{})}},
+			step{text: "   "},
+			step{text: "Two projects: Feature Delivery and Docs."},
+		)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, f := runText(t, r, "what projects are there?")
+		if f != nil {
+			t.Fatalf("RunTurn failed: %+v", f)
+		}
+		if got := model.bodyCount(); got != 3 {
+			t.Fatalf("completions = %d, want 3", got)
+		}
+		if res.Answer.AnswerMarkdown != "Two projects: Feature Delivery and Docs." {
+			t.Fatalf("final answer = %q", res.Answer.AnswerMarkdown)
+		}
+	})
+
+	t.Run("a navigation request does not re-ask", func(t *testing.T) {
+		model := newFakeModel(t,
+			step{toolCalls: []toolCallRequest{toolCall("ui.navigate", map[string]any{"route": "/settings"})}},
+			step{text: "Opened it."},
+		)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, f := runText(t, r, "open the secrets page")
+		if f != nil {
+			t.Fatalf("RunTurn failed: %+v", f)
+		}
+		if got := model.bodyCount(); got != 2 {
+			t.Fatalf("completions = %d, want 2 (no re-ask on a navigation request)", got)
+		}
+		if res.Answer.AnswerMarkdown != "Opened it." {
+			t.Fatalf("final answer = %q, want the ack to ship", res.Answer.AnswerMarkdown)
+		}
+	})
+
+	t.Run("a real answer with a navigation does not re-ask", func(t *testing.T) {
+		model := newFakeModel(t,
+			step{toolCalls: []toolCallRequest{toolCall("project.list", map[string]any{})}},
+			step{toolCalls: []toolCallRequest{toolCall("ui.navigate", map[string]any{"route": "/settings"})}},
+			step{text: "Yes, I can read the projects: Feature Delivery and Docs. I've opened the Secrets page."},
+		)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, f := runText(t, r, "do you have access to any github tokens?")
+		if f != nil {
+			t.Fatalf("RunTurn failed: %+v", f)
+		}
+		if got := model.bodyCount(); got != 3 {
+			t.Fatalf("completions = %d, want 3 (the answer shipped, no re-ask)", got)
+		}
+		if !strings.Contains(res.Answer.AnswerMarkdown, "Feature Delivery") {
+			t.Fatalf("final answer = %q", res.Answer.AnswerMarkdown)
+		}
+	})
+
+	t.Run("the second reply is final even unanswered again", func(t *testing.T) {
+		// Re-ask once, model answers with another bare ack: that ack ships.
+		model := newFakeModel(t,
+			step{toolCalls: []toolCallRequest{toolCall("ui.navigate", map[string]any{"route": "/settings"})}},
+			step{text: "I've opened the Secrets page."},
+			step{text: "The page is open."},
+		)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, f := runText(t, r, "do you have access to any github tokens?")
+		if f != nil {
+			t.Fatalf("RunTurn failed: %+v", f)
+		}
+		if got := model.bodyCount(); got != 3 {
+			t.Fatalf("completions = %d, want 3 — never more than one re-ask", got)
+		}
+		if res.Answer.AnswerMarkdown != "The page is open." {
+			t.Fatalf("final answer = %q, want the second reply to be final", res.Answer.AnswerMarkdown)
+		}
+	})
+
+	t.Run("an empty second reply is the empty-answer refusal, not a loop", func(t *testing.T) {
+		model := newFakeModel(t,
+			step{text: ""},
+			step{text: ""},
+		)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		_, f := runText(t, r, "what projects are there?")
+		if f == nil || f.Code != FailBadModelResponse {
+			t.Fatalf("failure = %+v, want %s", f, FailBadModelResponse)
+		}
+		if got := model.bodyCount(); got != 2 {
+			t.Fatalf("completions = %d, want 2 (one re-ask, then the refusal)", got)
+		}
+	})
+
+	t.Run("no re-ask when the model-call budget is spent", func(t *testing.T) {
+		// Eleven tool rounds, then the unanswered ack on completion twelve:
+		// the budget for another completion is gone, so the ack ships rather
+		// than the turn dying at the call cap.
+		steps := make([]step, 0, MaxRunnerModelCalls)
+		for i := 0; i < MaxRunnerModelCalls-1; i++ {
+			steps = append(steps, step{toolCalls: []toolCallRequest{
+				toolCall("ui.navigate", map[string]any{"route": "/settings"}),
+			}})
+		}
+		steps = append(steps, step{text: "I've opened the Secrets page."})
+		model := newFakeModel(t, steps...)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res, f := runText(t, r, "do you have access to any github tokens?")
+		if f != nil {
+			t.Fatalf("RunTurn failed: %+v", f)
+		}
+		if got := model.bodyCount(); got != MaxRunnerModelCalls {
+			t.Fatalf("completions = %d, want the cap %d with no re-ask", got, MaxRunnerModelCalls)
+		}
+		if res.Answer.AnswerMarkdown != "I've opened the Secrets page." {
+			t.Fatalf("final answer = %q, want the ack to ship unanswered", res.Answer.AnswerMarkdown)
+		}
+	})
 }

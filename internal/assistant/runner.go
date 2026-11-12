@@ -633,6 +633,10 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 	// was an explicit draft-edit ask (the reply travels as plain text that
 	// carries no edit verbs of its own, e.g. the option's label).
 	nudged := false
+	// as-reask: ONE re-ask per turn when the final reply did not answer
+	// (reask.go). The budget check is modelRuns < MaxRunnerModelCalls, so a
+	// re-ask can never turn a shipping answer into a call-cap failure.
+	reasked := false
 	editAskOpen := looksLikeDraftEditAsk(q) || editAskOpenInHistory(req.History, q)
 	var (
 		calls    []ToolCall
@@ -678,6 +682,20 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 			// announcement with nothing behind it is a promise the reader will
 			// never see kept, so the line goes before the answer ships.
 			answerText := r.b.cleanMarkdown(dropDanglingLeadIn(stripGuardRemarks(ans.Text)))
+			// as-reask (owner decision): a turn that ends on an empty reply,
+			// or on a bare "I've opened the page" where the person asked a
+			// question, gets ONE fixed server nudge and one more model step
+			// through this same loop. The second reply is final whatever it
+			// says; links already harvested stay on the answer.
+			if reason := reaskReason(answerText, turnNavigated(calls), q); reason != "" &&
+				!reasked && modelRuns < MaxRunnerModelCalls {
+				reasked = true
+				r.b.logger().Info("assistant re-asked after an unanswered turn", "reason", reason)
+				messages = append(messages,
+					chatMessage{Role: "assistant", Content: text(ans.Text)},
+					chatMessage{Role: "user", Content: text(reaskNudge)})
+				continue
+			}
 			if strings.TrimSpace(answerText) == "" {
 				// An answer that was nothing but a remark about the injection
 				// guard carried no answer: the same refusal as an empty one.
