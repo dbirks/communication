@@ -302,12 +302,22 @@ that can be attached to different ACP agent setups. Today the spec
       m1-journey:148, shell-journey:1285, repo-chat-nav:2799 and repo-triggers:164. Those four were Collective or
       infra flakes, and verification (the emulator loop) is green on attempt 2. assistant-handoff:489 failed on
       both attempts, so it is a real failure and is tracked in the next box.
-- [ ] assistant-handoff:489 (add a repo) failed twice on d695673. In attempt 1, repo.check answered not_found for
+- [x] assistant-handoff:489 (add a repo) failed twice on d695673. In attempt 1, repo.check answered not_found for
       dbirks/comms-test-repo-1 with the test credential, and the model asked rather than proposing. In attempt 2,
       the project was created without the repository row. The token itself reaches the repo (GET
       /repos/dbirks/comms-test-repo-1 returns 200 with push access; it expires 2026-12-24). The leg passed on
       b34d777 (Acceptance 42817589466). Reproduce it on the lab at d695673, fix the cause, and prove the leg 3/3
       locally.
+      Reproduced on the lab at d695673 (1 pass, 1 not_found, 1 Collective 429). Cause: assistantParseRepo
+      accepted a scheme URL, ssh/scp, or a bare owner/repo, but not the host-qualified form people type
+      ("github.com/owner/repo"). When the model passed it through, repo.check answered not_found without calling
+      GitHub, and project.create kept the project but refused its repository. Fixed: a schemeless
+      github.com / www.github.com prefix (and a trailing / or .git) is accepted
+      (TestAssistantRepoCheckAcceptsEveryURLForm now covers 9 forms;
+      TestAssistantSetupProjectCreateAcceptsASchemelessGitHubURL). Lab with the fix: the setup + credentials +
+      add-a-repo legs passed 3 runs in a row, and the credentials leg alone passed 3/3. One earlier run had a
+      single failure in that group, with no add-a-repo error; I didn't capture its output, and I'm treating it
+      as model noise.
 
 ## Done when
 - [ ] Every box above is checked with evidence.

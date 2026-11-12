@@ -480,9 +480,20 @@ func (t *assistantSetupTools) RepoCheck(ctx context.Context, c as.Caller, url, c
 // github.com — an Enterprise or GitLab host is refused, because this adapter
 // speaks to api.github.com and nothing else.
 func assistantParseRepo(url string) (github.Repository, error) {
-	s := strings.TrimSpace(url)
+	s := strings.TrimSuffix(strings.TrimSpace(url), "/")
 	if s == "" {
 		return github.Repository{}, as.ErrNotFound
+	}
+	// The form people actually type and the model passes straight through:
+	// a host-qualified path with no scheme ("github.com/owner/repo",
+	// "www.github.com/owner/repo"). Without this, repo.check answered
+	// not_found before ever calling GitHub, and project.create kept the
+	// project but refused its repository (Acceptance 43128149321 att. 1/2).
+	for _, host := range []string{"github.com/", "www.github.com/"} {
+		if strings.HasPrefix(strings.ToLower(s), host) {
+			s = "https://github.com/" + s[len(host):]
+			break
+		}
 	}
 	if !strings.Contains(s, "://") && !strings.Contains(s, "@") && !strings.Contains(s, ":") {
 		if !bareRepo.MatchString(s) {

@@ -241,6 +241,22 @@ func TestAssistantSetupProjectCreateWithRepoAndCredential(t *testing.T) {
 	}
 }
 
+// The URL as a person types it — host-qualified, no scheme — still attaches
+// the repository (Acceptance 43128149321 attempt 2: the project was created
+// and its repository refused, because the parser wanted a scheme or owner/repo).
+func TestAssistantSetupProjectCreateAcceptsASchemelessGitHubURL(t *testing.T) {
+	s := newSetupActStore(authz.RoleMaintainer)
+	_, _, err := runSetupAction(t, setupActions(s), "project.create", setupMaintainer, map[string]string{
+		"name": "home-lab", "repo_url": "github.com/acme/app", "credential": "GITHUB_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("project.create: %v", err)
+	}
+	if len(s.repos) != 1 || s.repos[0].gitURL != "https://github.com/acme/app.git" {
+		t.Fatalf("the repository was not attached from github.com/acme/app: %+v", s.repos)
+	}
+}
+
 func TestAssistantSetupProjectCreateDefaultsTheBranchToMain(t *testing.T) {
 	s := newSetupActStore(authz.RoleMaintainer)
 	if _, _, err := runSetupAction(t, setupActions(s), "project.create", setupMaintainer,

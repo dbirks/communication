@@ -429,6 +429,9 @@ func TestAssistantRepoCheckAcceptsEveryURLForm(t *testing.T) {
 	for _, url := range []string{
 		"https://github.com/acme/app.git", "https://github.com/acme/app",
 		"ssh://git@github.com/acme/app.git", "git@github.com:acme/app.git", "acme/app",
+		// The form a person types (and the model passes on): host-qualified,
+		// no scheme — Acceptance 43128149321 saw it answered not_found.
+		"github.com/acme/app", "www.github.com/acme/app", "GitHub.com/acme/app.git", "https://github.com/acme/app/",
 	} {
 		got := map[string]any{}
 		raw, err := reader.RepoCheck(context.Background(), callerOne(), url, "github-token")
@@ -442,8 +445,8 @@ func TestAssistantRepoCheckAcceptsEveryURLForm(t *testing.T) {
 			t.Errorf("RepoCheck(%q) = %s", url, raw)
 		}
 	}
-	if calls != 5 {
-		t.Errorf("GitHub was called %d times for 5 URL forms", calls)
+	if calls != 9 {
+		t.Errorf("GitHub was called %d times for 9 URL forms", calls)
 	}
 }
 
