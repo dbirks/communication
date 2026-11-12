@@ -196,7 +196,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Worker-image build hardening: worker/Dockerfile's executionbin stage
       # uses .release-assets/ from the build context when present and only
       # falls back to the GitHub release CDN (which intermittently 504s for
@@ -205,7 +205,7 @@ jobs:
       # IS the pins (any version bump in worker/Dockerfile changes it).
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -217,14 +217,14 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: e2e/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -349,7 +349,7 @@ jobs:
           ${{ env.M4_COMPOSE }} logs --no-color --timestamps > lab-compose.log 2>&1 || true
       - name: upload evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: lab-e2e-${{ github.run_attempt }}
           path: |
@@ -398,14 +398,14 @@ jobs:
       SHARD: ${{ matrix.shard }}
       GATES: ${{ matrix.gates }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Worker-image build hardening (see lab-e2e's identical step): the m4
       # driver's `--up` builds worker/Dockerfile from this checkout, so the
       # .release-assets cache keeps its nono/apm/gh fetches off the flaky
       # GitHub release CDN. Verification (sha256sum -c) is unchanged.
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -417,14 +417,14 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: e2e/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -555,7 +555,7 @@ jobs:
             down -v --remove-orphans || true
       - name: upload shard evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: m4-${{ matrix.shard }}-${{ github.run_attempt }}
           path: |
@@ -596,7 +596,7 @@ jobs:
       M4_ALL: ${{ needs.select.outputs.m4-all }}
       M4_SHARDS: ${{ needs.select.outputs.m4-shards }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: check the shard coverage
         id: scope
         run: |
@@ -612,7 +612,7 @@ jobs:
           echo "run=false" >> "$GITHUB_OUTPUT"
       - name: download the shards' witness files
         if: steps.scope.outputs.run == 'true'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v7.0.0
         with:
           # Only the six shard artifacts (m4-<shard>-<attempt>); this job's own
           # regrade evidence artifact is uploaded after the download.
@@ -639,7 +639,7 @@ jobs:
           exit $rc
       - name: upload the regrade verdicts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: regrade-m4-${{ github.run_attempt }}
           path: |
@@ -670,14 +670,14 @@ jobs:
       # checkout, so scripts/lab-up.sh IS the reset (see its header).
       LAB_RESET_CMD: bash scripts/lab-up.sh && bash docs/compatibility/probes/m4/seed.sh
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Worker-image build hardening (see lab-e2e's identical step): every
       # LAB_RESET_CMD pass rebuilds through scripts/lab-up.sh from the repo
       # root, so .release-assets is in the compose build context for all of
       # them — a CDN 504 mid-loop no longer resets a pass's clock.
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -689,14 +689,14 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: e2e/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -772,7 +772,7 @@ jobs:
         run: bash e2e/emulator/loop.sh --max-passes 6
       - name: upload pass evidence (screenshots, results.json, reports)
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: emulator-out-${{ github.run_attempt }}
           # admin.json / alice.json are the passes' live session storage
@@ -799,11 +799,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Worker-image build hardening (see lab-e2e's identical step).
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -815,14 +815,14 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: e2e/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -875,7 +875,7 @@ jobs:
         run: ${{ env.M4_COMPOSE }} logs --no-color --timestamps > gh-loop-compose.log 2>&1 || true
       - name: upload evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: github-loop-${{ github.run_attempt }}
           path: |

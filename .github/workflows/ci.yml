@@ -80,7 +80,7 @@ jobs:
       COMMUNICATION_TEST_OIDC_ISSUER: http://localhost:18091/default
     services:
       postgres:
-        image: postgres:18.6
+        image: postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_USER: ci
@@ -96,14 +96,14 @@ jobs:
       oidc:
         # ADR-0012: real OIDC (discovery, JWKS, signed ID tokens), interactive
         # login only — no credentials exist to commit.
-        image: ghcr.io/navikt/mock-oauth2-server:6.0.7
+        image: ghcr.io/navikt/mock-oauth2-server:6.0.7@sha256:f67032396f2ee4320d09389a174ef04112c754e49ce26f060050a66c1c07aedb
         env:
           JSON_CONFIG: '{"interactiveLogin":true}'
         ports:
           - 18091:8080
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
       # Same CDN hardening as the worker-image and acceptance jobs: the pinned
@@ -120,7 +120,7 @@ jobs:
       # "Install pinned apm (real APM resolve tests)").
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -132,7 +132,7 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
@@ -398,8 +398,8 @@ jobs:
     name: contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.22.0
       - name: Enable corepack
@@ -417,7 +417,7 @@ jobs:
     name: compose
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # compose.yml lands with the M1 compose task; the guard keeps this job
       # green until then and strict (config -q) once it exists.
       - name: Validate compose configuration
@@ -432,8 +432,8 @@ jobs:
     name: audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
       - name: govulncheck
@@ -450,7 +450,7 @@ jobs:
       # output.
       ui: ${{ steps.ui-package.outputs.ui }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - id: ui-package
         if: hashFiles('ui/package.json') != ''
         run: echo "ui=true" >> "$GITHUB_OUTPUT"
@@ -465,13 +465,13 @@ jobs:
       # fetch-depth: 0 because the test-id guard below diffs a previous
       # revision against the worktree; the default shallow checkout carries no
       # history to compare against.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: ui/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.22.0
           cache: pnpm
@@ -523,11 +523,11 @@ jobs:
     # The worker/agent harness is deliberately excluded: CI carries no agent
     # credentials, and M1 needs no worker.
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: e2e/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.22.0
           cache: pnpm
@@ -562,7 +562,7 @@ jobs:
       # cookies (ADR-0006 Security/privacy).
       - name: upload report and failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: playwright-e2e-${{ github.run_attempt }}
           path: |
@@ -592,7 +592,7 @@ jobs:
     # silently skips: a skipped test proves nothing, and a file whose unittest
     # summary reports "skipped=" fails this job.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Syntax-check the driver first (the tests import it), then run every
       # pure-logic test; a non-zero exit or any reported skip fails the job.
       - name: gate logic tests
@@ -617,26 +617,26 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
       # .goreleaser.yaml before.hooks run pnpm to build the embedded ui/dist
       # (ADR-0007), so this job needs the same pinned Node/pnpm setup as the
       # ui job before GoReleaser runs.
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.1
         with:
           package_json_file: ui/package.json
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.22.0
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
       # The image is built for linux/amd64 and linux/arm64 in one snapshot run,
       # so the arm64 layers need qemu user emulation.
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-qemu-action@v4.4.0
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -645,7 +645,7 @@ jobs:
       # never pushes) the per-platform images, tagged
       # ghcr.io/dbirks/communication:main-linux-{amd64,arm64}.
       - name: Build snapshot image
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@v7.3.0
         with:
           distribution: goreleaser
           version: v2.18.3
@@ -692,7 +692,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Same CDN hardening as the acceptance jobs: on a GHA layer-cache miss
       # for the executionbin stage, worker/Dockerfile takes nono/apm/gh from
       # .release-assets/ in the build context instead of the flaky GitHub
@@ -701,7 +701,7 @@ jobs:
       # worker behind a profile, so neither builds the worker image.
       - name: restore release assets cache
         id: release_assets_cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
@@ -713,12 +713,12 @@ jobs:
       # restore hit (the cache already has these bytes).
       - name: save release assets cache
         if: steps.release_assets_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: .release-assets
           key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
