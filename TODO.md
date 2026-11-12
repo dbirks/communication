@@ -295,6 +295,20 @@ that can be attached to different ACP agent setups. Today the spec
       capacity: 429 "backend at capacity" on direct probes at the time, and harness logs saying "never recovered its
       provider transport".
 
+- [x] Acceptance 43128149321 (d695673) attempt 1 failed lab-e2e assistant-handoff:489, m1-journey:148 and
+      shell-journey:1285, and emulator repo-chat-nav:2799 and repo-triggers:164, while the Collective was answering
+      429 "backend at capacity". On 2026-11-11 21:31 the Collective answered 200 three times in a row
+      (qwen3-8-flash-next, 0.4–0.7s), and attempt 2 of the same run (`gh run rerun 43128149321 --failed`) passed
+      m1-journey:148, shell-journey:1285, repo-chat-nav:2799 and repo-triggers:164. Those four were Collective or
+      infra flakes, and verification (the emulator loop) is green on attempt 2. assistant-handoff:489 failed on
+      both attempts, so it is a real failure and is tracked in the next box.
+- [ ] assistant-handoff:489 (add a repo) failed twice on d695673. In attempt 1, repo.check answered not_found for
+      dbirks/comms-test-repo-1 with the test credential, and the model asked rather than proposing. In attempt 2,
+      the project was created without the repository row. The token itself reaches the repo (GET
+      /repos/dbirks/comms-test-repo-1 returns 200 with push access; it expires 2026-12-24). The leg passed on
+      b34d777 (Acceptance 42817589466). Reproduce it on the lab at d695673, fix the cause, and prove the leg 3/3
+      locally.
+
 ## Done when
 - [ ] Every box above is checked with evidence.
 - [ ] CI and Acceptance are green on the final SHA.
