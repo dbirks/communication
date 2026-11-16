@@ -19,7 +19,7 @@
 #   Node.js                                   24.22.0 (current LTS line)
 #   @redocly/cli                            2.63.0 (API contract lint, api/README.md)
 #   openapi-typescript                    7.13.0 (ui/tools/apigen only — the API type generator; the app itself builds on TypeScript 7 and keeps its pins in ui/package.json / ui/tools/apigen/package.json)
-#   @playwright/test                        1.65.1 (e2e/ Playwright suite, ADR-0006)
+#   @playwright/test                        1.64.1 (e2e/ Playwright suite, ADR-0006)
 #   nono                                    0.81.0 (go job: the real sandbox binary
 #                                             the M3 tests exec. Same pin, tarball
 #                                             sha256 and gnu build as
