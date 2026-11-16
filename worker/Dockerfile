@@ -12,10 +12,11 @@
 # The standalone harness CLIs (@anthropic-ai/claude-code, @openai/codex)
 # that this file used to install globally are deliberately gone: both
 # adapters spawn their *own* bundled harness runtimes, not PATH binaries —
-# observed in the adapter sources at these pins: claude-agent-acp 0.90.0
+# observed in the adapter sources at these pins (re-read from the published
+# dist bundles when the pins moved): claude-agent-acp 0.106.0
 # resolves `CLAUDE_CODE_EXECUTABLE ?? claudeCliPath()`, and claudeCliPath()
 # resolves the platform binary bundled inside @anthropic-ai/claude-agent-sdk
-# (never a PATH lookup); codex-acp 2.2.2 spawns `CODEX_PATH` only when set
+# (never a PATH lookup); codex-acp 2.6.0 spawns `CODEX_PATH` only when set
 # and otherwise `require.resolve("@openai/codex/bin/codex.js")` from its own
 # node_modules. Keeping the global CLIs shipped ~690 MB of duplicate native
 # binaries that no process ever executed. Harness *authentication* is
@@ -25,11 +26,12 @@
 # re-run against this image before shipping it.
 #
 # Base image: trixie, not bookworm, because of one measured dependency. APM
-# 0.34.0 bundles libpython3.12, which needs GLIBC_2.38; bookworm ships 2.36 and
+# 0.34.0 bundles libpython3.12, which needs GLIBC_2.38 (observed in the release
+# tarball when the pin moved — objdump on _internal/libpython3.12.so.1.0); bookworm ships 2.36 and
 # the binary dies at import with
 #   Failed to load Python shared library ... version `GLIBC_2.38' not found
 # trixie ships 2.41. This was verified by running the actual binary in both
-# images, not by reading a release note. nono 0.80.0 needs only GLIBC_2.34 and
+# images, not by reading a release note. nono 0.81.0 needs only GLIBC_2.34 and
 # would have run on bookworm; the base is chosen by the stricter requirement.
 
 # Stage 1: build the Go binary. No toolchain survives into the final image.
@@ -45,10 +47,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/communication ./cm
 
 # Stage 2: install the pinned adapters off-line from the final image, so the
 # npm cache (~600 MB at these pins) never lands in any shipped layer.
-FROM node:22-trixie-slim AS npmdeps
-ARG CLAUDE_ACP_VERSION=0.90.0
-ARG CODEX_ACP_VERSION=2.2.2
-ARG PI_VERSION=1.4.0
+FROM node:24-trixie-slim AS npmdeps
+ARG CLAUDE_ACP_VERSION=0.107.0
+ARG CODEX_ACP_VERSION=2.6.0
+ARG PI_VERSION=1.5.2
 ARG PI_ACP_VERSION=0.0.34
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g --omit=dev --no-update-check --no-fund --no-audit \
@@ -64,28 +66,31 @@ RUN --mount=type=cache,target=/root/.npm \
 # binary is not the binary that was probed would make every
 # docs/compatibility/SANDBOX.md row a claim about some other build.
 #
-#   nono v0.80.0  — matches the published SHA256SUMS.txt for that release and the
-#                   value recorded in docs/compatibility/SANDBOX.md ("nono tarball
-#                   sha256"), which is the build the probe matrix ran on.
-#   apm v0.34.0   — matches the release's own apm-linux-x86_64.tar.gz.sha256 and
-#                   docs/compatibility/APM.md's provenance line.
-#   gh v2.103.0   — matches the release's own gh_2.103.0_checksums.txt (cli/cli
-#                   v2.103.0, published 2026-10-21) and the digest pinned as
-#                   GH_SHA256 below; the pin came from that release's checksums
-#                   file, the same source the apm pin used.
+#   nono v0.81.0  — matches the published SHA256SUMS.txt for that release
+#                   (downloaded, `sha256sum`-ed and cross-checked 2026-11-12).
+#                   The probe matrix in docs/compatibility/SANDBOX.md ran on the
+#                   v0.80.0 build (tarball sha256 6da665b6…f17037f, recorded
+#                   there); that evidence predates this pin and is unchanged.
+#   apm v0.34.0   — matches the release's own apm-linux-x86_64.tar.gz.sha256
+#                   (downloaded, `sha256sum`-ed and cross-checked 2026-11-12).
+#                   docs/compatibility/APM.md's provenance line records the
+#                   superseded 0.34.0 vendor.
+#   gh v2.104.0   — matches the release's own gh_2.104.0_checksums.txt (cli/cli
+#                   v2.104.0, published 2026-11-12); downloaded, `sha256sum`-ed
+#                   and cross-checked 2026-11-12, the same source the apm pin used.
 #
 # The musl nono build is deliberately NOT used even though it would have no glibc
 # dependency at all: the probe matrix ran against the gnu build, and ADR-0019's
 # contract is about the binary that was tested. Swapping the libc flavor of a
 # sandbox to make a Dockerfile tidier is exactly the kind of unverified
 # substitution the compatibility tables exist to prevent.
-FROM node:22-trixie-slim AS executionbin
-ARG NONO_VERSION=0.80.0
-ARG NONO_SHA256=6da665b61999570c10dffc7da78828fe1fb7f3cac53319e505cebecaef17037f
+FROM node:24-trixie-slim AS executionbin
+ARG NONO_VERSION=0.81.0
+ARG NONO_SHA256=7ecc33ff9c349bdfa84b4496e7a7555f67bcc33f1e125c7df9efb653c6c4e569
 ARG APM_VERSION=0.34.0
 ARG APM_SHA256=4487af55604b4fa6f4587f3ee6e833b44ce99c491f11069790e4e13e297cde8c
-ARG GH_VERSION=2.103.0
-ARG GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786
+ARG GH_VERSION=2.104.0
+ARG GH_SHA256=98cb101ad87dbbd3f6b2f2bfcbd43197ccd07643140121d8a9cfaa91eadbc24e
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
@@ -134,7 +139,7 @@ RUN set -eu; \
     fetch gh.tgz "gh_${GH_VERSION}_linux_amd64.tar.gz" \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
     printf '%s  gh.tgz\n' "${GH_SHA256}" | sha256sum -c -; \
-    # The gh release tarball carries a top-level directory (gh_2.103.0_linux_amd64/),
+    # The gh release tarball carries a top-level directory (gh_2.104.0_linux_amd64/),
     # so it is stripped the same way the apm one is: /out/gh/bin/gh is the real
     # binary and /usr/local/bin/gh the PATH-visible one (a real file, not a
     # symlink — the sandbox grants resolved paths, and a symlink would resolve
@@ -147,7 +152,7 @@ RUN set -eu; \
 # npm, corepack) are re-emitted as one squashed filesystem layer with the
 # package managers removed — an upper-layer `rm` cannot shrink immutable
 # lower layers, so the 3.82 GB image measured 1.1 GB of actual files.
-FROM node:22-trixie-slim AS nodebase
+FROM node:24-trixie-slim AS nodebase
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
       /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 

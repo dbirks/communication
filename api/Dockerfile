@@ -12,7 +12,7 @@
 # moving tag in CI.
 
 # ---------------------------------------------------------------- UI bundle
-FROM node:24.22.0-trixie-slim AS ui
+FROM node:24.22.3-trixie-slim AS ui
 
 WORKDIR /src
 

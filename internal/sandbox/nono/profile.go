@@ -17,7 +17,7 @@ import (
 // 0.80.0" is an abort, not a warning). Upgrading it means rebuilding the
 // worker image and re-running the SANDBOX matrix, which is ADR-0019's
 // Migration section, not a runtime decision.
-const PinnedVersion = "0.80.0"
+const PinnedVersion = "0.81.0"
 
 // Profile kinds are the ADR-0019 Decision 3 policies plus M4's command
 // profile. They are separate files rather than one file and a flag because the

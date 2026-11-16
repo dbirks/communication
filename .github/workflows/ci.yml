@@ -19,8 +19,8 @@
 #   Node.js                                   24.22.0 (current LTS line)
 #   @redocly/cli                            2.63.0 (API contract lint, api/README.md)
 #   openapi-typescript                    7.13.0 (ui/tools/apigen only — the API type generator; the app itself builds on TypeScript 7 and keeps its pins in ui/package.json / ui/tools/apigen/package.json)
-#   @playwright/test                        1.64.1 (e2e/ Playwright suite, ADR-0006)
-#   nono                                    0.80.0 (go job: the real sandbox binary
+#   @playwright/test                        1.65.1 (e2e/ Playwright suite, ADR-0006)
+#   nono                                    0.81.0 (go job: the real sandbox binary
 #                                             the M3 tests exec. Same pin, tarball
 #                                             sha256 and gnu build as
 #                                             worker/Dockerfile's NONO_SHA256 and
@@ -170,10 +170,10 @@ jobs:
       - name: Install pinned nono (real sandbox tests)
         run: |
           set -euo pipefail
-          ver=0.80.0
+          ver=0.81.0
           asset="nono-v${ver}-x86_64-unknown-linux-gnu"
-          tarsum=6da665b61999570c10dffc7da78828fe1fb7f3cac53319e505cebecaef17037f
-          binsum=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+          tarsum=7ecc33ff9c349bdfa84b4496e7a7555f67bcc33f1e125c7df9efb653c6c4e569
+          binsum=d8ac3fa92d87bfbe80a52ea68729a8b5b461149437d55225c356b82af5bfc90f
           dl="$RUNNER_TEMP/nono-dl"; bin="$RUNNER_TEMP/nono-bin"
           mkdir -p "$dl" "$bin"
           cached="$GITHUB_WORKSPACE/.release-assets/$asset.tar.gz"
