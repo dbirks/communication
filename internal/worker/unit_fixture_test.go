@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/sandbox/nono"
 	wsgit "github.com/dbirks/communication/internal/workspace/git"
 )
 
@@ -139,8 +140,11 @@ func nonoPath(t *testing.T) string {
 	if err != nil {
 		t.Skipf("nono --version failed: %v: %s", err, out)
 	}
-	if !strings.Contains(string(out), "0.80.0") {
-		t.Skipf("nono 0.80.0 pinned, found: %s", strings.TrimSpace(string(out)))
+	// The pin is nono.PinnedVersion (the one the worker's launch gate checks),
+	// never a literal here: a literal went stale on the 0.81.0 upgrade and
+	// turned 42 real-argv tests into skips.
+	if !strings.Contains(string(out), nono.PinnedVersion) {
+		t.Skipf("nono %s pinned, found: %s", nono.PinnedVersion, strings.TrimSpace(string(out)))
 	}
 	return path
 }
