@@ -1,0 +1,22 @@
+# Dependabot keeps the workflow actions current. The workflows are locked by
+# .github/workflows/actions.lock (github/gh-actions-lock). If a Dependabot PR
+# changes a `uses:` without updating that lockfile, the verify-lockfile check
+# fails on the PR: check out the branch, run `gh actions-lock --relock`, review
+# the lockfile diff, and push the update to the same PR before merging.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Wait a week before proposing a release, so a bad or compromised version
+    # has time to be noticed and pulled first.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "CI"
