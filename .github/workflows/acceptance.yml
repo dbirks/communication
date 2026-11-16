@@ -612,7 +612,7 @@ jobs:
           echo "run=false" >> "$GITHUB_OUTPUT"
       - name: download the shards' witness files
         if: steps.scope.outputs.run == 'true'
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.2
         with:
           # Only the six shard artifacts (m4-<shard>-<attempt>); this job's own
           # regrade evidence artifact is uploaded after the download.
