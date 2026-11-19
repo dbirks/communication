@@ -445,6 +445,12 @@ The worker mounts a persistent `CODEX_HOME` at `/harness/codex` (home-k8s PVC
 closed until someone logs in once with the device flow. Codex then writes its
 refreshed `auth.json` back to that volume.
 
+**In the app (ADR-0085):** an organization admin opens Settings → Agent
+accounts, clicks **Sign in** on the Codex row, opens the link and enters the
+code shown. The worker runs the sign-in against this same volume. The ChatGPT
+account must have "Enable device code sign-in for Codex" turned on (ChatGPT →
+Settings → Security). The `kubectl exec` below is the fallback.
+
 ```
 kubectl -n default exec -it deploy/communication-worker -c worker -- \
   env CODEX_HOME=/harness/codex \
