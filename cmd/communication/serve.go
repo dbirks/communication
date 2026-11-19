@@ -1754,6 +1754,14 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	api.RegisterAPMCollections(handler, postgres.APIAPMCollectionStore{
 		S: &postgres.APMCollectionStore{Pool: d.Pool},
 	})
+	// ADR-0085: in-app agent sign-in. The queue is Postgres, the live-worker
+	// set reuses the /workers liveness rule, so the tab and the ops page never
+	// disagree about which workers can actually run a sign-in.
+	api.RegisterAgentAccounts(handler, postgres.APIAgentAccountStore{
+		S:                 &postgres.AgentLoginStore{Pool: d.Pool},
+		Registry:          &postgres.WorkerRegistry{Pool: d.Pool},
+		HeartbeatInterval: d.WorkerHeartbeat,
+	})
 	api.RegisterRuns(handler,
 		postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 		postgres.APIAssignmentStore{S: pipelineStore},

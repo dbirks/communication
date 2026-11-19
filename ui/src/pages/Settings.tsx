@@ -1,24 +1,28 @@
 /**
  * Settings (route `/settings/:tab`): the per-person preferences and the
- * Operations dashboard. Three tabs — Layout (how the sidebar looks, 3g),
- * Assistant (the trust level) and Operations (worker fleet health) — read and
- * write through the preferences client (contract C2) and the ops endpoints.
+ * Operations dashboard. The tabs — Layout (how the sidebar looks, 3g),
+ * Assistant (the trust level), Agent accounts (ADR-0085 sign-ins, admins only)
+ * and Operations (worker fleet health) — read and write through the preferences
+ * client (contract C2) and the ops endpoints.
  * The route builder maps bare `/settings` to `/settings/layout`, so an unknown
  * tab still renders Layout instead of an error page.
  */
 import { NavLink, useParams } from "react-router";
 import { useReplicaName } from "../api/replica";
+import { useMe } from "../api/queries";
 import { routes } from "../lib/routes";
 import LayoutSettings from "./settings/Layout";
 import AssistantSettings from "./settings/Assistant";
+import AgentAccountsSettings from "./settings/AgentAccounts";
 import { OperationsBody } from "../components/ops/OperationsBody";
 import Page from "../components/ds/Page";
 
-type SettingsTab = "layout" | "assistant" | "operations";
+type SettingsTab = "layout" | "assistant" | "accounts" | "operations";
 
 const TABS: Array<{ key: SettingsTab; label: string; description?: string }> = [
   { key: "layout", label: "Layout" },
   { key: "assistant", label: "Assistant" },
+  { key: "accounts", label: "Agent accounts" },
   {
     key: "operations",
     label: "Operations",
@@ -37,13 +41,24 @@ const tabClassName = (isActive: boolean) =>
 export default function Settings() {
   const { tab } = useParams<{ tab: string }>();
   const replica = useReplicaName();
+  // ADR-0085: agent sign-ins move someone's credential volume, so the tab is an
+  // admin's. The read is the same `me` every other admin gate uses, and the
+  // body refuses non-admins too — the URL is reachable by typing it.
+  const me = useMe();
+  const isAdmin = me.data?.is_org_admin === true;
   const active: SettingsTab =
-    tab === "assistant" ? "assistant" : tab === "operations" ? "operations" : "layout";
+    tab === "assistant"
+      ? "assistant"
+      : tab === "accounts"
+        ? "accounts"
+        : tab === "operations"
+          ? "operations"
+          : "layout";
 
   return (
     <Page layout="reading" testid="settings-page" title="Settings">
       <nav aria-label="Settings" className="flex items-end gap-4 border-b border-line-soft">
-        {TABS.map((item) =>
+        {TABS.filter((item) => item.key !== "accounts" || isAdmin).map((item) =>
           item.key === "operations" ? (
             <NavLink
               key="operations"
@@ -74,6 +89,10 @@ export default function Settings() {
       {active === "operations" ? (
         <div className="mt-4">
           <OperationsBody />
+        </div>
+      ) : active === "accounts" ? (
+        <div className="mt-4 max-w-[640px]">
+          <AgentAccountsSettings />
         </div>
       ) : (
         <div className="mt-4 max-w-[440px]">

@@ -758,6 +758,16 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid apm lock loop configuration", slog.String("error", apmLockErr.Error()))
 		return 2
 	}
+	// ADR-0085: in-app agent sign-in. Drivers exist only for the launchers this
+	// worker holds a credential volume for (worker_agentlogin.go).
+	agentLoginLoop, agentLoginErr := worker.NewAgentLoginLoop(&postgres.AgentLoginStore{Pool: pool},
+		agentLoginDrivers(filepath.Dir(opts.apmLockScratchRoot)), w.ID,
+		worker.WithAgentLoginLogger(log))
+	if agentLoginErr != nil {
+		stop()
+		log.Error("invalid agent login loop configuration", slog.String("error", agentLoginErr.Error()))
+		return 2
+	}
 	registry := &postgres.WorkerRegistry{Pool: pool, Capacity: opts.attemptCapacity}
 	w.Registered = func(ctx context.Context, workerID string) {
 		// Registration-time writes, in this order and before any claim:
@@ -814,12 +824,17 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 				}
 			}()
 		}
+		go func() {
+			if err := agentLoginLoop.Start(ctx); err != nil {
+				log.Warn("agent login loop stopped", slog.String("error", err.Error()))
+			}
+		}()
 		if err := loop.Start(ctx); err != nil {
 			log.Warn("turn loop stopped", slog.String("error", err.Error()))
 		}
 	}
 	w.Drain = func(ctx context.Context) error {
-		return errors.Join(loop.Drain(ctx), attemptLoop.Drain(ctx), apmLockLoop.Drain(ctx))
+		return errors.Join(loop.Drain(ctx), attemptLoop.Drain(ctx), apmLockLoop.Drain(ctx), agentLoginLoop.Drain(ctx))
 	}
 
 	log.Info("worker starting",

@@ -214,7 +214,10 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00034 (pipeline timestamps:
+// version every replica demands. Current head: 00035 (ADR-0085 in-app agent
+// sign-in: the agent_logins request queue with its one-active partial unique
+// index and claim index, plus agent_account_status keyed
+// (worker_id, launcher)) on top of 00034 (pipeline timestamps:
 // pipelines.updated_at, stamped by every write the pipeline store makes for a
 // definition, so workflow.list can say when a workflow last moved) on top of
 // 00033 (ADR-0084 apm collections:
@@ -324,7 +327,17 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // revision's published_at) — re-stamped by the pipeline store's own writes:
 // metadata PATCH, archive, draft create/save, validation record, publish,
 // deprecation and assignment create/update/delete).
-const migHeadVersion = 34
+// Head bump for 00035 (ADR-0085: in-app agent sign-in — agent_logins, the
+// claim queue whose status walks queued → starting → awaiting_user →
+// (verifying) → succeeded|failed|cancelled|expired behind a partial unique
+// index allowing one active row per (organization_id, launcher,
+// coalesce(worker_id, empty string)), and agent_account_status, one row per
+// (worker_id, launcher) holding the signed_in|signed_out|unknown probe answer
+// with its label, detail and checked_at. worker_id is TEXT — the workers.id
+// string the registry hands out — so neither table carries an FK to workers
+// (uuid); the list read keys on live workers, which makes a leftover row
+// unread rather than wrong).
+const migHeadVersion = 35
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.

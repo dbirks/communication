@@ -914,6 +914,106 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/agent-accounts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Sign-in state of each sign-in launcher on each live worker
+     * @description ADR-0085. One row per live worker × launcher that supports in-app sign-in (`codex`, `antigravity`), as the worker last reported it (`checked_at`), plus that pair's active or most recent sign-in attempt. Organization admins only.
+     */
+    get: operations["listAgentAccounts"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-accounts/{launcher}/logins": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Start an in-app sign-in for a launcher
+     * @description ADR-0085. Queues a sign-in the named worker (or any worker, when `worker_id` is omitted) runs against its own credential volume. Poll `getAgentLogin` for the link and code. Organization admins only; `409` when a sign-in for the same launcher and worker is already active; `404` for a launcher without in-app sign-in.
+     */
+    post: operations["startAgentLogin"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-logins/{loginId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One sign-in attempt
+     * @description ADR-0085. The pasted Antigravity code is never returned. Organization admins only.
+     */
+    get: operations["getAgentLogin"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-logins/{loginId}/code": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Hand the waiting sign-in the code the provider showed
+     * @description ADR-0085. Only for a sign-in with `needs_code` in `awaiting_user` (otherwise `409`). The code is trimmed, must be 1–2048 characters, is never logged or journaled, and is cleared by the worker when it reads it. Organization admins only.
+     */
+    post: operations["submitAgentLoginCode"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-logins/{loginId}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Cancel an active sign-in
+     * @description ADR-0085. Idempotent on an already-finished sign-in (202, nothing changes). Organization admins only.
+     */
+    post: operations["cancelAgentLogin"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/apm-collections": {
     parameters: {
       query?: never;
@@ -3486,6 +3586,67 @@ export interface components {
     /** WorkerList */
     WorkerList: {
       items: components["schemas"]["Worker"][];
+    };
+    /** AgentLoginCreate */
+    AgentLoginCreate: {
+      /** @description The worker whose credential volume to sign in; omitted = any worker. */
+      worker_id?: string;
+    };
+    /** AgentLoginCode */
+    AgentLoginCode: {
+      code: string;
+    };
+    /**
+     * AgentLogin
+     * @description One in-app sign-in attempt (ADR-0085). Never carries a pasted code or a token.
+     */
+    AgentLogin: {
+      /** Format: uuid */
+      id: string;
+      /** @enum {string} */
+      launcher: "codex" | "antigravity";
+      worker_id: string | null;
+      /** @enum {string} */
+      status:
+        | "queued"
+        | "starting"
+        | "awaiting_user"
+        | "verifying"
+        | "succeeded"
+        | "failed"
+        | "cancelled"
+        | "expired";
+      verification_url: string | null;
+      /** @description Codex's device code; null for Antigravity. */
+      user_code: string | null;
+      /** @description True when the user must paste the provider's code back (Antigravity). */
+      needs_code: boolean;
+      account_label: string | null;
+      error: string | null;
+      /** Format: date-time */
+      expires_at: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
+    /** AgentAccount */
+    AgentAccount: {
+      worker_id: string;
+      worker_name: string;
+      /** @enum {string} */
+      launcher: "codex" | "antigravity";
+      /** @enum {string} */
+      state: "signed_in" | "signed_out" | "unknown";
+      account_label: string | null;
+      detail: string | null;
+      /** Format: date-time */
+      checked_at: string | null;
+      login: components["schemas"]["AgentLogin"] | null;
+    };
+    /** AgentAccountList */
+    AgentAccountList: {
+      items: components["schemas"]["AgentAccount"][];
     };
     /**
      * LauncherList
@@ -9233,6 +9394,139 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+    };
+  };
+  listAgentAccounts: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Agent accounts. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentAccountList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+    };
+  };
+  startAgentLogin: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        launcher: "codex" | "antigravity";
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["AgentLoginCreate"];
+      };
+    };
+    responses: {
+      /** @description The queued sign-in. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentLogin"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
+  getAgentLogin: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        loginId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The sign-in attempt. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentLogin"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  submitAgentLoginCode: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        loginId: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgentLoginCode"];
+      };
+    };
+    responses: {
+      /** @description Handed to the worker. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
+  cancelAgentLogin: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        loginId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Cancellation recorded. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
     };
   };
   listAPMCollections: {

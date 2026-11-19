@@ -2144,6 +2144,178 @@ paths:
                 $ref: "#/components/schemas/LauncherList"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/agent-accounts:
+    get:
+      operationId: listAgentAccounts
+      tags: [workers]
+      summary: Sign-in state of each sign-in launcher on each live worker
+      description: >
+        ADR-0085. One row per live worker × launcher that supports in-app
+        sign-in (`codex`, `antigravity`), as the worker last reported it
+        (`checked_at`), plus that pair's active or most recent sign-in attempt.
+        Organization admins only.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Agent accounts.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentAccountList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/agent-accounts/{launcher}/logins:
+    post:
+      operationId: startAgentLogin
+      tags: [workers]
+      summary: Start an in-app sign-in for a launcher
+      description: >
+        ADR-0085. Queues a sign-in the named worker (or any worker, when
+        `worker_id` is omitted) runs against its own credential volume. Poll
+        `getAgentLogin` for the link and code. Organization admins only; `409`
+        when a sign-in for the same launcher and worker is already active; `404`
+        for a launcher without in-app sign-in.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: launcher
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [codex, antigravity]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentLoginCreate"
+      responses:
+        "201":
+          description: The queued sign-in.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLogin"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /api/v1/agent-logins/{loginId}:
+    get:
+      operationId: getAgentLogin
+      tags: [workers]
+      summary: One sign-in attempt
+      description: >
+        ADR-0085. The pasted Antigravity code is never returned. Organization
+        admins only.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: loginId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The sign-in attempt.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLogin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/agent-logins/{loginId}/code:
+    post:
+      operationId: submitAgentLoginCode
+      tags: [workers]
+      summary: Hand the waiting sign-in the code the provider showed
+      description: >
+        ADR-0085. Only for a sign-in with `needs_code` in `awaiting_user`
+        (otherwise `409`). The code is trimmed, must be 1–2048 characters, is
+        never logged or journaled, and is cleared by the worker when it reads
+        it. Organization admins only.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: loginId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentLoginCode"
+      responses:
+        "202":
+          description: Handed to the worker.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /api/v1/agent-logins/{loginId}/cancel:
+    post:
+      operationId: cancelAgentLogin
+      tags: [workers]
+      summary: Cancel an active sign-in
+      description: >
+        ADR-0085. Idempotent on an already-finished sign-in (202, nothing
+        changes). Organization admins only.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: loginId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "202":
+          description: Cancellation recorded.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/apm-collections:
     get:
       operationId: listAPMCollections
@@ -8800,6 +8972,97 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Worker"
+    AgentLoginCreate:
+      title: AgentLoginCreate
+      type: object
+      additionalProperties: false
+      properties:
+        worker_id:
+          type: string
+          description: The worker whose credential volume to sign in; omitted = any worker.
+    AgentLoginCode:
+      title: AgentLoginCode
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 2048
+    AgentLogin:
+      title: AgentLogin
+      description: One in-app sign-in attempt (ADR-0085). Never carries a pasted code or a token.
+      type: object
+      required: [id, launcher, worker_id, status, verification_url, user_code, needs_code, account_label, error, expires_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        launcher:
+          type: string
+          enum: [codex, antigravity]
+        worker_id:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [queued, starting, awaiting_user, verifying, succeeded, failed, cancelled, expired]
+        verification_url:
+          type: [string, "null"]
+        user_code:
+          type: [string, "null"]
+          description: Codex's device code; null for Antigravity.
+        needs_code:
+          type: boolean
+          description: True when the user must paste the provider's code back (Antigravity).
+        account_label:
+          type: [string, "null"]
+        error:
+          type: [string, "null"]
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AgentAccount:
+      title: AgentAccount
+      type: object
+      required: [worker_id, worker_name, launcher, state, account_label, detail, checked_at, login]
+      properties:
+        worker_id:
+          type: string
+        worker_name:
+          type: string
+        launcher:
+          type: string
+          enum: [codex, antigravity]
+        state:
+          type: string
+          enum: [signed_in, signed_out, unknown]
+        account_label:
+          type: [string, "null"]
+        detail:
+          type: [string, "null"]
+        checked_at:
+          type: [string, "null"]
+          format: date-time
+        login:
+          oneOf:
+            - $ref: "#/components/schemas/AgentLogin"
+            - type: "null"
+    AgentAccountList:
+      title: AgentAccountList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentAccount"
     LauncherList:
       title: LauncherList
       description: >

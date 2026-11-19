@@ -268,3 +268,45 @@ describe("Settings → Assistant", () => {
     expect(patch.headers.get("x-csrf-token")).toBe(CSRF);
   });
 });
+
+describe("Settings → Agent accounts (ADR-0085)", () => {
+  /** The same person with the organization admin role. */
+  const adminFixture = { ...meFixture, is_org_admin: true };
+  const ACCOUNTS_PATH = "/api/v1/agent-accounts";
+
+  it("hides the tab from a member", async () => {
+    mount("/settings/assistant");
+    await waitFor(() => expect(screen.getByTestId("settings-tab-assistant")).toBeTruthy());
+    expect(screen.queryByTestId("settings-tab-accounts")).toBeNull();
+  });
+
+  it("shows the tab to an admin after Assistant, before Operations", async () => {
+    mount("/settings/assistant", [{ path: "/api/v1/me", body: adminFixture }]);
+    const tab = await screen.findByTestId("settings-tab-accounts");
+    expect(tab.getAttribute("href")).toBe("/settings/accounts");
+    const keys = screen.getByRole("navigation", { name: "Settings" }).querySelectorAll("a");
+    expect(Array.from(keys).map((link) => link.getAttribute("href"))).toEqual([
+      "/settings/layout",
+      "/settings/assistant",
+      "/settings/accounts",
+      "/settings/operations",
+    ]);
+  });
+
+  it("renders the account rows on /settings/accounts", async () => {
+    mount("/settings/accounts", [
+      { path: "/api/v1/me", body: adminFixture },
+      { path: ACCOUNTS_PATH, method: "GET", body: { items: [] } },
+    ]);
+    expect(await screen.findByTestId("settings-accounts")).toBeTruthy();
+    const empty = await screen.findByTestId("settings-accounts-empty");
+    expect(empty.textContent).toBe("No workers are online, so there is nothing to sign in yet.");
+    expect(screen.getByTestId("settings-tab-accounts").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("shows the refusal, not the Operations body, when a member opens the URL directly", async () => {
+    mount("/settings/accounts");
+    expect(await screen.findByTestId("settings-accounts-forbidden")).toBeTruthy();
+    expect(screen.queryByTestId("settings-layout")).toBeNull();
+  });
+});

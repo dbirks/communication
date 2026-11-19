@@ -85,8 +85,10 @@ export const routes = {
    * tab (`/settings/operations`); the builder returns the canonical path.
    */
   ops: (): string => "/settings/operations",
-  /** User settings: `/settings/:tab` (`layout`, `assistant`, `operations`);
-      `/settings` → `layout`. */
+  /** User settings: `/settings/:tab` (`layout`, `assistant`, `accounts`,
+      `operations`); `/settings` → `layout`. `accounts` is the ADR-0085 agent
+      sign-in tab — an organization admin's, so the nav hides it for everyone
+      else while the URL still resolves to the body's own refusal. */
   settings: (tab?: string): string => (tab ? `/settings/${encode(tab)}` : "/settings/layout"),
   /**
    * `/profile` — the signed-in PERSON's own page (their name, picture and

@@ -1653,3 +1653,66 @@ func TestM4PayloadsCarryNoSecretsPromptsPathsOrLeases(t *testing.T) {
 // have no omitempty so the member is still present (as null) — this helper
 // just makes the fixtures above readable.
 func boolPtr(b bool) *bool { return &b }
+
+// TestAgentLoginTypeConstants pins the five ADR-0085 sign-in event types: their
+// spelling, and that each matches the envelope schema's own `type` pattern.
+// The journal names the moments of one agent_logins row, and the terminal
+// four must match the status spellings the store's CHECK admits.
+func TestAgentLoginTypeConstants(t *testing.T) {
+	pattern := regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`)
+	for _, tt := range []struct {
+		constant string
+		literal  string
+	}{
+		{TypeAgentLoginStarted, "agent.login.started"},
+		{TypeAgentLoginSucceeded, "agent.login.succeeded"},
+		{TypeAgentLoginFailed, "agent.login.failed"},
+		{TypeAgentLoginCancelled, "agent.login.cancelled"},
+		{TypeAgentLoginExpired, "agent.login.expired"},
+	} {
+		if tt.constant != tt.literal {
+			t.Errorf("event type constant = %q, want %q", tt.constant, tt.literal)
+		}
+		if !pattern.MatchString(tt.constant) {
+			t.Errorf("event type %q does not match the schema pattern %s", tt.constant, pattern)
+		}
+	}
+}
+
+// TestAgentLoginPayloadCarriesNoCodesOrURLs is ADR-0085's own privacy rule in
+// a test: the shared sign-in payload names the attempt (login id, launcher,
+// worker, label) and nothing else — no member may even be *named* like a
+// code, URL or token, because the device code, the verification link and any
+// provider token are exactly what the journal must never hold.
+func TestAgentLoginPayloadCarriesNoCodesOrURLs(t *testing.T) {
+	raw, err := json.Marshal(AgentLoginPayload{
+		LoginID:      "01987a71-3333-7000-8000-abcdef012345",
+		Launcher:     "codex",
+		WorkerID:     "01987a71-4444-7000-8000-abcdef012345",
+		AccountLabel: "david@example.com",
+	})
+	if err != nil {
+		t.Fatalf("marshal AgentLoginPayload: %v", err)
+	}
+	var members map[string]any
+	if err := json.Unmarshal(raw, &members); err != nil {
+		t.Fatalf("decode AgentLoginPayload: %v", err)
+	}
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	want := []string{"account_label", "launcher", "login_id", "worker_id"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("payload members = %v, want %v", names, want)
+	}
+	for _, name := range names {
+		lower := strings.ToLower(name)
+		for _, banned := range []string{"code", "url", "token", "secret"} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("payload member %q is named like a %s — the sign-in journal must not carry one", name, banned)
+			}
+		}
+	}
+}

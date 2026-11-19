@@ -294,6 +294,20 @@ const (
 	TypeAgentProfileAPMLocked = "agent.profile.apm_locked"
 )
 
+// Agent sign-in (ADR-0085): the journal rows around one agent_logins attempt.
+// `started` is the admin queueing it (human actor), the other four are the
+// worker's terminal writes or the admin's cancel. Same org-scoped shape as the
+// profile family — a sign-in has no project — and the same naming rule: the
+// envelope pattern admits underscores only after the first segment, so the
+// names are dotted (`agent.login.*`) where the Go identifiers are underscored.
+const (
+	TypeAgentLoginStarted   = "agent.login.started"
+	TypeAgentLoginSucceeded = "agent.login.succeeded"
+	TypeAgentLoginFailed    = "agent.login.failed"
+	TypeAgentLoginCancelled = "agent.login.cancelled"
+	TypeAgentLoginExpired   = "agent.login.expired"
+)
+
 // APM collections (ADR-0084): the journal rows behind the collection library.
 // Same org-scoped shape as the profile family — a collection has no project —
 // and the same naming rule: the envelope schema's `type` pattern admits
@@ -1292,6 +1306,20 @@ type AgentProfileAPMLockedPayload struct {
 	// the difference between "a digest exists" and "this is the context the
 	// digest pins", and it is what a reader compares against what Stage installed.
 	Deps []string `json:"deps,omitempty"`
+}
+
+// AgentLoginPayload is the one shape all five agent.login.* rows share
+// (ADR-0085): who signed in where, and nothing else. It carries no code, no
+// URL and no token — the device code and the verification link live on the
+// agent_logins row for the humans who need them; the journal only records that
+// the attempt happened and how it ended.
+type AgentLoginPayload struct {
+	LoginID  string `json:"login_id"`
+	Launcher string `json:"launcher"`
+	// WorkerID is the worker whose credential volume received (or was to
+	// receive) the login; empty means the attempt never got pinned to one.
+	WorkerID     string `json:"worker_id,omitempty"`
+	AccountLabel string `json:"account_label,omitempty"`
 }
 
 // -------------------------------------------------------- M3 enum values ---
