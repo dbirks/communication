@@ -34,7 +34,7 @@ import type { NodeExecution } from "../api/types";
 import type { NodeExecutionSummary } from "../lib/pipeline/contract";
 import { viewNodeExecution } from "../api/m4view";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
-import { shortId } from "./ProjectRuns";
+import { shortId } from "../lib/format";
 import {
   WIRE_ATTEMPT_1,
   WIRE_NODE_IMPLEMENT,

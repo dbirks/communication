@@ -309,7 +309,7 @@ describe("RunHeader rows 1 and 3", () => {
     // The label is mono uppercase; the value is the fact, not a sentence.
     expect(facts.querySelector("dt")?.className).toContain("uppercase");
     const values = Array.from(facts.querySelectorAll("dd"));
-    expect(values[0].textContent).toBe("feature-development · rev 7");
+    expect(values[0].textContent).toBe("feature-development · See on canvas · rev 7");
     expect(values[1].textContent).toBe("billing-service");
     expect(values[1].className).toContain("font-mono");
     expect(values[2].textContent).toMatch(/ago by Priya Natarajan$/);
@@ -317,6 +317,20 @@ describe("RunHeader rows 1 and 3", () => {
     // against the library's digests.
     expect(values[3].textContent).toBe("3f2f3f2f3f2f");
     expect(values[3].className).toContain("font-mono");
+  });
+
+  // The run page and the canvas are the same run seen twice — the workbench
+  // lists its steps, the editor paints them. Until this link existed, nothing
+  // in the app linked to `?run=` at all.
+  it("links the run to its own state painted on the workflow canvas", () => {
+    mountHeader();
+    const canvas = screen.getByTestId("run-header-canvas");
+    expect(canvas.textContent).toBe("See on canvas");
+    expect(canvas.getAttribute("href")).toBe(
+      `/p/${wireProjectId}/factory/${wireRun.pipeline_id}?run=${WIRE_RUN_ID}`,
+    );
+    // It rides running text in the facts row, so it is underlined, not coloured.
+    expect(canvas.className.split(/\s+/)).toContain("underline");
   });
 
   it("the rev fact links to the pinned revision, and says nothing the read cannot", () => {
@@ -343,7 +357,7 @@ describe("RunHeader rows 1 and 3", () => {
       ...Array.from(screen.getByTestId("run-breadcrumb").querySelectorAll("a")),
       ...Array.from(screen.getByTestId("run-header-meta").querySelectorAll("a")),
     ];
-    expect(inlineLinks.length).toBe(3); // project, Runs, rev 7
+    expect(inlineLinks.length).toBe(4); // project, Runs, See on canvas, rev 7
     for (const link of inlineLinks) {
       expect(link.className.split(/\s+/)).toContain("underline");
     }

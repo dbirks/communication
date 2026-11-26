@@ -67,7 +67,7 @@ import { duplicateNode } from "../lib/pipeline/duplicateNode";
 import { shortId } from "../lib/format";
 import { routes } from "../lib/routes";
 import { useScope } from "../lib/scope";
-import { RUN_STATE, STATES, stateOf } from "../components/ds/states";
+import { NODE_EXECUTION_STATE, RUN_STATE, STATES, stateOf } from "../components/ds/states";
 import { SoftButton } from "../components/ds/SoftButton";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
@@ -171,6 +171,21 @@ function scopeIterationIndex(instanceKey: string, scopeId: string): number | nul
   const re = new RegExp(`/${scopeId}\\[(\\d+)\\]`);
   const m = re.exec(instanceKey);
   return m ? Number(m[1]) : null;
+}
+
+/** Node statuses that have closed the round: after these there IS a verdict. */
+const VERDICT_STEP_CLOSED = new Set(["succeeded", "failed", "skipped", "cancelled", "interrupted"]);
+
+/** The scope's OWN row (`/build_loop`, or `/outer[2]/inner` for a nested one) —
+ * the row that says what became of the loop, as opposed to the rows of the
+ * rounds it ran. `overlays` rolls a scope's state up from its children, so a
+ * loop that ran three clean rounds and then gave up on its own goal rolls up
+ * `done`; only this row knows the goal was never met. */
+function scopeOwnRow(
+  rows: readonly NodeExecutionSummary[],
+  scopeId: string,
+): NodeExecutionSummary | undefined {
+  return rows.find((row) => row.node_instance_key.split("/").at(-1) === scopeId);
 }
 
 function parseJudgeOutput(
@@ -605,10 +620,39 @@ export function StudioPage() {
       isViewingRun ? projectRun({ run: baseRun, nodes: baseRunNodes }, runEvents.events) : null,
     [isViewingRun, baseRun, baseRunNodes, runEvents.events],
   );
-  const statusOverlay = useMemo(
-    () => (runProjection ? overlays(runProjection.nodes, {}) : undefined),
-    [runProjection],
-  );
+  // The canvas overlay for a run: one entry per DEFINITION node, not one per
+  // execution row. `overlays` only knows the nodes the run produced rows for, so
+  // a branch the run never reached (a skipped `until` body, everything after a
+  // failed step) came back `undefined` and the box carried no glyph and no word
+  // at all — colour-without-a-word is exactly what identity rule 06 forbids, and
+  // "no state" is a state the reader has to be told. The un-produced boxes get
+  // the workbench's own word for them (`not started`, the queued set's neutral
+  // dot), the same one StepStrip and the scope picker print.
+  const statusOverlay = useMemo(() => {
+    if (!runProjection) return undefined;
+    const filled: Record<string, { state: string; label: string; executionId: string | null }> =
+      overlays(runProjection.nodes, {});
+    for (const node of model.nodes) {
+      if (filled[node.id] === undefined)
+        filled[node.id] = { state: "queued", label: "not started", executionId: null };
+    }
+    // A loop frame whose rounds all ran cleanly rolls up `done` even when the
+    // loop itself ended failed (its `passWhen` never held) or stopped: the
+    // roll-up reads the rounds, and the rounds are innocent. The frame's own row
+    // has the last word, so the box says `×` / `⊘` with the round counter, not
+    // a `✓` nobody should trust next to a failed run.
+    for (const node of model.nodes) {
+      if (!node.isScope) continue;
+      const overlay = filled[node.id];
+      if (!overlay || overlay.state !== "done") continue;
+      const own = scopeOwnRow(runProjection.nodes, node.id);
+      if (!own) continue;
+      const ownState = stateOf(NODE_EXECUTION_STATE[own.status] ?? "queued");
+      if (ownState === "failed" || ownState === "interrupted")
+        filled[node.id] = { ...overlay, state: ownState };
+    }
+    return filled;
+  }, [runProjection, model]);
 
   // Identify GoalFrame scopes & verdict-step executions to fetch outputs for VerdictStack
   const goalScopes = useMemo(() => {
@@ -675,6 +719,10 @@ export function StudioPage() {
       if (iterations.length === 0) continue;
       const maxIter = iterations[iterations.length - 1];
       const scopeOverallStatus = statusOverlay?.[scopeItem.id]?.state ?? "queued";
+      // The loop's own row is the last word on the goal: a Repeat-until whose
+      // rounds all ran cleanly but whose `passWhen` never held ends `failed`, and
+      // the final round is then "not yet", never "goal met".
+      const scopeOwnStatus = scopeOwnRow(runProjection.nodes, scopeItem.id)?.status ?? null;
       const rounds: VerdictRound[] = [];
       for (const n of iterations) {
         const exec: NodeExecutionSummary | undefined = scopeItem.verdictStepId
@@ -690,18 +738,30 @@ export function StudioPage() {
         let reason: string | undefined = parsedJudge?.reason;
         if (parsedJudge) {
           verdict = parsedJudge.verdict;
-        } else if (
-          exec &&
-          (exec.status === "running" || exec.status === "leased" || exec.status === "ready")
-        ) {
+        } else if (exec && !VERDICT_STEP_CLOSED.has(exec.status)) {
+          // The round's verdict step has not answered yet — `pending` counts as
+          // much as `running`: until it finishes there is no verdict to print,
+          // and "× not yet" about a round still in flight says the loop gave up
+          // before it ever looked.
           verdict = "running";
         } else if (n < maxIter) {
           verdict = "not_yet";
-        } else if (scopeOverallStatus === "done") {
+        } else if (scopeOwnStatus === "failed" || scopeOwnStatus === "cancelled") {
+          verdict = "not_yet";
+        } else if (scopeOwnStatus === "skipped") {
+          verdict = "not_yet";
+        } else if (scopeOwnStatus === "succeeded" && scopeOverallStatus === "done") {
           verdict = "met";
-        } else if (exec?.status === "failed") {
+        } else if (
+          exec?.status === "failed" ||
+          exec?.status === "cancelled" ||
+          exec?.status === "skipped"
+        ) {
           verdict = "not_yet";
         } else if (scopeOverallStatus === "running" || !exec) {
+          verdict = "running";
+        } else if (scopeOwnStatus === null) {
+          // No loop row to read the goal off — say "judging", not "met".
           verdict = "running";
         } else {
           verdict = "not_yet";
@@ -1137,15 +1197,21 @@ export function StudioPage() {
     validateOutcome ?? (studio.dirty ? null : viewValidate(draft.data?.validation ?? null));
 
   // Draft status line in TopBarLeft
+  const runBannerState = runProjection?.run
+    ? STATES[stateOf(RUN_STATE[runProjection.run.status] ?? "queued")]
+    : STATES.queued;
   let draftStatusNode: React.ReactNode = null;
   if (isViewingRun) {
+    // The dot is the run's state colour, never the draft's amber, and the state
+    // word rides the line: a finished run that wears the running-blue dot with
+    // no word says "live" in the one place the reader glances at.
     draftStatusNode = (
       <span
         className="flex items-center gap-[6px] text-[12px] text-muted"
         data-testid="studio-draft-status"
       >
-        <span className="h-[7px] w-[7px] rounded-full bg-st-running-strong" aria-hidden />
-        Run {shortId(runParam)}
+        <span className={`h-[7px] w-[7px] rounded-full ${runBannerState.strongBg}`} aria-hidden />
+        Run {shortId(runParam)} · {runBannerState.word}
       </span>
     );
   } else if (studio.saving) {
@@ -1331,10 +1397,6 @@ export function StudioPage() {
       ) : null}
     </div>
   );
-
-  const runBannerState = runProjection?.run
-    ? STATES[stateOf(RUN_STATE[runProjection.run.status] ?? "queued")]
-    : STATES.queued;
 
   const viewedRevSummary = viewingDigest
     ? (revisions.find((r) => r.revision_digest === viewingDigest) ?? null)

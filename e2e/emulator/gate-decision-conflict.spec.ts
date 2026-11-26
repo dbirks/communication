@@ -15,7 +15,7 @@ test("T10b: /approvals/:approvalId surfaces honest 409 conflict when gate is alr
   request,
   emu,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(300_000);
   const ts = Date.now().toString(36);
   emu.expectFailure(/\/decide$/, 409);
 
@@ -152,8 +152,12 @@ test("T10b: /approvals/:approvalId surfaces honest 409 conflict when gate is alr
 
   await page.goto(`${EMU_BASE_URL}/approvals/${pendingId}`);
   await expect(page.getByTestId("decision-bar")).toBeVisible();
+  // The summary card is a real model call bounded by the lab's own
+  // per-completion deadline (COMMUNICATION_ASSISTANT_TIMEOUT, 180 s in
+  // compose.real.yml): the capture waits past that bound for the card to leave
+  // its loading state (Acceptance 45864491300 was still loading at 15 s).
   await expect(page.locator('[data-testid^="approval-detail-summary-loading-"]')).toHaveCount(0, {
-    timeout: 15_000,
+    timeout: 200_000,
   });
   await emu.screen("approval", "detail");
 

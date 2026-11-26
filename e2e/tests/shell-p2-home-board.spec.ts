@@ -32,6 +32,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { signIn } from "./helpers.js";
 import {
+  evidenceQuick,
   SHELL_ENABLED,
   SHELL_GATE,
   apiBoardRuns,
@@ -447,7 +448,13 @@ test.describe("shell p2 — Home: needs you, running, factory health", () => {
       /Approved\. The run continues in \d+s\./,
     );
     await expect(page.getByTestId("decision-undo")).toBeVisible();
-    await evidence(
+    // The hold is only 5 s, and a full-page evidence capture between the two
+    // clicks can outlast
+    // it on a loaded runner — the hold then posts for real before Undo is
+    // reached (Acceptance 45864491300 counted exactly that one POST). The
+    // hold's own screen is still recorded, by a viewport shot that is bounded
+    // well inside the window.
+    await evidenceQuick(
       page,
       "shell-p2-gate-hold",
       "the gate page's Approve verb holds the decision behind a counting-down Undo window instead of POSTing on the click (finding 04's one DecisionBar, now reached from a NEEDS YOU card)",

@@ -1,5 +1,6 @@
 /**
- * The collection editor (`/workflows/collections/:id`, ADR-0084).
+ * The collection editor (Manage → Agents & models → Skills → a collection,
+ * `?item=<id>`, ADR-0084).
  *
  * A collection is an ORDERED list of pinned refs; this page is that list.
  * Revisions are immutable once published (ADR-0002's rule restated), so the
@@ -19,14 +20,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { IconArrowDown, IconArrowUp, IconGripVertical, IconPlus } from "@tabler/icons-react";
-import Page from "../ds/Page";
 import { Button } from "../ds/Button";
 import { Input } from "../ds/Field";
 import { Alert } from "../ds/Alert";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { problemOf } from "../../api/client";
 import {
-  collectionsRoute,
   createRevision,
   invalidateCollections,
   publishRevision,
@@ -34,7 +33,7 @@ import {
   validateCollectionRef,
   type APMCollectionEntry,
 } from "../../api/apmCollections";
-import { WorkflowsTabs } from "../../pages/Workflows";
+import { routes } from "../../lib/routes";
 
 export interface CollectionEditorProps {
   collectionId: string;
@@ -137,65 +136,50 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
 
   if (detailQuery.isPending) {
     return (
-      <Page
-        layout="wide"
-        testid="collection-editor-loading"
-        title="Collection"
-        band={<WorkflowsTabs active="collections" />}
-      >
-        <Spinner label="Loading the collection" />
-      </Page>
+      <div data-testid="collection-editor-loading">
+        <SkillsBackLink />
+        <div className="pt-[12px]">
+          <Spinner label="Loading the collection" />
+        </div>
+      </div>
     );
   }
   if (detailQuery.isError || !detail) {
     return (
-      <Page
-        layout="wide"
-        testid="collection-editor-error"
-        title="Collection"
-        band={<WorkflowsTabs active="collections" />}
-      >
-        <ProblemBanner
-          error={detailQuery.error ?? new Error("not found")}
-          fallback="This collection could not be read."
-        />
-      </Page>
+      <div data-testid="collection-editor-error">
+        <SkillsBackLink />
+        <div className="pt-[12px]">
+          <ProblemBanner
+            error={detailQuery.error ?? new Error("not found")}
+            fallback="This collection could not be read."
+          />
+        </div>
+      </div>
     );
   }
 
   const collection = detail.collection;
   return (
-    <Page
-      layout="wide"
-      testid="collection-editor"
-      title={
-        <span className="flex flex-wrap items-center gap-[8px]">
-          {collection.name}
-          <span
-            className="font-mono text-[10.5px] font-normal text-muted"
-            data-testid="collection-revision-chip"
-          >
-            {latest
-              ? latest.status === "published"
-                ? `r${latest.revision} published`
-                : "draft"
-              : "no revision"}
-          </span>
-        </span>
-      }
-      breadcrumb={
-        <Link
-          to={collectionsRoute}
-          className="text-[12px] text-muted underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          data-testid="collection-editor-back"
-        >
-          Collections
-        </Link>
-      }
-      subtitle={<span>{collection.description}</span>}
-      band={<WorkflowsTabs active="collections" />}
-      actions={
-        <div className="flex items-center gap-[8px]">
+    <div data-testid="collection-editor">
+      <SkillsBackLink />
+      <header className="flex flex-wrap items-start justify-between gap-[10px] pt-[6px]">
+        <div className="min-w-0">
+          <h2 className="flex flex-wrap items-center gap-[8px] text-[20px] font-bold leading-[1.25] text-ink">
+            {collection.name}
+            <span
+              className="font-mono text-[10.5px] font-normal text-muted"
+              data-testid="collection-revision-chip"
+            >
+              {latest
+                ? latest.status === "published"
+                  ? `r${latest.revision} published`
+                  : "draft"
+                : "no revision"}
+            </span>
+          </h2>
+          <p className="mt-1 max-w-[720px] text-[13.5px] text-muted">{collection.description}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-[8px]">
           <Button
             variant="secondary"
             disabled={!dirty || busy !== null}
@@ -213,133 +197,134 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
             {busy === "publish" ? "Publishing…" : publishLabel}
           </Button>
         </div>
-      }
-    >
-      {dirty ? (
-        <p className="font-mono text-[11px] text-muted" data-testid="collection-editor-dirty">
-          unsaved edits — Save draft lands them as r{highest + 1}
-        </p>
-      ) : null}
-      <table className="w-full border-collapse text-left" data-testid="collection-entries">
-        <thead>
-          <tr className="border-b border-line font-mono text-[10px] uppercase tracking-[.06em] text-faint">
-            <th className="w-[64px] p-[6px] font-semibold">#</th>
-            <th className="p-[6px] font-semibold">ref</th>
-            <th className="p-[6px] font-semibold">skills</th>
-            <th className="p-[6px] font-semibold">note</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((entry, index) => (
-            <tr
-              key={`${index}:${entry.ref}`}
-              className="border-b border-line align-top"
-              data-testid={`collection-entry-${index}`}
-            >
-              <td className="p-[6px]">
-                <span className="flex items-center gap-[2px]">
-                  {/* The grip is the affordance; the arrows are how a keyboard
+      </header>
+      <div className="pt-[14px]">
+        {dirty ? (
+          <p className="font-mono text-[11px] text-muted" data-testid="collection-editor-dirty">
+            unsaved edits — Save draft lands them as r{highest + 1}
+          </p>
+        ) : null}
+        <table className="w-full border-collapse text-left" data-testid="collection-entries">
+          <thead>
+            <tr className="border-b border-line font-mono text-[10px] uppercase tracking-[.06em] text-faint">
+              <th className="w-[64px] p-[6px] font-semibold">#</th>
+              <th className="p-[6px] font-semibold">ref</th>
+              <th className="p-[6px] font-semibold">skills</th>
+              <th className="p-[6px] font-semibold">note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry, index) => (
+              <tr
+                key={`${index}:${entry.ref}`}
+                className="border-b border-line align-top"
+                data-testid={`collection-entry-${index}`}
+              >
+                <td className="p-[6px]">
+                  <span className="flex items-center gap-[2px]">
+                    {/* The grip is the affordance; the arrows are how a keyboard
                       (and this build) actually moves a row. */}
-                  <IconGripVertical
-                    size={14}
-                    stroke={1.7}
-                    aria-hidden="true"
-                    className="text-faint"
-                  />
-                  <button
-                    type="button"
-                    aria-label={`Move ${entry.ref} up`}
-                    disabled={index === 0}
-                    onClick={() => move(index, -1)}
-                    data-testid={`collection-entry-up-${index}`}
-                    className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  >
-                    <IconArrowUp size={14} stroke={1.7} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Move ${entry.ref} down`}
-                    disabled={index === entries.length - 1}
-                    onClick={() => move(index, 1)}
-                    data-testid={`collection-entry-down-${index}`}
-                    className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  >
-                    <IconArrowDown size={14} stroke={1.7} aria-hidden="true" />
-                  </button>
-                </span>
-              </td>
-              <td className="p-[6px] font-mono text-[12px] break-all text-ink-2">{entry.ref}</td>
-              <td className="p-[6px]">
-                {(entry.skills ?? []).length === 0 ? (
-                  <span className="font-mono text-[11px] text-faint">all</span>
-                ) : (
-                  <span className="flex flex-wrap gap-[3px]">
-                    {entry.skills?.map((skill) => (
-                      <span
-                        key={skill}
-                        className="rounded-[3px] border border-line px-[5px] py-[1px] font-mono text-[10.5px] text-ink-2"
-                      >
-                        {skill}
-                      </span>
-                    ))}
+                    <IconGripVertical
+                      size={14}
+                      stroke={1.7}
+                      aria-hidden="true"
+                      className="text-faint"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Move ${entry.ref} up`}
+                      disabled={index === 0}
+                      onClick={() => move(index, -1)}
+                      data-testid={`collection-entry-up-${index}`}
+                      className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    >
+                      <IconArrowUp size={14} stroke={1.7} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Move ${entry.ref} down`}
+                      disabled={index === entries.length - 1}
+                      onClick={() => move(index, 1)}
+                      data-testid={`collection-entry-down-${index}`}
+                      className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    >
+                      <IconArrowDown size={14} stroke={1.7} aria-hidden="true" />
+                    </button>
                   </span>
-                )}
+                </td>
+                <td className="p-[6px] font-mono text-[12px] break-all text-ink-2">{entry.ref}</td>
+                <td className="p-[6px]">
+                  {(entry.skills ?? []).length === 0 ? (
+                    <span className="font-mono text-[11px] text-faint">all</span>
+                  ) : (
+                    <span className="flex flex-wrap gap-[3px]">
+                      {entry.skills?.map((skill) => (
+                        <span
+                          key={skill}
+                          className="rounded-[3px] border border-line px-[5px] py-[1px] font-mono text-[10.5px] text-ink-2"
+                        >
+                          {skill}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </td>
+                <td className="p-[6px] text-[12px] text-muted">{entry.note ?? ""}</td>
+              </tr>
+            ))}
+            {entries.length === 0 ? (
+              <tr data-testid="collection-entries-empty">
+                <td colSpan={4} className="p-[10px] font-mono text-[11px] text-faint">
+                  no packages — this collection stages nothing
+                </td>
+              </tr>
+            ) : null}
+            <tr data-testid="collection-add-row">
+              <td className="p-[6px]" />
+              <td className="p-[6px]">
+                <div className="flex items-center gap-[6px]">
+                  <Input
+                    aria-label="Add package ref"
+                    value={refDraft}
+                    placeholder="owner/repo[/path]#tag-or-sha"
+                    onChange={(event) => {
+                      setRefDraft(event.target.value);
+                      if (refError !== null) setRefError(null);
+                    }}
+                    className="min-w-0 flex-1 font-mono"
+                    data-testid="collection-add-ref"
+                  />
+                  <Button
+                    variant="secondary"
+                    compact
+                    onClick={addPackage}
+                    data-testid="collection-add-package"
+                  >
+                    <IconPlus size={14} stroke={1.7} aria-hidden="true" />
+                    Add package
+                  </Button>
+                </div>
+                {refError ? (
+                  <p
+                    role="alert"
+                    className="pt-1 text-[11.5px] text-st-failed-tag-fg"
+                    data-testid="collection-add-error"
+                  >
+                    {refError}
+                  </p>
+                ) : null}
               </td>
-              <td className="p-[6px] text-[12px] text-muted">{entry.note ?? ""}</td>
+              <td className="p-[6px]" />
+              <td className="p-[6px]" />
             </tr>
-          ))}
-          {entries.length === 0 ? (
-            <tr data-testid="collection-entries-empty">
-              <td colSpan={4} className="p-[10px] font-mono text-[11px] text-faint">
-                no packages — this collection stages nothing
-              </td>
-            </tr>
-          ) : null}
-          <tr data-testid="collection-add-row">
-            <td className="p-[6px]" />
-            <td className="p-[6px]">
-              <div className="flex items-center gap-[6px]">
-                <Input
-                  aria-label="Add package ref"
-                  value={refDraft}
-                  placeholder="owner/repo[/path]#tag-or-sha"
-                  onChange={(event) => {
-                    setRefDraft(event.target.value);
-                    if (refError !== null) setRefError(null);
-                  }}
-                  className="min-w-0 flex-1 font-mono"
-                  data-testid="collection-add-ref"
-                />
-                <Button
-                  variant="secondary"
-                  compact
-                  onClick={addPackage}
-                  data-testid="collection-add-package"
-                >
-                  <IconPlus size={14} stroke={1.7} aria-hidden="true" />
-                  Add package
-                </Button>
-              </div>
-              {refError ? (
-                <p
-                  role="alert"
-                  className="pt-1 text-[11.5px] text-st-failed-tag-fg"
-                  data-testid="collection-add-error"
-                >
-                  {refError}
-                </p>
-              ) : null}
-            </td>
-            <td className="p-[6px]" />
-            <td className="p-[6px]" />
-          </tr>
-        </tbody>
-      </table>
-      {problem ? (
-        <Alert state="failed" label="REFUSED" role="alert" testid="collection-editor-problem">
-          {problemOf(problem).detail || problemOf(problem).title}
-        </Alert>
-      ) : null}
+          </tbody>
+        </table>
+        {problem ? (
+          <Alert state="failed" label="REFUSED" role="alert" testid="collection-editor-problem">
+            {problemOf(problem).detail || problemOf(problem).title}
+          </Alert>
+        ) : null}
+      </div>
       {confirmOpen && publishable !== null ? (
         <CollectionPublishDialog
           revision={publishable}
@@ -349,7 +334,20 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
           onConfirm={() => void publish(publishable)}
         />
       ) : null}
-    </Page>
+    </div>
+  );
+}
+
+/** The way back to the Skills grid: keeps `tab=skills`, drops `item`. */
+function SkillsBackLink() {
+  return (
+    <Link
+      to={routes.collections()}
+      className="inline-block text-[12.5px] text-muted underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+      data-testid="collection-editor-back"
+    >
+      ← Skills
+    </Link>
   );
 }
 

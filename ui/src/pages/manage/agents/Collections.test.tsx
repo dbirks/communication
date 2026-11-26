@@ -1,18 +1,19 @@
 /**
- * The Collections tab (`/workflows/collections`) and the editor route
- * (`/workflows/collections/:id`) — ADR-0084. The list renders cards from the
- * library read joined (client-side) with the profile read for `used by N
- * profiles`; the editor carries the ordered entries, the add-row's pin
- * refusal, the reorder → `Save draft` body order, and the publish confirm's
- * exact words. Fixtures only — no live server.
+ * The Skills tab of Manage → Agents & models — ADR-0084. The list renders cards
+ * from the library read joined (client-side) with the profile read for `used by
+ * N profiles`; the collection editor's own behaviour (ordered entries, the
+ * add-row's pin refusal, the reorder → `Save draft` body order, the publish
+ * confirm's exact words) is asserted beside that component, in
+ * components/collections/CollectionEditor.test.tsx. Fixtures only — no live
+ * server.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import Collections from "./Collections";
-import { mockFetch, requestsTo, type RouteStub } from "../test/fakes";
-import { meFixture } from "../test/fakes";
+import { mockFetch, requestsTo, type RouteStub } from "../../../test/fakes";
+import { meFixture } from "../../../test/fakes";
 
 const admin = { ...meFixture, is_org_admin: true };
 
@@ -59,7 +60,13 @@ const pstack = {
   },
 };
 
-function mount(stubs: RouteStub[], path = "/workflows/collections") {
+/** Where the tab actually is — the create path navigates, so the tests watch it. */
+function LocationProbe() {
+  const { pathname, search } = useLocation();
+  return <div data-testid="location">{`${pathname}${search}`}</div>;
+}
+
+function mount(stubs: RouteStub[], path = "/manage/agents?tab=skills") {
   const { requests } = mockFetch(stubs);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
@@ -68,13 +75,28 @@ function mount(stubs: RouteStub[], path = "/workflows/collections") {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/workflows/collections" element={<Collections />} />
-          <Route path="/workflows/collections/:id" element={<Collections />} />
+          <Route
+            path="/manage/agents"
+            element={
+              <>
+                <Collections />
+                <LocationProbe />
+              </>
+            }
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
   return requests;
+}
+
+/** The detail read the editor makes for one collection. */
+function detailStub(collection: typeof matt): RouteStub {
+  return {
+    path: `/api/v1/apm-collections/${collection.id}`,
+    body: { collection, revisions: [collection.latest_revision] },
+  };
 }
 
 function baseStubs(collections: unknown): RouteStub[] {
@@ -133,8 +155,6 @@ describe("Collections list", () => {
     expect(within(pstackCard).getByTestId("collection-card-usage-c-pstack").textContent).toBe(
       "used by 1 profile",
     );
-    // The third tab is present on the strip.
-    expect(screen.getByTestId("workflows-tab-collections").textContent).toBe("Collections");
   });
 
   it("shows the empty state, not a fake row", async () => {
@@ -157,13 +177,20 @@ describe("Collections list", () => {
 
   it("New collection creates a draft and lands on its editor", async () => {
     const requests = mount([
-      ...baseStubs({ collections: [], next_cursor: null }),
+      { path: "/api/v1/me", body: admin },
+      { path: "/api/v1/agent-profiles", body: { items: [] } },
+      {
+        path: "/api/v1/apm-collections",
+        method: "GET",
+        body: { collections: [], next_cursor: null },
+      },
       {
         path: "/api/v1/apm-collections",
         method: "POST",
         status: 201,
         body: { ...matt, id: "c-new" },
       },
+      detailStub({ ...matt, id: "c-new" }),
     ]);
     fireEvent.click(await screen.findByTestId("collections-new"));
     const dialog = await screen.findByTestId("collections-new-dialog");
@@ -184,10 +211,57 @@ describe("Collections list", () => {
         entries: [],
       });
     });
+    // and the route moves to that collection's editor (`?item=`)
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/manage/agents?tab=skills&item=c-new",
+      ),
+    );
+    expect(await screen.findByTestId("collection-editor")).toBeDefined();
   });
 });
 
-describe("Collections embedded (Manage → Agents & models → Skills)", () => {
+describe("A collection opened from the Skills grid", () => {
+  it("links each card to the collection's editor route", async () => {
+    mount([...baseStubs({ collections: [matt, pstack], next_cursor: null })]);
+    const card = await screen.findByTestId("collection-card-c-matt");
+    expect(card.getAttribute("href")).toBe("/manage/agents?tab=skills&item=c-matt");
+  });
+
+  it("?item= renders the editor for that collection instead of the grid", async () => {
+    mount(
+      [...baseStubs({ collections: [matt, pstack], next_cursor: null }), detailStub(matt)],
+      "/manage/agents?tab=skills&item=c-matt",
+    );
+    const editor = await screen.findByTestId("collection-editor");
+    expect(editor.textContent).toContain("Matt Pocock skills");
+    expect((await screen.findByTestId("collection-entry-0")).textContent).toContain(
+      "mattpocock/skills#v1.3.2",
+    );
+    // the grid is gone, the editor is not a page with its own band
+    expect(screen.queryByTestId("collections-grid")).toBeNull();
+    expect(screen.queryByTestId("page-band")).toBeNull();
+    // and the way back is the Skills grid, tab kept, item dropped
+    const back = screen.getByTestId("collection-editor-back");
+    expect(back.textContent).toBe("← Skills");
+    expect(back.getAttribute("href")).toBe("/manage/agents?tab=skills");
+  });
+
+  it("an id the library does not carry says so and offers the way back", async () => {
+    mount(
+      [...baseStubs({ collections: [matt], next_cursor: null }), detailStub(matt)],
+      "/manage/agents?tab=skills&item=c-gone",
+    );
+    const missing = await screen.findByTestId("collections-item-missing");
+    expect(missing.textContent).toContain("That skill collection doesn't exist.");
+    const back = within(missing).getByTestId("collections-back-to-grid");
+    expect(back.textContent).toBe("← Skills");
+    expect(back.getAttribute("href")).toBe("/manage/agents?tab=skills");
+    expect(screen.queryByTestId("collection-editor")).toBeNull();
+  });
+});
+
+describe("Collections in the Skills tab", () => {
   it("draws no page title or tab strip, and the New button still opens the dialog", async () => {
     const { requests } = mockFetch([
       { path: "/api/v1/me", body: admin },
@@ -201,7 +275,7 @@ describe("Collections embedded (Manage → Agents & models → Skills)", () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/manage/agents?tab=skills"]}>
           <Routes>
-            <Route path="/manage/agents" element={<Collections embedded />} />
+            <Route path="/manage/agents" element={<Collections />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -210,7 +284,7 @@ describe("Collections embedded (Manage → Agents & models → Skills)", () => {
     expect(screen.queryByTestId("workflows-tabs")).toBeNull();
     expect(screen.queryByTestId("page-band")).toBeNull();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
-    // Non-embedded output is unchanged: the full-page chrome is untouched.
+    // The library is read exactly once for the tab.
     expect(requestsTo(requests, "/api/v1/apm-collections", "GET").length).toBe(1);
     fireEvent.click(await screen.findByTestId("collections-new"));
     const dialog = await screen.findByTestId("collections-new-dialog");

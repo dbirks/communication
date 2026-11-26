@@ -83,7 +83,7 @@ import { hasLibraryRole } from "../../lib/pipeline/authoring";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 import { formatAge, shortId } from "../../lib/format";
 import { RUN_STATE, STATES, STREAM_STATE, stateOf } from "../ds/states";
-import { RunStateChip } from "../../pages/ProjectRuns";
+import { RunStateChip } from "./runState";
 import { useRunActionsModel } from "../../pages/RunInspector";
 import {
   attentionNode,
@@ -443,6 +443,18 @@ export function RunHeader({
       >
         <Fact label="Workflow" testid="workflow">
           {slug}
+          {" · "}
+          {/* The run's own state painted on the definition it ran (`?run=` in the
+              editor): every step in its run state, the loop frames animated,
+              the judge verdicts stacked. A quiet link — `rev {n}` and the ⋯
+              menu keep their targets. */}
+          <Link
+            to={routes.factoryWorkflow(run.pipeline_id, projectId, { run: run.id })}
+            data-testid="run-header-canvas"
+            className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            See on canvas
+          </Link>
           {revision ? (
             <>
               {" · "}

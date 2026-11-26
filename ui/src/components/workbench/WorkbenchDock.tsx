@@ -38,7 +38,7 @@ import { kindWord } from "../../lib/pipeline/definition";
 import { iterationOf } from "../../lib/pipeline/runView";
 import { toRunEvent } from "../../lib/pipeline/runEvents";
 import { retryVerdict } from "../../pages/RunInspector";
-import { runStateWord } from "../../pages/ProjectRuns";
+import { runStateWord } from "./runState";
 import { childRunOf } from "../../lib/pipeline/workbench";
 import { routes } from "../../lib/routes";
 import type {

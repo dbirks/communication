@@ -73,8 +73,12 @@ vi.mock("../../components/profiles/NewProfileDialog", () => ({
 vi.mock("../../components/ops/ModelsPanel", () => ({
   ModelsPanel: () => <div data-testid="models-panel" />,
 }));
-vi.mock("../Collections", () => ({ default: () => <div data-testid="skills-tab" /> }));
-vi.mock("../Steps", () => ({ default: () => <div data-testid="steps-tab" /> }));
+vi.mock("./agents/Collections", () => ({
+  default: () => <div data-testid="skills-tab" />,
+}));
+vi.mock("./agents/Steps", () => ({
+  default: () => <div data-testid="steps-tab" />,
+}));
 vi.mock("../settings/Assistant", () => ({ default: () => <div data-testid="assistant-tab" /> }));
 
 const profileFixture: AgentProfile = {

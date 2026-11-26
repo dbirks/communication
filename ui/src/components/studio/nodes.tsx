@@ -75,7 +75,7 @@ export type TriggerNodeRender = {
   onClick?: () => void;
 };
 
-type StepStateCategory = "done" | "running" | "waiting" | "failed" | null;
+type StepStateCategory = "done" | "running" | "waiting" | "failed" | "interrupted" | null;
 
 function stepStateCategory(state: string | undefined): StepStateCategory {
   if (!state) return null;
@@ -90,6 +90,10 @@ function stepStateCategory(state: string | undefined): StepStateCategory {
     return "done";
   if (s.includes("run") || s === "active") return "running";
   if (s.includes("wait")) return "waiting";
+  // `interrupted` is its OWN state set (ds/states: ⊘ / "stopped") — a stopped
+  // step is not a failed one, and a card that paints it plain white says
+  // "nothing happened here" about a step the run did stop.
+  if (s.includes("interrupt") || s.includes("cancel") || s === "stopped") return "interrupted";
   if (s.includes("fail") || s.includes("error")) return "failed";
   return null;
 }
@@ -106,13 +110,36 @@ function statusGlyph(state: string): string {
     s.includes("approved")
   )
     return "✓";
-  if (s.includes("fail") || s.includes("cancel") || s.includes("error")) return "×";
+  // ⊘ is the interrupted set's glyph (ds/states): stopped, outcome unknown.
+  // It is NOT the failed set's ×, and the old `cancel` → × mapping printed a
+  // failure mark on every box a cancelled run had stopped.
+  if (s.includes("interrupt") || s.includes("cancel") || s === "stopped") return "⊘";
+  if (s.includes("fail") || s.includes("error")) return "×";
   // "!" is the waiting set's glyph — a person must answer it. Not-started
   // work (queued/pending) carries the queued set's neutral dot instead
   // (ds/states: queued is "·"), so an unstarted box never reads as urgent.
   if (s.includes("wait")) return "!";
-  if (s.includes("pend") || s.includes("queue")) return "·";
-  return "•";
+  if (s.includes("pend") || s.includes("queue") || s.includes("skip")) return "·";
+  if (s.includes("retry")) return "↻";
+  return "·";
+}
+
+/** The state's own text colour, for a status line that rides a coloured frame. */
+function stateToneClass(state: string | undefined): string {
+  switch (stepStateCategory(state)) {
+    case "done":
+      return "text-st-done-pale-fg";
+    case "running":
+      return "text-st-running-pale-fg";
+    case "waiting":
+      return "text-st-waiting-pale-fg";
+    case "failed":
+      return "text-st-failed-pale-fg";
+    case "interrupted":
+      return "text-st-interrupted-pale-fg";
+    default:
+      return "text-muted";
+  }
 }
 
 /** The ONE key fact a canvas node carries beyond icon + kind word: the
@@ -197,22 +224,28 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         ? "border-accent bg-st-waiting-pale-body"
         : stateCat === "failed"
           ? "border-accent bg-st-failed-pale-body"
-          : "border-accent bg-surface"
+          : stateCat === "interrupted"
+            ? "border-accent bg-st-interrupted-pale-body"
+            : "border-accent bg-surface"
     : stateCat === "running"
       ? "border-st-running-strong bg-st-running-pale-body"
       : stateCat === "waiting"
         ? "border-st-waiting-pale-edge bg-st-waiting-pale-body"
         : stateCat === "failed"
           ? "border-st-failed-pale-edge bg-st-failed-pale-body"
-          : "border-line bg-surface";
+          : stateCat === "interrupted"
+            ? "border-st-interrupted-pale-edge bg-st-interrupted-pale-body"
+            : "border-line bg-surface";
   const tileClass =
     stateCat === "done"
       ? "bg-st-done-tag text-st-done-tag-fg"
-      : data.kind === "model.chat" || data.kind === "agent.acp"
-        ? "bg-accent-tint text-accent-edge"
-        : data.kind === "human.approval"
-          ? "bg-st-waiting-tag text-st-waiting-tag-fg"
-          : "bg-fill text-ink-2";
+      : stateCat === "interrupted"
+        ? "bg-st-interrupted-tag text-st-interrupted-tag-fg"
+        : data.kind === "model.chat" || data.kind === "agent.acp"
+          ? "bg-accent-tint text-accent-edge"
+          : data.kind === "human.approval"
+            ? "bg-st-waiting-tag text-st-waiting-tag-fg"
+            : "bg-fill text-ink-2";
 
   return (
     <div
@@ -227,7 +260,11 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
       <div
         role="button"
         tabIndex={interactive ? 0 : -1}
-        aria-label={`${data.label} step ${data.id}`}
+        aria-label={
+          data.status
+            ? `${data.label} step ${data.id} · ${data.status.label}`
+            : `${data.label} step ${data.id}`
+        }
         onClick={() => data.onSelect()}
         onKeyDown={pick}
         className={`flex ${data.status ? "min-h-[56px] py-1" : "h-[56px]"} w-[168px] items-center gap-[10px] rounded-[10px] border px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${cardSurfaceClass} ${data.stale ? "opacity-70" : ""}`}
@@ -260,6 +297,11 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
             <span
               className="block truncate text-[10px] leading-3"
               aria-label={`status: ${data.status.label}`}
+              // The card's role=button aria-label OVERRIDES its text content for
+              // an assistive tech, so the state word has to ride that name (and a
+              // hover title) — a sighted-only "✓ done" is colour-alone for anyone
+              // who cannot see the tile (identity rule 06).
+              title={data.status.label}
               data-testid={`step-status-${data.id}`}
             >
               {statusGlyph(data.status.state)} {data.status.label}
@@ -372,6 +414,14 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
   const width = props.width ?? data.boxWidth ?? 224;
   const height = props.height ?? data.boxHeight ?? 160;
   const running = stepStateCategory(data.status?.state) === "running";
+  // A goal frame carries its run state the same way a step card does: the
+  // glyph+word pair, in the state's own colour.
+  const frameStatus = data.status
+    ? {
+        text: `${statusGlyph(data.status.state)} ${data.status.label}`,
+        className: stateToneClass(data.status.state),
+      }
+    : null;
   const showMenu = Boolean(selected && interactive && data.onMenu);
   const scopeMenuBtn = showMenu ? (
     <button
@@ -432,6 +482,7 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
           rect={{ x: 0, y: 0, width, height }}
           goal={data.goal}
           running={running}
+          status={frameStatus}
           onHeaderClick={interactive ? data.onEditGoal : undefined}
         >
           {emptyBodyNode}

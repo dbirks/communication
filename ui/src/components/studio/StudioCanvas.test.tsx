@@ -1511,12 +1511,101 @@ spec:
 
     expect(await screen.findByTestId("goal-frame")).toBeTruthy();
     expect(screen.getByTestId("goal-frame-text").textContent).toContain("Tests pass");
-    expect(screen.getByTestId("goal-frame-footer").textContent).toBe("up to 3 rounds · then stop");
+    // The bound keeps the footer's left; the loop's own state (glyph + word)
+    // rides its right, so the frame never says "running" in colour alone.
+    expect(screen.getByTestId("goal-frame-footer").firstElementChild?.textContent).toBe(
+      "up to 3 rounds · then stop",
+    );
+    expect(screen.getByTestId("goal-frame-status").textContent).toBe("● running");
     expect(screen.getByTestId("goal-frame-ants")).toBeTruthy();
     expect(screen.getByTestId("verdict-stack")).toBeTruthy();
     expect(screen.getByTestId("verdict-round-1").textContent).toContain("Lint failed.");
     expect(screen.getByTestId("canvas-scope-fan").style.borderRadius).toBe("16px");
     expect(container.querySelector("[data-testid='canvas-recurrence-arrow']")).toBeNull();
+  });
+
+  // The run view's whole promise is that a reader can stand in front of the
+  // canvas and read the run: every box says its state in a GLYPH AND A WORD
+  // (identity rule 06 — never colour alone, and never motion alone either).
+  // Three boxes that used to break it: a goal frame (which drew only its
+  // animated outline), a step the run stopped (which drew a bullet, not the
+  // interrupted set's ⊘, on a plain white card), and a step the run never
+  // produced a row for (which said nothing at all).
+  it("says the state of every box in a run view: goal frame, stopped step, un-produced step", async () => {
+    const runDocText = `kind: Pipeline
+spec:
+  nodes:
+    - id: build_loop
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: 'nodes.judge.outputs.text.contains("GOAL_MET")'
+        body:
+          nodes:
+            - id: code
+              kind: agent.acp
+            - id: judge
+              kind: agent.acp
+              dependsOn: [code]
+              config:
+                prompt: 'Decide whether this goal is met: "Tests pass". Answer with exactly GOAL_MET or NOT_YET on the first line, then one sentence why.'
+    - id: stopped_step
+      kind: process.exec
+      dependsOn: [build_loop]
+      config:
+        executable: sh
+        args: []
+    - id: untouched_step
+      kind: process.exec
+      dependsOn: [stopped_step]
+      config:
+        executable: sh
+        args: []
+`;
+    const parsed = parseGraph(runDocText);
+    if (!parsed.ok) throw new Error(parsed.error);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <div style={{ width: 960, height: 640 }}>
+          <StudioCanvas
+            model={parsed.model}
+            document={parse(runDocText)}
+            layout={{}}
+            selectedId={null}
+            stale={false}
+            onSelect={() => {}}
+            readOnly
+            statusOverlay={{
+              build_loop: { state: "running", label: "iteration 2 of 3" },
+              code: { state: "done", label: "done" },
+              judge: { state: "running", label: "running" },
+              stopped_step: { state: "interrupted", label: "stopped" },
+              untouched_step: { state: "queued", label: "not started" },
+            }}
+          />
+        </div>
+      </QueryClientProvider>,
+    );
+
+    // The goal frame: its outline animates AND the header says the word.
+    expect(await screen.findByTestId("goal-frame-ants")).toBeTruthy();
+    const frameStatus = screen.getByTestId("goal-frame-status");
+    expect(frameStatus.textContent).toBe("● iteration 2 of 3");
+    expect(frameStatus.getAttribute("title")).toBe("● iteration 2 of 3");
+
+    // A stopped step carries the interrupted set's ⊘ and its own pale card.
+    const stopped = screen.getByTestId("canvas-step-stopped_step");
+    expect(stopped.getAttribute("data-state-kind")).toBe("interrupted");
+    expect(screen.getByTestId("step-status-stopped_step").textContent).toBe("⊘ stopped");
+    // The card's role=button name OVERRIDES its text for a screen reader, so
+    // the state word has to ride that name or the state is sighted-only.
+    expect(stopped.querySelector("[role='button']")?.getAttribute("aria-label")).toBe(
+      "Run command / tests step stopped_step · stopped",
+    );
+
+    // A step the run never reached is still a state the reader is told.
+    expect(screen.getByTestId("step-status-untouched_step").textContent).toBe("· not started");
+    expect(screen.getByTestId("step-status-code").textContent).toBe("✓ done");
   });
 
   it("renders synthetic TriggerNode when trigger prop is set and invokes onClick", async () => {

@@ -65,7 +65,7 @@ import {
   viewRunTree,
 } from "../api/m4view";
 import { normalizeRunFrames, projectRun, toRunEvent } from "../lib/pipeline/runEvents";
-import { formatTime, shortCommit } from "../lib/format";
+import { formatTime, shortCommit, shortId } from "../lib/format";
 import {
   isScopeKind,
   scopeBody,
@@ -81,7 +81,9 @@ import type {
   RunTreeRoot,
 } from "../lib/pipeline/contract";
 import type { EventActor, EventEnvelope, PipelineRevisionSummaryList } from "../api/types";
-import { ProjectSectionNav, RunStateChip, shortDigest, shortId } from "./ProjectRuns";
+import { ProjectSectionNav } from "../components/ProjectSectionNav";
+import { RunStateChip } from "../components/workbench/runState";
+import { shortDigest } from "../lib/pipeline/yamlPointer";
 import { routes } from "../lib/routes";
 import { NewRevisionNotice } from "../components/workbench/RunHeader";
 

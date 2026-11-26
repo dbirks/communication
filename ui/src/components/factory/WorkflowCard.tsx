@@ -238,13 +238,25 @@ export function WorkflowCard({
           </p>
         ) : null}
         {live ? (
-          <Link
-            to={routes.run(live.id)}
-            data-testid="workflow-card-run"
-            className="relative z-10 w-fit text-[12px] font-semibold text-accent-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            Open run
-          </Link>
+          <div className="flex items-center gap-[10px]">
+            <Link
+              to={routes.run(live.id)}
+              data-testid="workflow-card-run"
+              className="relative z-10 text-[12px] font-semibold text-accent-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Open run
+            </Link>
+            {/* The same run on the editor canvas: the definition with every step
+                painted in its run state (`?run=` in the editor). Quiet, because
+                `Open run` stays the primary way into a run. */}
+            <Link
+              to={routes.factoryWorkflow(pipeline.id, scope, { run: live.id })}
+              data-testid="workflow-card-watch"
+              className="relative z-10 text-[12px] font-semibold text-muted underline decoration-line underline-offset-2 hover:text-accent-text hover:decoration-accent-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Watch on canvas
+            </Link>
+          </div>
         ) : null}
       </div>
     </article>

@@ -1,15 +1,15 @@
 /**
- * The Steps page in embedded mode (Manage → Agents & models → Step templates).
- * The embedded page draws no Page band, no title and no tab strip, ignores the
- * route's `:itemId` (an agent profile id under `/manage/agents/:itemId`) and
- * reads the selection from `?item=`.
+ * The Steps tab of Manage → Agents & models (Step templates). The tab draws no
+ * Page band, no title and no tab strip, ignores the route's `:itemId` (an agent
+ * profile id under `/manage/agents/:itemId`) and reads the selection from
+ * `?item=`.
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import Steps from "./Steps";
-import { mockFetch, type RouteStub } from "../test/fakes";
+import { mockFetch, type RouteStub } from "../../../test/fakes";
 
 const TEMPLATE = {
   id: "t-1",
@@ -55,8 +55,8 @@ function mount(path: string, stubs: RouteStub[]) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/manage/agents" element={<Steps embedded />} />
-          <Route path="/manage/agents/:itemId" element={<Steps embedded />} />
+          <Route path="/manage/agents" element={<Steps />} />
+          <Route path="/manage/agents/:itemId" element={<Steps />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

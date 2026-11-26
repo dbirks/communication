@@ -24,8 +24,8 @@ import AgentsTabs, { tabFromSearchParam } from "./agents/AgentsTabs";
 import ProfilesTable from "./agents/ProfilesTable";
 import ProfileSheet from "./agents/ProfileSheet";
 import NewProfileDialog from "../../components/profiles/NewProfileDialog";
-import Collections from "../Collections";
-import Steps from "../Steps";
+import Collections from "./agents/Collections";
+import Steps from "./agents/Steps";
 import AssistantSettings from "../settings/Assistant";
 
 export default function Agents() {
@@ -110,9 +110,9 @@ export default function Agents() {
               ) : null}
             </>
           ) : tab === "skills" ? (
-            <Collections embedded />
+            <Collections />
           ) : tab === "steps" ? (
-            <Steps embedded />
+            <Steps />
           ) : tab === "models" ? (
             <ModelsTab isAdmin={canWrite} />
           ) : (

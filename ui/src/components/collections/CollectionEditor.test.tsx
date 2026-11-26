@@ -1,6 +1,7 @@
 /**
- * The collection editor (`/workflows/collections/:id`, ADR-0084): the ordered
- * entry table, the add row's pin refusal (branch refused, tag ok, full SHA
+ * The collection editor (Manage → Agents & models → Skills → `?item=<id>`,
+ * ADR-0084): the ordered entry table, the add row's pin refusal (branch refused,
+ * tag ok, full SHA
  * ok), the reorder → `Save draft` body order, and the publish confirm's exact
  * re-attach line. Rendered from fixtures; the editor reaches the wire only
  * through the stubs here.
@@ -62,7 +63,9 @@ describe("CollectionEditor", () => {
     ]);
     const chip = await screen.findByTestId("collection-revision-chip");
     expect(chip.textContent).toBe("r3 published");
-    expect(screen.getByTestId("collection-entry-0").textContent).toContain("skills/how#");
+    // The entry rows arrive with the editor's seed (an effect one commit after
+    // the header), so they are awaited, not assumed.
+    expect((await screen.findByTestId("collection-entry-0")).textContent).toContain("skills/how#");
     expect(screen.getByTestId("collection-entry-0").textContent).toContain("all");
     const second = screen.getByTestId("collection-entry-1");
     expect(second.textContent).toContain("skills/why#");
@@ -177,6 +180,24 @@ describe("CollectionEditor", () => {
         requestsTo(requests, `/api/v1/apm-collections/${pstack.id}/revisions/4/publish`, "POST"),
       ).toHaveLength(1);
     });
+  });
+
+  it("is tab chrome: a ← Skills back link, no page band, no page title", async () => {
+    mount([
+      {
+        path: `/api/v1/apm-collections/${pstack.id}`,
+        body: { collection: pstack, revisions: [pstack.latest_revision] },
+      },
+    ]);
+    const chip = await screen.findByTestId("collection-revision-chip");
+    expect(chip.textContent).toBe("r3 published");
+    const back = screen.getByTestId("collection-editor-back");
+    expect(back.textContent).toBe("← Skills");
+    // keeps `tab=skills`, drops `item`
+    expect(back.getAttribute("href")).toBe("/manage/agents?tab=skills");
+    expect(screen.queryByTestId("page-band")).toBeNull();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    expect(screen.getByTestId("collection-editor")).toBeDefined();
   });
 
   it("Cancel keeps the draft unpublished", async () => {

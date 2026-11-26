@@ -735,6 +735,305 @@ spec:
     expect(screen.getByTestId("mock-status-overlay").textContent).toContain("build_loop");
   });
 
+  // A run leaves steps behind it that it never produced a row for: the branch
+  // a `verdict` skipped, everything after a failed step, the body of a loop the
+  // run never entered. The canvas has to say so — a box with no glyph and no
+  // word reads as "no state", which is not a state a reader can act on.
+  it("marks a step the run never produced as not started, and names the run's state up top", async () => {
+    const runId = "01987a61-2222-7000-8000-aaaaaaaaaaaa";
+    const loopYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: run-unreached
+spec:
+  nodes:
+    - id: build_loop
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: 'nodes.judge.outputs.text.contains("GOAL_MET")'
+        body:
+          nodes:
+            - id: code
+              kind: agent.acp
+              config:
+                profile: coder
+                prompt: Implement feature.
+            - id: judge
+              kind: agent.acp
+              dependsOn: [code]
+              config:
+                profile: judge
+                prompt: 'Decide whether this goal is met: "All tests pass". Answer with exactly GOAL_MET or NOT_YET on the first line, then one sentence why.'
+`;
+    const row = (id: string, nodeId: string, key: string, kind: string, status: string) => ({
+      id,
+      run_id: runId,
+      node_id: nodeId,
+      node_instance_key: key,
+      scope_key: "",
+      kind,
+      execution_location: kind === "agent.acp" ? "worker" : "server",
+      status,
+      attempt_count: 1,
+      attempt_limit: 1,
+      in_flight: status === "running",
+      artifact_refs: [],
+    });
+    const runRecord = {
+      id: runId,
+      project_id: "proj-1",
+      pipeline_id: WIRE_PIPELINE_ID,
+      pipeline_revision_id: wireRevision.id,
+      revision_digest: digest,
+      plan_digest: "0".repeat(64),
+      digest_scope: "v1alpha1-canonical-1",
+      status: "failed",
+      depth: 0,
+      placement: { scheduled: true },
+      expression_evaluations: 0,
+      created_at: "2026-07-31T08:00:00Z",
+    };
+    const runNodes = {
+      run_id: runId,
+      revision_digest: digest,
+      // The loop started; its judge step never got a row at all.
+      node_executions: [
+        row("ne-0", "build_loop", "/build_loop", "until", "running"),
+        row("ne-1", "code", "/build_loop[1]/code", "agent.acp", "failed"),
+      ],
+    };
+
+    mount(`/factory/${WIRE_PIPELINE_ID}?run=${runId}`, [
+      {
+        path: `/api/v1/revisions/${wireRevision.id}`,
+        body: { ...wireRevision, canonical_document: undefined, document_text: loopYaml },
+      },
+      { path: `/api/v1/runs/${runId}`, body: runRecord },
+      { path: `/api/v1/runs/${runId}/nodes`, body: runNodes },
+      { path: `/api/v1/runs/${runId}/events`, body: { items: [] } },
+    ]);
+
+    await screen.findByTestId("studio-run-banner");
+    // The overlay arrives with the run reads; wait for the shape rather than
+    // the first paint (an un-overlaid canvas is a legitimate intermediate).
+    const overlay = await waitFor(() => {
+      const parsed = JSON.parse(
+        screen.getByTestId("mock-status-overlay").textContent ?? "{}",
+      ) as Record<string, { state: string; label: string }>;
+      expect(parsed.judge).toBeDefined();
+      return parsed;
+    });
+    expect(overlay.judge).toEqual({ state: "queued", label: "not started", executionId: null });
+    // The boxes the run did produce keep their real state.
+    expect(overlay.code?.label).toBe("failed");
+
+    // The top bar says which run this is and what became of it — never "Your
+    // draft", which is a claim about a draft the reader is not looking at.
+    const status = await screen.findByTestId("studio-draft-status");
+    expect(status.textContent).toContain(`Run ${runId.slice(-8)}`);
+    expect(status.textContent).toContain("failed");
+    expect(status.textContent).not.toContain("draft");
+    expect(screen.getByTestId("studio-run-banner").textContent).toContain("×");
+  });
+
+  // Observed on a real three-round loop whose `check` step never passed: the
+  // rounds all ran clean, so the scope's roll-up was `done`, and the card beside
+  // the frame said "✓ goal met" about a run that FAILED. The loop's own row is
+  // the last word on its goal.
+  it("says a loop that gave up is not met, whatever its rounds look like", async () => {
+    const runId = "01987a61-3333-7000-8000-aaaaaaaaaaaa";
+    const cmdLoopYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: run-gave-up
+spec:
+  nodes:
+    - id: prove_loop
+      kind: until
+      config:
+        maxIterations: 2
+        passWhen: 'nodes.check.outputs.exit_code == 0'
+        body:
+          nodes:
+            - id: check
+              kind: process.exec
+              config:
+                executable: "false"
+                args: []
+`;
+    const row = (id: string, key: string, status: string) => ({
+      id,
+      run_id: runId,
+      node_id: id === "ne-loop" ? "prove_loop" : "check",
+      node_instance_key: key,
+      scope_key: "",
+      kind: key === "/prove_loop" ? "until" : "process.exec",
+      execution_location: "worker",
+      status,
+      attempt_count: 1,
+      attempt_limit: 1,
+      in_flight: false,
+      artifact_refs: [],
+    });
+    const runNodes = {
+      run_id: runId,
+      revision_digest: digest,
+      node_executions: [
+        row("ne-loop", "/prove_loop", "failed"),
+        row("ne-1", "/prove_loop[1]/check", "succeeded"),
+        row("ne-2", "/prove_loop[2]/check", "succeeded"),
+      ],
+    };
+    const checkDetail = (outputs: Record<string, unknown>) => ({
+      execution: { ...row("ne-1", "/prove_loop[1]/check", "succeeded") },
+      attempts: [{ id: "att-1", attempt_number: 1, status: "succeeded", outputs }],
+      artifacts: [],
+    });
+
+    mount(`/factory/${WIRE_PIPELINE_ID}?run=${runId}`, [
+      {
+        path: `/api/v1/revisions/${wireRevision.id}`,
+        body: { ...wireRevision, canonical_document: undefined, document_text: cmdLoopYaml },
+      },
+      {
+        path: `/api/v1/runs/${runId}`,
+        body: {
+          id: runId,
+          project_id: "proj-1",
+          pipeline_id: WIRE_PIPELINE_ID,
+          pipeline_revision_id: wireRevision.id,
+          revision_digest: digest,
+          plan_digest: "0".repeat(64),
+          digest_scope: "v1alpha1-canonical-1",
+          status: "failed",
+          depth: 0,
+          placement: { scheduled: true },
+          expression_evaluations: 0,
+          created_at: "2026-07-31T08:00:00Z",
+        },
+      },
+      { path: `/api/v1/runs/${runId}/nodes`, body: runNodes },
+      { path: `/api/v1/runs/${runId}/events`, body: { items: [] } },
+      {
+        path: `/api/v1/runs/${runId}/nodes/ne-1`,
+        body: checkDetail({ exit_code: 1 }),
+      },
+      {
+        path: `/api/v1/runs/${runId}/nodes/ne-2`,
+        body: checkDetail({ exit_code: 1 }),
+      },
+    ]);
+
+    const verdicts = await waitFor(() => {
+      const parsed = JSON.parse(screen.getByTestId("mock-verdicts").textContent ?? "{}") as Record<
+        string,
+        { n: number; verdict: string }[]
+      >;
+      expect(parsed.prove_loop?.length).toBe(2);
+      return parsed;
+    });
+    expect(verdicts.prove_loop?.map((r) => r.verdict)).toEqual(["not_yet", "not_yet"]);
+  });
+
+  // A round whose verdict step has not answered yet is not a round that failed.
+  // The pending row used to fall through to "× not yet", so a loop in flight
+  // showed two losses before its second judge had even started.
+  it("says a round still in flight is judging, not lost", async () => {
+    const runId = "01987a61-4444-7000-8000-aaaaaaaaaaaa";
+    const cmdLoopYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: run-in-flight
+spec:
+  nodes:
+    - id: prove_loop
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: 'nodes.check.outputs.exit_code == 0'
+        body:
+          nodes:
+            - id: check
+              kind: process.exec
+              config:
+                executable: "false"
+                args: []
+`;
+    const row = (id: string, nodeId: string, key: string, status: string) => ({
+      id,
+      run_id: runId,
+      node_id: nodeId,
+      node_instance_key: key,
+      scope_key: "",
+      kind: nodeId === "prove_loop" ? "until" : "process.exec",
+      execution_location: "worker",
+      status,
+      attempt_count: 1,
+      attempt_limit: 1,
+      in_flight: status === "leased",
+      artifact_refs: [],
+    });
+
+    mount(`/factory/${WIRE_PIPELINE_ID}?run=${runId}`, [
+      {
+        path: `/api/v1/revisions/${wireRevision.id}`,
+        body: { ...wireRevision, canonical_document: undefined, document_text: cmdLoopYaml },
+      },
+      {
+        path: `/api/v1/runs/${runId}`,
+        body: {
+          id: runId,
+          project_id: "proj-1",
+          pipeline_id: WIRE_PIPELINE_ID,
+          pipeline_revision_id: wireRevision.id,
+          revision_digest: digest,
+          plan_digest: "0".repeat(64),
+          digest_scope: "v1alpha1-canonical-1",
+          status: "running",
+          depth: 0,
+          placement: { scheduled: true },
+          expression_evaluations: 0,
+          created_at: "2026-07-31T08:00:00Z",
+        },
+      },
+      {
+        path: `/api/v1/runs/${runId}/nodes`,
+        body: {
+          run_id: runId,
+          revision_digest: digest,
+          node_executions: [
+            row("ne-loop", "prove_loop", "/prove_loop", "leased"),
+            row("ne-1", "check", "/prove_loop[1]/check", "succeeded"),
+            row("ne-2", "check", "/prove_loop[2]/check", "pending"),
+          ],
+        },
+      },
+      { path: `/api/v1/runs/${runId}/events`, body: { items: [] } },
+      {
+        path: `/api/v1/runs/${runId}/nodes/ne-1`,
+        body: {
+          execution: row("ne-1", "check", "/prove_loop[1]/check", "succeeded"),
+          attempts: [{ id: "a1", attempt_number: 1, status: "succeeded", outputs: {} }],
+          artifacts: [],
+        },
+      },
+    ]);
+
+    const verdicts = await waitFor(() => {
+      const parsed = JSON.parse(screen.getByTestId("mock-verdicts").textContent ?? "{}") as Record<
+        string,
+        { n: number; verdict: string }[]
+      >;
+      expect(parsed.prove_loop?.length).toBe(2);
+      return parsed;
+    });
+    expect(verdicts.prove_loop?.map((r) => [r.n, r.verdict])).toEqual([
+      [1, "not_yet"],
+      [2, "running"],
+    ]);
+  });
+
   it("surfaces synthetic Trigger node from project schedules and opens TriggersDialog on click", async () => {
     mount(studioPath, [
       { path: draftPath, body: parseableDraft() },

@@ -72,6 +72,23 @@ function mount(itemValue: FactoryWorkflowItem, scope: string | null) {
 }
 
 describe("WorkflowCard", () => {
+  // A card that says "● #318 · test" is a promise the reader can watch that run
+  // where the steps are drawn — the editor canvas with `?run=` on it. The quiet
+  // second link is the only thing that makes that canvas reachable at all.
+  it("offers the live run on the editor canvas beside Open run, in the card's scope", () => {
+    mount(item({ liveRuns: [runWith()] }), projectFixture.id);
+    const watch = screen.getByTestId("workflow-card-watch");
+    expect(watch.getAttribute("href")).toBe(
+      `/p/${projectFixture.id}/factory/${pipeline.id}?run=${runWith().id}`,
+    );
+    expect(watch.textContent).toBe("Watch on canvas");
+    // Quiet, and above the card's own link overlay like `Open run`.
+    expect(watch.className).toContain("relative");
+    expect(screen.getByTestId("workflow-card-run").getAttribute("href")).toBe(
+      `/runs/${runWith().id}`,
+    );
+  });
+
   it("links to the unscoped editor and words the trigger and the drafts line", () => {
     mount(item(), null);
     const link = screen.getByTestId(`workflow-card-link-${pipeline.id}`);
@@ -85,6 +102,7 @@ describe("WorkflowCard", () => {
     );
     expect(screen.getByTestId(`workflow-card-state-${pipeline.id}`).textContent).toBe("idle");
     expect(screen.queryByTestId("workflow-card-run")).toBeNull();
+    expect(screen.queryByTestId("workflow-card-watch")).toBeNull();
   });
 
   it("links to the scoped editor in a project scope, and says when it last ran", () => {

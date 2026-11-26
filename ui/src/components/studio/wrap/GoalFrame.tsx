@@ -13,6 +13,11 @@ export interface GoalFrameProps {
   goal: GoalSpec;
   giveUpText?: string;
   running?: boolean;
+  /** The frame's OWN run state, glyph + word composed by the caller ("✓ done",
+   * "⊘ stopped", "· not started"). A goal frame is a step like any other: while
+   * or after its loop runs the frame has to SAY its state — the animated outline
+   * is motion, never a word (identity rule 06). Absent while editing. */
+  status?: { text: string; className: string } | null;
   onHeaderClick?: () => void;
   children?: ReactNode;
   className?: string;
@@ -23,6 +28,7 @@ export function GoalFrame({
   goal,
   giveUpText,
   running = false,
+  status = null,
   onHeaderClick,
   children,
   className = "",
@@ -91,11 +97,26 @@ export function GoalFrame({
 
       {children ? <div className="relative z-1 flex-1">{children}</div> : null}
 
+      {/* The bound and the state share the frame's one mono footer line: the
+          header is NOT in the flow the step cards are laid out against (React
+          Flow positions those by canvas coordinate), so anything added there
+          grows over the first card instead of pushing it down. */}
       <div
         data-testid="goal-frame-footer"
-        className="pointer-events-none relative z-1 px-[14px] pt-[8px] pb-[10px] font-mono text-[10.5px] leading-[14px] text-accent-text"
+        className="pointer-events-none relative z-1 flex flex-col gap-[4px] px-[14px] pt-[8px] pb-[10px] font-mono text-[10.5px] leading-[14px] text-accent-text"
       >
-        up to {goal.maxRounds} {roundWord} · {tail}
+        <span>
+          up to {goal.maxRounds} {roundWord} · {tail}
+        </span>
+        {status ? (
+          <span
+            data-testid="goal-frame-status"
+            title={status.text}
+            className={`self-end whitespace-nowrap font-semibold ${status.className}`}
+          >
+            {status.text}
+          </span>
+        ) : null}
       </div>
     </div>
   );

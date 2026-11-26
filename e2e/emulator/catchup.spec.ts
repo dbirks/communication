@@ -44,7 +44,9 @@ test("Home SinceYouLeft + /catch-up redirect + piece page (8a) + tour (8b)", asy
   await page.goto(`${EMU_BASE_URL}/catch-up/tour`);
   await expect(page.getByTestId("tour-player")).toBeVisible();
   await expect(
-    page.getByTestId("tour-current").or(page.getByTestId("tour-caught-up")),
+    // Both can be on the page at once (a current stop above the caught-up
+    // line), so the wait names the first of them.
+    page.getByTestId("tour-current").or(page.getByTestId("tour-caught-up")).first(),
   ).toBeVisible();
   if (await page.getByTestId("tour-current").isVisible()) {
     await emu.screen("8b", "catchup-tour");

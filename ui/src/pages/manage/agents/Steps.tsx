@@ -4,45 +4,39 @@
  * the API word is "node template", the UI word is "step" (settled
  * vocabulary decision).
  *
- * `/workflows/steps` — grouped list (40px rows: name + version, config
- * summary, kind, "N workflows" — the count only ever comes from
- * `used_in_count`). `/workflows/steps/:id` — the same list plus the 360px
- * detail panel (description, facts from the latest revision, USED IN N
- * WORKFLOWS, Edit-for-all and Duplicate). The panel stacks below the list on
- * phone. Finding 02: Steps is a tab of the Workflows page — the old `/steps`
- * and `/steps/:id` URLs redirect here, and the page draws the Workflows
- * page's frame (full-width band + `Workflows | Steps` tabs).
- *
- * `embedded` (Manage → Agents & models → Step templates): the same list and
- * detail panel with no Page band, no title and no tab strip, and the
- * selection read from `?item=` instead of the route's `:id`. Step links
- * inside the embedded page keep the current pathname and the `tab` query
- * and set `item` (the row component is owned by another worker, so the click
- * is intercepted here).
+ * This is Manage → Agents & models → Step templates (redesign R7/R8): the
+ * grouped list (name + version, config summary, kind, "N workflows" — the
+ * count only ever comes from `used_in_count`) plus the 360px detail panel
+ * (description, facts from the latest revision, USED IN N WORKFLOWS,
+ * Edit-for-all and Duplicate), which stacks below the list on phone. It draws
+ * no Page band, no title and no tab strip — the old `Workflows | Steps` tab
+ * row went with the unrouted Workflows index (rx-r8-pages) — and the selected
+ * step is read from `?item=`, never from a route param: `/manage/agents/:itemId`
+ * is a profile id. The old `/workflows/steps*` and `/steps*` URLs redirect to
+ * this tab (`lib/routes.ts`). Step links keep the current pathname and the
+ * `tab` query and set `item` (the row component is owned by another worker, so
+ * the click is intercepted here).
  *
  * Honest states: an empty registry, a server without the endpoint, and an
  * unknown id each get their own copy — nothing is faked.
  */
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
-import { Alert } from "../components/ds/Alert";
-import Page from "../components/ds/Page";
-import { DuplicateDialog } from "../components/steps/DuplicateDialog";
-import { EditForAllDialog } from "../components/steps/EditForAllDialog";
-import { StepDetailPanel } from "../components/steps/StepDetailPanel";
-import { StepRow, groupByFamily } from "../components/steps/StepRow";
-import { FormError } from "../components/Feedback";
-import { useNodeTemplate, useNodeTemplates, type NodeTemplate } from "../api/nodeTemplates";
-import { routes } from "../lib/routes";
-import { WorkflowsTabs } from "./Workflows";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Alert } from "../../../components/ds/Alert";
+import { DuplicateDialog } from "../../../components/steps/DuplicateDialog";
+import { EditForAllDialog } from "../../../components/steps/EditForAllDialog";
+import { StepDetailPanel } from "../../../components/steps/StepDetailPanel";
+import { StepRow, groupByFamily } from "../../../components/steps/StepRow";
+import { FormError } from "../../../components/Feedback";
+import { useNodeTemplate, useNodeTemplates, type NodeTemplate } from "../../../api/nodeTemplates";
+import { routes } from "../../../lib/routes";
 
-export default function Steps({ embedded = false }: { embedded?: boolean }) {
-  const { id: routeId } = useParams<{ id: string }>();
+export default function Steps() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const id = embedded ? (searchParams.get("item") ?? undefined) : routeId;
+  const id = searchParams.get("item") ?? undefined;
   const [editOpen, setEditOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
 
@@ -54,11 +48,10 @@ export default function Steps({ embedded = false }: { embedded?: boolean }) {
   const selected: NodeTemplate | undefined = detail?.template ?? templates.find((t) => t.id === id);
   const latest = detail?.revisions[0];
 
-  // In embedded mode a row link keeps the Manage page's pathname and `tab`
-  // query and carries the selection in ?item= (the Steps row owns its own
-  // link — components/steps/StepRow.tsx — so the click is intercepted here).
+  // A row link keeps the Manage page's pathname and `tab` query and carries the
+  // selection in ?item= (the Steps row owns its own link —
+  // components/steps/StepRow.tsx — so the click is intercepted here).
   const interceptStepLink = (event: MouseEvent) => {
-    if (!embedded) return;
     const anchor = (event.target as HTMLElement | null)?.closest?.("a");
     const href = anchor?.getAttribute("href");
     const match = href?.match(/\/workflows\/steps\/([^/?#]+)$/);
@@ -152,28 +145,9 @@ export default function Steps({ embedded = false }: { embedded?: boolean }) {
     </>
   );
 
-  if (embedded) {
-    return (
-      <div data-testid="steps-embedded" onClickCapture={interceptStepLink}>
-        {body}
-      </div>
-    );
-  }
-
   return (
-    <Page
-      layout="wide"
-      testid="steps-page"
-      title="Steps"
-      subtitle={
-        <span>
-          Saved node templates in YAML — kind: NodeTemplate. A step can be edited for every workflow
-          that uses it, or duplicated into a new step.
-        </span>
-      }
-      band={<WorkflowsTabs active="steps" />}
-    >
+    <div data-testid="steps-embedded" onClickCapture={interceptStepLink}>
       {body}
-    </Page>
+    </div>
   );
 }

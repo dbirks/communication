@@ -35,6 +35,19 @@ export async function evidence(page: Page, name: string, what: string): Promise<
   console.log(`EVIDENCE ${name}: ${what}`);
 }
 
+/**
+ * `evidence()` for a screen that is on a clock (a 5 s Undo hold): a viewport
+ * shot bounded at 2 s, never a full-page stitch, and never a failure of the
+ * journey — the picture is a record, the assertions are the proof.
+ */
+export async function evidenceQuick(page: Page, name: string, what: string): Promise<void> {
+  await mkdir(EVIDENCE_DIR, { recursive: true });
+  await page
+    .screenshot({ path: path.join(EVIDENCE_DIR, `${name}.png`), timeout: 2_000 })
+    .catch(() => undefined);
+  console.log(`EVIDENCE ${name}: ${what}`);
+}
+
 /** The design rule "no sideways scroll" as a page assertion. */
 export async function noSidewaysScroll(page: Page): Promise<void> {
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);

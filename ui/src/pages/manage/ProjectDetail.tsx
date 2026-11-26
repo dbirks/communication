@@ -2,8 +2,8 @@
  * One project's configuration page (`/manage/projects/:projectId`, redesign R7).
  *
  * It is where the project Settings section went: the blocks below are the
- * panels `pages/ProjectSettings.tsx` and `pages/ProjectMembersPage.tsx` mount
- * today — the same components, the same props, unchanged bodies — re-stacked
+ * panels the old `pages/ProjectSettings.tsx` and `pages/ProjectMembersPage.tsx`
+ * mounted — the same components, the same props, unchanged bodies — re-stacked
  * under the redesign's section labels. Nothing is dropped on the way:
  *
  *   old                                                                 new home
@@ -27,7 +27,7 @@ import { ApiError } from "../../api/client";
 import { useProject, useRepositories } from "../../api/queries";
 import type { Project } from "../../api/types";
 import { ProblemBanner, Spinner } from "../../components/Feedback";
-import { AgentMailPanel } from "../ProjectSettings";
+import { AgentMailPanel } from "../../components/project/AgentMailPanel";
 import { DefaultAgentLine } from "../../components/home/DefaultAgentLine";
 import { AddRepositoryDialog } from "../../components/project/AddRepositoryDialog";
 import { MembersPanel } from "../../components/project/MembersPanel";

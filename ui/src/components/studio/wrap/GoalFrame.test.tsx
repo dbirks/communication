@@ -58,6 +58,27 @@ describe("GoalFrame", () => {
     expect(screen.getByTestId("goal-frame").style.border).toContain("transparent");
   });
 
+  it("carries the loop's own run state as glyph + word in the header", () => {
+    const { rerender } = render(
+      <GoalFrame rect={RECT} goal={{ kind: "judge", text: "Ready", maxRounds: 3 }} />,
+    );
+    // While editing there is no run state to print, and none appears.
+    expect(screen.queryByTestId("goal-frame-status")).toBeNull();
+
+    rerender(
+      <GoalFrame
+        rect={RECT}
+        goal={{ kind: "judge", text: "Ready", maxRounds: 3 }}
+        running
+        status={{ text: "● iteration 2 of 3", className: "text-st-running-pale-fg" }}
+      />,
+    );
+    const status = screen.getByTestId("goal-frame-status");
+    expect(status.textContent).toBe("● iteration 2 of 3");
+    expect(status.getAttribute("title")).toBe("● iteration 2 of 3");
+    expect(status.className).toContain("text-st-running-pale-fg");
+  });
+
   it("renders a clickable header button when onHeaderClick is passed", () => {
     const onHeaderClick = vi.fn();
     render(

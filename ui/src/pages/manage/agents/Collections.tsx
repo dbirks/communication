@@ -1,19 +1,18 @@
 /**
- * The Collections tab (`/workflows/collections`, ADR-0084): the org's library
- * of named, versioned skill bundles, drawn as the Workflows starter cards'
- * grid (same shell: hairline panel, 4px corner, mono kicker, two-line clamp)
- * and reached as the third `Workflows | Steps | Collections` tab.
+ * The skill-collection library (ADR-0084) as Manage → Agents & models → Skills
+ * (redesign R7/R8): the org's library of named, versioned skill bundles, drawn
+ * as the Workflows starter cards' grid (same shell: hairline panel, 4px corner,
+ * mono kicker, two-line clamp).
  *
- * `/workflows/collections/:id` renders the editor (components/collections/
- * CollectionEditor.tsx) inside this same page frame — the Steps precedent.
- *
- * In `embedded` mode (Manage → Agents & models → Skills) the page draws no
- * Page band, no title and no tab strip: the body alone sits in a
- * `collections-embedded` div, the New collection button moves to a
- * right-aligned row at the top of that body, and the route's `:id` is never
- * read — a selected collection travels in `?item=<id>` instead. Card links
- * keep the current pathname and the `tab` query and set `item` (the card
- * component is owned by another worker, so the click is intercepted here).
+ * It is embedded-only: it draws no Page band, no title and no tab strip — the
+ * old `Workflows | Steps | Collections` row went with the unrouted Workflows
+ * index (rx-r8-pages) — the New collection button is a right-aligned row at the
+ * top of the body, and a selected collection travels in `?item=<id>`: the old
+ * `/workflows/collections[/:id]` URLs redirect to this tab (`lib/routes.ts`), so
+ * no route param is ever read here. With `item` set the body is that
+ * collection's editor (components/collections/CollectionEditor.tsx) in place of
+ * the grid, with a `← Skills` link back; without it, the card grid. Cards link
+ * to `routes.collection(id)` — the same tab with `item` set.
  *
  * Honest reads only:
  * - The list's `404` means the server lacks the endpoint — an info Alert, not
@@ -25,44 +24,82 @@
  *   it reads the library but sees no `New collection`.
  */
 import { useMemo, useState } from "react";
-import type { MouseEvent } from "react";
-import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import Page from "../components/ds/Page";
-import { Button } from "../components/ds/Button";
-import { Field, Input } from "../components/ds/Field";
-import { Alert } from "../components/ds/Alert";
-import { Spinner } from "../components/Feedback";
-import { problemOf } from "../api/client";
-import { useAgentProfiles, useMe } from "../api/queries";
+import { Button } from "../../../components/ds/Button";
+import { Field, Input } from "../../../components/ds/Field";
+import { Alert } from "../../../components/ds/Alert";
+import { Spinner } from "../../../components/Feedback";
+import { problemOf } from "../../../api/client";
+import { useAgentProfiles, useMe } from "../../../api/queries";
 import {
   collectionRoute,
   createCollection,
   invalidateCollections,
   useApmCollections,
   type APMCollection,
-} from "../api/apmCollections";
-import { CollectionCard } from "../components/collections/CollectionCard";
-import { CollectionEditor } from "../components/collections/CollectionEditor";
-import { WorkflowsTabs } from "./Workflows";
-import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../lib/pipeline/authoring";
+} from "../../../api/apmCollections";
+import { CollectionCard } from "../../../components/collections/CollectionCard";
+import { CollectionEditor } from "../../../components/collections/CollectionEditor";
+import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../../../lib/pipeline/authoring";
+import { routes } from "../../../lib/routes";
 
-export default function Collections({ embedded = false }: { embedded?: boolean }) {
-  const { id } = useParams<{ id: string }>();
-  if (embedded) return <CollectionsList embedded />;
-  if (id !== undefined) return <CollectionEditor collectionId={id} />;
+export default function Collections() {
+  const [searchParams] = useSearchParams();
+  const itemId = searchParams.get("item");
+  if (itemId !== null && itemId !== "") return <SkillDetail collectionId={itemId} />;
   return <CollectionsList />;
 }
 
-function CollectionsList({ embedded = false }: { embedded?: boolean }) {
+/**
+ * The chosen collection (`?item=<id>`): the editor replaces the grid inside the
+ * same tab body. The library read answers "is there such a collection" without
+ * a second request; while it is still landing (or re-landing after a create)
+ * the editor's own loading state covers the gap, and when the library itself is
+ * unreadable the editor's error state does.
+ */
+function SkillDetail({ collectionId }: { collectionId: string }) {
+  const collections = useApmCollections();
+  if (
+    collections.data !== null &&
+    !collections.isPending &&
+    !collections.isFetching &&
+    !collections.isError &&
+    !(collections.data.collections ?? []).some((item) => item.id === collectionId)
+  ) {
+    return (
+      <div data-testid="collections-item-missing">
+        <p className="max-w-[560px] text-[12.5px]" role="status">
+          That skill collection doesn&apos;t exist.
+        </p>
+        <SkillsBackLink />
+      </div>
+    );
+  }
+  return <CollectionEditor collectionId={collectionId} />;
+}
+
+/** The way back to the grid: keeps `tab=skills`, drops `item`. */
+function SkillsBackLink() {
+  return (
+    <p className="pt-[8px]">
+      <Link
+        to={routes.collections()}
+        className="inline-block text-[12.5px] text-muted underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid="collections-back-to-grid"
+      >
+        ← Skills
+      </Link>
+    </p>
+  );
+}
+
+function CollectionsList() {
   const me = useMe();
   const canAuthor = hasLibraryRole(me.data);
   const collections = useApmCollections();
   const profiles = useAgentProfiles();
   const [newOpen, setNewOpen] = useState(false);
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const { pathname } = useLocation();
 
   const items = collections.data?.collections ?? [];
   // `used by N profiles`: how many profiles the CALLER can see pin this
@@ -81,21 +118,6 @@ function CollectionsList({ embedded = false }: { embedded?: boolean }) {
     }
     return counts;
   }, [profiles.data]);
-
-  // In embedded mode a card link keeps the Manage page's pathname and `tab`
-  // query and carries the selection in ?item= (the card owns its own link —
-  // components/collections/CollectionCard.tsx — so the click is intercepted here).
-  const interceptCardLink = (event: MouseEvent) => {
-    if (!embedded) return;
-    const anchor = (event.target as HTMLElement | null)?.closest?.("a");
-    const href = anchor?.getAttribute("href");
-    const match = href?.match(/\/workflows\/collections\/([^/?#]+)$/);
-    if (!match) return;
-    event.preventDefault();
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("item", decodeURIComponent(match[1]));
-    navigate(`${pathname}?${params.toString()}`);
-  };
 
   const content = (
     <>
@@ -131,58 +153,27 @@ function CollectionsList({ embedded = false }: { embedded?: boolean }) {
     </>
   );
 
-  if (embedded) {
-    return (
-      <div data-testid="collections-embedded" onClickCapture={interceptCardLink}>
-        <div className="flex items-center justify-end">
-          {canAuthor ? (
-            <button
-              type="button"
-              onClick={() => setNewOpen(true)}
-              data-testid="collections-new"
-              className="h-[34px] rounded-[8px] bg-accent px-[14px] text-[13px] font-semibold text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              New collection
-            </button>
-          ) : (
-            <span className="font-mono text-[10.5px] text-faint">
-              authoring needs {LIBRARY_ROLE_LABEL}
-            </span>
-          )}
-        </div>
-        <div className="pt-[12px]">{content}</div>
-        <NewCollectionDialog open={newOpen} onClose={() => setNewOpen(false)} />
-      </div>
-    );
-  }
-
   return (
-    <Page
-      layout="wide"
-      testid="collections-page"
-      title="Collections"
-      subtitle={
-        <span>
-          Named, pinned bundles of skill packages an agent profile attaches in an order of its
-          choosing.
-        </span>
-      }
-      band={<WorkflowsTabs active="collections" />}
-      actions={
-        canAuthor ? (
-          <Button variant="primary" onClick={() => setNewOpen(true)} data-testid="collections-new">
+    <div data-testid="collections-embedded">
+      <div className="flex items-center justify-end">
+        {canAuthor ? (
+          <button
+            type="button"
+            onClick={() => setNewOpen(true)}
+            data-testid="collections-new"
+            className="h-[34px] rounded-[8px] bg-accent px-[14px] text-[13px] font-semibold text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
             New collection
-          </Button>
+          </button>
         ) : (
           <span className="font-mono text-[10.5px] text-faint">
             authoring needs {LIBRARY_ROLE_LABEL}
           </span>
-        )
-      }
-    >
-      {content}
+        )}
+      </div>
+      <div className="pt-[12px]">{content}</div>
       <NewCollectionDialog open={newOpen} onClose={() => setNewOpen(false)} />
-    </Page>
+    </div>
   );
 }
 
