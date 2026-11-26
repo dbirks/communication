@@ -592,3 +592,285 @@ func prjStringOr(v any) string {
 	s, _ := v.(string)
 	return s
 }
+
+// --- ADR-0086: the project's default agent profile -----------------------
+
+// prjSeedProfile inserts one agent profile in an organization and returns its
+// id. The name is unique per call because agent_profiles enforces
+// UNIQUE (organization_id, name).
+func prjSeedProfile(t *testing.T, store *ProjectStore, orgID, label string) string {
+	t.Helper()
+	var id string
+	if err := store.Pool.QueryRow(testCtx(t), `
+		INSERT INTO agent_profiles (organization_id, name, launcher_id)
+		VALUES ($1::uuid, $2, 'claude') RETURNING id::text`, orgID, label+" "+genUUID()).Scan(&id); err != nil {
+		t.Fatalf("insert agent profile %q: %v", label, err)
+	}
+	return id
+}
+
+// prjSetDefault moves only the ADR-0086 default: id set, id clear (nil with the
+// named flag), version CAS.
+func prjSetDefault(t *testing.T, store *ProjectStore, c Caller, projectID, id string, version int) (Project, error) {
+	t.Helper()
+	var profile *string
+	if id != "" {
+		profile = &id
+	}
+	return store.SetProjectSettings(testCtx(t), c, projectID, ProjectSettings{
+		DefaultAgentProfileSet: true,
+		DefaultAgentProfileID:  profile,
+	}, version)
+}
+
+// prjDefaultEvents reads the project.default_agent.changed rows of one project
+// oldest first, past the journal's readable horizon.
+func prjDefaultEvents(t *testing.T, store *ProjectStore, projectID string) []events.Envelope {
+	t.Helper()
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid AND e.type = $2",
+		projectID, events.TypeProjectDefaultAgentChanged)
+	page, err := store.EventsAfter(journalCtx(t), projectID, 0, 0)
+	if err != nil {
+		t.Fatalf("EventsAfter: %v", err)
+	}
+	out := make([]events.Envelope, 0, len(page))
+	for _, e := range page {
+		if e.Type == events.TypeProjectDefaultAgentChanged {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// TestProjectDefaultAgentSetClearAndJournal is ADR-0086's write path against a
+// real Postgres: the read returns the id AND the joined name, the write is
+// journaled in the same transaction with the old and the new value, JSON null
+// clears, and ON DELETE SET NULL makes a deleted profile read as "no default".
+func TestProjectDefaultAgentSetClearAndJournal(t *testing.T) {
+	store, orgID := prjFixture(t)
+	ctx := testCtx(t)
+	a, _, _, _ := prjUsers(t, store, orgID)
+	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
+	caller := Caller{UserID: a, OrganizationID: orgID}
+
+	// A new project has no default, and the read says so with a nil, not a "".
+	if p.DefaultAgentProfileID != nil || p.DefaultAgentProfileName != nil {
+		t.Fatalf("new project default = %v/%v, want NULL/NULL", p.DefaultAgentProfileID, p.DefaultAgentProfileName)
+	}
+
+	profile := prjSeedProfile(t, store, orgID, "Claude Default")
+	got, err := prjSetDefault(t, store, caller, p.ID, profile, 1)
+	if err != nil {
+		t.Fatalf("set default: %v", err)
+	}
+	if got.Version != 2 {
+		t.Errorf("version = %d, want 2 (one bump for one write)", got.Version)
+	}
+	if got.DefaultAgentProfileID == nil || *got.DefaultAgentProfileID != profile {
+		t.Errorf("default id = %v, want %s", got.DefaultAgentProfileID, profile)
+	}
+	if got.DefaultAgentProfileName == nil || *got.DefaultAgentProfileName !=
+		storeName(t, store, profile) {
+		t.Errorf("default name = %v, want the joined profile name", got.DefaultAgentProfileName)
+	}
+
+	// The journal row exists, is human-acted, and carries both ids.
+	rows := prjDefaultEvents(t, store, p.ID)
+	if len(rows) != 1 {
+		t.Fatalf("default-agent journal rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Actor.Kind != "human" || row.Actor.ID != a {
+		t.Errorf("event actor = %+v, want the maintainer as a human", row.Actor)
+	}
+	payload := prjPayloadMap(t, row.Payload)
+	if payload["project_id"] != p.ID {
+		t.Errorf("payload project_id = %v, want %s", payload["project_id"], p.ID)
+	}
+	if payload["default_agent_profile_id"] != profile {
+		t.Errorf("payload new id = %v, want %s", payload["default_agent_profile_id"], profile)
+	}
+	if prev, ok := payload["previous_default_agent_profile_id"]; !ok || prev != nil {
+		t.Errorf("payload previous id = %v (present=%v), want an explicit JSON null", prev, ok)
+	}
+	if payload["actor_user_id"] != a {
+		t.Errorf("payload actor_user_id = %v, want %s (ADR-0086 § 4)", payload["actor_user_id"], a)
+	}
+
+	// JSON null clears it, and the second journal row says what it used to be.
+	cleared, err := prjSetDefault(t, store, caller, p.ID, "", 2)
+	if err != nil {
+		t.Fatalf("clear default: %v", err)
+	}
+	if cleared.DefaultAgentProfileID != nil || cleared.DefaultAgentProfileName != nil {
+		t.Errorf("cleared default = %v/%v, want NULL/NULL", cleared.DefaultAgentProfileID, cleared.DefaultAgentProfileName)
+	}
+	rows = prjDefaultEvents(t, store, p.ID)
+	if len(rows) != 2 {
+		t.Fatalf("default-agent journal rows = %d, want 2", len(rows))
+	}
+	payload = prjPayloadMap(t, rows[1].Payload)
+	if got := prjStringOr(payload["previous_default_agent_profile_id"]); got != profile {
+		t.Errorf("payload previous id = %v, want %s", payload["previous_default_agent_profile_id"], profile)
+	}
+	if next, ok := payload["default_agent_profile_id"]; !ok || next != nil {
+		t.Errorf("payload new id = %v (present=%v), want an explicit JSON null", next, ok)
+	}
+
+	// ON DELETE SET NULL: deleting the profile the project named leaves the
+	// project reading "no default" rather than a dangling id or a refused delete.
+	reset, err := prjSetDefault(t, store, caller, p.ID, profile, 3)
+	if err != nil {
+		t.Fatalf("set default again: %v", err)
+	}
+	if reset.DefaultAgentProfileID == nil {
+		t.Fatal("default is NULL before the delete")
+	}
+	if _, err := store.Pool.Exec(ctx, `DELETE FROM agent_profiles WHERE id = $1::uuid`, profile); err != nil {
+		t.Fatalf("delete the profile: %v (want ON DELETE SET NULL, not a refused delete)", err)
+	}
+	after, err := store.GetProject(ctx, caller, p.ID)
+	if err != nil {
+		t.Fatalf("GetProject after the profile delete: %v", err)
+	}
+	if after.DefaultAgentProfileID != nil || after.DefaultAgentProfileName != nil {
+		t.Errorf("default after the profile delete = %v/%v, want NULL/NULL",
+			after.DefaultAgentProfileID, after.DefaultAgentProfileName)
+	}
+}
+
+// storeName reads a profile's stored name, so the joined-name assertion is the
+// database's answer and not the test's own string.
+func storeName(t *testing.T, store *ProjectStore, profileID string) string {
+	t.Helper()
+	var name string
+	if err := store.Pool.QueryRow(testCtx(t),
+		`SELECT name FROM agent_profiles WHERE id = $1::uuid`, profileID).Scan(&name); err != nil {
+		t.Fatalf("read profile name: %v", err)
+	}
+	return name
+}
+
+// TestProjectDefaultAgentRefusedCases pins what the write refuses and what it
+// leaves behind: a profile of another organization, a malformed id and a stale
+// version each answer without touching the row, and the API adapter maps the
+// first two onto api.ErrAgentProfileInvalid and the third onto the 409 sentinel.
+func TestProjectDefaultAgentRefusedCases(t *testing.T) {
+	store, orgID := prjFixture(t)
+	ctx := testCtx(t)
+	a, _, otherOrgID, otherUser := prjUsers(t, store, orgID)
+	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
+	caller := Caller{UserID: a, OrganizationID: orgID}
+	foreign := prjSeedProfile(t, store, otherOrgID, "Their profile")
+
+	for _, tt := range []struct {
+		name string
+		id   string
+		want error
+	}{
+		{"another organization's profile", foreign, ErrInvalidAgentProfile},
+		{"an id that names nothing", "00000000-0000-7000-8000-0000000000ff", ErrInvalidAgentProfile},
+		{"a malformed id", "not-a-uuid", ErrInvalidAgentProfile},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := prjSetDefault(t, store, caller, p.ID, tt.id, 1); !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+			// Nothing moved: the version is the create's 1 and there is no default.
+			cur, err := store.GetProject(ctx, caller, p.ID)
+			if err != nil {
+				t.Fatalf("GetProject: %v", err)
+			}
+			if cur.Version != 1 || cur.DefaultAgentProfileID != nil {
+				t.Errorf("project after the refusal = version %d default %v, want 1/NULL",
+					cur.Version, cur.DefaultAgentProfileID)
+			}
+		})
+	}
+	if n := prjCount(t, store,
+		`SELECT count(*) FROM domain_events WHERE type = $1`, events.TypeProjectDefaultAgentChanged); n != 0 {
+		t.Errorf("journal rows for refused writes = %d, want 0", n)
+	}
+
+	// A stale version is the same 409 sentinel the mail setting uses, and a
+	// non-member gets the same not-found answer as every other project read.
+	mine := prjSeedProfile(t, store, orgID, "Ours")
+	if _, err := prjSetDefault(t, store, caller, p.ID, mine, 99); !errors.Is(err, ErrConflict) {
+		t.Errorf("stale version err = %v, want ErrConflict", err)
+	}
+	stranger := Caller{UserID: otherUser, OrganizationID: otherOrgID}
+	if _, err := prjSetDefault(t, store, stranger, p.ID, mine, 1); !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("other organization's caller err = %v, want ErrProjectNotFound", err)
+	}
+
+	// The adapter maps the store's refusals onto the sentinels package api
+	// switches on: 400 invalid_agent_profile and the 409.
+	adapter := APIProjectStore{S: store}
+	maintainer := api.Caller{UserID: a, OrganizationID: orgID}
+	_, err := adapter.SetProjectSettings(ctx, maintainer, p.ID, api.ProjectSettingsPatch{
+		DefaultAgentProfileSet: true,
+		DefaultAgentProfileID:  &foreign,
+	}, 1)
+	if !errors.Is(err, api.ErrAgentProfileInvalid) {
+		t.Errorf("adapter foreign profile err = %v, want api.ErrAgentProfileInvalid", err)
+	}
+	if _, err := adapter.SetProjectSettings(ctx, maintainer, p.ID,
+		api.ProjectSettingsPatch{}, 1); err == nil {
+		t.Error("adapter accepted a patch that names no setting, want an error")
+	}
+}
+
+// TestProjectSettingsMailOnlyPatchStillWorks is ADR-0086's compatibility rule:
+// the old body (agent_mail_enabled + version) still moves the switch, still
+// bumps the version once, and still appends no journal row — while a body that
+// names both settings moves both in the one write.
+func TestProjectSettingsMailOnlyPatchStillWorks(t *testing.T) {
+	store, orgID := prjFixture(t)
+	ctx := testCtx(t)
+	a, _, _, _ := prjUsers(t, store, orgID)
+	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
+	caller := Caller{UserID: a, OrganizationID: orgID}
+
+	on := true
+	got, err := store.SetProjectSettings(ctx, caller, p.ID,
+		ProjectSettings{AgentMailEnabled: &on}, 1)
+	if err != nil {
+		t.Fatalf("mail-only patch: %v", err)
+	}
+	if !got.AgentMailEnabled || got.Version != 2 {
+		t.Errorf("after the mail-only patch: enabled=%v version=%d, want true/2", got.AgentMailEnabled, got.Version)
+	}
+	if got.DefaultAgentProfileID != nil {
+		t.Errorf("default = %v, want NULL: a body that did not name it left it alone", got.DefaultAgentProfileID)
+	}
+	if n := prjCount(t, store,
+		`SELECT count(*) FROM domain_events WHERE type = $1`, events.TypeProjectDefaultAgentChanged); n != 0 {
+		t.Errorf("journal rows for a mail-only patch = %d, want 0 (the setting is read where it is enforced)", n)
+	}
+
+	// Both settings, one body, one version bump.
+	profile := prjSeedProfile(t, store, orgID, "Both")
+	off := false
+	both, err := store.SetProjectSettings(ctx, caller, p.ID, ProjectSettings{
+		AgentMailEnabled:       &off,
+		DefaultAgentProfileSet: true,
+		DefaultAgentProfileID:  &profile,
+	}, 2)
+	if err != nil {
+		t.Fatalf("both-settings patch: %v", err)
+	}
+	if both.AgentMailEnabled || both.DefaultAgentProfileID == nil || *both.DefaultAgentProfileID != profile {
+		t.Errorf("after both: mail=%v default=%v, want false/%s", both.AgentMailEnabled, both.DefaultAgentProfileID, profile)
+	}
+	if both.Version != 3 {
+		t.Errorf("version after one body that moved two settings = %d, want 3 (one bump)", both.Version)
+	}
+	if rows := prjDefaultEvents(t, store, p.ID); len(rows) != 1 {
+		t.Errorf("journal rows = %d, want 1", len(rows))
+	}
+
+	// A patch that names nothing is a store-level wiring bug, not a write.
+	if _, err := store.SetProjectSettings(ctx, caller, p.ID, ProjectSettings{}, 3); err == nil {
+		t.Error("SetProjectSettings accepted a body that names no setting")
+	}
+}

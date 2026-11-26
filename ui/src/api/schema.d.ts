@@ -364,8 +364,8 @@ export interface paths {
     options?: never;
     head?: never;
     /**
-     * Move the project's agent-mail setting (ADR-0072)
-     * @description The project's one mutable setting today: `agent_mail_enabled` — the opt-in switch (default `false`) for chats in this project asking the agent of another repository in the project. Maintainer only. The write is optimistic against `version` (the token every project mutation already increments): a body naming a stale version is `409` and changes nothing. A successful patch returns the fresh project with `version` incremented; it appends no journal row — the setting is read where it is enforced.
+     * Move a project setting — agent mail (ADR-0072) or the default agent (ADR-0086)
+     * @description The project has two mutable settings: `agent_mail_enabled` — the opt-in switch (default `false`) for chats in this project asking the agent of another repository in the project — and `default_agent_profile_id`, the project's default agent profile (ADR-0086), which is what the agent chip preselects for a chat started in the project. Each field is optional, but the body must name at least one of them: a body that names nothing is `400` with `code: invalid_request`, never a `200` for a request that changed nothing. A `default_agent_profile_id` must name an agent profile of this project's own organization, or be `null` to clear the default; any other id is `400` with `code: invalid_agent_profile`. Maintainer only. The write is optimistic against `version` (the token every project mutation already increments): a body naming a stale version is `409` and changes nothing, and one body that moves both settings bumps the version exactly once. A successful patch returns the fresh project with `version` incremented. A default-agent change appends the `project.default_agent.changed` journal row; moving only the mail switch appends none — that setting is read where it is enforced.
      */
     patch: operations["patchProject"];
     trace?: never;
@@ -754,6 +754,11 @@ export interface paths {
      *       sends it back as the `Last-Event-ID` header.
      *     * `event:` is the envelope `type` (`project.created`,
      *       `project.member.updated`, `repository.added` in M1).
+     *     * ADR-0086 adds `project.default_agent.changed`, appended by the same
+     *       transaction that moves a project's default agent profile. Its
+     *       `payload` carries `project_id`, `previous_default_agent_profile_id`,
+     *       `default_agent_profile_id` (either id JSON `null` when there is no
+     *       default) and `actor_user_id`, the human who moved it.
      *
      *     M3 adds the workspace, sandbox, secret and artifact vocabulary below
      *     (`docs/m3-contract.md` § 3, ADR-0017..0020). These are project-scoped and
@@ -3366,6 +3371,13 @@ export interface components {
         | "#2f6f9a"
         | "#8a4b2a"
         | "#5a7a3a";
+      /**
+       * Format: uuid
+       * @description ADR-0086: the project's default agent profile — the profile the agent chip preselects for a chat started in this project. Null means "no default", a real state the UI answers with the person's last choice and then the first profile; nothing here invents a pick a maintainer never made. Deleting the profile clears the default (`ON DELETE SET NULL`, migration 00036), so a client re-reads the project rather than caching the id. Only `patchProject` moves it.
+       */
+      default_agent_profile_id?: string | null;
+      /** @description The display name of `default_agent_profile_id`, joined at read time so one read renders the chip label. Null with no default, and never a name the id does not point at. Read-only: a PATCH names the id, never the name. Like `agent_mail_enabled` and `color` it is not `required` of a response, so a client reads a missing member as "no default". */
+      readonly default_agent_profile_name?: string | null;
     };
     /**
      * ProjectCreate
@@ -3441,10 +3453,12 @@ export interface components {
     };
     /**
      * ProjectSettingsPatch
-     * @description Request body for `patchProject` (ADR-0072): the project's one mutable setting today is `agent_mail_enabled`, and `version` is the optimistic-concurrency token the write compares against — a stale version is `409` and changes nothing.
+     * @description Request body for `patchProject`: at least one of the project's two mutable settings — `agent_mail_enabled` (ADR-0072) and `default_agent_profile_id` (ADR-0086) — plus `version`, the optimistic-concurrency token the write compares against (a stale version is `409` and changes nothing). A field that is absent is left alone; a `default_agent_profile_id` of `null` clears the project's default. A body that names neither setting is `400` with `code: invalid_request`. Old clients that send only `agent_mail_enabled` keep working: the new field is optional.
      */
     ProjectSettingsPatch: {
-      agent_mail_enabled: boolean;
+      agent_mail_enabled?: boolean;
+      /** Format: uuid */
+      default_agent_profile_id?: string | null;
       version: number;
     };
     /**

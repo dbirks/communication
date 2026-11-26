@@ -230,6 +230,10 @@ func TestM1TypeConstants(t *testing.T) {
 		{TypeProjectCreated, "project.created"},
 		{TypeProjectMemberUpdated, "project.member.updated"},
 		{TypeRepositoryAdded, "repository.added"},
+		// ADR-0086: the project's default agent profile is journaled too, and
+		// its name follows the same dotted-lowercase rule the envelope schema's
+		// type pattern pins.
+		{TypeProjectDefaultAgentChanged, "project.default_agent.changed"},
 	} {
 		if tt.got != tt.want {
 			t.Errorf("event type constant = %q, want %q", tt.got, tt.want)

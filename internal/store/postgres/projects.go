@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,14 @@ var (
 	// project slug in the organization or a duplicate repository name in the
 	// project.
 	ErrConflict = errors.New("postgres: unique constraint violation")
+
+	// ErrInvalidAgentProfile is ADR-0086's reference-rule refusal: the
+	// default_agent_profile_id a project patch named is not an agent profile
+	// of that project's organization (another organization's profile, a deleted
+	// one, or an id that names nothing). The API maps it to
+	// 400 invalid_agent_profile — never 404, because a project patch may say
+	// "no such profile" without revealing which organization owns one.
+	ErrInvalidAgentProfile = errors.New("postgres: agent profile is not in this project's organization")
 )
 
 // Caller identifies the human on the other side of a store call. It carries
@@ -60,6 +69,17 @@ type Project struct {
 	// never mistaken for a maintainer's pick). The wire view renders that
 	// absence through the deterministic palette fallback.
 	Color string
+	// DefaultAgentProfileID is ADR-0086's project default: `projects.
+	// default_agent_profile_id` as stored, nil for "no default". The two are
+	// pointers precisely because absence is the state the UI branches on (fall
+	// back to the person's last choice, then the first profile) and a "" would
+	// make an unset default look like a corrupt id.
+	DefaultAgentProfileID *string
+	// DefaultAgentProfileName is the joined display name of that profile
+	// (agent_profiles.name), nil when there is no default. Read-only: the write
+	// path takes the id, and the name travels so one read answers the chip
+	// without a second round-trip to /agent-profiles.
+	DefaultAgentProfileName *string
 }
 
 // Repository is a git remote attached to a project.
@@ -103,13 +123,19 @@ type prjQuerier interface {
 // caller's user id (the membership join), $2 the caller's organization and $3
 // whether the caller is an organization admin, which lets an admin see every
 // project in the organization without holding a membership.
+// The agent_profiles LEFT JOIN (ADR-0086) is on a primary key and never
+// multiplies rows: a project names at most one profile, and the FK
+// (migration 00036) makes that one row exist or the column is NULL.
 const prjProjectSelect = `
 	SELECT p.id, p.organization_id, p.slug, p.name, p.description, p.created_at, p.version,
 	       p.agent_mail_enabled,
 	       COALESCE(m.role, 'maintainer'),
-	       COALESCE(p.color, '')
+	       COALESCE(p.color, ''),
+	       p.default_agent_profile_id::text,
+	       ap.name
 	FROM projects p
 	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
+	LEFT JOIN agent_profiles ap ON ap.id = p.default_agent_profile_id
 	WHERE p.organization_id = $2::uuid
 	  AND ($3::boolean OR m.user_id IS NOT NULL)`
 
@@ -239,7 +265,8 @@ func prjGetProject(ctx context.Context, q prjQuerier, c Caller, projectID string
 	err := q.QueryRow(ctx, prjProjectSelectOne,
 		c.UserID, c.OrganizationID, c.IsOrgAdmin, projectID).
 		Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.Name, &p.Description,
-			&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole, &p.Color)
+			&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole, &p.Color,
+			&p.DefaultAgentProfileID, &p.DefaultAgentProfileName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrProjectNotFound
 	}
@@ -250,30 +277,154 @@ func prjGetProject(ctx context.Context, q prjQuerier, c Caller, projectID string
 	return p, nil
 }
 
-// SetProjectAgentMail moves the ADR-0072 `agent_mail_enabled` setting. The
-// write is optimistic-concurrency against `version` (the token every
-// mutation already increments — RecordDenied's bump is the precedent): a
-// stale body is ErrProjectConflict, never a silent overwrite of the fresher
-// answer. Visibility (and thus membership) was proven by prjGetProject; the
-// role gate is the API handler's requireManage, the same split putMember
-// uses.
-func (s *ProjectStore) SetProjectAgentMail(ctx context.Context, c Caller, projectID string, enabled bool, version int) (Project, error) {
+// ProjectSettings is one PATCH /api/v1/projects/{projectId} body (ADR-0072 and
+// ADR-0086) reduced to what the store moves. Each field carries its own "was it
+// named?" answer, because "absent" and "null" must stay different requests:
+// absent leaves a setting alone, null clears it. A nil DefaultAgentProfileID
+// with DefaultAgentProfileSet true is exactly the JSON null; a nil with the flag
+// false is a body that never mentioned the field.
+type ProjectSettings struct {
+	// AgentMailEnabled is the ADR-0072 switch; nil means the body did not name
+	// it (that column is NOT NULL, so it has no "null" to distinguish).
+	AgentMailEnabled *bool
+	// DefaultAgentProfileSet is the named-marker for the ADR-0086 default.
+	DefaultAgentProfileSet bool
+	// DefaultAgentProfileID is the new default, or nil to clear it. Only read
+	// when DefaultAgentProfileSet is true.
+	DefaultAgentProfileID *string
+}
+
+// MovesAnything reports whether the body named at least one setting. The
+// handler refuses a body that names nothing rather than answering 200 for a
+// request whose author meant to change something.
+func (in ProjectSettings) MovesAnything() bool {
+	return in.AgentMailEnabled != nil || in.DefaultAgentProfileSet
+}
+
+// SetProjectSettings moves the project's mutable settings — the ADR-0072
+// `agent_mail_enabled` switch and/or the ADR-0086 `default_agent_profile_id` —
+// in one write. The properties that make it one write:
+//
+//   - Optimistic concurrency against `version` (the token every mutation
+//     already increments, see prjBumpProject): a stale body is ErrConflict,
+//     never a silent overwrite of the fresher answer. Both settings share the
+//     one CAS, so a body that names both cannot half-apply and cannot bump the
+//     version twice.
+//   - Visibility (and thus membership) is proven by prjGetProject inside the
+//     same transaction; the role gate is the API handler's requireManage, the
+//     same split putMember uses. A default-agent change additionally proves in
+//     this transaction that the profile belongs to the project's organization:
+//     another organization's profile is ErrInvalidAgentProfile and nothing is
+//     written.
+//   - The move is journaled as project.default_agent.changed (ADR-0086 § 4) in
+//     the same transaction, so a project with a moved default and no journal
+//     row cannot exist. A body that only moves the mail switch appends nothing,
+//     exactly as it did before ADR-0086 — api/openapi.yaml patchProject keeps
+//     saying the mail setting is read where it is enforced.
+func (s *ProjectStore) SetProjectSettings(ctx context.Context, c Caller, projectID string, in ProjectSettings, version int) (Project, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return Project{}, err
 	}
-	if _, err := prjGetProject(ctx, s.Pool, c, projectID); err != nil {
+	if !in.MovesAnything() {
+		return Project{}, errors.New("postgres: SetProjectSettings names no setting")
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return Project{}, fmt.Errorf("postgres: begin project settings: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	current, err := prjGetProject(ctx, tx, c, projectID)
+	if err != nil {
 		return Project{}, err
 	}
-	tag, err := s.Pool.Exec(ctx, `
-		UPDATE projects SET agent_mail_enabled = $2, version = version + 1, updated_at = now()
-		WHERE id = $1::uuid AND version = $3`, projectID, enabled, version)
+
+	// The SET list is assembled from the named fields with numbered
+	// placeholders: no request text ever reaches the SQL string itself, only
+	// "$n" does, and every value rides as a parameter.
+	set := "version = version + 1, updated_at = now()"
+	args := []any{projectID, version}
+	if in.AgentMailEnabled != nil {
+		args = append(args, *in.AgentMailEnabled)
+		set += ", agent_mail_enabled = $" + strconv.Itoa(len(args))
+	}
+	if in.DefaultAgentProfileSet {
+		newID := ""
+		if in.DefaultAgentProfileID != nil {
+			newID = *in.DefaultAgentProfileID
+			if !prjValidUUID(newID) {
+				// A malformed id names no profile of any organization, so it
+				// earns the same refusal rather than a ::uuid cast error.
+				return Project{}, ErrInvalidAgentProfile
+			}
+			// The one read that decides the refusal. It keys on the PROJECT's
+			// organization, not the caller's: the two agree for every honest
+			// caller, and ADR-0086 § 3 names the project's organization as the
+			// scope a default must live in.
+			var name string
+			err := tx.QueryRow(ctx, `
+				SELECT name FROM agent_profiles
+				WHERE id = $1::uuid AND organization_id = $2::uuid`,
+				newID, current.OrganizationID).Scan(&name)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Project{}, ErrInvalidAgentProfile
+			}
+			if err != nil {
+				return Project{}, fmt.Errorf("postgres: look up agent profile: %w", err)
+			}
+			args = append(args, newID)
+		} else {
+			args = append(args, nil) // JSON null: clear the default
+		}
+		set += ", default_agent_profile_id = $" + strconv.Itoa(len(args)) + "::uuid"
+
+		if _, err := AppendEvent(ctx, tx, events.New{
+			Type:           events.TypeProjectDefaultAgentChanged,
+			OrganizationID: current.OrganizationID,
+			ProjectID:      projectID,
+			Actor:          events.Human(c.UserID),
+			Payload: map[string]any{
+				"project_id": projectID,
+				// Both ids ride as explicit JSON nulls when absent: "the default
+				// was cleared" and "this row predates the field" must not read
+				// the same, so the values are *string, not string.
+				"previous_default_agent_profile_id": current.DefaultAgentProfileID,
+				"default_agent_profile_id":          m4RunReadPtr(newID),
+				// ADR-0086 § 4 also asks for the actor in the payload. The
+				// envelope's actor is the same human; repeating the id here is
+				// what lets a payload-only reader answer who moved it.
+				"actor_user_id": c.UserID,
+			},
+		}); err != nil {
+			return Project{}, err
+		}
+	}
+
+	tag, err := tx.Exec(ctx,
+		fmt.Sprintf("UPDATE projects SET %s WHERE id = $1::uuid AND version = $2", set), args...)
 	if err != nil {
-		return Project{}, fmt.Errorf("postgres: set project agent mail: %w", err)
+		if prjIsConflict(err) {
+			// The migration-00036 FK cannot raise this — ON DELETE SET NULL
+			// turns a profile deleted mid-flight into a null-out, not an error.
+			// The arm is the honest 409 for a constraint added later.
+			return Project{}, ErrConflict
+		}
+		return Project{}, fmt.Errorf("postgres: set project settings: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		// The CAS lost: the caller named a version that is not the row's.
 		return Project{}, ErrConflict
 	}
-	return prjGetProject(ctx, s.Pool, c, projectID)
+
+	updated, err := prjGetProject(ctx, tx, c, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Project{}, fmt.Errorf("postgres: commit project settings: %w", err)
+	}
+	return updated, nil
 }
 
 // ListRepositories reads a project's repositories ordered by name. Callers
@@ -543,7 +694,8 @@ func prjBumpProject(ctx context.Context, tx pgx.Tx, projectID string) error {
 func prjScanProject(rows interface{ Scan(dest ...any) error }) (Project, error) {
 	var p Project
 	if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.Name, &p.Description,
-		&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole, &p.Color); err != nil {
+		&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole, &p.Color,
+		&p.DefaultAgentProfileID, &p.DefaultAgentProfileName); err != nil {
 		return Project{}, fmt.Errorf("postgres: scan project: %w", err)
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
@@ -648,6 +800,8 @@ func prjAPIErr(err error) error {
 		return fmt.Errorf("%w: %w", api.ErrProjectConflict, err)
 	case errors.Is(err, ErrRepositoryCredentialInvalid):
 		return fmt.Errorf("%w: %w", api.ErrRepositoryCredentialInvalid, err)
+	case errors.Is(err, ErrInvalidAgentProfile):
+		return fmt.Errorf("%w: %w", api.ErrAgentProfileInvalid, err)
 	default:
 		return err
 	}
@@ -696,13 +850,17 @@ func (a APIProjectStore) GetProject(ctx context.Context, c api.Caller, projectID
 	return prjAPIProject(p), nil
 }
 
-// SetProjectAgentMail implements api.ProjectStore (ADR-0072).
-func (a APIProjectStore) SetProjectAgentMail(ctx context.Context, c api.Caller, projectID string, enabled bool, version int) (api.ProjectView, error) {
+// SetProjectSettings implements api.ProjectStore (ADR-0072 + ADR-0086).
+func (a APIProjectStore) SetProjectSettings(ctx context.Context, c api.Caller, projectID string, patch api.ProjectSettingsPatch, version int) (api.ProjectView, error) {
 	s, err := a.pool()
 	if err != nil {
 		return api.ProjectView{}, err
 	}
-	p, err := s.SetProjectAgentMail(ctx, prjAPICaller(c), projectID, enabled, version)
+	p, err := s.SetProjectSettings(ctx, prjAPICaller(c), projectID, ProjectSettings{
+		AgentMailEnabled:       patch.AgentMailEnabled,
+		DefaultAgentProfileSet: patch.DefaultAgentProfileSet,
+		DefaultAgentProfileID:  patch.DefaultAgentProfileID,
+	}, version)
 	if err != nil {
 		return api.ProjectView{}, prjAPIErr(err)
 	}
@@ -803,6 +961,10 @@ func prjAPIProject(p Project) api.ProjectView {
 		Version:          p.Version,
 		MyRole:           p.MyRole,
 		AgentMailEnabled: p.AgentMailEnabled,
+		// ADR-0086: the default is served as it is stored — a null is "nobody
+		// chose", and nothing here may invent a pick a maintainer never made.
+		DefaultAgentProfileID:   p.DefaultAgentProfileID,
+		DefaultAgentProfileName: p.DefaultAgentProfileName,
 		// NULL is "nobody chose", and the fallback is by project id: every
 		// replica, and every re-read after a rename, answers the same chip.
 		Color: domain.CatchUpProjectColorOr(p.ID, p.Color),

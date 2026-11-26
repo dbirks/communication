@@ -77,7 +77,7 @@ func (p *m4Projects) ListMembers(context.Context, Caller, string) ([]MemberView,
 func (p *m4Projects) PutMember(context.Context, Caller, string, string, string) (MemberView, error) {
 	return MemberView{}, nil
 }
-func (p *m4Projects) SetProjectAgentMail(context.Context, Caller, string, bool, int) (ProjectView, error) {
+func (p *m4Projects) SetProjectSettings(context.Context, Caller, string, ProjectSettingsPatch, int) (ProjectView, error) {
 	return ProjectView{}, nil
 }
 func (p *m4Projects) RecordDenied(_ context.Context, _ Caller, projectID, action string) error {

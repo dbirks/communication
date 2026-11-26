@@ -214,7 +214,10 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00035 (ADR-0085 in-app agent
+// version every replica demands. Current head: 00036 (ADR-0086 a project's
+// default agent profile: projects.default_agent_profile_id, nullable uuid with
+// an ON DELETE SET NULL key to agent_profiles) on top of
+// 00035 (ADR-0085 in-app agent
 // sign-in: the agent_logins request queue with its one-active partial unique
 // index and claim index, plus agent_account_status keyed
 // (worker_id, launcher)) on top of 00034 (pipeline timestamps:
@@ -337,7 +340,14 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // string the registry hands out — so neither table carries an FK to workers
 // (uuid); the list read keys on live workers, which makes a leftover row
 // unread rather than wrong).
-const migHeadVersion = 35
+// Head bump for 00036 (ADR-0086: a project's default agent profile —
+// projects.default_agent_profile_id, a nullable uuid REFERENCES agent_profiles
+// (id) ON DELETE SET NULL. NULL is the state "no default", which the UI answers
+// with the person's last choice and then the first profile, and deleting a
+// profile clears the default on every project that named it. No index: the
+// column is only ever read joined from the project row and written by
+// patchProject, and a profile delete is a maintainer action, not a hot path.).
+const migHeadVersion = 36
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.
@@ -2846,4 +2856,103 @@ func genUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// TestMigration00036ProjectDefaultAgent proves ADR-0086's column is what the
+// ADR says it is, by reading the catalog and by deleting a profile:
+// nullable (NULL is "no default", a state the UI branches on), typed uuid, and
+// an ON DELETE SET NULL foreign key — so a deleted profile clears every project
+// that named it rather than refusing the delete or stranding a dead id.
+func TestMigration00036ProjectDefaultAgent(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	var orgID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM organizations WHERE slug = 'default'`).Scan(&orgID); err != nil {
+		t.Fatalf("seed org lookup: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO users (organization_id, display_name, email)
+		VALUES ($1::uuid, 'Mig 00036', 'mig00036@example.test') RETURNING id`, orgID).
+		Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var projectID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO projects (organization_id, slug, name, created_by)
+		VALUES ($1::uuid, 'mig-00036', 'Migration 00036', $2::uuid) RETURNING id`, orgID, userID).
+		Scan(&projectID); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	// The column exists, is nullable and is a uuid.
+	var typeName string
+	var notNull bool
+	if err := pool.QueryRow(ctx, `
+		SELECT atttypid::regtype::text, attnotnull
+		FROM pg_attribute
+		WHERE attrelid = 'projects'::regclass AND attname = 'default_agent_profile_id'`).
+		Scan(&typeName, &notNull); err != nil {
+		t.Fatalf("projects.default_agent_profile_id is missing: %v", err)
+	}
+	if typeName != "uuid" {
+		t.Errorf("default_agent_profile_id type = %q, want uuid", typeName)
+	}
+	if notNull {
+		t.Error("default_agent_profile_id is NOT NULL, want nullable: NULL means \"no default\" (ADR-0086 § 1)")
+	}
+
+	// The foreign key exists and says ON DELETE SET NULL. Read from the
+	// constraint's own definition rather than pg_constraint's action letters:
+	// confdeltype spells SET NULL as 'n', which is one letter away from the
+	// 'a'/'r'/'d'/'c' that mean NO ACTION / RESTRICT / SET DEFAULT / CASCADE, and
+	// the sentence the migration wrote is the fact worth pinning.
+	var refTable, def string
+	if err := pool.QueryRow(ctx, `
+		SELECT c.confrelid::regclass::text, pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		WHERE c.contype = 'f' AND c.conrelid = 'projects'::regclass
+		  AND c.conname = 'projects_default_agent_profile_id_fkey'`).
+		Scan(&refTable, &def); err != nil {
+		t.Fatalf("default_agent_profile_id carries no foreign key: %v", err)
+	}
+	if refTable != "agent_profiles" {
+		t.Errorf("foreign key target = %q, want agent_profiles", refTable)
+	}
+	if !strings.Contains(def, "ON DELETE SET NULL") {
+		t.Errorf("foreign key = %q, want it to carry ON DELETE SET NULL", def)
+	}
+
+	// And the rule runs: naming a profile, then deleting it, leaves NULL — not
+	// a refused delete and not a dangling id.
+	var profileID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_profiles (organization_id, name, launcher_id)
+		VALUES ($1::uuid, $2, 'claude') RETURNING id`, orgID, "Mig 00036 profile "+genUUID()).
+		Scan(&profileID); err != nil {
+		t.Fatalf("insert agent profile: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE projects SET default_agent_profile_id = $2::uuid WHERE id = $1::uuid`,
+		projectID, profileID); err != nil {
+		t.Fatalf("set the project's default: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM agent_profiles WHERE id = $1::uuid`, profileID); err != nil {
+		t.Fatalf("delete the profile: %v (want ON DELETE SET NULL, not a refused delete)", err)
+	}
+	var after *string
+	if err := pool.QueryRow(ctx, `
+		SELECT default_agent_profile_id::text FROM projects WHERE id = $1::uuid`, projectID).
+		Scan(&after); err != nil {
+		t.Fatalf("read the project back: %v", err)
+	}
+	if after != nil {
+		t.Errorf("default_agent_profile_id after the delete = %q, want NULL", *after)
+	}
 }

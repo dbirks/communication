@@ -37,8 +37,9 @@ type prjFakeStore struct {
 
 type prjSettingsCall struct {
 	projectID string
-	enabled   bool
+	enabled   bool // the mail switch the body named (false when it named none)
 	version   int
+	patch     ProjectSettingsPatch
 }
 
 type prjCreateCall struct{ name, slug, description string }
@@ -141,9 +142,11 @@ func (f *prjFakeStore) GetProject(ctx context.Context, c Caller, projectID strin
 	return prjAsCaller(p, c), nil
 }
 
-// SetProjectAgentMail mirrors the real store (ADR-0072): visibility first
-// (the same not-found answer as GetProject), then a CAS against version.
-func (f *prjFakeStore) SetProjectAgentMail(ctx context.Context, c Caller, projectID string, enabled bool, version int) (ProjectView, error) {
+// SetProjectSettings mirrors the real store (ADR-0072 + ADR-0086): visibility
+// first (the same not-found answer as GetProject), then ONE CAS against version
+// that moves whichever fields the body named, then the reference rule that
+// refuses a profile outside the project's organization.
+func (f *prjFakeStore) SetProjectSettings(ctx context.Context, c Caller, projectID string, patch ProjectSettingsPatch, version int) (ProjectView, error) {
 	if f.customErr != nil {
 		return ProjectView{}, f.customErr
 	}
@@ -154,11 +157,49 @@ func (f *prjFakeStore) SetProjectAgentMail(ctx context.Context, c Caller, projec
 	if p.Version != version {
 		return ProjectView{}, ErrProjectConflict
 	}
-	p.AgentMailEnabled = enabled
+	if patch.DefaultAgentProfileSet {
+		if id := prjDerefStr(patch.DefaultAgentProfileID); id == prjTBadProfile {
+			return ProjectView{}, ErrAgentProfileInvalid
+		}
+		// The real store joins the name in; the fake knows exactly the two
+		// profiles the fixtures name, and null for everything else.
+		p.DefaultAgentProfileID = patch.DefaultAgentProfileID
+		p.DefaultAgentProfileName = nil
+		if name, known := prjTProfileNames[prjDerefStr(patch.DefaultAgentProfileID)]; known {
+			nm := name
+			p.DefaultAgentProfileName = &nm
+		}
+	}
+	if patch.AgentMailEnabled != nil {
+		p.AgentMailEnabled = *patch.AgentMailEnabled
+	}
 	p.Version++
 	f.byID[projectID] = p
-	f.settings = append(f.settings, prjSettingsCall{projectID: projectID, enabled: enabled, version: version})
+	f.settings = append(f.settings, prjSettingsCall{
+		projectID: projectID, enabled: patch.AgentMailEnabled != nil && *patch.AgentMailEnabled,
+		version: version, patch: patch,
+	})
 	return p, nil
+}
+
+// The fixture's agent profiles: two of this project's organization and one id
+// the fake store refuses the way the real one refuses another organization's.
+const (
+	prjTProfileClaude = "01987a70-1111-7000-8000-000000000001"
+	prjTProfileCodex  = "01987a70-1111-7000-8000-000000000002"
+	prjTBadProfile    = "01987a70-1111-7000-8000-00000000badc"
+)
+
+var prjTProfileNames = map[string]string{
+	prjTProfileClaude: "Claude Code",
+	prjTProfileCodex:  "Codex",
+}
+
+func prjDerefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // prjAsCaller mirrors the store's COALESCE(m.role, 'maintainer'): an org admin
@@ -388,8 +429,11 @@ func TestCreateProjectReturns201WithContractShape(t *testing.T) {
 	}
 	prjWantFields(t, rec.Body.Bytes(),
 		"id", "slug", "name", "description", "created_at", "version", "my_role", "agent_mail_enabled",
-		"color")
+		"color", "default_agent_profile_id", "default_agent_profile_name")
 	body := decodeBody(t, rec)
+	prjEqual(t, body["agent_mail_enabled"], false, "agent mail is off by default (ADR-0072)")
+	prjEqual(t, body["default_agent_profile_id"], "<nil>",
+		"a new project has no default agent profile, served as JSON null (ADR-0086)")
 	prjEqual(t, body["agent_mail_enabled"], false, "agent mail is off by default (ADR-0072)")
 	prjEqual(t, body["color"], domain.CatchUpProjectColor(body["id"].(string)),
 		"a project with no chosen colour is served the deterministic pick, never null")
@@ -560,7 +604,7 @@ func TestProjectColorRidesTheWire(t *testing.T) {
 	prjEqual(t, decodeBody(t, rec)["color"], "#1f8077", "one project's colour")
 	prjWantFields(t, rec.Body.Bytes(),
 		"id", "slug", "name", "description", "created_at", "version", "my_role",
-		"agent_mail_enabled", "color")
+		"agent_mail_enabled", "color", "default_agent_profile_id", "default_agent_profile_name")
 }
 
 func TestGetProjectNonMemberIs404AndAudits(t *testing.T) {
@@ -950,8 +994,10 @@ func TestPatchRepositoryCredentialSetsAndClears(t *testing.T) {
 
 // TestPatchProjectAgentMail is the ADR-0072 settings route: a maintainer
 // moves the switch with the current version, a stale version is a 409 that
-// changes nothing, a body naming no setting (or no version) is a 422, and a
-// read-only role never moves it at all.
+// changes nothing, a body with no version is a 422, a body naming no setting at
+// all is a 400 (ADR-0086 made the one field optional, so "named nothing" is now
+// the request-wide mistake it always was rather than a missing required field),
+// and a read-only role never moves it at all.
 func TestPatchProjectAgentMail(t *testing.T) {
 	store := prjNewFakeStore()
 	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
@@ -978,15 +1024,24 @@ func TestPatchProjectAgentMail(t *testing.T) {
 		t.Errorf("store calls after a 409 = %+v, want the CAS loser to never reach the write", store.settings)
 	}
 
-	for _, tt := range []struct{ name, body string }{
-		{"missing setting", `{"version":2}`},
-		{"missing version", `{"agent_mail_enabled":true}`},
-		{"zero version", `{"agent_mail_enabled":true,"version":0}`},
+	for _, tt := range []struct {
+		name, body string
+		want       int
+	}{
+		// ADR-0086 § 3: agent_mail_enabled is no longer required of a body, so a
+		// body that names neither setting is refused as a bad request, not as a
+		// validation failure of one field.
+		{"missing every setting", `{"version":2}`, http.StatusBadRequest},
+		{"missing version", `{"agent_mail_enabled":true}`, http.StatusUnprocessableEntity},
+		{"zero version", `{"agent_mail_enabled":true,"version":0}`, http.StatusUnprocessableEntity},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id, tt.body))
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.want, rec.Body)
+			}
+			if len(store.settings) != 1 {
+				t.Errorf("store calls = %+v, want the refused body to never reach the write", store.settings)
 			}
 		})
 	}
@@ -1009,6 +1064,133 @@ func TestPatchProjectAgentMail(t *testing.T) {
 			}
 			if len(s.settings) != 0 {
 				t.Errorf("store calls = %+v, want none from a refused role", s.settings)
+			}
+		})
+	}
+}
+
+// --- ADR-0086: the project's default agent profile ----------------------
+
+// TestPatchProjectDefaultAgent is the ADR-0086 half of the settings route: a
+// maintainer sets the project's default agent profile by id and gets the joined
+// name back, JSON null clears it, one body may move both settings in one write
+// (one version bump, one store call), and an id the store refuses as another
+// organization's profile is 400 invalid_agent_profile.
+func TestPatchProjectDefaultAgent(t *testing.T) {
+	store := prjNewFakeStore()
+	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+	srv := prjServer(t, store, prjAs("u-1", false))
+
+	rec := do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"default_agent_profile_id":"`+prjTProfileClaude+`","version":1}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set default: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	prjEqual(t, body["default_agent_profile_id"], prjTProfileClaude, "the default the maintainer named")
+	prjEqual(t, body["default_agent_profile_name"], "Claude Code", "the joined name (read-only)")
+	prjEqual(t, body["version"], float64(2), "one version bump")
+	prjEqual(t, body["agent_mail_enabled"], false, "the setting the body did not name stayed off")
+	if len(store.settings) != 1 || !store.settings[0].patch.DefaultAgentProfileSet ||
+		store.settings[0].patch.AgentMailEnabled != nil {
+		t.Fatalf("store calls = %+v, want one call that named only the default", store.settings)
+	}
+
+	rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"default_agent_profile_id":null,"version":2}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear default: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	prjEqual(t, body["default_agent_profile_id"], "<nil>", "null cleared the default")
+	prjEqual(t, body["default_agent_profile_name"], "<nil>", "and with it the name")
+
+	// One body, both settings, one write.
+	rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"agent_mail_enabled":true,"default_agent_profile_id":"`+prjTProfileCodex+`","version":3}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("both settings: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	prjEqual(t, body["agent_mail_enabled"], true, "mail moved in the same write")
+	prjEqual(t, body["default_agent_profile_id"], prjTProfileCodex, "default moved in the same write")
+	prjEqual(t, body["version"], float64(4), "the version moved once for a body that moved two settings")
+	if len(store.settings) != 3 {
+		t.Fatalf("store calls = %+v, want three (one per accepted body)", store.settings)
+	}
+
+	// Another organization's profile: 400 with the typed code, and no write.
+	rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"default_agent_profile_id":"`+prjTBadProfile+`","version":4}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("refused profile: status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_agent_profile") {
+		t.Errorf("body carries no invalid_agent_profile code: %s", rec.Body)
+	}
+	if len(store.settings) != 3 {
+		t.Errorf("store calls = %+v, want the refused profile to never reach the write", store.settings)
+	}
+
+	// A JSON value that is neither null nor a string cannot name a profile.
+	rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"default_agent_profile_id":7,"version":4}`))
+	if rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "invalid_agent_profile") {
+		t.Errorf("non-string profile id: status = %d, want 400 invalid_agent_profile (body %s)",
+			rec.Code, rec.Body)
+	}
+
+	// A stale version is still the 409 that changes nothing.
+	rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"default_agent_profile_id":"`+prjTProfileClaude+`","version":1}`))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale version: status = %d, want 409 (body %s)", rec.Code, rec.Body)
+	}
+
+	// A body that names nothing is refused rather than a 200 that moved nothing.
+	for _, bare := range []string{`{}`, `{"version":4}`} {
+		rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id, bare))
+		if rec.Code != http.StatusBadRequest ||
+			!strings.Contains(rec.Body.String(), "invalid_request") {
+			t.Errorf("body %s: status = %d, want 400 invalid_request (body %s)", bare, rec.Code, rec.Body)
+		}
+	}
+	if len(store.settings) != 3 {
+		t.Errorf("store calls after the refusals = %+v, want still three", store.settings)
+	}
+}
+
+// TestPatchProjectDefaultAgentRoles pins the one gate for both settings: a
+// maintainer may move the default, the read-only roles may not (403, nothing
+// reaches the store), and an organization admin may.
+func TestPatchProjectDefaultAgentRoles(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		role     string
+		orgAdmin bool
+		want     int
+	}{
+		{"maintainer", "maintainer", false, http.StatusOK},
+		{"contributor", "contributor", false, http.StatusForbidden},
+		{"viewer", "viewer", false, http.StatusForbidden},
+		{"org admin with no membership", "", true, http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := prjNewFakeStore()
+			id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: tt.role})
+			srv := prjServer(t, store, prjAs("u-1", tt.orgAdmin))
+			rec := do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+				`{"default_agent_profile_id":"`+prjTProfileClaude+`","version":1}`))
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.want, rec.Body)
+			}
+			wantCalls := 0
+			if tt.want == http.StatusOK {
+				wantCalls = 1
+			}
+			if len(store.settings) != wantCalls {
+				t.Errorf("store calls = %+v, want a write only when the role may write", store.settings)
 			}
 		})
 	}

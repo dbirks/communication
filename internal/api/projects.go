@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,13 @@ var (
 	// a secret whose delivery mode is not integration_broker. Handlers answer
 	// it with 422 and the typed code `invalid_credential_secret`.
 	ErrRepositoryCredentialInvalid = errors.New("api: repository credential secret is not valid for this project")
+	// ErrAgentProfileInvalid is ADR-0086's reference-rule refusal: a
+	// default_agent_profile_id that names no agent profile of the project's
+	// organization (another organization's profile, a deleted one, or an id
+	// shaped like nothing). The handler answers it with 400 and the typed code
+	// `invalid_agent_profile` — not 404, because "no such profile in YOUR
+	// organization" must not confirm that one exists elsewhere.
+	ErrAgentProfileInvalid = errors.New("api: agent profile is not valid for this project")
 )
 
 // Caller is the authenticated principal reduced to what project
@@ -65,6 +73,15 @@ type ProjectView struct {
 	// (domain.CatchUpProjectColorOr) — so the field is not a pointer and cannot
 	// shuffle between replicas or after a rename.
 	Color string `json:"color"`
+	// DefaultAgentProfileID is ADR-0086's project default, null for "no
+	// default": the UI then falls back to the person's last choice and to the
+	// first profile. It is a pointer precisely because null is the answer a
+	// client branches on, and "" would read as a corrupt id.
+	DefaultAgentProfileID *string `json:"default_agent_profile_id"`
+	// DefaultAgentProfileName is that profile's display name, joined at read
+	// time and read-only: a PATCH names the id, never the name. Null with no
+	// default, and never a name the id does not point at.
+	DefaultAgentProfileName *string `json:"default_agent_profile_name"`
 }
 
 // RepositoryView is the Repository schema of api/openapi.yaml. Credential is
@@ -107,10 +124,12 @@ type ProjectStore interface {
 	PatchRepositoryCredential(ctx context.Context, c Caller, projectID, repositoryID, credentialSecretID string) (RepositoryView, error)
 	ListMembers(ctx context.Context, c Caller, projectID string) ([]MemberView, error)
 	PutMember(ctx context.Context, c Caller, projectID, userID, role string) (MemberView, error)
-	// SetProjectAgentMail moves the ADR-0072 agent-mail setting, CAS against
-	// version; a stale version is ErrProjectConflict. Maintainer-only at the
-	// handler (requireManage).
-	SetProjectAgentMail(ctx context.Context, c Caller, projectID string, enabled bool, version int) (ProjectView, error)
+	// SetProjectSettings moves the project's mutable settings (the ADR-0072
+	// agent-mail switch and/or the ADR-0086 default agent profile) in one
+	// CAS against version; a stale version is ErrProjectConflict and an
+	// agent profile outside the project's organization is
+	// ErrAgentProfileInvalid. Maintainer-only at the handler (requireManage).
+	SetProjectSettings(ctx context.Context, c Caller, projectID string, patch ProjectSettingsPatch, version int) (ProjectView, error)
 	RecordDenied(ctx context.Context, c Caller, projectID, action string) error
 }
 
@@ -230,11 +249,30 @@ type prjMemberPutBody struct {
 	Role string `json:"role"`
 }
 
-// prjSettingsPatchBody keeps agent_mail_enabled as a pointer: absent is a
-// 422 (the one field this route moves must be named), not a silent false.
+// ProjectSettingsPatch is the validated body of the settings route, in the
+// shape the store needs: every field carries its own "the body named it" answer
+// so "absent" (leave it alone) and "null" (clear it) stay different requests.
+// What the struct cannot carry is `version`, which travels as its own argument
+// because it is not a setting.
+type ProjectSettingsPatch struct {
+	// AgentMailEnabled is the ADR-0072 switch; nil = the body did not name it.
+	AgentMailEnabled *bool
+	// DefaultAgentProfileSet is true when the body named default_agent_profile_id.
+	DefaultAgentProfileSet bool
+	// DefaultAgentProfileID is the new default, nil to clear it. Only read when
+	// DefaultAgentProfileSet is true.
+	DefaultAgentProfileID *string
+}
+
+// prjSettingsPatchBody keeps both settings optional (ADR-0086 § 3: an old client
+// that PATCHes only agent_mail_enabled keeps working) and keeps the new one as
+// raw JSON for the same reason prjRepositoryPatchBody does — a decoded *string
+// would make "absent" and "null" one request, and null is the only way to clear
+// a default. `version` stays required.
 type prjSettingsPatchBody struct {
-	AgentMailEnabled *bool `json:"agent_mail_enabled"`
-	Version          int   `json:"version"`
+	AgentMailEnabled      *bool           `json:"agent_mail_enabled"`
+	DefaultAgentProfileID json.RawMessage `json:"default_agent_profile_id"`
+	Version               int             `json:"version"`
 }
 
 // prjList is the {items:[...]} envelope every collection route returns, so a
@@ -321,8 +359,13 @@ func (h *prjHandlers) getProject(w http.ResponseWriter, r *http.Request) {
 // prjSettingsConflict is the 409 detail for a CAS loss on the settings patch.
 const prjSettingsConflict = "The project changed beneath you; refetch it and retry with the current version."
 
-// patchProject moves the ADR-0072 agent-mail setting (the project's only
-// mutable knob today). Maintainer-only; optimistic against `version`.
+// patchProject moves the project's mutable settings: the ADR-0072 agent-mail
+// switch and, beside it, the ADR-0086 default agent profile. Each field is
+// optional, so a client that names only the mail switch keeps working; a body
+// that names NEITHER is refused instead of answering 200 for a request that
+// changed nothing. Maintainer-only — the same gate for both settings — and
+// optimistic against `version`, which one write bumps once however many fields
+// it moved.
 func (h *prjHandlers) patchProject(w http.ResponseWriter, r *http.Request) {
 	c, ok := h.caller(w, r)
 	if !ok {
@@ -337,20 +380,65 @@ func (h *prjHandlers) patchProject(w http.ResponseWriter, r *http.Request) {
 		h.badRequest(w, r, err)
 		return
 	}
-	if body.AgentMailEnabled == nil {
-		prjInvalid(w, "agent_mail_enabled is required (true or false).")
+	patch, problem := body.toPatch()
+	if problem != nil {
+		// A plain 400: the body was fine JSON and named nothing this route moves,
+		// which is a mistake of the request as a whole rather than of one field's
+		// value (that is what 422 says).
+		ghiProblem(w, http.StatusBadRequest, problem.code, problem.title, problem.detail)
 		return
 	}
 	if body.Version < 1 {
 		prjInvalid(w, "version must be at least 1.")
 		return
 	}
-	project, err := h.store.SetProjectAgentMail(r.Context(), c, projectID, *body.AgentMailEnabled, body.Version)
+	project, err := h.store.SetProjectSettings(r.Context(), c, projectID, patch, body.Version)
 	if err != nil {
+		if errors.Is(err, ErrAgentProfileInvalid) {
+			prjAgentProfileProblem(w, "default_agent_profile_id must name an agent profile of this project's organization, or null to clear the default.")
+			return
+		}
 		h.fail(w, r, c, projectID, "project.settings.update", prjSettingsConflict, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, project)
+}
+
+// prjProblemText is a 400 this route answers with: a code, a title and one
+// sentence for a human.
+type prjProblemText struct{ code, title, detail string }
+
+// toPatch turns the decoded body into the store's patch, refusing the two
+// shapes that must never reach a write: a body that names no setting at all,
+// and a default_agent_profile_id that is neither null nor a string (a number,
+// an object, an array) — the store's reference check cannot speak those.
+func (b prjSettingsPatchBody) toPatch() (ProjectSettingsPatch, *prjProblemText) {
+	patch := ProjectSettingsPatch{AgentMailEnabled: b.AgentMailEnabled}
+	if b.AgentMailEnabled == nil && b.DefaultAgentProfileID == nil {
+		return patch, &prjProblemText{
+			code:  "invalid_request",
+			title: "Invalid Request",
+			detail: "Name at least one setting to change: agent_mail_enabled or " +
+				"default_agent_profile_id (null clears the default).",
+		}
+	}
+	if b.DefaultAgentProfileID == nil {
+		return patch, nil
+	}
+	patch.DefaultAgentProfileSet = true
+	if string(bytes.TrimSpace(b.DefaultAgentProfileID)) == "null" {
+		return patch, nil // the explicit clear
+	}
+	var id string
+	if err := json.Unmarshal(b.DefaultAgentProfileID, &id); err != nil {
+		return patch, &prjProblemText{
+			code:   "invalid_agent_profile",
+			title:  "Invalid Agent Profile",
+			detail: "default_agent_profile_id must be an agent profile id or null.",
+		}
+	}
+	patch.DefaultAgentProfileID = &id
+	return patch, nil
 }
 
 func (h *prjHandlers) listRepositories(w http.ResponseWriter, r *http.Request) {
@@ -496,6 +584,13 @@ func (h *prjHandlers) patchRepository(w http.ResponseWriter, r *http.Request) {
 func prjCredentialProblem(w http.ResponseWriter, detail string) {
 	ghiProblem(w, http.StatusUnprocessableEntity, "invalid_credential_secret",
 		"Invalid Credential Secret", detail)
+}
+
+// prjAgentProfileProblem is ADR-0086's 400 with the `invalid_agent_profile`
+// code — the same typed-problem convention: one code clients switch on.
+func prjAgentProfileProblem(w http.ResponseWriter, detail string) {
+	ghiProblem(w, http.StatusBadRequest, "invalid_agent_profile",
+		"Invalid Agent Profile", detail)
 }
 
 func (h *prjHandlers) listMembers(w http.ResponseWriter, r *http.Request) {

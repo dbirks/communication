@@ -137,8 +137,8 @@ func (p *evtProject) ListMembers(context.Context, Caller, string) ([]MemberView,
 func (p *evtProject) PutMember(context.Context, Caller, string, string, string) (MemberView, error) {
 	return MemberView{}, errors.New("evtProject: PutMember not expected")
 }
-func (p *evtProject) SetProjectAgentMail(context.Context, Caller, string, bool, int) (ProjectView, error) {
-	return ProjectView{}, errors.New("evtProject: SetProjectAgentMail not expected")
+func (p *evtProject) SetProjectSettings(context.Context, Caller, string, ProjectSettingsPatch, int) (ProjectView, error) {
+	return ProjectView{}, errors.New("evtProject: SetProjectSettings not expected")
 }
 
 var _ ProjectStore = (*evtProject)(nil)

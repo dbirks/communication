@@ -129,6 +129,16 @@ const (
 	TypeProjectCreated       = "project.created"
 	TypeProjectMemberUpdated = "project.member.updated"
 	TypeRepositoryAdded      = "repository.added"
+	// TypeProjectDefaultAgentChanged is ADR-0086's journal row: a maintainer
+	// moved the project's default agent profile through
+	// PATCH /api/v1/projects/{projectId}. Like the membership row it names the
+	// old and the new value, so the audit question "what did it used to be?"
+	// is answerable from the journal alone; JSON null on the new value is
+	// "the default was cleared". The payload carries project_id, the two
+	// profile ids and the human who moved it (the envelope's actor is the same
+	// person — the payload repeats it because ADR-0086 § 4 asks for an actor in
+	// the payload, and a consumer that only reads payloads still learns who).
+	TypeProjectDefaultAgentChanged = "project.default_agent.changed"
 )
 
 // ---------------------------------------------------------------- M2 events
