@@ -440,7 +440,14 @@ test.describe("shell p2 — Home: needs you, running, factory health", () => {
     // correct case — no POST ever happens — and hangs the journey.)
     let approvalPosts = 0;
     const onRequest = (req: import("@playwright/test").Request) => {
-      if (req.url().includes("/api/v1/approvals") && req.method() === "POST") approvalPosts += 1;
+      // Only the DECISION counts. The gate page also POSTs
+      // `/approvals/{id}/summary` (the model-written summary) and may POST
+      // `/interpret`; on a slow model that summary request starts after this
+      // listener is attached and was being counted as the approval
+      // (Acceptance 45892343026, both attempts' failure).
+      if (req.method() === "POST" && /\/api\/v1\/approvals\/[^/]+\/decide(\?|$)/.test(req.url())) {
+        approvalPosts += 1;
+      }
     };
     page.on("request", onRequest);
     await page.getByTestId("decision-approve").click();
