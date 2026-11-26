@@ -346,54 +346,79 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
 `~/.cache/pi-orch/communication/evidence/redesign/`.
 
 ## R0. Foundation
-- [ ] Handoff, prototype and contract are in `docs/design/redesign/`; routes, scope hook, tokens and the shared
+- [x] Handoff, prototype and contract are in `docs/design/redesign/`; routes, scope hook, tokens and the shared
       prompt box exist.
+      Commits dce6e28 (foundation) and 67d7979 (AgentPicker); the right README replaced a wrong first copy in a later commit.
 
 ## R1. Shell
-- [ ] Project rail (All, one tile per project, add, needs-you badge, Manage, account).
-- [ ] Top bar: context on the left, Home / Chats / Factory pill, Search or ask field, mic.
-- [ ] New routes (`/`, `/chats`, `/factory`, `/manage/:section`, `/p/:projectId/...`); every old route redirects.
-- [ ] Phone frame (scope sheet, icon pill) with no horizontal scroll at 390px.
-- [ ] Tokens per the README (white page, soft radii and shadows on redesigned surfaces).
+- [x] Project rail (All, one tile per project, add, needs-you badge, Manage, account).
+      ui/src/components/shell/ProjectRail.tsx (+ test). e2e shell-p1-shell 13 of 14 passed locally on the new UI (the 14th was an a11y defect on the repository page, fixed in 060b4e1). Deployed: evidence/redesign/deployed/home-all-1280-9a0c115.png.
+- [x] Top bar: context on the left, Home / Chats / Factory pill, Search or ask field, mic.
+      ui/src/components/shell/{TopBar,SectionPill,SearchField,TopBarSlot}.tsx (+ tests); the editor fills the left slot with its breadcrumb (~/.cache/pi-orch/communication/evidence/redesign/wip/editor-select-wrap.png).
+- [x] New routes (`/`, `/chats`, `/factory`, `/manage/:section`, `/p/:projectId/...`); every old route redirects.
+      ui/src/App.tsx + lib/routes.ts (flip commit 6d979bc, on main in 9a0c115). App.test.tsx: 72 tests, one row per old address with query and hash kept. shell-p1 "legacy routes redirect" covers 29 addresses in a browser. internal/assistant/routes.go mirrors the table (TestAllowedRoutesMirrorUIRoutes).
+- [x] Phone frame (scope sheet, icon pill) with no horizontal scroll at 390px.
+      ui/src/components/shell/ScopeSheet.tsx; shell-p1 tests at 390x844 and the 767/768 boundary passed locally; ~/.cache/pi-orch/communication/evidence/redesign/wip/shell-390.png.
+- [x] Tokens per the README (white page, soft radii and shadows on redesigned surfaces).
+      ui/src/styles/tokens.css (dce6e28); ds/SoftButton and ds/Sheet for the dialogs opened from redesigned screens (060b4e1); check:tokens passes in CI.
 
 ## R2. Home
-- [ ] All projects: greeting, prompt box, Since you left, Needs you, Running, Factory health.
+- [x] All projects: greeting, prompt box, Since you left, Needs you, Running, Factory health.
+      ui/src/pages/Home.tsx + components/home/{HomePrompt,SinceYouLeft,NeedsYouCards,RunningList,FactoryHealth}.tsx (+ tests). e2e shell-p2-home-board and m5-inbox (6 passed) on the new Home. Deployed: evidence/redesign/deployed/home-all-1280-9a0c115.png.
 - [ ] Project home: prompt box, starter pills, Happening now, Since you left, Repos, Workflows here, default agent.
-- [ ] `/catch-up` is a section of Home; a piece of work and its tour still open.
+- [x] `/catch-up` is a section of Home; a piece of work and its tour still open.
+      `/catch-up` redirects to `/`; e2e catchup-lab 4 passed locally (redirect, Since you left rows, the tour player marking stops seen, a decision reply reaching the chat).
 
 ## R3. Chats
-- [ ] List (grouped by project under All), New chat pane, thread with header, messages and composer.
-- [ ] Workflow suggestion pill above the composer; click only.
-- [ ] Starting a run puts a live run card in the thread with "Open in Factory".
+- [x] List (grouped by project under All), New chat pane, thread with header, messages and composer.
+      ui/src/pages/Chats.tsx + components/chats/* (27 own tests + 12 ported test files). e2e issue2-conversations 3 passed, shell-p6-threads 3 passed. ~/.cache/pi-orch/communication/evidence/redesign/wip/thread-1280.png, gaps-chat-header-filter.png.
+- [x] Workflow suggestion pill above the composer; click only.
+      components/chats/{WorkflowSuggestion,chatSuggestion}.tsx; WorkflowSuggestion.test.tsx proves Tab then Enter in the composer does not accept it.
+- [x] Starting a run puts a live run card in the thread with "Open in Factory".
+      components/chats/RunCard.tsx (+ test: step strip, state words, the link).
 
 ## R4. Factory
-- [ ] Index: live summary, workflow cards with live thumbnails, dashed New workflow card.
-- [ ] New workflow sheet: Describe it, from chats, copy, blank.
-- [ ] Runs live on the cards, the editor and Home; there is no Runs tab.
+- [x] Index: live summary, workflow cards with live thumbnails, dashed New workflow card.
+      ui/src/pages/Factory.tsx + components/factory/{WorkflowCard,WorkflowThumb,factoryData}.tsx (+ tests). e2e shell-p4-library 4 passed. ~/.cache/pi-orch/communication/evidence/redesign/wip/factory-1280.png; deployed: evidence/redesign/deployed/factory-1280-9a0c115.png.
+- [x] New workflow sheet: Describe it, from chats, copy, blank.
+      components/factory/NewWorkflowSheet.tsx (+ test). "From chats" prints an honest empty sentence: no API detects repeated chains yet. e2e m5-journey uses the sheet's Import YAML (11 passed). ~/.cache/pi-orch/communication/evidence/redesign/wip/factory-sheet-1280.png.
+- [x] Runs live on the cards, the editor and Home; there is no Runs tab.
+      `/p/:id/runs` redirects to the scoped Factory; cards show the live run and "Open run"; the project Factory lists schedules and triggers (testid project-pipelines; e2e m5-agents-schedules 3 passed).
 
 ## R5. Editor
-- [ ] Free left-to-right canvas snapping to 20px; positions persist; béziers without arrowheads; new nodes.
-- [ ] Tool island (hover widens), Versions / Try it / Make live, Versions panel; drafts autosave.
-- [ ] Box select with marching ants → wrap panel → goal frame, built on the existing `until` condition.
-- [ ] Side by side wrap.
+- [x] Free left-to-right canvas snapping to 20px; positions persist; béziers without arrowheads; new nodes.
+      Commit 18b6dad (flowModel LR, ui_layout persistence, nodes.tsx, edges.tsx; studio + workbench suites green). e2e issue2-studio 6 of 7 passed locally (the 7th is the assistant leg: the lab model timed out).
+- [x] Tool island (hover widens), Versions / Try it / Make live, Versions panel; drafts autosave.
+      components/studio/{ToolIsland,VersionsPanel}.tsx + pages/Studio.tsx (+ tests). e2e shell-journey steps a-b (Versions restore, autosave, Make live) passed. ~/.cache/pi-orch/communication/evidence/redesign/wip/editor-island-open.png, editor-versions.png.
+- [x] Box select with marching ants → wrap panel → goal frame, built on the existing `until` condition.
+      components/studio/wrap/* (wrapModel builds judge / command / output-contains loops from today's schema: a model.chat or process.exec last step plus `passWhen`; no schema change). ~/.cache/pi-orch/communication/evidence/redesign/wip/editor-select-wrap.png, editor-goal-frame.png.
+- [x] Side by side wrap.
+      wrapModel.wrapSideBySide (parallel scope, join all) + WrapPanel tab (+ tests).
 - [ ] Run state on the canvas (node states, animated frame, verdicts beside the frame).
-- [ ] Agent step inspector; YAML and Used in panels; triggers from the trigger step.
+- [x] Agent step inspector; YAML and Used in panels; triggers from the trigger step.
+      components/studio/{AgentStepCard,YamlEditPanel}.tsx, the "…" menu (Edit as YAML, Used in, Run inputs, Use in a project), trigger node → TriggersDialog. e2e shell-p789 test 3 (agent card → More settings) and m5-prompt-edit 6 passed. ~/.cache/pi-orch/communication/evidence/redesign/wip/editor-agent-card.png.
 - [ ] Judge condition: ADR written and approved by David before any backend work.
 
 ## R6. Assistant
-- [ ] Search or ask: tap ⌘K searches or asks; hold ⌘K (or the mic) talks.
-- [ ] Quick chat panel docked right, stays open until closed, "Open as chat".
+- [x] Search or ask: tap ⌘K searches or asks; hold ⌘K (or the mic) talks.
+      components/CommandPalette.tsx (Ask row), components/assistant/HoldToTalk.ts (+ fake-timer tests: tap, hold, release sends, blur cancels). e2e shell-p1 tests 4-5. ~/.cache/pi-orch/communication/evidence/redesign/wip/palette-1280.png.
+- [x] Quick chat panel docked right, stays open until closed, "Open as chat".
+      components/assistant/QuickChat.tsx (+ test). e2e assistant-handoff 8 passed locally. ~/.cache/pi-orch/communication/evidence/redesign/wip/quickchat-1280.png, quickchat-390.png.
 
 ## R7. Manage
-- [ ] Frame with the six sections; Runners table.
-- [ ] Projects, Repositories, People & access, Secrets.
-- [ ] Agents & models: accounts strip with sign-in, profiles table, profile side sheet, Skills, Step templates,
+- [x] Frame with the six sections; Runners table.
+      ui/src/pages/Manage.tsx + pages/manage/{ManageTable,Runners}.tsx; Runners also carries the old Operations panels and the replica line. e2e shell-p789 test 8. Deployed: evidence/redesign/deployed/manage-runners-1280-9a0c115.png.
+- [x] Projects, Repositories, People & access, Secrets.
+      pages/manage/{Projects,ProjectDetail,Repositories,People,Secrets}.tsx (+ tests, incl. 65 tests ported from the old settings pages). ~/.cache/pi-orch/communication/evidence/redesign/wip/manage-projects-desktop.png, manage-notes.md (what moved where).
+- [x] Agents & models: accounts strip with sign-in, profiles table, profile side sheet, Skills, Step templates,
       Models, Assistant tabs.
+      pages/manage/Agents.tsx + agents/* (commit 4813310, polish in 060b4e1). e2e shell-p5-profiles 5 passed. Deployed: evidence/redesign/deployed/manage-agents-1280-9a0c115.png (Codex "! needs sign-in" + Sign in).
 - [ ] Agent chip is a profile picker on Home, Chats and the canvas; project default agent on the project home.
 - [ ] Codex is signed in through the accounts strip in production and a Codex chat or run is proven there.
 
 ## R8. Clean-up
-- [ ] Replaced pages and components are deleted; no dead routes; no unused exports left behind.
+- [x] Replaced pages and components are deleted; no dead routes; no unused exports left behind.
+      43 unreachable files deleted with their tests (import-graph check from main.tsx), 244 test ids retired in ui/scripts/retired-testids.json; unit suite 264 files / 2967 tests green before the push (CI on PR #606 and on main 9a0c115).
 - [ ] e2e journeys and the emulator loop use the new navigation.
 
 ## Redesign done when
