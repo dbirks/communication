@@ -16,11 +16,17 @@ import {
   NewWorkflowSheet,
   describeKey,
   nameFromDescription,
+  templateBlurb,
+  templateSteps,
   writeDescription,
 } from "./NewWorkflowSheet";
 import type { Draft, Pipeline } from "../../api/types";
 import { mockFetch, type RouteStub } from "../../test/fakes";
-import { BLANK_SKELETON_YAML } from "../../lib/pipeline/templates";
+import {
+  BLANK_SKELETON_YAML,
+  PIPELINE_TEMPLATES,
+  templateById,
+} from "../../lib/pipeline/templates";
 
 afterEach(cleanup);
 
@@ -314,6 +320,120 @@ describe("NewWorkflowSheet", () => {
       "that slug is taken",
     );
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("offers one row per vetted template between the chats and the copies", () => {
+    const { unmount } = mount(
+      routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID),
+    );
+    const sheet = screen.getByTestId("new-workflow-sheet");
+    const label = screen.getByTestId("new-workflow-templates-label");
+    expect(label.textContent).toBe("Or start from a template");
+    expect(label.className).toContain("uppercase");
+    // The section sits where the brief put it: after the chats, before the copies.
+    const text = sheet.textContent ?? "";
+    expect(text.indexOf("Or from something you keep doing in chats")).toBeLessThan(
+      text.indexOf("Or start from a template"),
+    );
+    expect(text.indexOf("Or start from a template")).toBeLessThan(text.indexOf("Or copy"));
+
+    // One row per template, in the library's own order, each carrying its name,
+    // its one-line description and the steps its document puts on the canvas.
+    for (const template of PIPELINE_TEMPLATES) {
+      const row = screen.getByTestId(`new-workflow-template-${template.id}`).closest("div");
+      expect(row, `row for ${template.id}`).toBeTruthy();
+      expect(row?.textContent).toContain(template.label);
+      expect(row?.textContent).toContain(templateBlurb(template));
+      for (const step of templateSteps(template).slice(0, 5)) {
+        expect(row?.textContent).toContain(step);
+      }
+    }
+    // The six-step sample shows five chips and names the rest.
+    const pstack = screen.getByTestId("new-workflow-template-pstack-feature").closest("div")!;
+    expect(templateSteps(templateById("pstack-feature")!)).toHaveLength(6);
+    expect(pstack.textContent).toContain("+1");
+    expect(pstack.textContent).toContain("1 more step");
+    const pstackSteps = screen.getByTestId("new-workflow-template-steps-pstack-feature");
+    expect(pstackSteps.textContent).toBe(
+      "Steps: survey→plan→approve→implement→review+1 1 more step",
+    );
+    unmount();
+  });
+
+  it("uses a template with the old dialog's two writes and its suggested name", async () => {
+    const { requests } = mount(
+      routesFor(
+        createdPipeline("plan-with-approval", NEW_PIPELINE_ID),
+        NEW_PIPELINE_ID,
+        NEW_DRAFT_ID,
+      ),
+      "prj-1",
+    );
+    fireEvent.click(screen.getByTestId("new-workflow-template-plan-with-approval"));
+    await waitFor(() => expect(screen.queryByTestId("landing")).toBeTruthy());
+    expect(screen.getByTestId("landing").textContent).toBe(
+      `/p/prj-1/factory/${NEW_PIPELINE_ID}?draft=${NEW_DRAFT_ID}`,
+    );
+    const posts = requests.filter((request) => request.method === "POST");
+    expect(posts.map((request) => request.url)).toEqual([
+      "/api/v1/pipelines",
+      `/api/v1/pipelines/${NEW_PIPELINE_ID}/drafts`,
+    ]);
+    // The dialog named the workflow after the starter and derived the id from it.
+    expect(JSON.parse(posts[0]?.body ?? "{}")).toEqual({
+      slug: "plan-with-approval",
+      display_name: "Plan with approval",
+    });
+    // The first draft is the sample document, with metadata.name on the new id.
+    const draftYaml = String(JSON.parse(posts[1]?.body ?? "{}").document_yaml);
+    expect(draftYaml).toContain("name: plan-with-approval");
+    expect(draftYaml).toContain("- id: survey");
+    expect(draftYaml).not.toBe(BLANK_SKELETON_YAML);
+  });
+
+  it("names the Blank row's workflow like the blank canvas does", async () => {
+    const { requests } = mount(
+      routesFor(
+        createdPipeline("untitled-workflow", NEW_PIPELINE_ID),
+        NEW_PIPELINE_ID,
+        NEW_DRAFT_ID,
+      ),
+    );
+    fireEvent.click(screen.getByTestId("new-workflow-template-blank"));
+    await waitFor(() => expect(screen.queryByTestId("landing")).toBeTruthy());
+    expect(screen.getByTestId("landing").textContent).toBe(
+      `/factory/${NEW_PIPELINE_ID}?draft=${NEW_DRAFT_ID}`,
+    );
+    const posts = requests.filter((request) => request.method === "POST");
+    expect(JSON.parse(posts[0]?.body ?? "{}")).toEqual({
+      slug: "untitled-workflow",
+      display_name: "Untitled workflow",
+    });
+    expect(String(JSON.parse(posts[1]?.body ?? "{}").document_yaml)).toContain(
+      "name: untitled-workflow",
+    );
+  });
+
+  it("keeps a failed template create open and says what the server refused", async () => {
+    const { onClose } = mount([
+      {
+        path: "/api/v1/pipelines",
+        status: 409,
+        body: {
+          type: "https://communication.dev/errors/pipeline_slug_taken",
+          title: "Conflict",
+          status: 409,
+          detail: "that slug is taken",
+        },
+      },
+    ]);
+    fireEvent.click(screen.getByTestId("new-workflow-template-security-review"));
+    expect(await screen.findByTestId("new-workflow-sheet")).toBeTruthy();
+    expect((await screen.findByTestId("new-workflow-sheet-error")).textContent).toContain(
+      "that slug is taken",
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("landing")).toBeNull();
   });
 
   it("closes on the backdrop, but not on a click inside the sheet", () => {

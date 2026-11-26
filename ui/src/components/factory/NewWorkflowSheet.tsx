@@ -2,7 +2,7 @@
  * NewWorkflowSheet — the one way to start a workflow in the Factory
  * (redesign R4; the prototype's `sheet`).
  *
- * Four ways in, all real:
+ * Five ways in, all real:
  * 1. **Describe it** — a sentence, then `Sketch it`. This creates the workflow
  *    and its first draft exactly as `NewWorkflowDialog` does (the pipeline
  *    first, then its first draft — ADR-0002's logical create), and lands on the
@@ -13,16 +13,21 @@
  * 2. **From something you keep doing in chats** — no API serves detected
  *    chains yet, so this section carries its label and one honest sentence
  *    (CONTRACT: real data only, never fake rows).
- * 3. **Copy** — the chips are the org's real workflows; a click runs the same
+ * 3. **From a vetted template** — the samples that shipped with the old
+ *    dialog's `START FROM` picker (`PIPELINE_TEMPLATES`). Starting from one is
+ *    existing behaviour the sheet replaced, so it is offered here: one row per
+ *    template with its name, its one-line description and the steps the
+ *    document puts on the canvas as chips, plus `Use this`.
+ * 4. **Copy** — the chips are the org's real workflows; a click runs the same
  *    `useDuplicatePipeline` the Workflows index's `Duplicate` runs.
- * 4. **Blank canvas / Import YAML** — the skeleton create and the existing
+ * 5. **Blank canvas / Import YAML** — the skeleton create and the existing
  *    import dialog.
  *
  * Accessible-modal contract (the `NewWorkflowDialog` pattern): `role="dialog"`
  * + `aria-modal`, labelled by its own title, focus trapped while open, Escape
  * and the backdrop close, focus returns to the opener.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { IconMicrophone, IconPlus, IconSparkles, IconX } from "@tabler/icons-react";
@@ -32,7 +37,14 @@ import { apiFetch } from "../../api/client";
 import { queryKeys } from "../../api/queries";
 import { generateSlug } from "../workflows/NewWorkflowDialog";
 import { ImportYamlDialog } from "../workflows/ImportYamlDialog";
-import { BLANK_SKELETON_YAML, withMetadataName } from "../../lib/pipeline/templates";
+import {
+  BLANK_SKELETON_YAML,
+  PIPELINE_TEMPLATES,
+  firstSentence,
+  withMetadataName,
+  type PipelineTemplate,
+} from "../../lib/pipeline/templates";
+import { parseGraph } from "../../lib/pipeline/graphDoc";
 import { routes } from "../../lib/routes";
 import { FormError } from "../Feedback";
 import { useSpeechToText } from "../../lib/speech";
@@ -79,6 +91,95 @@ function SectionLabel({ children, id, testid }: { children: string; id: string; 
   );
 }
 
+/** How many step chips a template row shows before it says `+N`. */
+const MAX_STEP_CHIPS = 5;
+
+/**
+ * The template's steps, in the order the document defines them: the top-level
+ * nodes the canvas draws, picked the way `templateChain` picks them — a scope
+ * node is one chip for its own id, not one per child. An empty list means the
+ * document does not parse: the row then shows no chips rather than steps nobody
+ * observed.
+ */
+export function templateSteps(template: PipelineTemplate): string[] {
+  const parsed = parseGraph(template.documentYaml);
+  if (!parsed.ok) return [];
+  return parsed.model.nodes.filter((node) => node.scope.length === 0).map((node) => node.id);
+}
+
+/**
+ * The row's one-line description: the template's own metadata sentence cut to
+ * its first. Blank has no document to describe, and its metadata line is a note
+ * to whoever maintains the skeleton, so it keeps the words the old dialog and
+ * the Workflows index cards use for it (`starterHint`, copied here because that
+ * file goes away with the old library page).
+ */
+export function templateBlurb(template: PipelineTemplate): string {
+  if (template.id === "blank")
+    return "One agent step to start from. Add and edit steps on the canvas.";
+  return firstSentence(template.description);
+}
+
+interface TemplateRowProps {
+  template: PipelineTemplate;
+  busy: boolean;
+  disabled: boolean;
+  onUse: () => void;
+}
+
+/** A quiet card row: the starter's name, its line, its steps as chips joined by
+ * arrows, and the verb at the right. On phone the row stacks — the verb under
+ * the text — and grows to the contract's 44px touch target. */
+function TemplateRow({ template, busy, disabled, onUse }: TemplateRowProps) {
+  const steps = templateSteps(template);
+  const shown = steps.slice(0, MAX_STEP_CHIPS);
+  const hidden = steps.length - shown.length;
+  const chip =
+    "rounded-[6px] border border-line px-[6px] py-[1px] font-mono text-[10.5px] text-muted";
+  return (
+    <div className="flex items-center gap-[12px] rounded-[10px] border border-line bg-surface p-[10px_12px] transition-colors hover:border-line-strong max-md:flex-col max-md:items-start">
+      <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
+        <span className="text-[13.5px] font-semibold">{template.label}</span>
+        <span className="text-[12.5px] text-muted">{templateBlurb(template)}</span>
+        {shown.length > 0 ? (
+          <span
+            className="flex flex-wrap items-center gap-[4px]"
+            data-testid={`new-workflow-template-steps-${template.id}`}
+          >
+            <span className="sr-only">Steps: </span>
+            {shown.map((step, index) => (
+              <Fragment key={step}>
+                {index > 0 ? (
+                  <span aria-hidden="true" className="text-[10.5px] text-faint">
+                    →
+                  </span>
+                ) : null}
+                <span className={chip}>{step}</span>
+              </Fragment>
+            ))}
+            {hidden > 0 ? (
+              <span className={`${chip} text-faint`}>
+                <span aria-hidden="true">+{hidden}</span>
+                <span className="sr-only">{` ${hidden} more ${hidden === 1 ? "step" : "steps"}`}</span>
+              </span>
+            ) : null}
+          </span>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        onClick={onUse}
+        disabled={disabled}
+        data-testid={`new-workflow-template-${template.id}`}
+        className="flex h-[28px] shrink-0 items-center rounded-[8px] border border-line bg-surface px-[12px] text-[12.5px] font-semibold hover:border-line-strong disabled:cursor-not-allowed disabled:border-line disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-md:min-h-[44px] max-md:px-[16px]"
+      >
+        {busy ? "Creating…" : "Use this"}
+        <span className="sr-only">{` the ${template.label} template`}</span>
+      </button>
+    </div>
+  );
+}
+
 export interface NewWorkflowSheetProps {
   /** The page's scope: a project id, or null for All projects. */
   scope: string | null;
@@ -92,7 +193,10 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
   const containerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<Element | null>(null);
   const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState<"" | "sketch" | "blank">("");
+  /** Which of the sheet's create buttons is in flight: `sketch`, `blank`, or
+   * `template:<id>` — the row that must say `Creating…` while its two writes
+   * run. Anything non-empty keeps every create inert. */
+  const [busy, setBusy] = useState("");
   const [failure, setFailure] = useState<unknown>(null);
   /** The sentence held nothing a slug could be made from — the server would
    * answer `400`, and its words are about JSON, not about what to type. */
@@ -209,6 +313,30 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
         writeDescription(pipeline.id, text);
         onClose();
         navigate(routes.factoryWorkflow(pipeline.id, scope, { draft: draft.id, describe: "1" }));
+      } catch (error) {
+        setFailure(error);
+        setBusy("");
+      }
+    })();
+  }
+
+  /** `Use this` on a template row: the old dialog's create for that starter,
+   * unchanged — the name it suggested (its label) is the name the workflow
+   * gets, the id follows it through the same `generateSlug`, the document is
+   * the sample's own bytes with `metadata.name` rewritten to that id, and the
+   * two writes are the sheet's `createWorkflow`. Blank is the exception the
+   * dialog also made (a starter nobody names): it takes `Untitled workflow`,
+   * the same name the sheet's own `Blank canvas` link gives. */
+  function useTemplate(template: PipelineTemplate) {
+    if (busy) return;
+    setBusy(`template:${template.id}`);
+    setFailure(null);
+    void (async () => {
+      try {
+        const name = template.id === "blank" ? "Untitled workflow" : template.label;
+        const { pipeline, draft } = await createWorkflow(name, template.documentYaml);
+        onClose();
+        navigate(routes.factoryWorkflow(pipeline.id, scope, { draft: draft.id }));
       } catch (error) {
         setFailure(error);
         setBusy("");
@@ -342,7 +470,25 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
           </p>
         </div>
 
-        {/* 3. Copy something that already exists */}
+        {/* 3. The vetted samples the old New workflow dialog offered (README § 4
+            keeps the section; the dialog is gone, its starters are not). One row
+            per entry of `PIPELINE_TEMPLATES`, in the library's own order. */}
+        <div className="flex flex-col gap-[8px]">
+          <SectionLabel id="new-workflow-templates-label" testid="new-workflow-templates-label">
+            Or start from a template
+          </SectionLabel>
+          {PIPELINE_TEMPLATES.map((template) => (
+            <TemplateRow
+              key={template.id}
+              template={template}
+              busy={busy === `template:${template.id}`}
+              disabled={Boolean(busy)}
+              onUse={() => useTemplate(template)}
+            />
+          ))}
+        </div>
+
+        {/* 4. Copy something that already exists */}
         <div className="flex flex-wrap items-center gap-[8px]">
           <SectionLabel id="new-workflow-copy-label" testid="new-workflow-copy-label">
             Or copy
@@ -361,7 +507,7 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
           ))}
         </div>
 
-        {/* 4. The two ways that skip both */}
+        {/* 5. The two ways that skip both */}
         <div className="flex flex-wrap items-center gap-[14px]">
           <button
             type="button"
