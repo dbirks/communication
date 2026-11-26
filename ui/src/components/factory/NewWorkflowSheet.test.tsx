@@ -137,7 +137,11 @@ function routesFor(create: RouteStub["body"], createdId: string, draftId: string
   ];
 }
 
-function mount(routes: RouteStub[], scope: string | null = null) {
+function mount(
+  routes: RouteStub[],
+  scope: string | null = null,
+  props: { scopeName?: string | null } = {},
+) {
   const { requests } = mockFetch(routes);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
@@ -152,6 +156,7 @@ function mount(routes: RouteStub[], scope: string | null = null) {
             element={
               <NewWorkflowSheet
                 scope={scope}
+                scopeName={props.scopeName ?? null}
                 workflows={[
                   {
                     id: SOURCE_ID,
@@ -179,6 +184,18 @@ const DESCRIPTION = "When an issue gets the ready label, plan it, implement it, 
 
 function sketchButton(): HTMLButtonElement {
   return screen.getByTestId("new-workflow-sketch") as HTMLButtonElement;
+}
+
+/** The starters the sheet offers: every template but Blank, which the sheet's
+ * own Blank canvas link already is. */
+function nonBlankTemplates() {
+  return PIPELINE_TEMPLATES.filter((template) => template.id !== "blank");
+}
+
+/** The disclosure is closed by default (review 08-1280-1): anything that wants
+ * a template row opens it first, exactly as a person does. */
+function openTemplates(): void {
+  fireEvent.click(screen.getByTestId("new-workflow-templates-toggle"));
 }
 
 describe("nameFromDescription", () => {
@@ -341,26 +358,40 @@ describe("NewWorkflowSheet", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("offers one row per vetted template between the chats and the copies", () => {
+  it("keeps the templates in a collapsed disclosure below the README's parts", () => {
     const { unmount } = mount(
       routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID),
     );
     const sheet = screen.getByTestId("new-workflow-sheet");
-    const label = screen.getByTestId("new-workflow-templates-label");
-    expect(label.textContent).toBe("Or start from a template");
-    expect(label.className).toContain("uppercase");
-    // The section sits where the brief put it: after the chats, before the copies.
     const text = sheet.textContent ?? "";
+    // README § 4 lists three parts and ends with the copy chips and the Blank
+    // canvas link; the starters are the extra, so they wait behind one click
+    // BELOW it (review 08-1280-1) — closed by default, opening in place.
     expect(text.indexOf("Or from something you keep doing in chats")).toBeLessThan(
-      text.indexOf("Or start from a template"),
+      text.indexOf("Or copy"),
     );
-    expect(text.indexOf("Or start from a template")).toBeLessThan(text.indexOf("Or copy"));
+    expect(text.indexOf("Or copy")).toBeLessThan(text.indexOf("Start from a template"));
+    const toggle = screen.getByTestId("new-workflow-templates-toggle") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toContain(`Start from a template (${nonBlankTemplates().length})`);
+    // Closed: no row is in the DOM, so none of its buttons steals the tab order.
+    for (const template of nonBlankTemplates()) {
+      expect(screen.queryByTestId(`new-workflow-template-${template.id}`)).toBeNull();
+    }
 
-    // One row per non-Blank template, in the library's own order, each carrying
-    // its name, its one-line description and the steps its document puts on the canvas.
-    const nonBlank = PIPELINE_TEMPLATES.filter((template) => template.id !== "blank");
-    expect(nonBlank.length).toBeGreaterThan(0);
-    for (const template of nonBlank) {
+    fireEvent.click(toggle);
+    expect(
+      (screen.getByTestId("new-workflow-templates-toggle") as HTMLButtonElement).getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("true");
+
+    // Opened in place: the section label keeps its id and every row carries its
+    // name, its one-line description and the steps its document puts on the canvas.
+    const label = screen.getByTestId("new-workflow-templates-label");
+    expect(label.textContent).toBe(`Start from a template (${nonBlankTemplates().length})`);
+    expect(label.className).toContain("uppercase");
+    for (const template of nonBlankTemplates()) {
       const row = screen.getByTestId(`new-workflow-template-${template.id}`).closest("div");
       expect(row, `row for ${template.id}`).toBeTruthy();
       expect(row?.textContent).toContain(template.label);
@@ -384,9 +415,46 @@ describe("NewWorkflowSheet", () => {
     unmount();
   });
 
-  it("renders no template section when only the Blank template exists", () => {
+  // Review 08-1280-2: the promise belongs with the verb it describes, inside
+  // the box's own bottom row — not on a line under the box.
+  it("says what Sketch it does inside the box, beside the button", () => {
+    mount(routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID));
+    const sketch = screen.getByTestId("new-workflow-sketch");
+    const row = sketch.parentElement as HTMLElement;
+    const helper = [...row.children].find((node) =>
+      (node.textContent ?? "").startsWith("Steps get sketched on the canvas"),
+    );
+    expect(helper, "the helper sentence shares Sketch it's row").toBeTruthy();
+    // …and that row is inside the Describe it box, not under it.
+    const box = screen.getByTestId("new-workflow-description").parentElement as HTMLElement;
+    expect(box.contains(row)).toBe(true);
+  });
+
+  it("names the scope the workflow will belong to", () => {
+    mount(routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID), null, {
+      scopeName: "Project One",
+    });
+    // Review 08-1280-3: at All scope (or any scope) the sheet has to say where
+    // the workflow lands.
+    expect(document.getElementById("new-workflow-sheet-title")?.textContent).toBe(
+      "New workflow in Project One",
+    );
+  });
+
+  // Review 08-1280-4: the prototype's scrim is the content area — the rail and
+  // the top bar stay undimmed and the sheet starts under the bar.
+  it("stops the scrim at the shell", () => {
+    mount(routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID));
+    const backdrop = screen.getByTestId("new-workflow-backdrop");
+    expect(backdrop.className).not.toContain("inset-0");
+    expect(backdrop.className).toContain("md:top-[60px]");
+    expect(backdrop.className).toContain("md:left-16");
+  });
+
+  it("renders no template disclosure when only the Blank template exists", () => {
     templatesState.list = PIPELINE_TEMPLATES.filter((template) => template.id === "blank");
     mount(routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID));
+    expect(screen.queryByTestId("new-workflow-templates-toggle")).toBeNull();
     expect(screen.queryByTestId("new-workflow-templates-label")).toBeNull();
     expect(screen.queryByTestId("new-workflow-template-blank")).toBeNull();
     // The Blank canvas link still offers the blank start.
@@ -402,6 +470,7 @@ describe("NewWorkflowSheet", () => {
       ),
       "prj-1",
     );
+    openTemplates();
     fireEvent.click(screen.getByTestId("new-workflow-template-plan-with-approval"));
     await waitFor(() => expect(screen.queryByTestId("landing")).toBeTruthy());
     expect(screen.getByTestId("landing").textContent).toBe(
@@ -437,6 +506,7 @@ describe("NewWorkflowSheet", () => {
         },
       },
     ]);
+    openTemplates();
     fireEvent.click(screen.getByTestId("new-workflow-template-security-review"));
     expect(await screen.findByTestId("new-workflow-sheet")).toBeTruthy();
     expect((await screen.findByTestId("new-workflow-sheet-error")).textContent).toContain(

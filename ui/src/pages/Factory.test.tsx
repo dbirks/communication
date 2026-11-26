@@ -191,6 +191,45 @@ describe("Factory", () => {
     expect(screen.getByTestId("factory-summary").textContent).toBe("1 workflow · nothing running");
   });
 
+  // Review 07-1280-4: the prototype puts the live sentence to the RIGHT of the
+  // heading, on its line, led by a state-coloured glyph.
+  it("rides the summary on the heading's line, with a state-coloured glyph", async () => {
+    mount({
+      "/api/v1/runs": {
+        path: "/api/v1/runs",
+        body: {
+          runs: [
+            {
+              id: "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+              project_id: projectFixture.id,
+              pipeline_id: PIPELINE_ID,
+              pipeline_revision_id: "rev-1",
+              revision_digest: "sha256:1",
+              plan_digest: "sha256:2",
+              status: "running",
+              depth: 0,
+              priority: 0,
+              created_at: "2026-11-20T10:00:00Z",
+              project_name: projectFixture.name,
+              pipeline_slug: "wf-1",
+              pipeline_display_name: "Workflow One",
+              steps: [{ node_id: "plan", kind: "agent.acp", state: "running" }],
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+    });
+    const summary = await screen.findByTestId("factory-summary");
+    await waitFor(() => expect(summary.textContent).toBe("● 1 running · 1 workflow"));
+    // One line, to the right of the heading — not a paragraph under it.
+    expect(summary.previousElementSibling?.tagName).toBe("H2");
+    // The glyph carries the state colour; the words stay the sentence.
+    const glyph = summary.querySelector("span");
+    expect(glyph?.textContent).toBe("● ");
+    expect(glyph?.className).toContain("text-st-running-tag-fg");
+  });
+
   it("counts a live run into the headline, glyph and word", async () => {
     mount({
       "/api/v1/runs": {

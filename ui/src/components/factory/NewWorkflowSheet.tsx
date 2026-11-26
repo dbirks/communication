@@ -2,7 +2,7 @@
  * NewWorkflowSheet — the one way to start a workflow in the Factory
  * (redesign R4; the prototype's `sheet`).
  *
- * Five ways in, all real:
+ * Five ways in, all real, in the order README § 4 lists them:
  * 1. **Describe it** — a sentence, then `Sketch it`. This creates the workflow
  *    and its first draft exactly as `NewWorkflowDialog` does (the pipeline
  *    first, then its first draft — ADR-0002's logical create), and lands on the
@@ -13,24 +13,36 @@
  * 2. **From something you keep doing in chats** — no API serves detected
  *    chains yet, so this section carries its label and one honest sentence
  *    (CONTRACT: real data only, never fake rows).
- * 3. **From a vetted template** — the samples that shipped with the old
- *    dialog's `START FROM` picker (`PIPELINE_TEMPLATES`). Starting from one is
- *    existing behaviour the sheet replaced, so it is offered here: one row per
- *    template with its name, its one-line description and the steps the
- *    document puts on the canvas as chips, plus `Use this`.
- * 4. **Copy** — the chips are the org's real workflows; a click runs the same
+ * 3. **Copy** — the chips are the org's real workflows; a click runs the same
  *    `useDuplicatePipeline` the Workflows index's `Duplicate` runs.
- * 5. **Blank canvas / Import YAML** — the skeleton create and the existing
+ * 4. **Blank canvas / Import YAML** — the skeleton create and the existing
  *    import dialog.
+ * 5. **From a vetted template** — the samples that shipped with the old
+ *    dialog's `START FROM` picker (`PIPELINE_TEMPLATES`). Starting from one is
+ *    existing behaviour the sheet replaced, so it is offered — but inside a
+ *    collapsed "Start from a template (N)" disclosure row BELOW the copy
+ *    section, not as an open section: the README's contents (Describe it, the
+ *    chats line, OR COPY, and the two links) have to answer at once in a
+ *    1280x800 window with nothing scrolled (review 08-1280-1). Every template
+ *    row and every test id inside it is unchanged.
  *
  * Accessible-modal contract (the `NewWorkflowDialog` pattern): `role="dialog"`
  * + `aria-modal`, labelled by its own title, focus trapped while open, Escape
- * and the backdrop close, focus returns to the opener.
+ * and the backdrop close, focus returns to the opener. The scrim stops at the
+ * shell — the rail and the top bar stay undimmed and the sheet starts 40px
+ * under the bar, where the prototype puts it (review 08-1280-4); a phone keeps
+ * the contract's full-width bottom sheet.
  */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { IconMicrophone, IconPlus, IconSparkles, IconX } from "@tabler/icons-react";
+import {
+  IconChevronDown,
+  IconMicrophone,
+  IconPlus,
+  IconSparkles,
+  IconX,
+} from "@tabler/icons-react";
 import { useCreatePipeline, useDuplicatePipeline } from "../../api/pipelines";
 import type { Draft, Pipeline, PipelineSummary } from "../../api/types";
 import { apiFetch } from "../../api/client";
@@ -183,12 +195,22 @@ function TemplateRow({ template, busy, disabled, onUse }: TemplateRowProps) {
 export interface NewWorkflowSheetProps {
   /** The page's scope: a project id, or null for All projects. */
   scope: string | null;
+  /** What that scope is called — "All projects", or the project's own name.
+   * The sheet creates the workflow IN the scope, and at All scope nothing on it
+   * said which workflow would own the result (review 08-1280-3). Empty or null
+   * while the scope's read has not landed: the title then stays bare. */
+  scopeName?: string | null;
   /** The org's real workflows, for the `OR COPY` chips (up to 8 are shown). */
   workflows: PipelineSummary[];
   onClose: () => void;
 }
 
-export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheetProps) {
+export function NewWorkflowSheet({
+  scope,
+  scopeName = null,
+  workflows,
+  onClose,
+}: NewWorkflowSheetProps) {
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<Element | null>(null);
@@ -202,6 +224,9 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
    * answer `400`, and its words are about JSON, not about what to type. */
   const [nameError, setNameError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  /** The template disclosure, closed by default: one click opens the rows in
+   * place, under the copy section (review 08-1280-1). */
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   const templates = PIPELINE_TEMPLATES.filter((template) => template.id !== "blank");
   const speech = useSpeechToText();
@@ -378,9 +403,15 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
   const primaryButton =
     "flex h-[34px] items-center gap-[6px] rounded-[9px] bg-accent px-[14px] text-[13px] font-semibold text-white no-underline hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg";
 
+  const sheetTitle = scopeName ? `New workflow in ${scopeName}` : "New workflow";
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4 max-md:items-end max-md:p-0"
+      // The scrim is the content area, not the window: the rail (64px) and the
+      // top bar (60px / 52px on phone) stay undimmed and clickable, and the
+      // sheet starts 40px under the bar — the prototype's placement
+      // (review 08-1280-4). A phone keeps the contract's full-width bottom sheet.
+      className="fixed top-[52px] right-0 bottom-0 left-0 z-50 flex items-start justify-center bg-ink/25 p-4 max-md:items-end max-md:p-0 md:top-[60px] md:left-16 md:pt-[40px]"
       data-testid="new-workflow-backdrop"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -392,11 +423,11 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
         aria-modal="true"
         aria-labelledby="new-workflow-sheet-title"
         data-testid="new-workflow-sheet"
-        className="flex max-h-[calc(100vh-4rem)] w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[18px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85vh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
+        className="flex max-h-full w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[18px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85dvh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
       >
         <div className="flex items-center gap-[10px]">
           <h2 id="new-workflow-sheet-title" className="m-0 text-[18px] font-bold">
-            New workflow
+            {sheetTitle}
           </h2>
           <button
             type="button"
@@ -431,7 +462,7 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
                   onClick={() => (speech.listening ? speech.stop() : speech.start())}
                   aria-pressed={speech.listening}
                   data-testid="new-workflow-say-it"
-                  className={`flex h-[30px] items-center gap-[6px] rounded-full border border-line px-[11px] text-[12.5px] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                  className={`flex h-[30px] shrink-0 items-center gap-[6px] rounded-full border border-line px-[11px] text-[12.5px] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                     speech.listening ? "bg-accent text-white" : "bg-surface"
                   }`}
                 >
@@ -439,21 +470,24 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
                   {speech.listening ? "Listening…" : "Say it"}
                 </button>
               ) : null}
+              {/* The promise rides the box's own bottom row, between the two
+                  buttons the prototype has it beside (review 08-1280-2) — it is
+                  what `Sketch it` does, so it belongs with `Sketch it`. */}
+              <p className="m-0 min-w-0 flex-1 text-[12px] text-muted">
+                Steps get sketched on the canvas. Nothing runs until you make it live.
+              </p>
               <button
                 type="button"
                 onClick={sketch}
                 disabled={description.trim() === "" || Boolean(busy)}
                 data-testid="new-workflow-sketch"
-                className={`${primaryButton} ml-auto`}
+                className={`${primaryButton} ml-auto shrink-0`}
               >
                 <IconSparkles size={15} stroke={1.5} aria-hidden />
                 {busy === "sketch" ? "Sketching…" : "Sketch it"}
               </button>
             </div>
           </div>
-          <p className="m-0 text-[12.5px] text-muted">
-            Steps get sketched on the canvas. Nothing runs until you make it live.
-          </p>
           {speech.error ? (
             <p className="m-0 text-[12px] text-st-failed-tag-fg">{speech.error}</p>
           ) : null}
@@ -471,30 +505,7 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
           </p>
         </div>
 
-        {/* 3. The vetted samples the old New workflow dialog offered (README § 4
-            keeps the section; the dialog is gone, its starters are not). One row
-            per template, in the library's own order — the Blank template is
-            dropped: the sheet already has its own "Blank canvas" link below,
-            and the same thing twice is not a choice. The section is absent
-            when no template is left. */}
-        {templates.length > 0 ? (
-          <div className="flex flex-col gap-[8px]">
-            <SectionLabel id="new-workflow-templates-label" testid="new-workflow-templates-label">
-              Or start from a template
-            </SectionLabel>
-            {templates.map((template) => (
-              <TemplateRow
-                key={template.id}
-                template={template}
-                busy={busy === `template:${template.id}`}
-                disabled={Boolean(busy)}
-                onUse={() => useTemplate(template)}
-              />
-            ))}
-          </div>
-        ) : null}
-
-        {/* 4. Copy something that already exists */}
+        {/* 3. Copy something that already exists */}
         <div className="flex flex-wrap items-center gap-[8px]">
           <SectionLabel id="new-workflow-copy-label" testid="new-workflow-copy-label">
             Or copy
@@ -513,7 +524,7 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
           ))}
         </div>
 
-        {/* 5. The two ways that skip both */}
+        {/* 4. The two ways that skip both */}
         <div className="flex flex-wrap items-center gap-[14px]">
           <button
             type="button"
@@ -534,6 +545,50 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
             Import YAML
           </button>
         </div>
+
+        {/* 5. The vetted samples the old New workflow dialog offered, BELOW the
+            README's three parts and folded away until asked: an open section of
+            four template rows pushed `OR COPY` and the two links past the fold
+            of a 1280x800 window (review 08-1280-1). One row per template, in the
+            library's own order — the Blank template is dropped: the sheet already
+            offers "Blank canvas" two rows above, and the same thing twice is not a
+            choice. The disclosure is absent when no template is left. */}
+        {templates.length > 0 ? (
+          <div className="flex flex-col gap-[8px]">
+            <button
+              type="button"
+              onClick={() => setTemplatesOpen((open) => !open)}
+              aria-expanded={templatesOpen}
+              data-testid="new-workflow-templates-toggle"
+              className="flex w-fit items-center gap-[8px] rounded-[8px] px-[2px] py-[3px] text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <SectionLabel id="new-workflow-templates-label" testid="new-workflow-templates-label">
+                {`Start from a template (${templates.length})`}
+              </SectionLabel>
+              <IconChevronDown
+                size={14}
+                stroke={1.5}
+                aria-hidden
+                className={`shrink-0 text-muted transition-transform ${
+                  templatesOpen ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+            {templatesOpen ? (
+              <div className="flex flex-col gap-[8px]">
+                {templates.map((template) => (
+                  <TemplateRow
+                    key={template.id}
+                    template={template}
+                    busy={busy === `template:${template.id}`}
+                    disabled={Boolean(busy)}
+                    onUse={() => useTemplate(template)}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {nameError ? (
           <p

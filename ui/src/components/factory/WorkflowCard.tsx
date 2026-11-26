@@ -7,9 +7,12 @@
  * all answer to it — while the secondary `Open run` link sits above that
  * overlay and keeps its own target.
  *
- * Three lines of facts under the thumbnail:
- * - name + where the run is now (glyph + word, never colour alone);
- * - how it starts, in plain lower-case English (`factoryData.triggerSentence`);
+ * Two lines of facts under the thumbnail (review 07-1280-3 — the prototype's
+ * own card footer, about 70px, not three stacked lines):
+ * - name, then how it starts in plain lower-case English (`triggerSentence`) in
+ *   regular muted type on the SAME line, with the state at the right: a live run
+ *   is `● #318 · test`, a run a gate holds is `! waiting on you`, nothing live
+ *   is `○ idle`. Glyph and word always travel together (CONTRACT).
  * - one muted line: drafts, and where the workflow is used (All projects) or
  *   when it last ran (a project scope).
  *
@@ -38,13 +41,16 @@ export function runLabel(run: CrossProjectRunSummary): string {
 /**
  * The card's state line: what a reader wants answered first. A live run →
  * `● #318 · test`; a run held by a gate → `! waiting on you`; nothing live →
- * the honest `idle`. The glyph and the word always travel together.
+ * the honest `○ idle`. The glyph and the word always travel together — the bare
+ * word `idle` was colour-free but glyph-free too (review 07-1280-2, CONTRACT
+ * "Status is always glyph + word"). The state column is mono 11/600, the
+ * prototype's own setting.
  */
 export function cardState(run: CrossProjectRunSummary | null | undefined): {
   text: string;
   className: string;
 } {
-  if (!run) return { text: "idle", className: "text-muted" };
+  if (!run) return { text: "○ idle", className: "text-muted" };
   if (run.status === "waiting_human" || run.status === "paused") {
     return { text: "! waiting on you", className: "text-st-waiting-tag-fg" };
   }
@@ -164,7 +170,7 @@ export function WorkflowCard({
         <WorkflowThumb steps={item.steps} />
       </div>
       <div className="flex flex-col gap-[6px] px-[14px] py-[12px]">
-        <div className="flex items-center gap-[8px]">
+        <div className="flex items-baseline gap-[8px]">
           {/* The card's accessible name, and the link the whole card answers to. */}
           <Link
             to={routes.factoryWorkflow(pipeline.id, scope)}
@@ -174,13 +180,23 @@ export function WorkflowCard({
           >
             {name}
           </Link>
+          {/* How the workflow starts, in regular muted type beside the name — the
+              prototype's one-line footer; the italic second line it replaces was
+              never in the design (review 07-1280-3). */}
+          <span
+            data-testid={`workflow-card-trigger-${pipeline.id}`}
+            title={item.triggerText}
+            className="min-w-0 flex-1 truncate text-[13px] text-muted"
+          >
+            {item.triggerText}
+          </span>
           <span
             data-testid={`workflow-card-state-${pipeline.id}`}
-            className={`ml-auto shrink-0 text-[12.5px] whitespace-nowrap ${state.className}`}
+            className={`ml-auto shrink-0 font-mono text-[11px] font-semibold whitespace-nowrap ${state.className}`}
           >
             {state.text}
           </span>
-          <span className="relative z-20 inline-flex shrink-0">
+          <span className="relative z-20 inline-flex shrink-0 self-center">
             <button
               ref={menuTriggerRef}
               type="button"
@@ -207,12 +223,6 @@ export function WorkflowCard({
             />
           </span>
         </div>
-        <p
-          data-testid={`workflow-card-trigger-${pipeline.id}`}
-          className="m-0 text-[13px] italic text-muted"
-        >
-          {item.triggerText}
-        </p>
         {meta ? (
           <p
             data-testid={`workflow-card-meta-${pipeline.id}`}

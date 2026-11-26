@@ -12,7 +12,7 @@
  * (`useFactoryWorkflows` → `useBoardRuns`), so a card and the headline can
  * never disagree: a zero part is left out, and a quiet Factory says so.
  */
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
 import { IconPlus } from "@tabler/icons-react";
@@ -89,6 +89,23 @@ export function factorySummaryText(
     .join(" · ");
 }
 
+/**
+ * The headline sentence as nodes, so a state glyph can carry its state colour
+ * while the words stay the sentence `factorySummaryText` returns — the rendered
+ * text and that string are the same thing, which is what the tests assert.
+ */
+export function factorySummaryNodes(items: FactoryWorkflowItem[], liveRuns: { status: string }[]) {
+  return factorySummaryParts(items, liveRuns).map((part, index) => (
+    <Fragment key={`${part.text}-${index}`}>
+      {index > 0 ? " · " : ""}
+      {part.glyph === "" ? null : (
+        <span className={`font-mono ${part.glyphClass ?? ""}`}>{`${part.glyph} `}</span>
+      )}
+      {part.text}
+    </Fragment>
+  ));
+}
+
 export default function Factory() {
   // The scope is the URL prefix: `/p/:projectId/factory`, or All projects.
   // `useScope` is a hook and so runs on every render, whatever the params say.
@@ -118,16 +135,17 @@ export default function Factory() {
     <div data-testid="factory-index" className="min-h-full bg-surface">
       <div className="mx-auto flex max-w-[1180px] flex-col px-[36px] pt-[28px] pb-[48px] max-md:px-[16px] max-md:pt-[20px]">
         <div className="flex flex-wrap items-center gap-[14px]">
-          <div className="flex min-w-0 flex-col gap-[4px]">
-            <h2 className="m-0 text-[24px] leading-[28px] font-bold">Factory</h2>
-            <p
-              className="m-0 text-[13.5px] text-muted"
-              data-testid="factory-summary"
-              aria-live="polite"
-            >
-              {loading ? "reading the factory floor…" : factorySummaryText(items, liveRuns)}
-            </p>
-          </div>
+          {/* The live summary rides the heading's baseline, to its right — the
+              prototype's header row, not a second line under it
+              (review 07-1280-4). */}
+          <h2 className="m-0 text-[24px] leading-[28px] font-bold">Factory</h2>
+          <p
+            className="self-center text-[13.5px] text-ink-2"
+            data-testid="factory-summary"
+            aria-live="polite"
+          >
+            {loading ? "reading the factory floor…" : factorySummaryNodes(items, liveRuns)}
+          </p>
           <button
             type="button"
             onClick={() => setSheetOpen(true)}
@@ -255,6 +273,7 @@ export default function Factory() {
       {sheetOpen ? (
         <NewWorkflowSheet
           scope={scope}
+          scopeName={scope === null ? "All projects" : (scopedProject?.name ?? "")}
           workflows={items.map((item) => item.pipeline)}
           onClose={() => setSheetOpen(false)}
         />

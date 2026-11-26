@@ -31,6 +31,16 @@ describe("WorkflowThumb", () => {
     expect(chip("trigger").textContent).toBe("schedule");
   });
 
+  // Review 07-1280-5: the prototype draws the strip's chips as words (sans
+  // 11.5/600), not as ids in mono type.
+  it("draws the chip text in the UI's own sans, not in mono", () => {
+    render(<WorkflowThumb steps={steps} />);
+    const chipClass = chip("plan").className;
+    expect(chipClass).not.toContain("font-mono");
+    expect(chipClass).toContain("text-[11.5px]");
+    expect(chipClass).toContain("font-semibold");
+  });
+
   it("uses the state token classes, never a raw colour", () => {
     render(<WorkflowThumb steps={steps} />);
     expect(chip("plan").className).toContain(CHIP_CLASS.done);

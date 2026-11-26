@@ -10,10 +10,13 @@
  * the Factory index is a glance, not a library.
  *
  * Honesty rules, inherited from `components/workflows/WorkflowRow`:
- * - A step chip names a TOP-LEVEL node of the latest published revision's own
- *   document, in document order; a scope node folds to one `loop:` chip.
- *   Nothing is invented for a workflow that has never published — its strip
- *   carries only the trigger chip.
+ * - A step chip names a TOP-LEVEL node of the document the workflow would run
+ *   today, in document order; a scope node folds to one `loop:` chip. That is
+ *   the latest published revision's canonical document, and — for a workflow
+ *   nothing has published yet (review 07-1280-1) — the newest un-published
+ *   draft's own document, which is the only document that workflow has. A
+ *   workflow with neither, or whose document does not parse, carries only the
+ *   trigger chip: nothing is invented.
  * - The trigger sentence is built from the facts the row already words (the
  *   enabled cron of an assignment, the enabled issue triggers) and from
  *   `lib/cronText` — never a second cron parser.
@@ -24,6 +27,7 @@
  */
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch } from "../../api/client";
+import { parseGraph } from "../../lib/pipeline/graphDoc";
 import { viewRevisionSummary } from "../../api/m4view";
 import { queryKeys, useProjects } from "../../api/queries";
 import { useBoardRuns } from "../../api/board";
@@ -39,7 +43,13 @@ import {
 import type { ScheduleList } from "../../api/pipelines";
 import { issueTriggersQueryOptions } from "../../api/useIssueTriggers";
 import type { IssueTrigger, IssueTriggerList } from "../../api/useIssueTriggers";
-import type { AssignmentList, PipelineSummary, Project } from "../../api/types";
+import type {
+  AssignmentList,
+  Draft,
+  DraftSummary,
+  PipelineSummary,
+  Project,
+} from "../../api/types";
 import {
   SCOPE_KINDS,
   isDefinitionDocument,
@@ -146,6 +156,50 @@ export function documentStepChips(doc: DefinitionDocument | null): Omit<ThumbSte
     }
   }
   return chips;
+}
+
+/**
+ * The same chips from a draft's own YAML bytes (the graph parser's view, the
+ * rule `WorkflowRow.graphChain` follows): top-level nodes in definition order,
+ * a scope node folded to one `loop: <child> · <child>` chip. `[]` when there is
+ * no text or it does not parse — an un-written draft invents no steps, and the
+ * strip honestly shows the trigger alone.
+ *
+ * This is the fallback a workflow with nothing published draws from: its newest
+ * draft is the only document it has, and the card that hides it behind a lone
+ * trigger chip says less than the workflow does (review 07-1280-1).
+ */
+export function draftStepChips(documentYaml: string | null | undefined) {
+  if (!documentYaml) return [];
+  const parsed = parseGraph(documentYaml);
+  if (!parsed.ok) return [];
+  const { nodes } = parsed.model;
+  const chips: Omit<ThumbStep, "state">[] = [];
+  for (const node of nodes.filter((candidate) => candidate.scope.length === 0)) {
+    if (!node.isScope) {
+      chips.push({ id: node.id, label: node.id, kind: thumbStepKind(node.kind) });
+      continue;
+    }
+    const children = nodes
+      .filter((child) => child.scope.length > 0 && child.scope[0] === node.id)
+      .map((child) => child.id)
+      .join(" · ");
+    chips.push({
+      id: node.id,
+      label: children.length > 0 ? `loop: ${children}` : kindWord(node.kind),
+      kind: thumbStepKind(node.kind),
+    });
+  }
+  return chips;
+}
+
+/** The draft a never-published workflow's strip draws from: the newest one that
+ * is still a draft (`published` drafts are the audit trail, not the work). */
+export function newestOpenDraft(drafts: readonly DraftSummary[] | undefined): string {
+  const open = (drafts ?? [])
+    .filter((draft) => draft.status !== "published")
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  return open[0]?.id ?? "";
 }
 
 /** Cap the strip at {@link THUMB_STEP_LIMIT} chips: when the document has more
@@ -317,6 +371,29 @@ export function useFactoryWorkflows(scope: string | null): FactoryWorkflows {
   const revisionByDigest = new Map(
     uniqueDigests.map((digest, index) => [digest, revisionFan[index]]),
   );
+  // A workflow nothing has published has exactly ONE document: its newest open
+  // draft. That draft is what the card's strip has to draw from (review
+  // 07-1280-1: a five-step draft-only workflow showed a lone `manual` chip, so
+  // the card said less than the workflow does). The read is one extra GET per
+  // never-published row and nothing else — a published workflow's strip stays
+  // the live revision's own document, which is the honest thing to show. The
+  // draft id list is settled only once the definition read answered, so a
+  // published workflow is never briefly drawn from its newer draft.
+  const draftIds = rows.map((_pipeline, index) => {
+    if (!definitions[index]?.isSuccess) return "";
+    if (latestDigests[index] !== "") return "";
+    return newestOpenDraft(draftsList[index]?.data?.drafts);
+  });
+  const uniqueDraftIds = [...new Set(draftIds.filter((draftId) => draftId !== ""))];
+  const draftDocFan = useQueries({
+    queries: uniqueDraftIds.map((draftId) => ({
+      queryKey: queryKeys.draft(draftId),
+      queryFn: () => apiFetch<Draft>(`/api/v1/drafts/${draftId}`),
+    })),
+  });
+  const draftDocById = new Map(
+    uniqueDraftIds.map((draftId, index) => [draftId, draftDocFan[index]]),
+  );
 
   const projectItems = (projects.data?.items ?? []) as Project[];
   const indexIds = new Set(ids);
@@ -366,7 +443,12 @@ export function useFactoryWorkflows(scope: string | null): FactoryWorkflows {
     const document = asDocument(
       revisionByDigest.get(latestDigests[index] ?? "")?.data?.canonical_document,
     );
-    const chips = capStepChips(documentStepChips(document));
+    const draftDocument = document
+      ? null
+      : draftDocById.get(draftIds[index] ?? "")?.data?.document_yaml;
+    const chips = capStepChips(
+      document ? documentStepChips(document) : draftStepChips(draftDocument),
+    );
     const assignmentIds = new Set(facts.assigned.map((entry) => entry.assignment.id));
     const trigger = triggerSentence(
       facts.assigned.map((entry) => entry.cron),
@@ -426,7 +508,7 @@ export function useFactoryWorkflows(scope: string | null): FactoryWorkflows {
   // strip then carries the trigger alone, which is true as far as it goes. The
   // page's error is the one read that leaves it with nothing to show at all.
   const rowsIncomplete =
-    [...definitions, ...revisionFan, ...draftsList, ...assignmentsFan].some(
+    [...definitions, ...revisionFan, ...draftsList, ...draftDocFan, ...assignmentsFan].some(
       (entry) => entry.isError,
     ) ||
     projects.isError ||

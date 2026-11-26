@@ -12,6 +12,8 @@ import {
   applyRunStates,
   capStepChips,
   documentStepChips,
+  draftStepChips,
+  newestOpenDraft,
   thumbAriaLabel,
   thumbStateOfRunStep,
   thumbStepKind,
@@ -92,6 +94,60 @@ describe("documentStepChips", () => {
 
   it("says nothing for a workflow that has no document", () => {
     expect(documentStepChips(null)).toEqual([]);
+  });
+});
+
+// Review 07-1280-1: a workflow nothing has published yet has one document — its
+// newest draft — and the strip draws from it.
+describe("draftStepChips", () => {
+  const DRAFT_YAML = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: wf-2
+spec:
+  nodes:
+    - id: spec
+      kind: agent.acp
+    - id: wrap
+      kind: until
+      config:
+        body:
+          nodes:
+            - id: implement
+              kind: agent.acp
+            - id: tests
+              kind: process.exec
+    - id: open_pr
+      kind: git.publish
+`;
+
+  it("reads the draft's own top-level nodes, folding a scope to one loop chip", () => {
+    const chips = draftStepChips(DRAFT_YAML);
+    expect(chips.map((chip) => chip.label)).toEqual(["spec", "loop: implement · tests", "open_pr"]);
+    expect(chips.map((chip) => chip.kind)).toEqual(["agent", "other", "git"]);
+    // The body's nodes never come out as their own chips.
+    expect(chips.map((chip) => chip.id)).not.toContain("implement");
+  });
+
+  it("says nothing for a draft that is absent or is not a document yet", () => {
+    expect(draftStepChips(null)).toEqual([]);
+    expect(draftStepChips("")).toEqual([]);
+    expect(draftStepChips("not: a: pipeline: at: all")).toEqual([]);
+  });
+
+  it("picks the newest draft that is still a draft", () => {
+    const draft = (id: string, status: string, updated_at: string) =>
+      ({ id, status, updated_at, version: 1, edited_by: "u" }) as never;
+    expect(
+      newestOpenDraft([
+        draft("old", "draft", "2026-11-01T10:00:00Z"),
+        draft("live-one", "published", "2026-11-09T10:00:00Z"),
+        draft("newest", "invalid", "2026-11-05T10:00:00Z"),
+      ]),
+    ).toBe("newest");
+    // A pipeline whose only draft is the published audit trail has nothing open.
+    expect(newestOpenDraft([draft("pub", "published", "2026-11-09T10:00:00Z")])).toBe("");
+    expect(newestOpenDraft(undefined)).toBe("");
   });
 });
 
@@ -446,11 +502,129 @@ describe("useFactoryWorkflows", () => {
       OTHER_PIPELINE_ID,
     ]);
     // The unassigned one has nothing to word but the hand start, and nothing
-    // to draw but the trigger: a draft-only workflow invents no steps.
+    // to draw but the trigger: with no revision AND no draft there is no
+    // document to read, so the strip invents nothing.
     const other = result.current.items[1];
     expect(other?.triggerText).toBe("when you start it");
     expect(other?.steps.map((step) => step.state)).toEqual(["idle"]);
     expect(other?.steps[0]?.label).toBe("manual");
+  });
+
+  // Review 07-1280-1: a never-published workflow's card used to draw the single
+  // trigger chip while the editor showed five steps. The draft IS that
+  // workflow's document, so the strip draws from it.
+  it("draws a never-published workflow's strip from its newest draft", async () => {
+    const draftYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: wf-2
+spec:
+  nodes:
+    - id: spec
+      kind: agent.acp
+    - id: implement
+      kind: agent.acp
+    - id: open_pr
+      kind: git.publish
+`;
+    const draftDocRoute: RouteStub = {
+      path: "/api/v1/drafts/draft-newest",
+      body: {
+        id: "draft-newest",
+        pipeline_id: OTHER_PIPELINE_ID,
+        status: "invalid",
+        document_yaml: draftYaml,
+        source_kind: "manual",
+        source_sha256: "0".repeat(64),
+        ui_layout: {},
+        digest_scope: "v1alpha1-canonical-1",
+        version: 3,
+        created_at: "2026-11-05T10:00:00Z",
+        updated_at: "2026-11-08T10:00:00Z",
+        edited_by: "01987a61-2345-7000-8000-abcdef012345",
+      },
+    };
+    const { result } = renderHook(() => useFactoryWorkflows(null), {
+      wrapper: wrapper([
+        ...routesFor({
+          [`/api/v1/pipelines/${OTHER_PIPELINE_ID}/drafts`]: {
+            path: `/api/v1/pipelines/${OTHER_PIPELINE_ID}/drafts`,
+            body: {
+              drafts: [
+                {
+                  id: "draft-old",
+                  status: "draft",
+                  version: 1,
+                  updated_at: "2026-11-01T10:00:00Z",
+                  edited_by: "01987a61-2345-7000-8000-abcdef012345",
+                },
+                {
+                  id: "draft-newest",
+                  status: "invalid",
+                  version: 3,
+                  updated_at: "2026-11-08T10:00:00Z",
+                  edited_by: "01987a61-2345-7000-8000-abcdef012345",
+                },
+                {
+                  id: "draft-published",
+                  status: "published",
+                  version: 2,
+                  updated_at: "2026-11-09T10:00:00Z",
+                  edited_by: "01987a61-2345-7000-8000-abcdef012345",
+                },
+              ],
+            },
+          },
+        }),
+        draftDocRoute,
+      ]),
+    });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    const otherSteps = () =>
+      result.current.items.find((entry) => entry.pipeline.id === OTHER_PIPELINE_ID)?.steps ?? [];
+    // The draft's read lands after the list settles, so wait for the strip
+    // rather than for the page.
+    await waitFor(() =>
+      expect(otherSteps().map((step) => step.label)).toEqual([
+        "manual",
+        "spec",
+        "implement",
+        "open_pr",
+      ]),
+    );
+    expect(otherSteps()[1]?.kind).toBe("agent");
+    expect(otherSteps()[3]?.kind).toBe("git");
+    // The trigger chip is still first, and with no live run every chip is idle.
+    expect(otherSteps()[0]?.kind).toBe("trigger");
+    expect(otherSteps().every((step) => step.state === "idle")).toBe(true);
+  });
+
+  // The published document is the honest thing to show while it exists: a newer
+  // draft must not quietly replace the strip of a live workflow.
+  it("keeps a published workflow's strip on the published document", async () => {
+    const { result } = renderHook(() => useFactoryWorkflows(null), {
+      wrapper: wrapper(
+        routesFor({
+          [`/api/v1/pipelines/${PIPELINE_ID}/drafts`]: {
+            path: `/api/v1/pipelines/${PIPELINE_ID}/drafts`,
+            body: {
+              drafts: [
+                {
+                  id: "draft-live",
+                  status: "draft",
+                  version: 1,
+                  updated_at: "2026-11-08T10:00:00Z",
+                  edited_by: "01987a61-2345-7000-8000-abcdef012345",
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    const item = result.current.items.find((entry) => entry.pipeline.id === PIPELINE_ID);
+    expect(item?.steps.map((step) => step.label)).toEqual(["issue", "plan", "test"]);
   });
 
   it("reports a failed list read instead of an empty factory", async () => {

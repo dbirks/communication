@@ -100,9 +100,31 @@ describe("WorkflowCard", () => {
     expect(screen.getByTestId(`workflow-card-meta-${pipeline.id}`).textContent).toBe(
       `1 draft · used in ${projectFixture.name}`,
     );
-    expect(screen.getByTestId(`workflow-card-state-${pipeline.id}`).textContent).toBe("idle");
+    // Glyph + word, never the bare word (CONTRACT "Status is always glyph +
+    // word", review 07-1280-2).
+    expect(screen.getByTestId(`workflow-card-state-${pipeline.id}`).textContent).toBe("○ idle");
     expect(screen.queryByTestId("workflow-card-run")).toBeNull();
     expect(screen.queryByTestId("workflow-card-watch")).toBeNull();
+  });
+
+  // Review 07-1280-3: the prototype's footer is the name and its trigger on ONE
+  // line (trigger in regular muted), the state at the right, then one muted
+  // line. Production stacked three lines and italicised the trigger.
+  it("puts the trigger on the name's line, in regular muted type", () => {
+    mount(item(), null);
+    const trigger = screen.getByTestId(`workflow-card-trigger-${pipeline.id}`);
+    const link = screen.getByTestId(`workflow-card-link-${pipeline.id}`);
+    expect(trigger.parentElement).toBe(link.parentElement);
+    expect(trigger.className).not.toContain("italic");
+    expect(trigger.className).toContain("text-muted");
+    // The state rides that same line, at the right; the muted meta line is the
+    // card's only second line.
+    expect(screen.getByTestId(`workflow-card-state-${pipeline.id}`).parentElement).toBe(
+      link.parentElement,
+    );
+    expect(screen.getByTestId(`workflow-card-meta-${pipeline.id}`).parentElement).not.toBe(
+      link.parentElement,
+    );
   });
 
   it("links to the scoped editor in a project scope, and says when it last ran", () => {
@@ -154,9 +176,17 @@ describe("WorkflowCard", () => {
     );
   });
 
-  it("keeps a runless card's state quiet", () => {
-    expect(cardState(null).text).toBe("idle");
+  it("keeps a runless card's state quiet, and still glyphed", () => {
+    expect(cardState(null).text).toBe("○ idle");
     expect(cardState(null).className).toBe("text-muted");
+    // Every state of the card starts with its glyph: the word never stands alone.
+    for (const state of [
+      cardState(null),
+      cardState(runWith()),
+      cardState(runWith({ status: "waiting_human" })),
+    ]) {
+      expect(state.text[0]).toMatch(/[○●!]/);
+    }
   });
 
   it("offers Triggers…, Duplicate (for authors), and Open YAML in the … menu", () => {

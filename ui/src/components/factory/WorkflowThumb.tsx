@@ -6,9 +6,11 @@
  * Studio would lay out in a row, joined by the short connectors. The states
  * come from a live run, so a running card literally shows where the run is.
  *
- * Design (docs/design/redesign/Prototype.dc.html, the Factory index): the rail
- * background with the 14px dot grid, chips 24px tall, radius 7, mono 10.5, the
- * trigger chip inked white-on-ink, the state chips the `st-*` token sets.
+ * Design (docs/design/redesign/README.md § 4, the prototype's Factory index): the
+ * rail background with the 14px dot grid, chips 24px tall, radius 7, the state
+ * chips the `st-*` token sets, and the chip text in the UI's own sans at
+ * 11.5/600 — the prototype draws its step chips like words, not like ids
+ * (review 07-1280-5).
  *
  * The strip is NOT `aria-hidden`: a card whose only statement of "where is the
  * run" is a row of coloured chips would be a colour-only status (CONTRACT
@@ -58,8 +60,9 @@ export function chipClasses(kind: ThumbStepKind, state: ThumbStepState): string 
   return kind === "trigger" ? TRIGGER_CHIP_CLASS : CHIP_CLASS[state];
 }
 
+/** A chip's own text: the UI sans, 11.5/600 (review 07-1280-5). */
 const CHIP_BASE =
-  "flex h-[24px] items-center rounded-[7px] border font-mono text-[10.5px] whitespace-nowrap";
+  "flex h-[24px] items-center rounded-[7px] border text-[11.5px] font-semibold whitespace-nowrap";
 /** A strip's own padding: the design's `0 8` while the row has room for it. */
 const CHIP_PAD = "px-[8px]";
 /** A long chain packs tighter — `0 6` on the chip and a 14px connector — so a
@@ -122,7 +125,7 @@ export function WorkflowThumb({ steps, className = "" }: WorkflowThumbProps) {
       }}
     >
       {displaySteps.length === 0 ? (
-        <span className="mx-auto font-mono text-[10.5px] text-muted">no steps yet</span>
+        <span className="mx-auto text-[11.5px] text-muted">no steps yet</span>
       ) : (
         <div data-testid="workflow-thumb-strip" className="mx-auto flex shrink-0 items-center">
           {displaySteps.map((step, index) => {
