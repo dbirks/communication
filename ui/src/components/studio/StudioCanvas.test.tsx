@@ -29,9 +29,15 @@ import {
   moveDraggedNode,
   parseViewportTransform,
   PHONE_VIEWPORT_PX,
+  CANVAS_DOT_COLOR,
+  CANVAS_DOT_DIAMETER_PX,
+  CANVAS_DOT_GAP_PX,
+  CANVAS_DOT_OFFSET_PX,
+  canvasDotSizePx,
   FIT_EDGE_PAD_PX,
+  FIT_LEFT_PAD_PX,
   FIT_TOP_PAD_PX,
-  SMALL_WORKFLOW_MIN_ZOOM,
+  SMALL_WORKFLOW_OPEN_ZOOM,
   StudioCanvas,
   type StudioCanvasProps,
 } from "./StudioCanvas";
@@ -346,6 +352,12 @@ describe("StudioCanvas", () => {
     // extra hit area falls into the empty band under the sink.
     const afterCircle = after.querySelector("span[aria-hidden='true']");
     expect(afterCircle?.className).toContain("h-[22px]");
+    // Review-1 09-1280-7: the trailing “+” (and its stub) is a hover/focus
+    // affordance too — hidden until the step or the “+” itself is hovered or
+    // focused, never permanent ink.
+    expect(afterCircle?.className).toContain("opacity-0");
+    expect(afterCircle?.className).toContain("group-hover:opacity-100");
+    expect(afterCircle?.className).toContain("group-focus-within:opacity-100");
     expect(container.querySelector("[data-testid='add-after-plan']")).toBeNull();
   });
 
@@ -1608,6 +1620,30 @@ spec:
     expect(screen.getByTestId("step-status-code").textContent).toBe("✓ done");
   });
 
+  it("draws the README dot grid inside the pane, at a constant on-screen size", () => {
+    // Review-1 09-1280-4: React Flow's Background multiplies `size` by the
+    // viewport zoom, so the ~0.86 fit rendered the dots sub-pixel and the
+    // darkest canvas pixel sampled #FBFBFA. The canvas divides the zoom
+    // back out: every dot renders 1.1 CSS px wide at any zoom.
+    expect(canvasDotSizePx(1)).toBe(CANVAS_DOT_DIAMETER_PX);
+    expect(canvasDotSizePx(0.5)).toBeCloseTo(4.4, 6);
+    expect(canvasDotSizePx(0)).toBe(CANVAS_DOT_DIAMETER_PX); // never divides by zero
+    expect(CANVAS_DOT_COLOR).toBe("#d6d2c8");
+    expect(CANVAS_DOT_GAP_PX).toBe(20);
+    expect(CANVAS_DOT_OFFSET_PX).toBe(10);
+
+    const { container } = renderCanvas();
+    const bg = container.querySelector(".react-flow__background");
+    expect(bg).toBeTruthy();
+    // jsdom mounts the pattern at zoom 1: the README's dot (the gradient
+    // stop 1.1px is a RADIUS → a 2.2px-diameter dot, r = 1.1) on the 20px
+    // grid — the geometry, actually painted.
+    const dot = container.querySelector(".react-flow__background-pattern.dots");
+    expect(dot?.getAttribute("r")).toBe(String(CANVAS_DOT_DIAMETER_PX / 2));
+    const pattern = container.querySelector("pattern");
+    expect(pattern?.getAttribute("width")).toBe(String(CANVAS_DOT_GAP_PX));
+  });
+
   it("renders synthetic TriggerNode when trigger prop is set and invokes onClick", async () => {
     const onClick = vi.fn();
     renderCanvas({
@@ -1621,12 +1657,37 @@ spec:
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
-  it("clamps initial fit zoom to [0.75, 1] for <= 8 steps and allows 0.4 for larger graphs", () => {
-    expect(initialFitMinZoom(1280, 4)).toBe(SMALL_WORKFLOW_MIN_ZOOM);
-    expect(initialFitMinZoom(1280, 8)).toBe(SMALL_WORKFLOW_MIN_ZOOM);
-    expect(initialFitMinZoom(1280, 9)).toBe(0.4);
+  it("opens a small workflow (<= 8 steps) at zoom 1.0 exactly, left- and top-aligned at 72px", () => {
+    // Review-1 09-1280-5 / brief: a small workflow is NEVER zoomed out to
+    // fit — 168x56 cards render at their designed size — and the first box
+    // lands 72px from the pane's left and top edges (review-1 09-390-1: no
+    // more centred mid-flow open). Larger workflows may zoom out.
+    expect(initialFitMinZoom(1280, 4)).toBe(SMALL_WORKFLOW_OPEN_ZOOM);
+    expect(initialFitMinZoom(1280, 8)).toBe(SMALL_WORKFLOW_OPEN_ZOOM);
     expect(initialFitMinZoom(390, 4)).toBe(1);
+    expect(initialFitMinZoom(390, 12)).toBe(1); // phone floor stays 1
 
+    // A 5-step line that a centred fit used to place mid-pane:
+    const wide = Array.from({ length: 5 }, (_, i) => ({
+      x: i * 204,
+      y: 0,
+      width: 168,
+      height: 56,
+    }));
+    const vp = computeEditorFitViewport({
+      boxes: wide,
+      paneWidth: 1216,
+      paneHeight: 700,
+      viewportWidth: 1280,
+      stepCount: 5,
+    })!;
+    expect(vp).not.toBeNull();
+    expect(vp.zoom).toBe(1); // never zoomed out to fit
+    expect(vp.x).toBe(FIT_LEFT_PAD_PX - 0); // first box at 72px from the left
+    expect(vp.y).toBe(FIT_TOP_PAD_PX - 0); // …and 72px under the top
+
+    // TALLER than the pane: still 1.0 — it overflows and pans, it does not
+    // shrink (the old 0.75 clamp floor).
     const tallSmall = computeEditorFitViewport({
       boxes: [{ x: 0, y: 0, width: 200, height: 1200 }],
       paneWidth: 960,
@@ -1635,7 +1696,18 @@ spec:
       stepCount: 4,
     });
     expect(tallSmall).not.toBeNull();
-    expect(tallSmall!.zoom).toBe(0.75);
+    expect(tallSmall!.zoom).toBe(1);
+
+    // A bigger workflow (9+ steps) may still zoom out to fit its pane.
+    const big = computeEditorFitViewport({
+      boxes: wide,
+      paneWidth: 500,
+      paneHeight: 600,
+      viewportWidth: 1280,
+      stepCount: 12,
+    })!;
+    expect(big.zoom).toBeLessThan(1);
+    expect(big.x).toBe(FIT_LEFT_PAD_PX - 0); // …but the left anchor stays
   });
 
   it("leaves >= 72px top and left padding when a GoalFrame sits under top/left chrome", () => {

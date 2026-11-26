@@ -550,6 +550,34 @@ export function computeFitViewport(
  * buttons at top-4 so fitted graphs start below the chrome, not behind it). */
 export const FIT_TOP_PAD_PX = 72;
 
+/** CSS px between the pane's LEFT edge and the graph's first box when the
+ * canvas fits itself (review-1 09-390-1): the fit is LEFT-aligned as well as
+ * top-aligned. A horizontally CENTRED fit opened a wide left→right flow at
+ * its middle on phone widths (steps 1-2 off-screen) and let the tool island
+ * cover the entry step on desktop; at 72px the first step clears the 48px
+ * island that sits at left 16. */
+export const FIT_LEFT_PAD_PX = 72;
+
+/** The editor dot grid, exactly as the README names it:
+ * `radial-gradient(#d6d2c8 1.1px, transparent 1.1px)` on a 20px grid,
+ * offset 10px. The gradient stop is a RADIUS, so the dot the prototype
+ * draws is 2.2px across (its centre pixel samples exactly #D6D2C8 — the
+ * reviewer's prototype measurement). React Flow's `size` is the dot
+ * DIAMETER and it MULTIPLIES the prop by the viewport zoom, so at ~0.86
+ * the dots shrank into sub-pixel nothing (review-1 09-1280-4: the darkest
+ * canvas pixel was #FBFBFA). `canvasDotSizePx` divides the zoom back out
+ * so the dot always renders this wide ON SCREEN, at constant colour. */
+export const CANVAS_DOT_COLOR = "#d6d2c8";
+export const CANVAS_DOT_DIAMETER_PX = 2.2;
+export const CANVAS_DOT_GAP_PX = 20;
+export const CANVAS_DOT_OFFSET_PX = 10;
+
+/** The `size` prop the Background needs so the dot renders exactly
+ * CANVAS_DOT_DIAMETER_PX wide on screen at the given zoom. */
+export function canvasDotSizePx(zoom: number): number {
+  return CANVAS_DOT_DIAMETER_PX / (Number.isFinite(zoom) && zoom > 0 ? zoom : 1);
+}
+
 /** The app-shell phone breakpoint — the same `width < 560px` split the
  * APP-SHELL-PHONE rule in styles/tokens.css uses to give every control in
  * `main` `min-height: 44px`. */
@@ -580,16 +608,23 @@ export function fitMinZoom(viewportWidth: number): number {
 }
 
 export const SMALL_WORKFLOW_MAX_STEPS = 8;
-export const SMALL_WORKFLOW_MIN_ZOOM = 0.75;
+/** A small workflow (<= 8 steps) opens at zoom 1.0 EXACTLY (review-1
+ * 09-1280-5): the 168x56 cards render at their designed 13.5px title /
+ * 11px mono subline. It is never shrunk “to fit” — a wide flow simply
+ * pans. Larger workflows may zoom out; they drop below 0.75 only when
+ * the drawing still does not fit the pane at 0.75 (the fit's own
+ * padding), i.e. whenever `fitMinZoom` allows. */
+export const SMALL_WORKFLOW_OPEN_ZOOM = 1;
 export const GOAL_FRAME_SAFE_PAD_PX = 72;
 
 /**
- * Initial fit zoom floor: small workflows (<= 8 steps) never zoom below 0.75
- * so 168x56 cards stay readable; larger workflows may zoom out to fit.
+ * Initial fit zoom floor: small workflows (<= 8 steps) never zoom out at all
+ * (floor = open zoom = 1); larger workflows may zoom out to fit (phone floor
+ * is 1, desktop may go to 0.4 for a still-overflowing drawing).
  */
 export function initialFitMinZoom(viewportWidth: number, stepCount: number): number {
   const base = fitMinZoom(viewportWidth);
-  return stepCount <= SMALL_WORKFLOW_MAX_STEPS ? Math.max(base, SMALL_WORKFLOW_MIN_ZOOM) : base;
+  return stepCount <= SMALL_WORKFLOW_MAX_STEPS ? Math.max(base, SMALL_WORKFLOW_OPEN_ZOOM) : base;
 }
 
 /**
@@ -621,9 +656,12 @@ export function isBoxVisibleInPane(
 
 /**
  * Initial editor viewport fit:
- * - Clamps small workflows (<= 8 steps) to [0.75, 1] (or [1, 1] on phone).
- * - Leaves 72px top and 72px left padding when a GoalFrame's header would sit
- *   under the top-right action buttons or top-left tool island.
+ * - Small workflows (<= 8 steps) open at zoom 1.0 exactly — never zoomed out
+ *   to fit (review-1 09-1280-5); larger ones shrink to fit, on phone only to 1.
+ * - The drawing is LEFT- and TOP-aligned with 72px of clear pane on both
+ *   edges (review-1 09-390-1): the first step sits right of the tool island
+ *   and below the top chrome, at every width, never centred mid-flow.
+ * - A GoalFrame's header likewise never starts under the top/left chrome.
  */
 export function computeEditorFitViewport(params: {
   boxes: { x: number; y: number; width: number; height: number }[];
@@ -635,35 +673,26 @@ export function computeEditorFitViewport(params: {
 }): { x: number; y: number; zoom: number } | null {
   const { boxes, goalBoxes = [], paneWidth, paneHeight, viewportWidth, stepCount } = params;
   const minZoom = initialFitMinZoom(viewportWidth, stepCount);
-  const vp = computeTopFitViewport(boxes, paneWidth, paneHeight, FIT_TOP_PAD_PX, minZoom, 1);
-  if (vp === null || goalBoxes.length === 0) return vp;
-
-  const overlapsChrome = goalBoxes.some((g) => {
-    const left = g.x * vp.zoom + vp.x;
-    const top = g.y * vp.zoom + vp.y;
-    return top < GOAL_FRAME_SAFE_PAD_PX || left < GOAL_FRAME_SAFE_PAD_PX;
-  });
-  if (!overlapsChrome) return vp;
-
-  const padded = computeTopFitViewport(
-    boxes,
-    paneWidth,
-    paneHeight,
-    GOAL_FRAME_SAFE_PAD_PX,
-    minZoom,
-    1,
-  );
-  if (padded === null) return null;
-
-  let minGoalX = Infinity;
-  for (const g of goalBoxes) {
-    if (Number.isFinite(g.x)) minGoalX = Math.min(minGoalX, g.x);
+  const fit = computeFitViewport(boxes, paneWidth, paneHeight, minZoom, 1);
+  if (fit === null) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  for (const box of boxes) {
+    // computeFitViewport already refused non-finite / zero-size boxes.
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
   }
-  const shiftedX = Number.isFinite(minGoalX)
-    ? Math.max(padded.x, GOAL_FRAME_SAFE_PAD_PX - minGoalX * padded.zoom)
-    : padded.x;
-
-  return { x: shiftedX, y: padded.y, zoom: padded.zoom };
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null;
+  if (!isPositiveFinite(fit.zoom)) return null;
+  let x = FIT_LEFT_PAD_PX - minX * fit.zoom;
+  let y = FIT_TOP_PAD_PX - minY * fit.zoom;
+  for (const g of goalBoxes) {
+    if (!Number.isFinite(g.x) || !Number.isFinite(g.y)) continue;
+    x = Math.max(x, GOAL_FRAME_SAFE_PAD_PX - g.x * fit.zoom);
+    y = Math.max(y, GOAL_FRAME_SAFE_PAD_PX - g.y * fit.zoom);
+  }
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y, zoom: fit.zoom };
 }
 
 /** The viewport width the phone rule sees (no window during server render /
@@ -2116,12 +2145,18 @@ function CanvasInner({
           nodesDraggable={!readOnly && !stale && tool !== "move"}
           nodesConnectable={!readOnly && !stale}
         >
-          <Background color="#d6d2c8" gap={20} size={1.1} offset={10} />
+          <Background
+            color={CANVAS_DOT_COLOR}
+            gap={CANVAS_DOT_GAP_PX}
+            size={canvasDotSizePx(rfViewport.zoom)}
+            offset={CANVAS_DOT_OFFSET_PX}
+          />
         </ReactFlow>
         {showToolIsland && (
           <>
             <ToolIsland
               tool={tool}
+              narrow={phone}
               onTool={(next) => {
                 setIslandPicker(false);
                 setTool(next);

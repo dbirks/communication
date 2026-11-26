@@ -82,6 +82,30 @@ describe("VersionsPanel", () => {
     expect(panel.textContent).toContain("v2");
     expect(panel.textContent).toContain("Ada");
 
+    // Review-1 14-1280-1: the change summary is plain sans, muted, and
+    // WRAPS (the mono one-line ellipsis cut it mid-word).
+    const draftRow = screen.getByTestId("versions-row-draft");
+    const summary = Array.from(draftRow.querySelectorAll("span")).find((el) =>
+      (el.textContent ?? "").startsWith("+ check"),
+    ) as HTMLElement;
+    expect(summary.className).not.toContain("truncate");
+    expect(summary.className).not.toContain("font-mono");
+    expect(summary.className).toContain("break-words");
+
+    // Review-1 14-1280-2: the titles are ink 700, not the accent link blue —
+    // draft row and v-rows alike.
+    const draftTitle = screen.getByTestId("versions-select-draft");
+    expect(draftTitle.className).toContain("text-ink");
+    expect(draftTitle.className).not.toContain("text-accent-edge");
+    const v2Title = screen.getByTestId("versions-select-v2");
+    expect(v2Title.className).toContain("text-ink");
+    expect(v2Title.className).not.toContain("text-accent-edge");
+
+    // Review-1 14-390-1: the dot rides the title row (a phone 44px button
+    // under an old column-pinned dot sat ~14px apart).
+    expect(draftTitle.parentElement?.querySelector('span[aria-hidden="true"]')).toBeTruthy();
+    expect(draftRow.className).toContain("flex-col");
+
     fireEvent.click(screen.getByTestId("versions-select-v2"));
     expect(onSelectRevision).toHaveBeenCalledWith("sha256:2222");
 
@@ -93,5 +117,26 @@ describe("VersionsPanel", () => {
 
     fireEvent.click(screen.getByTestId("versions-panel-close"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the viewed row with aria-current instead of a link-blue tint", () => {
+    render(
+      <VersionsPanel
+        revisions={revisions}
+        baseDocument={baseDoc}
+        draftText={draftYaml}
+        hasDraft
+        viewingDigest="sha256:2222"
+        canAuthor
+        actorName={(id) => id}
+        onSelectDraft={vi.fn()}
+        onSelectRevision={vi.fn()}
+        onRestoreRevision={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("versions-select-v2").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("versions-select-v3").hasAttribute("aria-current")).toBe(false);
+    expect(screen.getByTestId("versions-select-draft").hasAttribute("aria-current")).toBe(false);
   });
 });

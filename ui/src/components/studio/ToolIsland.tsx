@@ -8,7 +8,6 @@ import {
   IconUserCheck,
   IconDots,
 } from "@tabler/icons-react";
-import { useState } from "react";
 
 export type CanvasTool = "select" | "move" | "box" | "connect";
 
@@ -18,14 +17,17 @@ export function ToolIsland({
   onAddStep,
   onMoreSteps,
   disabled,
+  narrow = false,
 }: {
   tool: CanvasTool;
   onTool(tool: CanvasTool): void;
   onAddStep(kind: string): void;
   onMoreSteps(): void;
   disabled: boolean;
+  /** The app-shell phone band (CONTRACT “below 768px”): there the island
+   * never widens, hover or no hover (review-1 10-390-1). */
+  narrow?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const tools = [
     { id: "select" as const, label: "Select", key: "V", Icon: IconPointer },
     { id: "move" as const, label: "Move around", key: "H", Icon: IconHandStop },
@@ -44,10 +46,20 @@ export function ToolIsland({
       data-testid="tool-island"
       role="toolbar"
       aria-label="Canvas tools"
-      onPointerDown={(event) => {
-        if (event.pointerType === "touch") setExpanded((open) => !open);
-      }}
-      className={`group absolute left-4 top-4 z-20 box-border overflow-hidden rounded-[12px] border border-line bg-surface p-[5px] shadow-[var(--shadow-pop)] transition-[width] duration-100 hover:w-[176px] focus-within:w-[176px] ${expanded ? "w-[176px]" : "w-[48px]"}`}
+      // README “(16, 100)” is viewport px: the top bar is 60px, so the
+      // island's top edge sits 40px below the top of the canvas pane (and
+      // left 16). Review-1 09-1280-2 measured it at the pane corner.
+      //
+      // The widening to 176px is gated to a FINE pointer AND off the phone
+      // band — review-1 10-390-1, CONTRACT phone “the tool island stays
+      // 48px”: a touch device keeps :hover stuck after a tap and focuses the
+      // pressed button, so plain `hover:`/`focus-within:` — and the old
+      // any-touch-opens-it handler — let a tap widen the island. The island
+      // has no toggle of its own, so on touch it simply never widens; the
+      // icons and 44px targets stay.
+      className={`absolute left-4 top-[40px] z-20 box-border w-[48px] overflow-hidden rounded-[12px] border border-line bg-surface p-[5px] shadow-[var(--shadow-pop)] transition-[width] duration-100 ${
+        narrow ? "" : "pointer-fine:hover:w-[176px] pointer-fine:focus-within:w-[176px]"
+      }`}
     >
       {tools.map(({ id, label, key, Icon }) => (
         <button
@@ -61,7 +73,9 @@ export function ToolIsland({
         >
           <Icon size={18} stroke={1.5} className="shrink-0" />
           <span className="text-[13px]">{label}</span>
-          <span className="ml-auto font-mono text-[10.5px] text-muted">{key}</span>
+          {/* One key style at every row (review-1 10-1280-1): the active row
+              bolds only the LABEL — the key stays normal-weight muted mono. */}
+          <span className="ml-auto font-mono text-[10.5px] font-normal text-muted">{key}</span>
         </button>
       ))}
       <div className="mx-[6px] my-1 h-px bg-line" />

@@ -128,6 +128,30 @@ async function openEdgePicker() {
   return { add, picker: screen.getByTestId("step-picker") as HTMLElement };
 }
 
+/**
+ * Review-1 09-1280-7: every edge “+” is a hover/focus affordance now, never
+ * permanent ink. The circle paints only while its edge group is hovered or
+ * holds (keyboard) focus; the 44px hit button stays in the DOM and tabbable
+ * either way, and the open picker keeps the circle revealed.
+ */
+it("edge “+” circle is hidden until the edge group is hovered or focused", async () => {
+  renderCanvas();
+  const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
+  const circle = add.querySelector("span") as HTMLElement;
+  expect(circle.className).toContain("opacity-0");
+  // Keyboard reachability: focus-within reveals it, and the button itself is
+  // a real focus target with a visible ring.
+  expect(circle.className).toContain("group-focus-within:opacity-100");
+  expect(circle.className).toContain("group-hover:opacity-100");
+  expect(add.className).toContain("focus-visible:ring-2");
+  // With the picker open the circle must stay revealed even unhovered.
+  fireEvent.click(add);
+  const openCircle = (screen.getByTestId("edge-add-plan-check") as HTMLElement).querySelector(
+    "span",
+  ) as HTMLElement;
+  expect(openCircle.className).toContain("opacity-100");
+});
+
 describe("edge “+” picker — wheel stays in the picker (#67)", () => {
   it("carries React Flow's nowheel/nopan/nodrag on the picker wrapper", async () => {
     const { picker } = await openEdgePicker();

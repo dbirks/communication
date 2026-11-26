@@ -1244,7 +1244,7 @@ export function StudioPage() {
     // no word says "live" in the one place the reader glances at.
     draftStatusNode = (
       <span
-        className="flex items-center gap-[6px] text-[12px] text-muted"
+        className="shrink-0 flex items-center gap-[6px] whitespace-nowrap text-[12px] text-muted"
         data-testid="studio-draft-status"
       >
         <span className={`h-[7px] w-[7px] rounded-full ${runBannerState.strongBg}`} aria-hidden />
@@ -1254,7 +1254,7 @@ export function StudioPage() {
   } else if (studio.saving) {
     draftStatusNode = (
       <span
-        className="flex items-center gap-[6px] text-[12px] text-muted"
+        className="shrink-0 flex items-center gap-[6px] whitespace-nowrap text-[12px] text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
@@ -1265,7 +1265,7 @@ export function StudioPage() {
     const errText = problemOf(studio.saveError).detail || problemOf(studio.saveError).title;
     draftStatusNode = (
       <span
-        className="flex items-center gap-[6px] text-[12px] text-st-failed-tag-fg"
+        className="shrink-0 flex items-center gap-[6px] whitespace-nowrap text-[12px] text-st-failed-tag-fg"
         data-testid="studio-draft-status"
       >
         × Couldn&apos;t save: {errText}
@@ -1274,7 +1274,7 @@ export function StudioPage() {
   } else if (studio.conflict) {
     draftStatusNode = (
       <span
-        className="flex items-center gap-[6px] text-[12px] text-st-failed-tag-fg"
+        className="shrink-0 flex items-center gap-[6px] whitespace-nowrap text-[12px] text-st-failed-tag-fg"
         data-testid="studio-draft-status"
       >
         × Conflict (server at v{studio.conflict.currentVersion})
@@ -1283,7 +1283,7 @@ export function StudioPage() {
   } else if (!draftId && newestSummary) {
     draftStatusNode = (
       <span
-        className="flex items-center gap-[6px] text-[12px] text-muted"
+        className="shrink-0 flex items-center gap-[6px] whitespace-nowrap text-[12px] text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-done-tag-fg" aria-hidden />
@@ -1299,7 +1299,7 @@ export function StudioPage() {
           : "";
     draftStatusNode = (
       <span
-        className="flex items-center gap-[6px] text-[12px] text-muted"
+        className="shrink-0 flex items-center gap-[6px] whitespace-nowrap text-[12px] text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
@@ -1309,26 +1309,30 @@ export function StudioPage() {
   }
 
   const topBarContent = (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-[12px] gap-y-[2px]">
+    // ONE line (review-1 09-1280-3): README puts the draft status AFTER the
+    // breadcrumb — “a 7px dot + … 12px #6b675e” on the same baseline. The old
+    // flex-wrap container wrapped the status under the breadcrumb inside the
+    // 60px bar (the sampled y=41 second line).
+    <div className="flex min-w-0 flex-nowrap items-center gap-x-[12px]">
       <nav
         aria-label="Breadcrumb"
-        className="flex min-w-0 items-center gap-[6px] text-[14px]"
+        className="flex min-w-0 flex-nowrap items-center gap-[6px] text-[14px]"
         data-testid="studio-breadcrumb"
       >
-        {scope ? (
-          <>
-            <Link
-              to={routes.scopeHome(scope)}
-              data-testid="studio-breadcrumb-project"
-              className="shrink-0 text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-            >
-              {projectLabel}
-            </Link>
-            <span aria-hidden className="text-line-strong">
-              /
-            </span>
-          </>
-        ) : null}
+        {/* The scope segment (review-1 09-1280-3): the project name in a
+            project scope, “All projects” otherwise — both link to that
+            scope's home (README “atlas / Factory / fix-issue … the first two
+            segments are links”). */}
+        <Link
+          to={routes.scopeHome(scope)}
+          data-testid="studio-breadcrumb-project"
+          className="max-w-[240px] shrink-0 truncate text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          {scope ? projectLabel : "All projects"}
+        </Link>
+        <span aria-hidden className="shrink-0 text-line-strong">
+          /
+        </span>
         <Link
           to={routes.factory(scope)}
           data-testid="studio-breadcrumb-workflows"
@@ -1564,12 +1568,14 @@ export function StudioPage() {
           statusOverlay={statusOverlay}
           verdictsByScope={verdictsByScope}
           trigger={
-            triggers.subline
-              ? {
-                  subline: triggers.subline,
-                  onClick: () => setTriggersDialogOpen(true),
-                }
-              : null
+            // The trigger step is always drawn first (review-1 09-1280-6,
+            // CONTRACT “Triggers dialogs | Opened from the trigger step on
+            // the canvas”): a workflow with no assignment or schedule still
+            // starts somewhere, and that is “when you start it”.
+            {
+              subline: triggers.subline ?? "when you start it",
+              onClick: () => setTriggersDialogOpen(true),
+            }
           }
           tool={tool}
           onToolChange={setTool}

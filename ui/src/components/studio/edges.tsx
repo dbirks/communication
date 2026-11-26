@@ -70,8 +70,15 @@ export type TriggerEdgeRender = RoutedGeometry & {
 const addHit =
   "pointer-events-auto absolute grid h-[44px] w-[44px] place-items-center rounded-full bg-transparent text-sm leading-none outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
+/** Review-1 09-1280-7: the insert “+” is an affordance, not decoration —
+ * README “Connection handles appear on hover”. The circle (and the dashed
+ * stub + trailing “+” under the last node, same rule in nodes.tsx) is
+ * hidden until its edge group is HOVERED or holds KEYBOARD FOCUS: the 44px
+ * button stays in the DOM and hit-testable, so hovering or tabbing to the
+ * midpoint reveals it, and `group-focus-within` keeps it revealed (and the
+ * picker anchored) while the picker it opens holds focus. */
 const addCircle =
-  "grid h-[22px] w-[22px] place-items-center rounded-full border border-line-strong bg-surface text-ink-2 shadow-sm group-hover:border-accent group-hover:text-accent group-focus-within:border-accent group-focus-within:text-accent";
+  "grid h-[22px] w-[22px] place-items-center rounded-full border border-line-strong bg-surface text-ink-2 shadow-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 group-hover:border-accent group-hover:text-accent group-focus-within:border-accent group-focus-within:text-accent";
 
 /**
  * Where the edge label copy sits: the "+" is a 44px target (`addHit`) centred on
@@ -241,7 +248,7 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
                 setPickerOpen(true);
               }}
             >
-              <span aria-hidden className={addCircle}>
+              <span aria-hidden className={`${addCircle}${pickerOpen ? " opacity-100" : ""}`}>
                 +
               </span>
             </button>

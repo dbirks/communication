@@ -269,6 +269,18 @@ describe("Workflow editor (rx-editor R5)", () => {
     expect(within(slot).getByTestId("studio-breadcrumb-workflows").getAttribute("href")).toBe(
       "/factory",
     );
+    // Review-1 09-1280-3: ONE line — the scope segment is present in an
+    // unscoped editor as “All projects” and links to that scope's home.
+    const scopeLink = within(slot).getByTestId("studio-breadcrumb-project");
+    expect(scopeLink.textContent).toBe("All projects");
+    expect(scopeLink.getAttribute("href")).toBe("/");
+    // The draft status rides the SAME line (never a second line under the
+    // breadcrumb): the container does not wrap.
+    expect(scopeLink.closest("div")?.className).toContain("flex-nowrap");
+    // Review-1 09-1280-6: the trigger step is always drawn first — a
+    // workflow with no assignment or schedule starts “when you start it”.
+    const triggerNode = await screen.findByTestId("mock-trigger-node");
+    expect(triggerNode.textContent).toContain("when you start it");
     expect(within(slot).getByTestId("studio-draft-status").textContent).toContain("Your draft");
 
     expect(screen.queryByTestId("studio-header")).toBeNull();

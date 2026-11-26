@@ -354,11 +354,18 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           style={{ top: "100%" }}
         >
           {/* Short dashed stub below the sink, on the node's vertical axis
-              (design 1g); the "+" sits at the end of the stub, never on the
-              node's edge. */}
+              (design 1g); the “+” sits at the end of the stub, never on the
+              node's edge. Review-1 09-1280-7: stub and “+” are an affordance,
+              hidden until the step is hovered or holds keyboard focus (the
+              node's own `group` wrapper covers both), and stay revealed while
+              the picker they open is focused. */}
           <span
             aria-hidden="true"
-            className="h-[10px] w-px border-l border-dashed border-line-strong"
+            className={`h-[10px] w-px border-l border-dashed border-line-strong transition-opacity ${
+              pickerOpen
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+            }`}
           />
           <button
             type="button"
@@ -382,7 +389,11 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           >
             <span
               aria-hidden
-              className="grid h-[22px] w-[22px] place-items-center rounded-full border-[2px] border-dashed border-line-strong bg-surface text-sm leading-none text-ink-2 group-hover:border-accent group-hover:text-accent"
+              className={`grid h-[22px] w-[22px] place-items-center rounded-full border-[2px] border-dashed border-line-strong bg-surface text-sm leading-none text-ink-2 transition-opacity group-hover:border-accent group-hover:text-accent ${
+                pickerOpen
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-focus-within:border-accent group-focus-within:text-accent"
+              }`}
             >
               +
             </span>

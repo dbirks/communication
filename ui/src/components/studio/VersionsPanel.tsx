@@ -115,28 +115,34 @@ export function VersionsPanel({
         ) : null}
 
         {hasDraft ? (
-          <div className="relative flex gap-[12px]" data-testid="versions-row-draft">
-            <span
-              aria-hidden="true"
-              className="relative z-1 mt-[4px] h-[10px] w-[10px] shrink-0 rounded-full bg-st-waiting-strong"
-            />
-            <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
+          <div className="relative flex flex-col gap-[4px]" data-testid="versions-row-draft">
+            {/* The dot rides the TITLE row (review-1 14-390-1): the phone
+                band's 44px button floor centered the text inside its box,
+                so a dot pinned to the column top sat ~14px above it. */}
+            <div className="flex items-center gap-[12px]">
+              <span
+                aria-hidden="true"
+                className="relative z-1 h-[10px] w-[10px] shrink-0 rounded-full bg-st-waiting-strong"
+              />
               <button
                 type="button"
                 onClick={onSelectDraft}
+                aria-current={viewingDigest === null ? true : undefined}
                 data-testid="versions-select-draft"
-                className={`text-left text-[13.5px] font-bold focus-visible:outline-2 focus-visible:outline-accent ${
-                  viewingDigest === null ? "text-accent-edge" : "text-ink hover:text-accent-text"
-                }`}
+                // Ink 700 like the prototype (review-1 14-1280-2): the accent
+                // “selected” tint made “Your draft” read as the only link.
+                className="text-left text-[13.5px] font-bold text-ink hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent"
               >
                 Your draft <span className="font-normal text-muted">· now</span>
               </button>
-              {changeLines.map((line, i) => (
-                <span key={i} className="truncate font-mono text-[11.5px] text-ink-2" title={line}>
-                  {line}
-                </span>
-              ))}
             </div>
+            {/* Sans, muted, and WRAPPING (review-1 14-1280-1): the mono
+                one-line ellipsis cut “first revision — nothing live to c…”. */}
+            {changeLines.map((line, i) => (
+              <span key={i} className="pl-[22px] break-words text-[12.5px] text-muted" title={line}>
+                {line}
+              </span>
+            ))}
           </div>
         ) : null}
 
@@ -157,46 +163,45 @@ export function VersionsPanel({
           return (
             <div
               key={rev.revision_digest}
-              className="relative flex gap-[12px]"
+              className="relative flex min-w-0 flex-col gap-[3px]"
               data-testid={`versions-row-v${rev.revision_number}`}
             >
-              <span
-                aria-hidden="true"
-                className={`relative z-1 mt-[4px] h-[10px] w-[10px] shrink-0 rounded-full ${
-                  isLive ? "bg-st-done-strong" : "border-[1.5px] border-line-strong bg-surface"
-                }`}
-              />
-              <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-                <div className="flex items-center gap-[6px]">
-                  <button
-                    type="button"
-                    onClick={() => onSelectRevision(rev.revision_digest)}
-                    data-testid={`versions-select-v${rev.revision_number}`}
-                    className={`text-left text-[13.5px] font-bold focus-visible:outline-2 focus-visible:outline-accent ${
-                      isViewing ? "text-accent-edge" : "text-ink hover:text-accent-text"
-                    }`}
-                  >
-                    v{rev.revision_number}
-                  </button>
-                  {isLive ? (
-                    <span className="rounded-[2px] bg-st-done-tag px-[5px] py-[1px] font-mono text-[10px] font-semibold text-st-done-tag-fg">
-                      LIVE
-                    </span>
-                  ) : null}
-                </div>
-                <span className="text-[12.5px] text-muted">{metaParts.join(" · ")}</span>
-                {canAuthor ? (
-                  <button
-                    type="button"
-                    disabled={restoring}
-                    onClick={() => onRestoreRevision(rev)}
-                    data-testid={`versions-restore-v${rev.revision_number}`}
-                    className="mt-[2px] w-fit text-left text-[12px] font-semibold text-accent-text hover:underline disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-accent"
-                  >
-                    Restore as draft
-                  </button>
+              <div className="flex min-w-0 items-center gap-[12px]">
+                <span
+                  aria-hidden="true"
+                  className={`relative z-1 h-[10px] w-[10px] shrink-0 rounded-full ${
+                    isLive ? "bg-st-done-strong" : "border-[1.5px] border-line-strong bg-surface"
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => onSelectRevision(rev.revision_digest)}
+                  aria-current={isViewing ? true : undefined}
+                  data-testid={`versions-select-v${rev.revision_number}`}
+                  // Same treatment as the draft row (review-1 14-1280-2):
+                  // ink 700 titles, the viewed one marked by aria-current.
+                  className="truncate text-left text-[13.5px] font-bold text-ink hover:text-accent-text focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  v{rev.revision_number}
+                </button>
+                {isLive ? (
+                  <span className="rounded-[2px] bg-st-done-tag px-[5px] py-[1px] font-mono text-[10px] font-semibold text-st-done-tag-fg">
+                    LIVE
+                  </span>
                 ) : null}
               </div>
+              <span className="pl-[22px] text-[12.5px] text-muted">{metaParts.join(" · ")}</span>
+              {canAuthor ? (
+                <button
+                  type="button"
+                  disabled={restoring}
+                  onClick={() => onRestoreRevision(rev)}
+                  data-testid={`versions-restore-v${rev.revision_number}`}
+                  className="ml-[22px] mt-[2px] w-fit text-left text-[12px] font-semibold text-accent-text hover:underline disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  Restore as draft
+                </button>
+              ) : null}
             </div>
           );
         })}
