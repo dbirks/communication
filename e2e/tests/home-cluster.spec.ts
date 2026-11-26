@@ -11,6 +11,27 @@
 // § 3 finding (unattended permission_mode:ask cancels, does not answer) with
 // the evidence.
 //
+// § 2's click path runs on the redesigned app (docs/design/redesign/CONTRACT.md,
+// redesign R8), so the surfaces named in the old brief map as follows — the
+// proof each step makes is unchanged, only the way to it moved:
+//   § 2 step 2  the projects index → Manage → Projects (`/manage/projects`;
+//               `/projects` answers as its redirect), whose table rows are
+//               `manage-projects-table-row-<id>` and whose create form is the
+//               `manage-new-project` dialog carrying the same field ids; the
+//               repositories of a project live on that row's detail page
+//   § 2 step 3  the Workflows index → Factory (`/factory`), the workflow's
+//               page + Studio → the editor (`/factory/:pipelineId?draft=…`),
+//               Studio's YAML view → the `…` menu's `Edit as YAML`, Save →
+//               autosave, Publish → Make live, and the project's Workflows tab
+//               → the project's scoped Factory, which hosts the same
+//               `+ use a library workflow` picker
+//   § 2 step 4  the project's Runs tab and its `Start run` band → the project
+//               home's `or run a workflow` chip (`home-prompt-run`), which opens
+//               the same `NewRunForm` in `StartRunDialog`; the run workbench and
+//               its gate card are unchanged
+//   § 2 step 5  the profile list (`/profiles`) → Manage → Agents & models
+//               (`/manage/agents`), whose rows open the profile in a sheet
+//
 // Skipped unless COMMUNICATION_E2E_HOME=1 (the orchestrator sets it once the
 // new image is deployed):
 //   COMMUNICATION_E2E_HOME=1 \
@@ -30,6 +51,14 @@
 //     E2E_HOME_LOGIN_SUBJECT=admin \
 //     pnpm exec playwright test tests/home-cluster.spec.ts
 //
+// The UI it drives is E2E_BASE_URL (e2e/tests/env.ts) and the API it reads is
+// E2E_HOME_URL: one and the same target by default, or — when the orchestrator
+// runs the working tree's redesigned UI on a Vite dev server against the shared
+// lab — a dev server that proxies `/api` and `/auth` to that target (see
+// ui/vite.config.ts). Both shapes work because every browser navigation here is
+// rooted at the UI base and every read carries the session cookie the sign-in
+// flow set for `localhost`.
+//
 // This suite WRITES (project, repository, two pipelines, two runs, one agent
 // profile) and resets nothing. Names carry a timestamp stamp (overridable
 // through E2E_HOME_STAMP); a project with the exact name an interrupted
@@ -47,6 +76,7 @@ import {
   type Page,
   type Response as PWResponse,
 } from "@playwright/test";
+import { readFileSync } from "node:fs";
 import {
   addRepository,
   clickRunAction,
@@ -73,6 +103,17 @@ const HOME_ENABLED = process.env.COMMUNICATION_E2E_HOME === "1";
 /** The target (default: the live cluster, docs/home-cluster.md § 1); overridable for the proof. */
 const HOME_BASE_URL = process.env.E2E_HOME_URL ?? "https://communication.beluga-wyvern.ts.net";
 const HOME_ORIGIN = new URL(HOME_BASE_URL).origin;
+/**
+ * The origin the browser navigates: the target's own embedded UI by default, or
+ * the dev server E2E_BASE_URL names when the working tree's UI is served beside
+ * the lab. `context.request` reads keep using HOME_BASE_URL — the target's own
+ * API — so § 5's worker/checkpoint/scheduler reads are always the cluster's
+ * fact, never the proxy's.
+ */
+const UI_BASE_URL = (process.env.E2E_BASE_URL ?? HOME_BASE_URL).replace(/\/+$/, "");
+/** The origins this suite's own traffic may come from: the target plus the UI
+ * base (the mock IdP's origin is neither, and stays excluded). */
+const APP_ORIGINS = new Set([HOME_ORIGIN, new URL(UI_BASE_URL).origin]);
 
 /** Whether a browser response is a refused write to the APP's own API. Only
  * non-GET/HEAD answers from the target's origin on a /api/ path count, and
@@ -91,7 +132,7 @@ function isRefusedWriteResponse(response: PWResponse): boolean {
   } catch {
     return false;
   }
-  return url.origin === HOME_ORIGIN && url.pathname.startsWith("/api/");
+  return APP_ORIGINS.has(url.origin) && url.pathname.startsWith("/api/");
 }
 
 /**
@@ -236,6 +277,26 @@ const TEST_TIMEOUT_MS = GATE_TIMEOUT_MS + RUN_TIMEOUT_MS + 1_800_000;
  */
 const NAV_TIMEOUT_MS = Number(process.env.E2E_HOME_NAV_TIMEOUT_MS ?? 60_000);
 
+/** The harness label Manage → Agents prints for a launcher id (the component's
+ * own map: ui/src/components/shell/AgentPicker.tsx `harnessLabel`). */
+function harnessLabel(launcher: string): string {
+  const known: Record<string, string> = {
+    claude: "Claude",
+    codex: "Codex",
+    antigravity: "Antigravity",
+  };
+  if (known[launcher]) return known[launcher];
+  return launcher.charAt(0).toUpperCase() + launcher.slice(1);
+}
+
+/** The claude proof's document: CLAUDE_PIPELINE with this run's slug, profile
+ * and prompt block in place. */
+function claudeDocument(slug: string): string {
+  return CLAUDE_PIPELINE.replace("__SLUG__", slug)
+    .replace("__PROFILE__", PROFILE_NAME)
+    .replace("__PROMPT__", CLAUDE_PROMPT_BLOCK);
+}
+
 /**
  * The bound for a plain UI interaction (click, fill) and for waiting on an
  * element the page draws from data it already has. Playwright gives an
@@ -255,6 +316,115 @@ const UI_TIMEOUT_MS = Number(process.env.E2E_HOME_UI_TIMEOUT_MS ?? 120_000);
  * own expectation about the sample, not a guess read off a page.
  */
 const GATE_NODE_ID = "approve";
+
+/**
+ * The vetted Plan with approval sample this proof runs (§ 2 step 3), read from
+ * the repository's own copy of the document. `ui/src/lib/pipeline/templates/`
+ * `plan-with-approval.yaml.txt` is byte-identical to it (its drift test asserts
+ * that), so the suite imports the same bytes the product's starter ships.
+ */
+function planSampleDocument(): string {
+  return readFileSync(
+    new URL("../../docs/samples/home/plan-with-approval.yaml", import.meta.url),
+    "utf8",
+  );
+}
+
+/**
+ * Open the editor's YAML panel. Redesign R4/R5 replaced the Studio header's
+ * `studio-view-yaml` button with the `…` menu's `Edit as YAML`.
+ */
+async function openYamlPanel(page: Page): Promise<void> {
+  await page.getByTestId("editor-more-btn").click({ timeout: UI_TIMEOUT_MS });
+  await expect(page.getByTestId("editor-more-menu")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+  await page.getByTestId("editor-menu-yaml").click({ timeout: UI_TIMEOUT_MS });
+  await expect(page.getByTestId("studio-yaml")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+}
+
+/**
+ * Close an open editor panel. The redesigned editor stacks panels over the
+ * top-right verbs (`editor-top-actions` sits at the same z-band as the wrap and
+ * Versions panels), so a spec about to click a header verb closes its panel
+ * first — the workaround issue2-studio.spec.ts documents.
+ */
+async function closeEditorPanel(page: Page): Promise<void> {
+  const close = page.getByTestId("editor-panel-close");
+  if (await close.isVisible().catch(() => false)) {
+    await close.click({ timeout: UI_TIMEOUT_MS });
+    await expect(close).toBeHidden({ timeout: UI_TIMEOUT_MS });
+  }
+}
+
+/**
+ * Validate the open draft through the YAML panel's own verb and prove the
+ * server's verdict is valid. The redesigned editor has no Save button — it
+ * autosaves, and the panel's Validate saves the document first — so the gone
+ * `studio-yaml-dirty` chip is the successor of the old Save + `studio-dirty`
+ * pair, and `studio-yaml-verdict` is the successor of `studio-validate-verdict`.
+ */
+async function validateDraft(page: Page): Promise<void> {
+  await page.getByTestId("studio-yaml-validate").click({ timeout: UI_TIMEOUT_MS });
+  await expect(page.getByTestId("studio-yaml-verdict")).toHaveText("valid", { timeout: 30_000 });
+  await expect(page.getByTestId("studio-yaml-dirty")).toHaveCount(0, { timeout: 30_000 });
+}
+
+/** Make live → the publish note names r1 (`published as rN <label>`). */
+async function makeLive(page: Page): Promise<void> {
+  await closeEditorPanel(page);
+  await expect(page.getByTestId("studio-publish")).toBeEnabled({ timeout: 30_000 });
+  await page.getByTestId("studio-publish").click({ timeout: UI_TIMEOUT_MS });
+  await expect(page.getByTestId("studio-published")).toContainText("published as r1", {
+    timeout: 30_000,
+  });
+}
+
+/**
+ * Create a pipeline and its first draft through the Factory's New workflow
+ * sheet's Import YAML door, resolving to the pipeline id the editor's URL
+ * names. The sheet is the redesign's only creation surface on the index, and it
+ * makes the same two writes the old dialog made (the logical pipeline, then the
+ * draft that holds the document — ADR-0002).
+ */
+async function importWorkflow(page: Page, slug: string, document: string): Promise<string> {
+  await page.getByTestId("factory-new").click({ timeout: UI_TIMEOUT_MS });
+  await expect(page.getByTestId("new-workflow-sheet")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+  await page.getByTestId("new-workflow-import").click({ timeout: UI_TIMEOUT_MS });
+  await expect(page.getByTestId("import-yaml-dialog")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+  await page.getByTestId("import-yaml-doc").fill(document, { timeout: UI_TIMEOUT_MS });
+  await page.getByTestId("import-yaml-slug").fill(slug, { timeout: UI_TIMEOUT_MS });
+  await page.getByTestId("import-yaml-name").fill(slug, { timeout: UI_TIMEOUT_MS });
+  // A template is not a revision: the click path lands on the draft's editor,
+  // at /factory/:pipelineId?draft=:draftId. A 422 (e.g. an illegal slug) never
+  // navigates and fails the wait with the API's status and body.
+  const created = waitForNavAfterWrite(
+    page,
+    /\/factory\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/,
+    `create the ${slug} pipeline`,
+  );
+  await page.getByTestId("import-yaml-submit").click({ timeout: UI_TIMEOUT_MS });
+  await created;
+  return new URL(page.url()).pathname.split("/")[2];
+}
+
+/**
+ * The plan pipeline's document with its `metadata.name` rewritten to this run's
+ * own slug — the one edit `NewWorkflowSheet` makes to a starter document before
+ * it posts it (`withMetadataName` in ui/src/lib/pipeline/templates.ts).
+ */
+function planDocumentFor(slug: string): string {
+  const document = planSampleDocument();
+  const rewritten = document.replace(
+    /^([ \t]+)name:[ \t]*plan-with-approval[ \t]*$/m,
+    `$1name: ${slug}`,
+  );
+  if (rewritten === document) {
+    throw new Error(
+      "the plan sample no longer carries its metadata.name line — " +
+        "planDocumentFor must be updated with it",
+    );
+  }
+  return rewritten;
+}
 
 // § 5(c)'s served shapes — read-only, no worker internals (AttemptView has no
 // worker_id by construction; the checkpoint row is the attempt's identity).
@@ -361,10 +531,13 @@ async function agentReplyText(
   budgetMs = 8_000,
 ): Promise<string> {
   const path = `/api/v1/conversations/${conversationId}/events`;
-  const url = `${HOME_BASE_URL}${path}`;
   try {
     return await page.evaluate(
-      async ({ streamUrl, budget }: { streamUrl: string; budget: number }) => {
+      async ({ streamPath, budget }: { streamPath: string; budget: number }) => {
+        // Resolved against the PAGE's own origin, not the API base: they differ
+        // when the UI runs on a dev server that proxies the target, and an
+        // EventSource across origins would arrive without the session cookie.
+        const streamUrl = new URL(streamPath, window.location.origin).toString();
         const rows: { turn: string; text: string }[] = [];
         let refused = false;
         await new Promise<void>((resolve) => {
@@ -412,7 +585,7 @@ async function agentReplyText(
           .map((row) => row.text)
           .join("");
       },
-      { streamUrl: url, budget: budgetMs },
+      { streamPath: path, budget: budgetMs },
     );
   } catch (error) {
     return `(the transcript at GET ${path} was not readable: ${String(error)})`;
@@ -421,11 +594,12 @@ async function agentReplyText(
 
 /**
  * Navigate inside the home app. The helpers' gotoApp resolves relative paths
- * against the playwright config's baseURL (the lab stack), so the home suite
- * roots every navigation at HOME_BASE_URL itself, keeping the 502-retry loop.
+ * against the playwright config's baseURL, so the home suite roots every
+ * navigation at UI_BASE_URL itself (the target, or the dev server that proxies
+ * it), keeping the 502-retry loop.
  */
 async function gotoApp(page: Page, path = "/"): Promise<void> {
-  const url = `${HOME_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  const url = `${UI_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
   for (let attempt = 1; attempt <= 10; attempt++) {
     const response = await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => null);
     if (response && response.ok()) return;
@@ -666,20 +840,27 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         await test.step(`sign in through the lab's mock-IdP form as ${HOME_LOGIN_SUBJECT}`, async () => {
           // The shared signIn helper (e2e/tests/helpers.ts) navigates
           // relative to the playwright config's baseURL (E2E_BASE_URL,
-          // e2e/tests/env.ts), so a lab run must point that base at the
-          // same target the rest of the suite reads. The helper fills the
-          // IdP's interactive form (no real credentials) and waits for the
-          // signed-in badge itself.
-          const configBase = (process.env.E2E_BASE_URL ?? "http://localhost:28080").replace(
-            /\/+$/,
-            "",
-          );
-          if (configBase !== HOME_BASE_URL.replace(/\/+$/, "")) {
-            throw new Error(
-              `E2E_HOME_LOGIN_SUBJECT=${HOME_LOGIN_SUBJECT} needs E2E_BASE_URL to match ` +
-                `the target (${HOME_BASE_URL}): the shared signIn helper resolves ` +
-                `relative navigation against the config's baseURL`,
-            );
+          // e2e/tests/env.ts), so what that base must be is the UI this suite
+          // drives — the target's own embedded UI, or a Vite dev server that
+          // proxies `/api` and `/auth` to the target (ui/vite.config.ts). The
+          // helper fills the IdP's interactive form (no real credentials) and
+          // waits for the signed-in badge itself.
+          if (UI_BASE_URL !== HOME_BASE_URL.replace(/\/+$/, "")) {
+            // A dev-server run: prove the base really answers the target's API
+            // before relying on it, so a mispointed proxy fails here with the
+            // URL named instead of timing out on the IdP round trip.
+            const proxied = await context.request
+              .get(`${UI_BASE_URL}/api/v1/system/readiness`)
+              .catch(() => null);
+            if (!proxied || !proxied.ok()) {
+              throw new Error(
+                `E2E_BASE_URL=${UI_BASE_URL} does not answer the target's API ` +
+                  `(${HOME_BASE_URL}): GET ${UI_BASE_URL}/api/v1/system/readiness -> ` +
+                  `${proxied ? proxied.status() : "no answer"}. Run the suite against the target ` +
+                  `itself, or start the dev server with ` +
+                  `COMMUNICATION_DEV_API=${HOME_BASE_URL}`,
+              );
+            }
           }
           // Exactly as m5-inbox.spec.ts: the seeded subject plus the derived
           // email claim — no invented name claim.
@@ -751,44 +932,62 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     // still start from a clean record so only this step's writes are judged.
     refusedWrites.length = 0;
     await test.step("an earlier run's same-named project is reused, never duplicated", async () => {
-      // The projects index (create form + cards) lives at /projects since the
-      // app-shell redesign; `/` is the Home briefing and carries neither.
+      // The projects index (the table plus its create dialog) is Manage →
+      // Projects since the redesign (CONTRACT "What happens to the old app");
+      // the suite takes the old `/projects` address and asserts the redirect,
+      // which is the contract's other half.
       await gotoApp(page, "/projects");
-      // A fresh target (or account) has the empty message instead of the
-      // list; wait for whichever the served state is.
+      await expect(page).toHaveURL(`${UI_BASE_URL}/manage/projects`, { timeout: NAV_TIMEOUT_MS });
+      // A fresh target (or account) has the table's empty line instead of the
+      // table; wait for whichever the served state is.
       await expect(
-        page.getByTestId("project-list").or(page.getByTestId("project-list-empty")).first(),
+        page
+          .getByTestId("manage-projects-table")
+          .or(page.getByTestId("manage-projects-table-empty"))
+          .first(),
       ).toBeVisible({ timeout: 30_000 });
       const existing = page
-        .locator('[data-testid^="project-card-"]')
+        .locator('[data-testid^="manage-projects-table-row-"]')
         .filter({ hasText: PROJECT_NAME });
       if ((await existing.count()) > 0) {
-        await existing.first().locator('[data-testid^="project-link-"]').click();
-        await page.waitForURL(/\/p\/[0-9a-f-]{36}\/?$/, { timeout: NAV_TIMEOUT_MS });
+        await existing.first().locator('[data-testid$="-link"]').click();
+        await page.waitForURL(/\/manage\/projects\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
         console.log(`reusing existing project: ${PROJECT_NAME}`);
       } else {
-        await test.step("New project through the form (§ 2 step 2)", async () => {
-          // The form starts open only on an empty account; otherwise the
-          // toggle reveals it.
+        await test.step("New project through the dialog (§ 2 step 2)", async () => {
+          // The dialog opens itself only on an empty account; otherwise the
+          // section header's opener reveals it.
           const nameField = page.getByTestId("create-project-name");
           if (!(await nameField.isVisible().catch(() => false))) {
-            await page.getByTestId("new-project-toggle").click();
+            await page.getByTestId("manage-new-project").click();
           }
           await nameField.fill(PROJECT_NAME);
           await page.getByTestId("create-project-submit").click();
-          await waitForNavAfterWrite(page, /\/p\/[0-9a-f-]{36}\/?$/, "create the project");
+          // Creating lands on the project's own Manage detail page, where its
+          // repositories are configured.
+          await waitForNavAfterWrite(
+            page,
+            /\/manage\/projects\/[0-9a-f-]{36}$/,
+            "create the project",
+          );
         });
       }
-      projectPath = new URL(page.url()).pathname;
-      projectId = projectPath.split("/").pop() ?? "";
+      const detailPath = new URL(page.url()).pathname;
+      projectId = detailPath.split("/").pop() ?? "";
       expect(projectId).toMatch(/^[0-9a-f-]{36}$/);
+      // `/p/<id>` stays the project's canonical scope path (route contract C1);
+      // every scoped section below is built from it.
+      projectPath = `/p/${projectId}`;
       evidence.push(`project: ${PROJECT_NAME} (${shortRefOf(projectId)})`);
     });
     await test.step("add the public repository; the binding name is the form's name", async () => {
-      // The binding row and the empty list are both rendered only after the
-      // repositories fetch resolves; settle on one of them before branching.
+      // Repositories are configured on the project's Manage detail page; the
+      // binding row and the empty line are both drawn only after the
+      // repositories fetch resolves, so settle on one of them first.
+      await gotoApp(page, `/manage/projects/${projectId}`);
+      await expect(page.getByTestId("detail-repositories")).toBeVisible({ timeout: 30_000 });
       await expect(
-        rowFor(page, REPO_BINDING).or(page.getByTestId("repo-list-empty")).first(),
+        rowFor(page, REPO_BINDING).or(page.getByTestId("detail-repos-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
       if (
         await rowFor(page, REPO_BINDING)
@@ -797,8 +996,13 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       ) {
         console.log(`repository binding already present: ${REPO_BINDING}`);
       } else {
-        await addRepository(page, `${HOME_BASE_URL}${projectPath}`, REPO_BINDING, REPO_URL);
+        await addRepository(page, `${UI_BASE_URL}${projectPath}`, REPO_BINDING, REPO_URL);
       }
+      // The project's own home page reads the same binding back (redesign R2:
+      // the repository list lives there now).
+      await gotoApp(page, projectPath);
+      await expect(page.getByTestId("project-home")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId(`repo-row-${REPO_BINDING}`)).toBeVisible({ timeout: 30_000 });
       evidence.push(`repository binding: ${REPO_BINDING} -> ${REPO_URL}`);
       assertNoRefusedWrites("step 2 — project and repository setup");
       await shot(page, "home-01-project-repo");
@@ -812,16 +1016,23 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     // and when its r1 is already published the Validate/Publish steps are
     // skipped because the stored revision is the fact.
     let publishedAlready = false;
-    await test.step("Workflows → the plan pipeline (created once, reused on re-runs)", async () => {
+    await test.step("Factory → the plan pipeline (created once, reused on re-runs)", async () => {
+      // The Workflows index is the Factory now (CONTRACT "What happens to the
+      // old app"); the suite takes the old address and asserts the redirect.
       await gotoApp(page, "/workflows");
-      await expect(page.getByTestId("library-page")).toBeVisible();
+      await expect(page).toHaveURL(`${UI_BASE_URL}/factory`, { timeout: NAV_TIMEOUT_MS });
+      await expect(page.getByTestId("factory-index")).toBeVisible();
       await expect(
-        page.getByTestId("workflows-list").or(page.getByTestId("workflows-empty")).first(),
+        page.getByTestId("factory-summary").or(page.getByTestId("factory-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
-      const existing = page.getByTestId(`workflow-name-${PLAN_SLUG}`);
+      // The card names the workflow it is (display name or slug), so a re-run
+      // finds its own stamped slug in the card's own link.
+      const existing = page
+        .locator('[data-testid^="workflow-card-link-"]')
+        .filter({ hasText: PLAN_SLUG });
       if (await existing.isVisible().catch(() => false)) {
         await existing.click();
-        await page.waitForURL(/\/workflows\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
+        await page.waitForURL(/\/factory\/[0-9a-f-]{36}/, { timeout: NAV_TIMEOUT_MS });
         planPipelinePath = new URL(page.url()).pathname;
         const revisions = await pipelineRevisions(planPipelinePath);
         const r1 = revisions.find((row) => row.revision_number === 1);
@@ -840,47 +1051,27 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         publishedAlready = true;
         await shot(page, "home-02-reused-pipeline");
       } else {
-        // Design 1c: the New workflow dialog is the index's only creation
-        // surface — a name, the id derived from it (changed here to the
-        // suite's own slug), and the starter chosen as a card.
-        await page.getByTestId("workflows-new-workflow").click();
-        await expect(page.getByTestId("new-workflow-dialog")).toBeVisible();
-        await page.getByTestId("library-new-name-input").fill(PLAN_SLUG);
-        await page.getByTestId("new-workflow-id-change").click();
-        await page.getByTestId("library-new-slug-input").fill(PLAN_SLUG);
-        await page.getByTestId("new-workflow-template-plan-with-approval").click();
-        await page.getByTestId("library-new-submit").click();
-        // A template is not a revision: the click path lands on the seeded
-        // draft's Workflow Studio, at /workflows/:id/drafts/:draftId. A 422
-        // (e.g. an illegal slug) never navigates and fails the wait with
-        // the API's status and body.
-        await waitForNavAfterWrite(
-          page,
-          /\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
-          "create the plan pipeline",
-        );
-        planPipelinePath = `/workflows/${new URL(page.url()).pathname.split("/")[2]}`;
-        // The Studio's YAML view is the same authoring surface the old
-        // editor exposed as its textarea.
-        await page.getByTestId("studio-view-yaml").click();
+        // The redesign's New workflow sheet has no starter-template picker (see
+        // the PRODUCT note in this file's report): the vetted sample reaches a
+        // draft through the sheet's Import YAML door, which posts the same two
+        // writes and lands on the same draft's editor.
+        const pipelineId = await importWorkflow(page, PLAN_SLUG, planDocumentFor(PLAN_SLUG));
+        planPipelinePath = `/factory/${pipelineId}`;
+        // The editor's YAML panel is the same authoring surface the old editor
+        // exposed as its textarea.
+        await openYamlPanel(page);
         await expect(page.getByTestId("studio-yaml")).toHaveValue(new RegExp(PLAN_SLUG));
+        await expect(page.getByTestId("studio-yaml")).toHaveValue(/kind: human\.approval/);
         await shot(page, "home-02-template-draft");
       }
     });
     if (!publishedAlready) {
       await test.step("Validate → the server's stored verdict is valid", async () => {
-        await page.getByTestId("studio-validate").click();
         // Publish is gated on the stored verdict, so the verdict is the gate.
-        await expect(page.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
-          timeout: 30_000,
-        });
-        await expect(page.getByTestId("studio-publish")).toBeEnabled();
+        await validateDraft(page);
       });
-      await test.step("Publish → r1 carries the revision digest", async () => {
-        await page.getByTestId("studio-publish").click();
-        await expect(page.getByTestId("studio-published")).toContainText("published as r1", {
-          timeout: 30_000,
-        });
+      await test.step("Make live → r1 carries the revision digest", async () => {
+        await makeLive(page);
         const revisions = await pipelineRevisions(planPipelinePath);
         const r1 = revisions.find((row) => row.revision_number === 1);
         expect(r1?.revision_digest, "published r1 must carry a revision digest").toMatch(
@@ -895,8 +1086,14 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       // Design 1b (project-1b-workflows): the tab is ONE panel of 2e rows; the
       // inline assign form is gone and its one way in is the
       // `+ use a library workflow` picker, whose single `Use` verb resolves the
-      // newest published revision and posts the whole-project pin.
+      // newest published revision and posts the whole-project pin. The panel is
+      // hosted by the project's scoped Factory now (CONTRACT "What happens to
+      // the old app"): the suite takes the old tab address and asserts it lands
+      // there.
       await gotoApp(page, `${projectPath}/workflows`);
+      await expect(page).toHaveURL(`${UI_BASE_URL}${projectPath}/factory`, {
+        timeout: NAV_TIMEOUT_MS,
+      });
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
       await expect(
         page
@@ -933,7 +1130,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       }
       // Either way the panel itself now carries the workflow as a 2e row
       // (name link to its page) pinned to r1 — the tab's whole revision story.
-      const planPipelineId = planPipelinePath.replace(/^\/(?:library|workflows)\//, "");
+      const planPipelineId = planPipelinePath.replace(/^\/(?:library|workflows|factory)\//, "");
       const pinnedRow = page
         .locator('[data-testid^="project-workflow-row-"]')
         .filter({ has: page.locator(`a[href$="${planPipelineId}"]`) });
@@ -959,11 +1156,11 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     ).toEqual([]);
   }
 
-  /** GET the pipeline's stored revisions (route 13) behind its /workflows path. */
+  /** GET the pipeline's stored revisions (route 13) behind its editor path. */
   async function pipelineRevisions(
     path: string,
   ): Promise<{ revision_number: number; revision_digest: string; status: string }[]> {
-    const pipelineId = path.replace(/^\/(?:library|workflows)\//, "");
+    const pipelineId = path.replace(/^\/(?:library|workflows|factory)\//, "");
     const body = await getJson<{
       revisions: { revision_number: number; revision_digest: string; status: string }[];
     }>(context, `/api/v1/pipelines/${pipelineId}/revisions`);
@@ -971,67 +1168,35 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   }
 
   /**
-   * Take the one-node claude document through the Workflow Studio's YAML
-   * view: fill → save → validate → publish r1. The caller is either already
-   * on the Studio route `/workflows/:pipelineId/drafts/:draftId` (the Blank
-   * create navigates straight there) or on the pipeline page's Overview, in
-   * which case the History tab (design 1e — commit a5b3f64 moved the drafts
-   * and the clone control there) is opened first: an existing `draft-row-*`
-   * is selected when the tab lists one (the resume of an interrupted run),
-   * otherwise the tab's "New draft" control (`pipeline-new-draft`) is the
-   * click —
-   * with zero published revisions it posts the blank skeleton named for
-   * the slug, so the control is enabled by construction. Every wait is
-   * bounded; the only failure left is the page's own query settling on
-   * neither a row nor an enabled control.
+   * Take the one-node claude document into the editor's YAML panel and publish
+   * it as r1: open the panel → fill → validate → Make live. The caller is either
+   * already on the editor route `/factory/:pipelineId?draft=:draftId` (the Import
+   * YAML create navigates straight there) or on the editor of a pipeline an
+   * interrupted run left without a published revision — and the redesigned
+   * editor needs no "open History and press New draft" walk, because opening an
+   * editor with no draft draws one itself (`ui/src/pages/Studio.tsx`'s first-edit
+   * draft create posts the skeleton named for the slug when there is nothing to
+   * clone, and puts its id on the URL). Every wait is bounded; the only failure
+   * left is the page's own query settling on neither a draft nor an editor.
    */
-  async function authorFirstRevision(slug: string): Promise<void> {
-    if (!/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/.test(page.url())) {
-      // Drafts and the clone control are the History tab's surface now; the
-      // page opens on the read-only Overview graph.
-      const historyTab = page.getByTestId("workflow-tab-history");
-      await expect(historyTab).toBeVisible({ timeout: 30_000 });
-      await historyTab.click({ timeout: 30_000 });
-      const draftRow = page.getByTestId(/^draft-row-.+$/).first();
-      // Settle the drafts list first: it shows either a row or its own
-      // `drafts-empty` line, and the decision below must not race the query.
-      await expect(draftRow.or(page.getByTestId("drafts-empty")).first()).toBeVisible({
-        timeout: 30_000,
-      });
-      if (await draftRow.isVisible()) {
-        // An interrupted run left the draft: select it and finish the
-        // publish from wherever it stopped.
-        await draftRow.click({ timeout: 30_000 });
-      } else {
-        // No row: "New draft" posts the skeleton (nothing to clone at zero
-        // revisions) and the Studio route opens.
-        const newDraft = page.getByTestId("pipeline-new-draft");
-        await expect(newDraft).toBeEnabled({ timeout: 30_000 });
-        await newDraft.click({ timeout: 30_000 });
-      }
-      await page.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
-        timeout: 30_000,
-      });
+  async function authorFirstRevision(document: string): Promise<void> {
+    // The redesigned editor draws the draft itself: an editor opened on a
+    // pipeline with none creates one and puts it on the URL.
+    // (`ui/src/pages/Studio.tsx`'s first-edit draft create, which posts the
+    // skeleton named for the slug when there is nothing to clone) and puts its
+    // id on the URL. Every wait here is bounded, so the only failure left is
+    // the page's own query settling on neither a draft nor an open editor.
+    if (!/[?&]draft=[0-9a-f-]{36}/.test(page.url())) {
+      await page.waitForURL(/[?&]draft=[0-9a-f-]{36}/, { timeout: 30_000 });
     }
-    await page.getByTestId("studio-view-yaml").click();
+    await openYamlPanel(page);
     const editor = page.getByTestId("studio-yaml");
     await expect(editor).toBeVisible({ timeout: 30_000 });
-    const document = CLAUDE_PIPELINE.replace("__SLUG__", slug)
-      .replace("__PROFILE__", PROFILE_NAME)
-      .replace("__PROMPT__", CLAUDE_PROMPT_BLOCK);
-    await editor.fill(document);
-    await page.getByTestId("studio-save").click();
-    await expect(page.getByTestId("studio-dirty")).toHaveCount(0, {
-      timeout: 30_000,
-    });
-    await page.getByTestId("studio-validate").click();
-    await expect(page.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
-      timeout: 30_000,
-    });
-    await page.getByTestId("studio-publish").click();
-    await expect(page.getByTestId("studio-published")).toContainText("published as r1", {
-      timeout: 30_000,
-    });
+    await editor.fill(document, { timeout: UI_TIMEOUT_MS });
+    // Validate saves the document first (the panel says so on its own label);
+    // Make live then rides the same autosaved draft.
+    await validateDraft(page);
+    await makeLive(page);
   }
 
   /**
@@ -1154,13 +1319,22 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   test(`step 4 — start the run, approve the gate, terminal, ${TARGET_TITLE.toLowerCase()}-worker proof`, async () => {
     refusedWrites.length = 0;
     await test.step("New run: the revision's inputs (goal + the repository binding)", async () => {
-      await gotoApp(page, `${projectPath}/runs`);
-      await expect(page.getByTestId("project-runs")).toBeVisible({ timeout: UI_TIMEOUT_MS });
-      // Design 1b: the RUNS panel carries no "New run" button of its own — the
-      // header band's `Start run` is the page's one door, landing here with
-      // ?new=1 and opening the form above the list.
-      await page.getByTestId("project-start-run").click({ timeout: UI_TIMEOUT_MS });
-      await expect(page).toHaveURL(/[?&]new=1/, { timeout: UI_TIMEOUT_MS });
+      // The project's own Home is the one door to a run (redesign R2): the
+      // prompt box's `or run a workflow` chip opens `StartRunDialog`, which
+      // mounts the same NewRunForm the retired Runs tab used to host. The old
+      // `/p/:id/runs` address answers, but only as the redirect to the scoped
+      // Factory — which lists workflows, not runs — so the journey goes to the
+      // home page itself.
+      await gotoApp(page, projectPath);
+      await expect(page.getByTestId("project-home")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+      await page.getByTestId("home-prompt-run").click({ timeout: UI_TIMEOUT_MS });
+      await expect(page.getByTestId("run-form-dialog")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+      // The dialog asks which of the caller's projects to start against; one
+      // project is preselected by the dialog itself.
+      const projectSelect = page.getByTestId("home-start-run-project");
+      if (await projectSelect.isVisible().catch(() => false)) {
+        await projectSelect.selectOption({ value: projectId });
+      }
       await expect(page.getByTestId("new-run-form")).toBeVisible({ timeout: UI_TIMEOUT_MS });
       // The form names the pinned revision two ways, and both are the page's
       // own fact (ADR-0066 typed mode): with more than one assignment the
@@ -1168,20 +1342,20 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       // single assignment the dialog opens straight on it — its heading
       // carries the pipeline's slug, which is the pin named as data.
       const assignmentSelect = page.getByTestId("new-run-assignment");
-      // The form settles only once the pinned revision has loaded. While it
-      // is still in flight the free-form shape is on screen WITH its select
-      // but WITHOUT its declared fields — a transient shape that the typed
-      // run-by-hand dialog replaces the moment `input_specs` arrive (the
-      // plan sample declares goal + repository, so this project settles
-      // typed, and its single-assignment dialog carries no select). Branching
+      // The form settles only once the pinned revision has loaded. While it is
+      // still in flight the free-form shape is on screen WITH its select but
+      // WITHOUT its declared fields — a transient shape that the typed
+      // run-by-hand dialog replaces the moment `input_specs` arrive. Branching
       // on the select's presence inside that window is what failed run
       // 41754108482: the option was read from a select the form was about to
-      // unmount, so it never attached. The goal field exists in BOTH settled
-      // shapes (free-form and typed, `new-run-input-${name}`), so wait for it
-      // before deciding which shape is final.
-      await expect(page.getByTestId("new-run-input-goal")).toBeVisible({
-        timeout: UI_TIMEOUT_MS,
-      });
+      // unmount, so it never attached. The spinners are the honest settle
+      // marker; the declared fields are not, because on a re-run this project
+      // carries TWO pins and the newest one (the claude workflow) declares no
+      // `goal` input at all — its typed form would never show one.
+      await expect(page.getByText(/Loading (projects|assignments|pinned revision)/i)).toHaveCount(
+        0,
+        { timeout: UI_TIMEOUT_MS },
+      );
       if (await assignmentSelect.isVisible()) {
         await selectByOptionText(page, "new-run-assignment", PLAN_SLUG);
       } else {
@@ -1189,6 +1363,10 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           timeout: UI_TIMEOUT_MS,
         });
       }
+      // The plan revision's own fields, named by its `spec.inputs`.
+      await expect(page.getByTestId("new-run-input-goal")).toBeVisible({
+        timeout: UI_TIMEOUT_MS,
+      });
       await page.getByTestId("new-run-input-goal").fill(GOAL, { timeout: UI_TIMEOUT_MS });
       // `repository` is the project binding name, offered as the project's
       // own list — not a URL a user has to remember. Typed mode declares this
@@ -1383,28 +1561,32 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   test(`step 5 — one agent.acp node on the ${LAB_LAUNCHER} launcher profile`, async () => {
     refusedWrites.length = 0;
     await test.step(`the ${LAB_LAUNCHER}-launcher profile exists (created through the dialog when absent)`, async () => {
+      // Agents live in Manage → Agents & models now (CONTRACT "What happens to
+      // the old app"); the suite takes the old `/profiles` address and asserts
+      // the redirect it is contractually owed.
       await gotoApp(page, "/profiles");
-      await expect(page.getByTestId("agents-page")).toBeVisible();
+      await expect(page).toHaveURL(`${UI_BASE_URL}/manage/agents`, { timeout: NAV_TIMEOUT_MS });
+      await expect(page.getByTestId("manage-agents")).toBeVisible();
       const rows = page
         .getByTestId("agent-list")
-        .locator('[data-testid^="agent-item-"]')
+        .locator('[data-testid^="agent-row-"]')
         .filter({ hasText: PROFILE_NAME });
       if ((await rows.count()) === 0) {
-        // The redesigned /profiles creates through the New profile dialog with
-        // a LAUNCHER CARD (shell-p5's proven flow) — there is no longer a
-        // launcher `<select>` on the list page itself. The card is the lab's
-        // launcher (COMMUNICATION_LAB_LAUNCHER; unset = claude, unchanged).
+        // Manage → Agents creates through the New profile dialog with a LAUNCHER
+        // CARD (shell-p5's proven flow) — there is no launcher `<select>` on the
+        // section itself. The card is the lab's launcher
+        // (COMMUNICATION_LAB_LAUNCHER; unset = claude, unchanged).
         await page.getByTestId("agents-new-open").click();
         const dialog = page.getByTestId("new-profile-dialog");
         await expect(dialog).toBeVisible();
         await page.getByTestId(newProfileCardTestid()).click();
         await page.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
         await page.getByTestId("agents-new-submit").click();
-        // The dialog closes and the journey lands on the new profile's detail
+        // The dialog closes and the journey lands on the new profile's sheet
         // (the caller acts on onCreated — shell-p5's evidence); return to the
-        // list so the row read below is the API's own row.
+        // section so the row read below is the API's own row.
         await expect(dialog).toBeHidden({ timeout: 30_000 });
-        await gotoApp(page, "/profiles");
+        await gotoApp(page, "/manage/agents");
         await expect(rows.first()).toBeVisible({ timeout: 30_000 });
         console.log(`created agent profile ${PROFILE_NAME} (${LAB_LAUNCHER} launcher)`);
       } else {
@@ -1418,29 +1600,43 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         // seed lands behind the API's back, so reload the page: the chip
         // read below must be the served row, not the pre-seed cache.
         seedLabPiProfile(PROFILE_NAME);
-        await gotoApp(page, "/profiles");
-        await expect(page.getByTestId("agents-page")).toBeVisible();
+        await gotoApp(page, "/manage/agents");
+        await expect(page.getByTestId("manage-agents")).toBeVisible();
         await expect(rows.first()).toBeVisible({ timeout: 30_000 });
       }
       const testid = (await rows.first().getAttribute("data-testid")) ?? "";
-      profileId = testid.replace(/^agent-item-/, "");
+      profileId = testid.replace(/^agent-row-/, "");
       expect(profileId).toMatch(/^[0-9a-f-]{36}$/);
-      await expect(page.getByTestId(`agent-launcher-${profileId}`)).toHaveText(
-        new RegExp(`^launcher: ${LAB_LAUNCHER}$`),
-      );
-      // The permission chip renders on the profile DETAIL page, so open the
-      // row. Under claude a product-created profile can only ever be `ask`
+      // The table's Harness cell names the launcher through the shell's own
+      // label (`harnessLabel`, ui/src/components/shell/AgentPicker.tsx) — the
+      // claim the old `launcher: <id>` cell spelled in the launcher's own id.
+      await expect(rows.first()).toContainText(harnessLabel(LAB_LAUNCHER), {
+        timeout: UI_TIMEOUT_MS,
+      });
+      // The permission chip renders on the profile SHEET, so open the row.
+      // Under claude a product-created profile can only ever be `ask`
       // (ADR-0030: permission_mode has no write field) — the § 3 caveat's
       // precondition, recorded as evidence. Under pi it reads
       // `autonomous_within_sandbox`, the never-asks launcher's only honest
       // mode (ADR-0069): no prompt, the sandbox is the boundary.
-      await page.getByTestId(`agent-row-${profileId}`).click();
+      await page.getByTestId(`agent-name-${profileId}`).click();
+      await expect(page.getByTestId("profile-sheet")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId(`profile-detail-${profileId}`)).toBeVisible({
+        timeout: 30_000,
+      });
+      // The sheet quotes the launcher by its raw id, exactly as the retired
+      // list page did.
+      await expect(page.getByTestId(`profile-detail-${profileId}`)).toContainText(
+        new RegExp(`launcher: ${LAB_LAUNCHER}`),
+      );
       await expect(page.getByTestId("profile-version")).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId(`agent-permission-${profileId}`)).toHaveText(
-        new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous \\(sandbox is the boundary\\)" : "ask"}$`),
+        new RegExp(
+          `^permission: ${IS_PI_LAUNCHER ? "autonomous \\(sandbox is the boundary\\)" : "ask"}$`,
+        ),
       );
-      await gotoApp(page, "/profiles");
-      await expect(page.getByTestId(`agent-item-${profileId}`)).toBeVisible();
+      await gotoApp(page, "/manage/agents");
+      await expect(page.getByTestId(`agent-row-${profileId}`)).toBeVisible();
       evidence.push(
         `agent profile ${PROFILE_NAME}: launcher ${LAB_LAUNCHER}, permission ${
           IS_PI_LAUNCHER ? "autonomous_within_sandbox" : "ask"
@@ -1448,18 +1644,20 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       );
       await shot(page, "home-09-profile");
     });
-    await test.step("the one-node pipeline (Blank): r1 published (created once, reused)", async () => {
-      await gotoApp(page, "/workflows");
-      await expect(page.getByTestId("library-page")).toBeVisible();
+    await test.step("the one-node pipeline (Import YAML): r1 published (created once, reused)", async () => {
+      await gotoApp(page, "/factory");
+      await expect(page.getByTestId("factory-index")).toBeVisible();
       await expect(
-        page.getByTestId("workflows-list").or(page.getByTestId("workflows-empty")).first(),
+        page.getByTestId("factory-summary").or(page.getByTestId("factory-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
-      const existing = page.getByTestId(`workflow-name-${CLAUDE_SLUG}`);
+      const existing = page
+        .locator('[data-testid^="workflow-card-link-"]')
+        .filter({ hasText: CLAUDE_SLUG });
       if (await existing.isVisible().catch(() => false)) {
         // Re-run: the server would 409 the duplicate slug, so the existing
         // definition is opened and its stored state decides.
         await existing.click();
-        await page.waitForURL(/\/workflows\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
+        await page.waitForURL(/\/factory\/[0-9a-f-]{36}/, { timeout: NAV_TIMEOUT_MS });
         const revisions = await pipelineRevisions(new URL(page.url()).pathname);
         const r1 = revisions.find((row) => row.revision_number === 1);
         if (r1?.status === "published") {
@@ -1475,40 +1673,40 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
               `half-published; delete the pipeline from the library and re-run`,
           );
         }
-        // Zero revisions: the legitimate leftover of the Blank path — the
+        // Zero revisions: the legitimate leftover of the create path — the
         // definition POST can land with the draft write still to come, so
         // an interrupted run can stop right after the definition. Resume
-        // through a draft instead of throwing.
+        // through the draft the editor draws instead of throwing.
         console.log(`resuming the zero-revision claude pipeline through a draft`);
-        await authorFirstRevision(CLAUDE_SLUG);
+        await authorFirstRevision(claudeDocument(CLAUDE_SLUG));
         await shot(page, "home-10-claude-published");
         return;
       }
-      // Blank posts the skeleton as the first draft and navigates the
-      // create click straight to the Studio route with it selected — the
-      // navigation is the fact (`waitForNavAfterWrite` semantics: a
-      // non-2xx on the write rejects before the wait burns its timeout).
-      // Design 1c: the starter card opens the New workflow dialog with Blank
-      // already selected; the id is the suite's own slug.
-      await page.getByTestId("workflow-starter-blank").click();
-      await expect(page.getByTestId("new-workflow-dialog")).toBeVisible();
-      await page.getByTestId("library-new-name-input").fill(CLAUDE_SLUG);
-      await page.getByTestId("new-workflow-id-change").click();
-      await page.getByTestId("library-new-slug-input").fill(CLAUDE_SLUG);
-      const created = waitForNavAfterWrite(
-        page,
-        /\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
-        "create the claude pipeline",
+      // The sheet's Import YAML door posts the document AS the first draft and
+      // navigates the create click straight to its editor — the navigation is
+      // the fact (`waitForNavAfterWrite` semantics: a non-2xx on the write
+      // rejects before the wait burns its timeout).
+      await importWorkflow(page, CLAUDE_SLUG, claudeDocument(CLAUDE_SLUG));
+      // The editor reads the authored document back through its YAML panel:
+      // the one-node agent.acp shape, named by this run's slug and profile.
+      await openYamlPanel(page);
+      await expect(page.getByTestId("studio-yaml")).toHaveValue(new RegExp(CLAUDE_SLUG));
+      await expect(page.getByTestId("studio-yaml")).toHaveValue(/kind: agent\.acp/);
+      await expect(page.getByTestId("studio-yaml")).toHaveValue(
+        new RegExp(`profile: ${PROFILE_NAME}`),
       );
-      await page.getByTestId("library-new-submit").click();
-      await created;
-      await authorFirstRevision(CLAUDE_SLUG);
+      await validateDraft(page);
+      await makeLive(page);
       await shot(page, "home-10-claude-published");
     });
     await test.step("assign it and start a run on the repository binding", async () => {
-      // Same picker the plan pipeline used: the tab's one way in is
-      // `+ use a library workflow`; `Use` resolves r1 and posts.
+      // Same picker the plan pipeline used, on the project's scoped Factory
+      // (the old Workflows-tab address answers as the redirect to it); the
+      // panel's one way in is `+ use a library workflow` and `Use` resolves r1.
       await gotoApp(page, `${projectPath}/workflows`);
+      await expect(page).toHaveURL(`${UI_BASE_URL}${projectPath}/factory`, {
+        timeout: NAV_TIMEOUT_MS,
+      });
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
       await expect(
         page
@@ -1547,9 +1745,23 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         .filter({ has: page.getByTestId(/^project-workflow-name-/) })
         .filter({ hasText: CLAUDE_SLUG });
       await expect(claudeRow).toBeVisible({ timeout: 30_000 });
-      await gotoApp(page, `${projectPath}/runs`);
-      await page.getByTestId("project-start-run").click();
-      await expect(page.getByTestId("new-run-form")).toBeVisible();
+      // Same door as step 4: the project home's `or run a workflow` chip.
+      await gotoApp(page, projectPath);
+      await expect(page.getByTestId("project-home")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+      await page.getByTestId("home-prompt-run").click({ timeout: UI_TIMEOUT_MS });
+      await expect(page.getByTestId("run-form-dialog")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+      const claudeProjectSelect = page.getByTestId("home-start-run-project");
+      if (await claudeProjectSelect.isVisible().catch(() => false)) {
+        await claudeProjectSelect.selectOption({ value: projectId });
+      }
+      await expect(page.getByTestId("new-run-form")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+      // Settle before branching (the same free-form/typed window step 4 names).
+      await expect(page.getByText(/Loading (projects|assignments|pinned revision)/i)).toHaveCount(
+        0,
+        { timeout: UI_TIMEOUT_MS },
+      );
+      // Two workflows are pinned to this project now, so the form asks which
+      // one to run and the suite names the claude one.
       await selectByOptionText(page, "new-run-assignment", CLAUDE_SLUG);
       // Same two shapes as step 4's binding field: a repo picker when the
       // form offers one, a text box when the revision types it as plain text.
