@@ -180,6 +180,21 @@
      translate(2px,2px) + no shadow (see .ds-btn in the component layer). */
   --shadow-raised: 2px 2px 0 var(--color-ink);
 
+  /* Redesign (docs/design/redesign/README.md "Design tokens"): the new shell,
+     Home, Chats, Factory, the canvas and Manage use these soft radii and
+     shadows. The hard 2px offset shadow above is NOT used on them. */
+  --color-rail: #faf9f6;
+  --radius-chip: 8px;
+  --radius-card: 10px;
+  --radius-pane: 12px;
+  --radius-prompt: 14px;
+  --radius-frame: 16px;
+  --radius-modal: 18px;
+  --shadow-pill: 0 1px 3px rgba(30, 29, 26, 0.06);
+  --shadow-prompt: 0 4px 18px rgba(30, 29, 26, 0.06);
+  --shadow-pop: 0 10px 30px rgba(30, 29, 26, 0.1);
+  --shadow-modal: 0 24px 60px rgba(30, 29, 26, 0.16);
+
   /* M4/M5 application roles — transcribed from docs/design/design-system.md,
      "Token extensions M5 needs (additive; identity-neutral)", which says of
      itself: "Adds ROLES only: no new hue, no restyled primitive. Apply in a

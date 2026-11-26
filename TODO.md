@@ -338,3 +338,67 @@ that can be attached to different ACP agent setups. Today the spec
       Operations report 0.0.0-SNAPSHOT-8ad27c7. Screenshots:
       ~/.cache/pi-orch/communication/evidence/deployed/final/{today,catchup,ops,workflows,collections,profile,
       settings-assistant,assistant}-8ad27c7.png.
+
+# Redesign (2026-11-26): rail, Home / Chats / Factory, canvas editor, Manage
+
+Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Prototype.dc.html` (source of truth),
+`docs/design/redesign/CONTRACT.md` (build contract, phone rules, what happens to each old page). Evidence goes in
+`~/.cache/pi-orch/communication/evidence/redesign/`.
+
+## R0. Foundation
+- [ ] Handoff, prototype and contract are in `docs/design/redesign/`; routes, scope hook, tokens and the shared
+      prompt box exist.
+
+## R1. Shell
+- [ ] Project rail (All, one tile per project, add, needs-you badge, Manage, account).
+- [ ] Top bar: context on the left, Home / Chats / Factory pill, Search or ask field, mic.
+- [ ] New routes (`/`, `/chats`, `/factory`, `/manage/:section`, `/p/:projectId/...`); every old route redirects.
+- [ ] Phone frame (scope sheet, icon pill) with no horizontal scroll at 390px.
+- [ ] Tokens per the README (white page, soft radii and shadows on redesigned surfaces).
+
+## R2. Home
+- [ ] All projects: greeting, prompt box, Since you left, Needs you, Running, Factory health.
+- [ ] Project home: prompt box, starter pills, Happening now, Since you left, Repos, Workflows here, default agent.
+- [ ] `/catch-up` is a section of Home; a piece of work and its tour still open.
+
+## R3. Chats
+- [ ] List (grouped by project under All), New chat pane, thread with header, messages and composer.
+- [ ] Workflow suggestion pill above the composer; click only.
+- [ ] Starting a run puts a live run card in the thread with "Open in Factory".
+
+## R4. Factory
+- [ ] Index: live summary, workflow cards with live thumbnails, dashed New workflow card.
+- [ ] New workflow sheet: Describe it, from chats, copy, blank.
+- [ ] Runs live on the cards, the editor and Home; there is no Runs tab.
+
+## R5. Editor
+- [ ] Free left-to-right canvas snapping to 20px; positions persist; béziers without arrowheads; new nodes.
+- [ ] Tool island (hover widens), Versions / Try it / Make live, Versions panel; drafts autosave.
+- [ ] Box select with marching ants → wrap panel → goal frame, built on the existing `until` condition.
+- [ ] Side by side wrap.
+- [ ] Run state on the canvas (node states, animated frame, verdicts beside the frame).
+- [ ] Agent step inspector; YAML and Used in panels; triggers from the trigger step.
+- [ ] Judge condition: ADR written and approved by David before any backend work.
+
+## R6. Assistant
+- [ ] Search or ask: tap ⌘K searches or asks; hold ⌘K (or the mic) talks.
+- [ ] Quick chat panel docked right, stays open until closed, "Open as chat".
+
+## R7. Manage
+- [ ] Frame with the six sections; Runners table.
+- [ ] Projects, Repositories, People & access, Secrets.
+- [ ] Agents & models: accounts strip with sign-in, profiles table, profile side sheet, Skills, Step templates,
+      Models, Assistant tabs.
+- [ ] Agent chip is a profile picker on Home, Chats and the canvas; project default agent on the project home.
+- [ ] Codex is signed in through the accounts strip in production and a Codex chat or run is proven there.
+
+## R8. Clean-up
+- [ ] Replaced pages and components are deleted; no dead routes; no unused exports left behind.
+- [ ] e2e journeys and the emulator loop use the new navigation.
+
+## Redesign done when
+- [ ] Every box above is checked with evidence.
+- [ ] Each prototype screen has a deployed screenshot at 1280 and 390, compared against the prototype by a fresh
+      reviewer with no unresolved differences.
+- [ ] CI and Acceptance are green on the final main SHA.
+- [ ] communication.beluga-wyvern.ts.net runs that SHA.

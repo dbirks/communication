@@ -33,7 +33,43 @@ function withParams(path: string, params?: Record<string, string>): string {
   return query === "" ? path : `${path}?${query}`;
 }
 
+/** Manage's left sub-nav, in order (handoff README §7). */
+export const MANAGE_SECTIONS = [
+  "projects",
+  "repositories",
+  "people",
+  "runners",
+  "agents",
+  "secrets",
+] as const;
+export type ManageSection = (typeof MANAGE_SECTIONS)[number];
+
+/** The three daily places in the top bar's pill, plus Manage. */
+export type Section = "home" | "chats" | "factory" | "manage";
+
 export const routes = {
+  /**
+   * Redesign routes (docs/design/redesign/CONTRACT.md). The selected project
+   * ("scope") is a URL prefix: `/p/:projectId/...`; "All projects" has none.
+   * Pass `scope` = a project id, or null/undefined for All.
+   */
+  scopeHome: (scope?: string | null): string => (scope ? `/p/${encode(scope)}` : "/"),
+  chats: (scope?: string | null): string => `${scope ? `/p/${encode(scope)}` : ""}/chats`,
+  /** `new` is the New chat pane. */
+  chat: (id: string, scope?: string | null): string =>
+    `${scope ? `/p/${encode(scope)}` : ""}/chats/${encode(id)}`,
+  factory: (scope?: string | null): string => `${scope ? `/p/${encode(scope)}` : ""}/factory`,
+  /** The workflow editor. `params` may carry `draft`, `panel` (`yaml` |
+   * `used-in` | `versions`) and `run` (show a run's live state on the canvas). */
+  factoryWorkflow: (
+    pipelineId: string,
+    scope?: string | null,
+    params?: Record<string, string>,
+  ): string =>
+    withParams(`${scope ? `/p/${encode(scope)}` : ""}/factory/${encode(pipelineId)}`, params),
+  /** Manage is global (never scoped): `/manage/:section[/:itemId]`. */
+  manage: (section: ManageSection = "projects", itemId?: string): string =>
+    itemId ? `/manage/${section}/${encode(itemId)}` : `/manage/${section}`,
   /** `/` — the Home briefing (placeholder until the briefing data lands). */
   home: (): string => "/",
   /** Legacy addresses (finding 03): `/inbox` and `/board` are no longer
