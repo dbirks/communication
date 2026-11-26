@@ -232,7 +232,7 @@ describe(`/projects/:projectId/runs/:runId`, () => {
       "revision 8 published since this run started — this run is pinned to 7",
     );
     expect(screen.getByTestId("run-new-revision-link").getAttribute("href")).toBe(
-      `/workflows/${WIRE_PIPELINE_ID}`,
+      `/factory/${WIRE_PIPELINE_ID}`,
     );
     // The pinned identity the run started with is unchanged on the page: the
     // title is still the run's own sentence and the meta line still carries the

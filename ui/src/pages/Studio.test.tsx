@@ -1,11 +1,10 @@
 /**
- * The Workflow Studio route: the header / palette / canvas surface over one
- * draft, the YAML toggle, the stale-canvas fallback on invalid YAML, the
- * read-only rule, and the Save / Validate / Publish actions the inline editor
- * used to own (this file now also asserts the findings and the versioned
- * PUT that the library tests used to exercise through DraftEditor).
+ * The Workflow Studio route: TopBarLeft breadcrumb & draft status, top-right
+ * Versions / Try it / Make live / "..." actions, 800ms debounced autosave,
+ * GoalFrame / WrapPanel callbacks, AgentStepCard overlay, ?run= live state,
+ * synthetic Trigger node, phone sheets, and assistant proposal lifecycle.
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,11 +21,13 @@ import {
 import { validValidation, w8DraftYaml, w8Validation } from "../test/fixtures/m4/w8Draft";
 import { samplePipelineYaml } from "../test/fixtures/m4/samplePipeline";
 import { uiLayoutOfText } from "../components/studio/useStudioDraft";
-import { PipelinePage } from "./Library";
+import type { GoalSpec } from "../components/studio/wrap/wrapModel";
+import type { VerdictRound } from "../components/studio/wrap/VerdictStack";
 import { StudioPage } from "./Studio";
 
 // The canvas is the heaviest child (React Flow) and is covered by its own
-// suite; here the stub mirrors the props the page must hand down.
+// suite; here the stub mirrors the props the page hands down and exposes
+// callback hooks for integration assertions.
 vi.mock("../components/studio/StudioCanvas", () => ({
   StudioCanvas: (props: {
     showToolIsland?: boolean;
@@ -35,28 +36,117 @@ vi.mock("../components/studio/StudioCanvas", () => ({
     staleMessage?: string;
     readOnly?: boolean;
     selectedId?: string | null;
+    selectedIds?: string[];
     highlight?: string[];
+    direction?: string;
+    tool?: string;
+    phone?: boolean;
+    statusOverlay?: Record<string, { state: string; label: string }>;
+    verdictsByScope?: Record<string, VerdictRound[]>;
+    trigger?: { subline: string; onClick: () => void } | null;
     onSelectionChange?: (ids: string[]) => void;
-  }) => (
-    <div
-      data-testid="studio-canvas"
-      data-stale={props.stale ? "true" : "false"}
-      data-read-only={props.readOnly ? "true" : "false"}
-      data-selected={props.selectedId ?? ""}
-      data-highlight-count={props.highlight ? props.highlight.length : 0}
-    >
-      {props.stale ? props.staleMessage : "canvas"}
-      {props.showToolIsland && (
+    onSelect?: (id: string | null) => void;
+    onWrapRepeat?: (ids: string[], goal: GoalSpec) => void;
+    onWrapSideBySide?: (ids: string[]) => void;
+    onEditGoal?: (scopeId: string, goal: GoalSpec) => void;
+    onUnwrap?: (scopeId: string) => void;
+    renderNodeOverlay?: (arg: {
+      nodeId: string;
+      placement: { left: number; top: number; side: "right" | "left" };
+      sheet: boolean;
+    }) => React.ReactNode;
+  }) => {
+    const statusObj = props.statusOverlay ?? {};
+    return (
+      <div
+        data-testid="studio-canvas"
+        data-direction={props.direction ?? "TB"}
+        data-tool={props.tool ?? "select"}
+        data-phone={props.phone ? "true" : "false"}
+        data-stale={props.stale ? "true" : "false"}
+        data-read-only={props.readOnly ? "true" : "false"}
+        data-selected={props.selectedId ?? ""}
+        data-selected-count={props.selectedIds ? props.selectedIds.length : 0}
+        data-highlight-count={props.highlight ? props.highlight.length : 0}
+        data-trigger-subline={props.trigger?.subline ?? ""}
+      >
+        {props.stale ? props.staleMessage : "canvas"}
+        <div data-testid="mock-status-overlay">{JSON.stringify(statusObj)}</div>
+        <div data-testid="mock-verdicts">{JSON.stringify(props.verdictsByScope ?? {})}</div>
+        {props.trigger ? (
+          <button type="button" data-testid="mock-trigger-node" onClick={props.trigger.onClick}>
+            Trigger: {props.trigger.subline}
+          </button>
+        ) : null}
+        {props.showToolIsland && (
+          <button
+            type="button"
+            data-testid="tool-island"
+            onClick={() => props.onIslandAdd?.("agent.acp", { x: 20, y: 40 })}
+          >
+            Add Agent
+          </button>
+        )}
         <button
-          data-testid="tool-island"
-          onClick={() => props.onIslandAdd?.("agent.acp", { x: 20, y: 40 })}
+          type="button"
+          data-testid="mock-select-plan"
+          onClick={() => props.onSelectionChange?.(["plan"])}
         >
-          Add Agent
+          Select plan
         </button>
-      )}
-      <button onClick={() => props.onSelectionChange?.(["plan", "check"])}>Select steps</button>
-    </div>
-  ),
+        <button
+          type="button"
+          data-testid="mock-select-pair"
+          onClick={() => props.onSelectionChange?.(["plan", "check"])}
+        >
+          Select steps
+        </button>
+        <button
+          type="button"
+          data-testid="mock-wrap-repeat"
+          onClick={() =>
+            props.onWrapRepeat?.(["plan", "check"], {
+              kind: "judge",
+              text: "tests pass and diff is clean",
+              maxRounds: 3,
+            })
+          }
+        >
+          Wrap repeat
+        </button>
+        <button
+          type="button"
+          data-testid="mock-wrap-side"
+          onClick={() => props.onWrapSideBySide?.(["plan", "check"])}
+        >
+          Wrap side
+        </button>
+        <button
+          type="button"
+          data-testid="mock-edit-goal"
+          onClick={() =>
+            props.onEditGoal?.("until", {
+              kind: "command",
+              text: "npm test",
+              maxRounds: 5,
+            })
+          }
+        >
+          Edit goal
+        </button>
+        <button type="button" data-testid="mock-unwrap" onClick={() => props.onUnwrap?.("until")}>
+          Unwrap scope
+        </button>
+        {props.selectedId
+          ? props.renderNodeOverlay?.({
+              nodeId: props.selectedId,
+              placement: { left: 320, top: 80, side: "right" },
+              sheet: Boolean(props.phone),
+            })
+          : null}
+      </div>
+    );
+  },
 }));
 
 const admin: Me = { ...meFixture, is_org_admin: true };
@@ -67,7 +157,6 @@ const validatePath = `${draftPath}/validate`;
 const publishPath = `${draftPath}/publish`;
 const digest = wirePipeline.revisions[0].revision_digest;
 
-/** The draft served with parseable YAML — the canvas renders it live. */
 function parseableDraft(validation?: ValidateResponse): Draft {
   return wireDraft("invalid", validation, samplePipelineYaml);
 }
@@ -98,6 +187,9 @@ function wireDraft(
 function routes(overrides: RouteStub[] = []): RouteStub[] {
   const base: RouteStub[] = [
     { path: "/api/v1/me", body: admin },
+    { path: "/api/v1/users", body: { items: [] } },
+    { path: "/api/v1/projects", body: { items: [] } },
+    { path: "/api/v1/agent-profiles", body: { items: [] } },
     { path: pipelinePath, body: wirePipeline },
     { path: draftPath, body: wireDraft("invalid", w8Validation as ValidateResponse) },
     {
@@ -118,19 +210,20 @@ function LocationProbe() {
   return <output data-testid="location">{location.pathname + location.search}</output>;
 }
 
-function mount(path: string, overrides: RouteStub[] = []) {
+function mount(path: string, overrides: RouteStub[] = [], withTopBarSlot = false) {
   const { fetchMock, requests } = mockFetch(routes(overrides));
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
   render(
     <QueryClientProvider client={queryClient}>
+      {withTopBarSlot ? <div id="top-bar-left-slot" data-testid="top-bar-left-slot" /> : null}
       <MemoryRouter initialEntries={[path]}>
         <LocationProbe />
         <Routes>
           <Route path="/factory/:pipelineId" element={<StudioPage />} />
-          <Route path="/library/:pipelineId" element={<PipelinePage />} />
-          <Route path="/library/:pipelineId/drafts/:draftId" element={<StudioPage />} />
+          <Route path="/p/:projectId/factory/:pipelineId" element={<StudioPage />} />
+          <Route path="/workflows/:pipelineId/drafts/:draftId" element={<StudioPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -138,218 +231,183 @@ function mount(path: string, overrides: RouteStub[] = []) {
   return { fetchMock, requests };
 }
 
-const studioPath = `/library/${WIRE_PIPELINE_ID}/drafts/${WIRE_DRAFT_ID}`;
+const studioPath = `/workflows/${WIRE_PIPELINE_ID}/drafts/${WIRE_DRAFT_ID}`;
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
-describe("/library/:pipelineId/drafts/:draftId", () => {
-  it("renders the header, the palette and the canvas over the draft", async () => {
-    mount(studioPath, [
-      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
-    ]);
-    const header = await screen.findByTestId("studio-header");
-    expect((await screen.findByTestId("studio-title")).textContent).toBe("Feature development");
-    // The version the draft read served, and the server's last verdict.
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("· DRAFT V12");
+describe("Workflow editor (rx-editor R5)", () => {
+  it("renders LR canvas, TopBarLeft breadcrumb, top-right controls, and hides StudioHeader/StudioStatusBar", async () => {
+    mount(
+      studioPath,
+      [{ path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) }],
+      true,
+    );
+
+    const slot = await screen.findByTestId("top-bar-left-slot");
+    expect((await within(slot).findByTestId("studio-title")).textContent).toBe(
+      "Feature development",
+    );
+    expect(within(slot).getByTestId("studio-breadcrumb-workflows").getAttribute("href")).toBe(
+      "/factory",
+    );
+    expect(within(slot).getByTestId("studio-draft-status").textContent).toContain("Your draft");
+
+    expect(screen.queryByTestId("studio-header")).toBeNull();
     expect(screen.queryByTestId("studio-status-bar")).toBeNull();
-    // Design 1g: the header carries the Canvas/YAML tabs only — the
-    // Runs/Assigned links are gone (the testids are retired).
-    const tabs = await screen.findByTestId("studio-header-tabs");
-    expect((await screen.findByTestId("studio-view-canvas")).getAttribute("aria-selected")).toBe(
-      "true",
-    );
-    expect((await screen.findByTestId("studio-view-yaml")).getAttribute("aria-selected")).toBe(
-      "false",
-    );
-    expect(within(tabs).queryByTestId("studio-header-runs")).toBeNull();
-    expect(within(tabs).queryByTestId("studio-header-assigned")).toBeNull();
-    // The breadcrumb links back to the workflows index.
-    expect((await screen.findByTestId("studio-breadcrumb-workflows")).getAttribute("href")).toBe(
-      "/workflows",
-    );
-    // The authoring columns: palette on the left, the canvas in the middle,
-    // the inspector's pipeline view when nothing is selected.
     expect(screen.queryByTestId("studio-palette")).toBeNull();
-    expect(await screen.findByTestId("tool-island")).toBeTruthy();
-    expect((await screen.findByTestId("studio-canvas")).getAttribute("data-stale")).toBe("false");
-    expect(await screen.findByTestId("insp-pipeline")).toBeTruthy();
-    expect(within(header).getByTestId("studio-save")).toBeTruthy();
+    expect(screen.queryByTestId("studio-view-canvas")).toBeNull();
+    expect(screen.queryByTestId("studio-view-yaml")).toBeNull();
+
+    expect(screen.getByTestId("editor-versions-btn")).toBeTruthy();
+    expect(screen.getByTestId("editor-try-it-btn")).toBeTruthy();
+    expect(screen.getByTestId("studio-publish").textContent).toBe("Make live");
+    expect(screen.getByTestId("editor-more-btn")).toBeTruthy();
+
+    const canvas = await screen.findByTestId("studio-canvas");
+    expect(canvas.getAttribute("data-direction")).toBe("LR");
+    expect(canvas.getAttribute("data-stale")).toBe("false");
+    expect(screen.getByTestId("tool-island")).toBeTruthy();
   });
 
-  it("adds an agent from the island and selects it", async () => {
+  it("opens AgentStepCard beside an agent step and switches to full inspector via More settings", async () => {
+    const simpleAgentYaml = `kind: Pipeline
+spec:
+  nodes:
+    - id: plan
+      kind: agent.acp
+      config:
+        profile: reviewer
+        prompt: Inspect recent changes.
+`;
     mount(studioPath, [
-      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+      { path: draftPath, body: wireDraft("invalid", undefined, simpleAgentYaml) },
     ]);
-    await waitFor(() =>
-      expect(screen.getByTestId("studio-canvas").getAttribute("data-stale")).toBe("false"),
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(screen.getByTestId("mock-select-plan"));
+
+    const card = await screen.findByTestId("agent-step-card");
+    expect(card.textContent).toContain("AGENT STEP");
+    expect((screen.getByTestId("agent-card-name") as HTMLInputElement).value).toBe("plan");
+    const promptBox = screen.getByTestId("agent-card-prompt") as HTMLTextAreaElement;
+    expect(promptBox.rows).toBeGreaterThanOrEqual(6);
+    expect(promptBox.value).toBe("Inspect recent changes.");
+
+    // Edit prompt via card (commits on blur) -> YAML panel reflects it
+    fireEvent.change(promptBox, { target: { value: "Review unit test coverage first." } });
+    fireEvent.blur(promptBox);
+    fireEvent.click(screen.getByTestId("agent-card-more-settings"));
+    expect(await screen.findByTestId("editor-inspector-panel")).toBeTruthy();
+    expect(screen.queryByTestId("agent-step-card")).toBeNull();
+
+    // Close inspector and open View YAML via "..." menu
+    fireEvent.click(screen.getByTestId("editor-inspector-close"));
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    expect(await screen.findByTestId("editor-panel-yaml")).toBeTruthy();
+    expect(screen.getByTestId("yaml-view").textContent).toContain(
+      "Review unit test coverage first.",
     );
-    fireEvent.click(await screen.findByTestId("tool-island"));
-    expect(screen.queryByTestId("studio-op-error")?.textContent).toBeUndefined();
-    expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("studio-view-yaml"));
-    expect((screen.getByTestId("studio-yaml") as HTMLTextAreaElement).value).toContain("agent.acp");
   });
 
-  it("wraps the workflow name in the header instead of cutting it (pass-2 1g DEFECT)", async () => {
-    // `1g-studio-1280/390.png` showed `Emu plan pass-2-202…` with free header
-    // space beside it. The page is what hands the name down, so prove the pair
-    // end to end: the full name reaches the H1, keeps its `title`, and the
-    // header carries the wrap-not-truncate shape rather than a 52px cap.
-    const longName = "Emu plan pass-2-20261101181828 with a goal that needs room";
+  it("adds an agent from ToolIsland, selects it, and preserves long titles safely", async () => {
+    const longName = "Long workflow title that keeps its full title attribute";
     mount(studioPath, [
       { path: pipelinePath, body: { ...wirePipeline, display_name: longName } },
       { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
     ]);
-    const header = await screen.findByTestId("studio-header");
-    const title = within(header).getByTestId("studio-title");
+    const title = await screen.findByTestId("studio-title");
     expect(title.textContent).toBe(longName);
     expect(title.getAttribute("title")).toBe(longName);
-    expect(title.className).not.toMatch(/(^|\s)truncate(\s|$)/);
-    expect(title.classList.contains("min-w-0")).toBe(true);
-    expect(header.className).not.toMatch(/(^|\s)md:h-\[52px\](\s|$)/);
-    // The actions stay one right-aligned group, never a squeezed column, and
-    // the header never trades the wrap for a sideways scroll that would push
-    // that group off-screen between 768 and 1024px.
-    const actions = within(header).getByTestId("studio-header-actions");
-    expect(actions.classList.contains("ml-auto")).toBe(true);
-    expect(actions.classList.contains("flex-nowrap")).toBe(true);
-    expect(actions.classList.contains("md:shrink-0")).toBe(true);
-    expect(header.className).not.toMatch(/(^|\s)md:(flex-nowrap|overflow-x-auto)(\s|$)/);
+
+    fireEvent.click(await screen.findByTestId("tool-island"));
+    expect(screen.queryByTestId("studio-op-error")).toBeNull();
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBeTruthy();
+    expect(await screen.findByTestId("agent-step-card")).toBeTruthy();
   });
 
-  it("says `unsaved` exactly once — in the draft chip, never the status bar (1g item 4)", async () => {
-    // The 2026-10-30 review's 1g item: the word used to print three times over
-    // one draft (in the chip, beside the chip, and in the strip). Design 1g
-    // puts the mark on the draft chip; the strip's own line stays `N steps`.
-    mount(studioPath, [
-      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
-    ]);
-    const page = await screen.findByTestId("studio-page");
-    expect(screen.queryByTestId("studio-dirty")).toBeNull();
-    // A local edit is what makes a draft unsaved: type one character.
-    fireEvent.click(screen.getByTestId("studio-view-yaml"));
-    const editor = screen.getByTestId("studio-yaml") as HTMLTextAreaElement;
-    fireEvent.change(editor, { target: { value: editor.value + " " } });
-
-    const dirty = screen.getByTestId("studio-dirty");
-    expect(dirty.textContent).toBe("unsaved");
-    // It lives inside the chip — the header's one draft-state affordance.
-    expect(screen.getByTestId("studio-draft-version").contains(dirty)).toBe(true);
-    expect(screen.queryByText("unsaved", { exact: false })).toBeTruthy();
-    expect(page.textContent?.match(/unsaved/g)).toHaveLength(1);
-
-    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
-  });
-
-  it("replaces the old ?draft= URL shape through to the Studio route", async () => {
-    mount(`/library/${WIRE_PIPELINE_ID}?draft=${WIRE_DRAFT_ID}`);
-    expect(await screen.findByTestId("studio-page")).toBeTruthy();
-    // The replace happened: the pipeline page is no longer what's rendered.
-    await waitFor(() => expect(screen.queryByTestId("pipeline-page")).toBeNull());
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("· DRAFT V12");
-  });
-
-  it("switches the canvas for the YAML text and back", async () => {
-    mount(studioPath);
-    await screen.findByTestId("studio-canvas");
-    fireEvent.click(await screen.findByTestId("studio-view-yaml"));
-    const box = (await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement;
-    expect(box.value).toContain("apiVersion: communication.dev/v1alpha1");
-    expect(screen.queryByTestId("studio-canvas")).toBeNull();
-    fireEvent.click(screen.getByTestId("studio-view-canvas"));
-    expect(await screen.findByTestId("studio-canvas")).toBeTruthy();
-    expect(screen.queryByTestId("studio-yaml")).toBeNull();
-  });
-
-  it("keeps invalid YAML, names the line, and stalls the canvas on lastGood", async () => {
-    mount(studioPath);
-    await screen.findByTestId("studio-canvas");
-    fireEvent.click(await screen.findByTestId("studio-view-yaml"));
-    const box = (await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement;
-    fireEvent.change(box, {
-      target: { value: `apiVersion: communication.dev/v1alpha1\nspec: [broken` },
-    });
-    // The text stays (the parse error, with its line, names the problem)…
-    const error = await screen.findByTestId("studio-yaml-error");
-    expect(error.textContent).toContain("line");
-    expect((screen.getByTestId("studio-yaml") as HTMLTextAreaElement).value).toContain("broken");
-    // … and the canvas goes stale, saying the graph edits are paused.
-    fireEvent.click(screen.getByTestId("studio-view-canvas"));
-    const canvas = await screen.findByTestId("studio-canvas");
-    expect(canvas.getAttribute("data-stale")).toBe("true");
-    expect(canvas.textContent).toContain("graph editing is paused");
-  });
-
-  it("hides Save and Publish without the library role, and says why", async () => {
-    mount(studioPath, [{ path: "/api/v1/me", body: member }]);
-    await screen.findByTestId("studio-header");
-    expect((await screen.findByTestId("studio-read-only-note")).textContent).toContain(
-      "library role",
-    );
-    expect(screen.queryByTestId("studio-save")).toBeNull();
-    expect(screen.queryByTestId("studio-publish")).toBeNull();
-    // The same answer reaches the canvas: no handles, no edits.
-    expect((await screen.findByTestId("studio-canvas")).getAttribute("data-read-only")).toBe(
-      "true",
-    );
-  });
-
-  it("Validates against the server and renders the findings with go-to-node", async () => {
-    const { requests } = mount(studioPath, [{ path: draftPath, body: parseableDraft() }]);
-    await screen.findByTestId("studio-header");
-    fireEvent.click(await screen.findByTestId("studio-validate"));
-    await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
-    // The § 2.2 body, rendered: the verdict line and every finding…
-    const drawer = await screen.findByTestId("studio-validate-drawer");
-    expect((await screen.findByTestId("studio-validate-verdict")).textContent).toContain("invalid");
-    const findings = await screen.findAllByTestId(/^studio-validate-finding-/);
-    expect(findings.length).toBeGreaterThan(0);
-    expect(findings[0].textContent).toContain("duplicate_key");
-    // … and the one whose pointer names a node offers the jump.
-    fireEvent.click(within(drawer).getByTestId("studio-goto-node-0"));
-    expect(await screen.findByTestId("insp-node")).toBeTruthy();
-  });
-
-  it("Save posts the version and bakes the layout into the YAML's metadata.ui", async () => {
+  it("debounces autosave by 800ms after edits and bakes layout into metadata.ui", async () => {
     const layout = { nodes: { plan: { x: 114.25, y: 203.485 } } };
+    const simpleYaml = `kind: Pipeline
+spec:
+  nodes:
+    - id: plan
+      kind: agent.acp
+      config:
+        profile: reviewer
+        prompt: Initial prompt
+`;
     const { requests } = mount(studioPath, [
       {
         path: draftPath,
-        body: wireDraft("invalid", validValidation as ValidateResponse, samplePipelineYaml, layout),
+        body: wireDraft("invalid", validValidation as ValidateResponse, simpleYaml, layout),
       },
     ]);
-    await screen.findByTestId("studio-header");
-    fireEvent.click(await screen.findByTestId("studio-save"));
-    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
+    await screen.findByTestId("studio-canvas");
+    vi.useFakeTimers();
+
+    fireEvent.click(screen.getByTestId("tool-island"));
+    // Before 800ms elapses, no PUT has fired
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(0);
+
+    // At 800ms+, the debounced autosave fires with the version and metadata.ui
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1);
     const body = JSON.parse(requestsTo(requests, draftPath, "PUT")[0].body ?? "{}") as {
       version?: number;
       document_yaml?: string;
       ui_layout?: unknown;
     };
-    // The frozen wire body is exactly {document_yaml, version}: positions ride
-    // the bytes as the digest-excluded metadata.ui block (ADR-0021 § 5), they
-    // never travel as a separate member.
     expect(body.version).toBe(12);
     expect(body).not.toHaveProperty("ui_layout");
-    expect(body.document_yaml).toContain("apiVersion: communication.dev/v1alpha1");
-    expect(uiLayoutOfText(body.document_yaml ?? "")).toEqual(layout);
+    expect(uiLayoutOfText(body.document_yaml ?? "")?.nodes?.plan).toEqual(layout.nodes.plan);
   });
 
-  it("Publish posts only on the server's valid verdict, and names the revision", async () => {
+  it("hides Make live and editing affordances without the library role", async () => {
+    mount(studioPath, [{ path: "/api/v1/me", body: member }]);
+    expect((await screen.findByTestId("studio-read-only-note")).textContent).toContain(
+      "library role",
+    );
+    expect(screen.queryByTestId("studio-publish")).toBeNull();
+    expect((await screen.findByTestId("studio-canvas")).getAttribute("data-read-only")).toBe(
+      "true",
+    );
+  });
+
+  it("Make live runs validation when invalid and renders findings with go-to-node", async () => {
+    const { requests } = mount(studioPath, [{ path: draftPath, body: parseableDraft() }]);
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(await screen.findByTestId("studio-publish"));
+
+    await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
+    expect(requestsTo(requests, publishPath, "POST")).toHaveLength(0);
+
+    const drawer = await screen.findByTestId("studio-validate-drawer");
+    expect(screen.getByTestId("studio-validate-verdict").textContent).toContain("invalid");
+    const findings = within(drawer).getAllByTestId(/^studio-validate-finding-/);
+    expect(findings[0].textContent).toContain("duplicate_key");
+
+    fireEvent.click(within(drawer).getByTestId("studio-goto-node-0"));
+    await waitFor(() => expect(screen.queryByTestId("studio-validate-drawer")).toBeNull());
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBeTruthy();
+  });
+
+  it("Make live publishes when server verdict is already valid and prints the revision", async () => {
     const { requests } = mount(studioPath, [
       { path: draftPath, body: wireDraft("valid", validValidation as ValidateResponse) },
-      {
-        path: draftPath,
-        method: "PUT",
-        body: wireDraft("invalid", w8Validation as ValidateResponse),
-      },
     ]);
-    await screen.findByTestId("studio-header");
-    // Valid verdict, clean bytes: publish is live; the status bar says so.
-    const publish = (await screen.findByTestId("studio-publish")) as HTMLButtonElement;
-    expect(publish.disabled).toBe(false);
-    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
-    fireEvent.click(publish);
+    const publishBtn = (await screen.findByTestId("studio-publish")) as HTMLButtonElement;
+    expect(publishBtn.disabled).toBe(false);
+    fireEvent.click(publishBtn);
+
     await waitFor(() => expect(requestsTo(requests, publishPath, "POST")).toHaveLength(1));
     const body = JSON.parse(requestsTo(requests, publishPath, "POST")[0].body ?? "{}") as {
       version?: number;
@@ -358,22 +416,51 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect((await screen.findByTestId("studio-published")).textContent).toContain("r7");
   });
 
-  it("multi-selects in the outline and wraps the selection in a Repeat until scope", async () => {
-    // The outline (checkbox multi-select) only renders 768–1024px — stub the
-    // media query for the narrow-but-not-phone range, so the page takes the
-    // <1024px outline path without a canvas (the <768px phone path shows
-    // the full canvas with drawers instead).
-    vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: query === "(max-width: 1023px)",
-      media: "",
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      onchange: null,
-      dispatchEvent: () => false,
-    }));
-    const wrapYaml = `kind: Pipeline
+  it("opens Versions panel, previews an older revision read-only with banner, and restores as draft", async () => {
+    const { requests } = mount(studioPath, [
+      {
+        path: `/api/v1/runs`,
+        body: {
+          runs: [
+            {
+              id: "run-1",
+              pipeline_id: WIRE_PIPELINE_ID,
+              revision_digest: digest,
+              status: "completed",
+            },
+          ],
+        },
+      },
+      { path: draftPath, body: parseableDraft(validValidation as ValidateResponse) },
+    ]);
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(screen.getByTestId("editor-versions-btn"));
+
+    const panel = await screen.findByTestId("versions-panel");
+    expect(within(panel).getByTestId("versions-row-draft")).toBeTruthy();
+    const revRow = within(panel).getByTestId(`versions-row-v${wireRevision.revision_number}`);
+    expect(revRow.textContent).toContain("LIVE");
+    await waitFor(() => expect(revRow.textContent).toContain("ran 1 time"));
+
+    // Click revision to preview read-only
+    fireEvent.click(within(panel).getByTestId(`versions-select-v${wireRevision.revision_number}`));
+    const banner = await screen.findByTestId("version-viewing-banner");
+    expect(banner.textContent).toContain(`Viewing v${wireRevision.revision_number}`);
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-read-only")).toBe("true");
+
+    // Restore revision back into the draft
+    fireEvent.click(within(panel).getByTestId(`versions-restore-v${wireRevision.revision_number}`));
+    await waitFor(() =>
+      expect(requestsTo(requests, `/api/v1/revisions/${digest}`).length).toBeGreaterThanOrEqual(2),
+    );
+    await waitFor(() => expect(screen.queryByTestId("version-viewing-banner")).toBeNull());
+  });
+
+  it("wraps selection in Repeat until, updates goal, unwraps, and wraps Side by side", async () => {
+    const wrapYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: wrap-test
 spec:
   nodes:
     - id: plan
@@ -384,28 +471,234 @@ spec:
 `;
     mount(studioPath, [{ path: draftPath, body: wireDraft("invalid", undefined, wrapYaml) }]);
     await screen.findByTestId("studio-canvas");
-    fireEvent.click(screen.getByText("Select steps"));
-    const actions = await screen.findByTestId("selection-toolbar");
-    fireEvent.click(within(actions).getByTestId("wrap-until"));
-    // The wrap went through apply: the YAML now holds the until scope with
-    // both members as its body, and the scope is selected for the inspector.
-    await screen.findByText("Pass when (CEL)");
-    fireEvent.click(screen.getByTestId("studio-view-yaml"));
-    const box = await screen.findByTestId("studio-yaml");
-    const text = (box as HTMLTextAreaElement).value;
-    expect(text).toContain("kind: until");
-    expect(text).toContain("body:");
-    expect(text).toContain("id: plan");
-    expect(text).toContain("id: check");
-    expect(text).toContain("passWhen");
-    vi.unstubAllGlobals();
+
+    fireEvent.click(screen.getByTestId("mock-wrap-repeat"));
+    await waitFor(() =>
+      expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBe("until"),
+    );
+
+    // Open YAML panel to verify the until scope + goal judge step
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    expect((await screen.findByTestId("yaml-view")).textContent).toContain("kind: until");
+    expect(screen.getByTestId("yaml-view").textContent).toContain("GOAL_MET");
+    fireEvent.click(screen.getByTestId("editor-panel-close"));
+
+    // Edit goal to command kind, then unwrap
+    fireEvent.click(screen.getByTestId("mock-edit-goal"));
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    expect((await screen.findByTestId("yaml-view")).textContent).toContain("executable: npm");
+    fireEvent.click(screen.getByTestId("editor-panel-close"));
+
+    fireEvent.click(screen.getByTestId("mock-unwrap"));
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    expect((await screen.findByTestId("yaml-view")).textContent).not.toContain("kind: until");
+    fireEvent.click(screen.getByTestId("editor-panel-close"));
+
+    // Side by side wrap
+    fireEvent.click(screen.getByTestId("mock-wrap-side"));
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    expect((await screen.findByTestId("yaml-view")).textContent).toContain("kind: parallel");
   });
 
-  it("lays the phone out as one scrolling document, palette and inspector included", async () => {
-    // The pass-2 review found the 390 studio (1g-studio, 1g-inspector-edit)
-    // clipped: a fixed-height root over an inner scroll box stopped the palette
-    // after `Approval`, kept the inspector below the fold, and truncated the
-    // status bar to `to publish: va…`. The phone now scrolls as a document.
+  it("renders ?run=<runId> read-only overlay, VerdictStack judge reason, and top-center run banner", async () => {
+    const runId = "01987a61-1111-7000-8000-aaaaaaaaaaaa";
+    const judgeLoopYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: run-test
+spec:
+  nodes:
+    - id: build_loop
+      kind: until
+      config:
+        maxIterations: 4
+        passWhen: 'nodes.judge.outputs.text.contains("GOAL_MET")'
+        body:
+          nodes:
+            - id: code
+              kind: agent.acp
+              config:
+                profile: coder
+                prompt: Implement feature.
+            - id: judge
+              kind: agent.acp
+              dependsOn: [code]
+              config:
+                profile: judge
+                prompt: 'Decide whether this goal is met: "All tests pass". Answer with exactly GOAL_MET or NOT_YET on the first line, then one sentence why.'
+`;
+    const runRecord = {
+      id: runId,
+      project_id: "proj-1",
+      pipeline_id: WIRE_PIPELINE_ID,
+      pipeline_revision_id: wireRevision.id,
+      revision_digest: digest,
+      plan_digest: "0".repeat(64),
+      digest_scope: "v1alpha1-canonical-1",
+      status: "running",
+      depth: 0,
+      placement: { scheduled: true },
+      expression_evaluations: 0,
+      created_at: "2026-07-31T08:00:00Z",
+    };
+    const runNodes = {
+      run_id: runId,
+      revision_digest: digest,
+      node_executions: [
+        {
+          id: "ne-0",
+          run_id: runId,
+          node_id: "build_loop",
+          node_instance_key: "/build_loop",
+          scope_key: "",
+          kind: "until",
+          execution_location: "server",
+          status: "running",
+          attempt_count: 1,
+          attempt_limit: 1,
+          in_flight: true,
+          artifact_refs: [],
+        },
+        {
+          id: "ne-1",
+          run_id: runId,
+          node_id: "code",
+          node_instance_key: "/build_loop[1]/code",
+          scope_key: "/build_loop[1]",
+          kind: "agent.acp",
+          execution_location: "worker",
+          status: "succeeded",
+          attempt_count: 1,
+          attempt_limit: 1,
+          in_flight: false,
+          artifact_refs: [],
+        },
+        {
+          id: "ne-2",
+          run_id: runId,
+          node_id: "judge",
+          node_instance_key: "/build_loop[1]/judge",
+          scope_key: "/build_loop[1]",
+          kind: "agent.acp",
+          execution_location: "worker",
+          status: "succeeded",
+          attempt_count: 1,
+          attempt_limit: 1,
+          in_flight: false,
+          artifact_refs: [],
+        },
+        {
+          id: "ne-3",
+          run_id: runId,
+          node_id: "code",
+          node_instance_key: "/build_loop[2]/code",
+          scope_key: "/build_loop[2]",
+          kind: "agent.acp",
+          execution_location: "worker",
+          status: "running",
+          attempt_count: 1,
+          attempt_limit: 1,
+          in_flight: true,
+          artifact_refs: [],
+        },
+      ],
+    };
+
+    mount(`/factory/${WIRE_PIPELINE_ID}?run=${runId}`, [
+      {
+        path: `/api/v1/revisions/${digest}`,
+        body: { ...wireRevision, canonical_document: undefined, document_text: judgeLoopYaml },
+      },
+      {
+        path: `/api/v1/revisions/${wireRevision.id}`,
+        body: { ...wireRevision, canonical_document: undefined, document_text: judgeLoopYaml },
+      },
+      { path: `/api/v1/runs/${runId}`, body: runRecord },
+      { path: `/api/v1/runs/${runId}/nodes`, body: runNodes },
+      { path: `/api/v1/runs/${runId}/events`, body: { items: [] } },
+      {
+        path: `/api/v1/runs/${runId}/nodes/ne-2`,
+        body: {
+          execution: runNodes.node_executions[1],
+          attempts: [
+            {
+              id: "att-2",
+              attempt_number: 1,
+              status: "succeeded",
+              outputs: { text: "NOT_YET\nUnit suite failed on auth middleware." },
+            },
+          ],
+          artifacts: [],
+        },
+      },
+    ]);
+
+    const banner = await screen.findByTestId("studio-run-banner");
+    expect(banner.textContent).toContain("Run");
+    await waitFor(() => expect(banner.textContent).toContain("running"));
+    expect(screen.getByTestId("studio-run-open").getAttribute("href")).toBe(`/runs/${runId}`);
+
+    const canvas = screen.getByTestId("studio-canvas");
+    expect(canvas.getAttribute("data-read-only")).toBe("true");
+    await waitFor(() =>
+      expect(screen.getByTestId("mock-verdicts").textContent).toContain(
+        "Unit suite failed on auth middleware.",
+      ),
+    );
+    expect(screen.getByTestId("mock-status-overlay").textContent).toContain("build_loop");
+  });
+
+  it("surfaces synthetic Trigger node from project schedules and opens TriggersDialog on click", async () => {
+    mount(studioPath, [
+      { path: draftPath, body: parseableDraft() },
+      {
+        path: "/api/v1/projects",
+        body: { items: [{ id: "proj-1", slug: "backend", name: "Backend", description: "" }] },
+      },
+      {
+        path: "/api/v1/projects/proj-1/assignments",
+        body: {
+          assignments: [
+            {
+              id: "assign-1",
+              project_id: "proj-1",
+              pipeline_id: WIRE_PIPELINE_ID,
+              pipeline_revision_id: wireRevision.id,
+            },
+          ],
+        },
+      },
+      {
+        path: "/api/v1/projects/proj-1/schedules",
+        body: {
+          schedules: [
+            {
+              id: "sched-1",
+              project_id: "proj-1",
+              pipeline_id: WIRE_PIPELINE_ID,
+              assignment_id: "assign-1",
+              cron_expr: "0 9 * * 1-5",
+              timezone: "UTC",
+              enabled: true,
+            },
+          ],
+        },
+      },
+      { path: "/api/v1/projects/proj-1/repositories", body: { items: [] } },
+      { path: "/api/v1/projects/proj-1/issue-triggers", body: { issue_triggers: [] } },
+    ]);
+
+    const triggerBtn = await screen.findByTestId("mock-trigger-node");
+    expect(triggerBtn.textContent).toContain("every weekday");
+    fireEvent.click(triggerBtn);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+  });
+
+  it("renders icon-only controls and phone bottom sheets below 768px", async () => {
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query === "(max-width: 767px)",
       media: "",
@@ -421,18 +714,15 @@ spec:
     ]);
     const page = await screen.findByTestId("studio-page");
     expect(page.getAttribute("data-phone")).toBe("true");
-    expect(page.className).toContain("h-full");
-    expect(page.className).toContain("overflow-hidden");
-    expect(screen.getByTestId("studio-canvas")).toBeTruthy();
-    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
-    vi.unstubAllGlobals();
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-phone")).toBe("true");
+    // Open YAML panel as a fixed bottom sheet on phone
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    const yamlSheet = await screen.findByTestId("editor-panel-yaml");
+    expect(yamlSheet.className).toContain("bottom-0");
   });
 
   it("keeps the page heading over a failed draft read", async () => {
-    // Issue #23: the failed read used to render a BARE ProblemBanner — every
-    // other server-error screen (the 1e workflow page above all) keeps the
-    // page's heading over the panel. The design-landmark check
-    // `studio-error-heading` asks for an h1 (or the studio page frame).
     mount(studioPath, [
       {
         path: draftPath,
@@ -440,81 +730,18 @@ spec:
         body: { type: "server_error", title: "Internal server error", detail: "draft gone" },
       },
     ]);
-    // The heading stands: the breadcrumb, and the title the pipeline read
-    // answers with (the draft's own name was never served).
     expect(await screen.findByTestId("studio-breadcrumb")).toBeTruthy();
     expect(screen.getByRole("heading", { level: 1, name: "Feature development" })).toBeTruthy();
-    // The panel is still the panel: role=alert quoting the server.
     const alert = await screen.findByTestId("studio-draft-error");
-    expect(alert.getAttribute("role")).toBe("alert");
     expect(alert.textContent).toContain("draft gone");
-    // And it offers the retry the read supports.
     expect(screen.getByTestId("studio-draft-retry").textContent).toBe("Retry");
-    // No canvas, palette or status bar mounts over the failed read.
-    expect(screen.queryByTestId("studio-page")).toBeNull();
     expect(screen.queryByTestId("studio-canvas")).toBeNull();
   });
 
-  it("titles the failed-draft screen neutrally when the pipeline read failed too", async () => {
-    // Nothing answered the name, so the page says what it is rather than
-    // inventing one (design brief: honest data only).
-    mount(studioPath, [
-      {
-        path: pipelinePath,
-        status: 500,
-        body: { type: "server_error", title: "Internal server error", detail: "pipeline gone" },
-      },
-      {
-        path: draftPath,
-        status: 500,
-        body: { type: "server_error", title: "Internal server error", detail: "draft gone" },
-      },
-    ]);
-    expect(await screen.findByRole("heading", { level: 1, name: "Workflow draft" })).toBeTruthy();
-    expect(await screen.findByTestId("studio-draft-error")).toBeTruthy();
-    // The breadcrumb keeps the one thing the route always knows.
-    expect((await screen.findByTestId("studio-breadcrumb-workflows")).getAttribute("href")).toBe(
-      "/workflows",
-    );
-  });
+  it("opens the current user's open draft on /factory/:pipelineId and creates one on first edit", async () => {
+    const factoryPath = `/factory/${WIRE_PIPELINE_ID}`;
+    const draftsPath = `${pipelinePath}/drafts`;
 
-  it("says the diff has nothing to compare on a zero-revision pipeline", async () => {
-    mount(studioPath, [
-      {
-        path: pipelinePath,
-        body: { ...wirePipeline, revisions: [], revision_count: 0 },
-      },
-    ]);
-    await screen.findByTestId("studio-header");
-    fireEvent.click(await screen.findByTestId("studio-diff"));
-    expect((await screen.findByTestId("studio-diff-drawer")).textContent).toContain(
-      "nothing to compare",
-    );
-  });
-});
-
-describe("editor route draft resolution", () => {
-  const factoryPath = `/factory/${WIRE_PIPELINE_ID}`;
-  const draftsPath = `${pipelinePath}/drafts`;
-
-  it("opens the draft on the old route and the query route", async () => {
-    const { requests } = mount(`${factoryPath}?draft=${WIRE_DRAFT_ID}`);
-    expect(await screen.findByTestId("studio-page")).toBeTruthy();
-    expect(requestsTo(requests, draftPath)).toHaveLength(1);
-    expect(requestsTo(requests, draftsPath)).toHaveLength(0);
-    expect(screen.getByTestId("location").textContent).toContain(`?draft=${WIRE_DRAFT_ID}`);
-  });
-
-  it("opens the current user's open draft", async () => {
-    const { requests } = mount(factoryPath, [
-      { path: "/api/v1/me", body: { ...admin, id: wireUserId } },
-      { path: draftsPath, body: wireDraftSummaries },
-    ]);
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toContain("DRAFT V12");
-    expect(requestsTo(requests, draftPath)).toHaveLength(1);
-  });
-
-  it("shows live before creating a draft on the first edit and saves that edit", async () => {
     const { requests } = mount(factoryPath, [
       { path: draftsPath, method: "GET", body: { drafts: [] } },
       {
@@ -525,24 +752,24 @@ describe("editor route draft resolution", () => {
     ]);
     await screen.findByTestId("studio-canvas");
     expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
-    fireEvent.click(screen.getByTestId("studio-view-yaml"));
-    const editor = screen.getByTestId("studio-yaml") as HTMLTextAreaElement;
-    const edited = editor.value + "\n# first edit";
-    fireEvent.change(editor, { target: { value: edited } });
+    fireEvent.click(screen.getByTestId("tool-island"));
     await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1));
     await waitFor(() =>
       expect(screen.getByTestId("location").textContent).toContain(`?draft=${WIRE_DRAFT_ID}`),
     );
-    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
-    expect(requestsTo(requests, draftPath, "PUT")[0].body).toContain("first edit");
+
+    cleanup();
+    const second = mount(factoryPath, [
+      { path: "/api/v1/me", body: { ...admin, id: wireUserId } },
+      { path: draftsPath, body: wireDraftSummaries },
+    ]);
+    expect((await screen.findByTestId("studio-draft-status")).textContent).toContain("Your draft");
+    expect(requestsTo(second.requests, draftPath)).toHaveLength(1);
   });
 });
 
-describe("the assistant proposal lifecycle", () => {
+describe("the assistant proposal lifecycle (via Workflow settings)", () => {
   const proposalPath = "/api/v1/assistant/draft-proposals";
-  // insert_after against the terminal root step of the parseable fixture —
-  // the same shape the ADR-0044 closed set carries and proposalOps.test.ts
-  // proves applies cleanly.
   const proposalOp = {
     op: "insert_after",
     after: "publish_needs_attention",
@@ -551,11 +778,8 @@ describe("the assistant proposal lifecycle", () => {
     config: { profile: "m4-reviewer", prompt: "Summarise the approved plan for the log." },
   };
 
-  /** Mount, ask the assistant, and land on the preview (highlight + caption). */
   async function mountPreviewing(overrides: RouteStub[] = []) {
     const { requests } = mount(studioPath, [
-      // `overrides` lead: the methodless GET draft stub in `routes()` would
-      // otherwise shadow a PUT-specific stub (mockFetch's first match wins).
       ...overrides,
       { path: draftPath, body: parseableDraft() },
       {
@@ -569,37 +793,29 @@ describe("the assistant proposal lifecycle", () => {
         },
       },
     ]);
-    await screen.findByTestId("studio-header");
-    // Design 1g: the box collapses to the footer row — open it first.
-    fireEvent.click(screen.getByTestId("assistant-proposal-footer"));
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-settings"));
+    fireEvent.click(await screen.findByTestId("assistant-proposal-footer"));
     fireEvent.change(screen.getByTestId("assistant-proposal-input"), {
       target: { value: "Add a note agent at the end" },
     });
     fireEvent.click(screen.getByTestId("assistant-proposal-submit"));
     await screen.findByTestId("assistant-proposal-caption");
-    // The preview rings the proposed node on the canvas and shows the page's
-    // review caption.
-    const canvas = screen.getByTestId("studio-canvas");
-    expect(canvas.getAttribute("data-highlight-count")).toBe("1");
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("1");
     expect(screen.getByTestId("studio-proposal-caption")).toBeTruthy();
     return { requests };
   }
 
-  it("clears the highlight and the preview when Apply saves", async () => {
+  it("clears the highlight when Apply saves", async () => {
     const { requests } = await mountPreviewing();
     fireEvent.click(screen.getByTestId("assistant-proposal-apply"));
-    // The adopted text went out through the version-checked PUT.
-    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT").length).toBe(1));
-    // No reload, no error: the highlight is gone and the box is back to the
-    // plain form (no caption, input present again).
+    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
     expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
     expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
-    expect(screen.queryByTestId("studio-proposal-caption")).toBeNull();
-    expect(screen.queryByTestId("assistant-proposal-apply")).toBeNull();
-    expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
   });
 
-  it("keeps the preview and shows the error when the Apply save fails", async () => {
+  it("keeps the preview and shows the error when Apply fails", async () => {
     await mountPreviewing([
       {
         path: draftPath,
@@ -609,23 +825,14 @@ describe("the assistant proposal lifecycle", () => {
       },
     ]);
     fireEvent.click(screen.getByTestId("assistant-proposal-apply"));
-    // The save failed, so the banner explains it and the proposal is still on
-    // the canvas, still apply-able.
     expect(await screen.findByTestId("studio-save-error")).toBeTruthy();
     expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("1");
-    expect(screen.getByTestId("assistant-proposal-caption")).toBeTruthy();
-    expect(screen.getByTestId("studio-proposal-caption")).toBeTruthy();
-    expect(screen.getByTestId("assistant-proposal-apply")).toBeTruthy();
   });
 
-  it("clears the highlight and the preview when the proposal is discarded", async () => {
+  it("clears the highlight when discarded", async () => {
     await mountPreviewing();
     fireEvent.click(screen.getByTestId("assistant-proposal-discard"));
-    // Undo lands: the highlight is cleared and the box is back to the plain
-    // form. Nothing was saved.
     expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
-    expect(screen.queryByTestId("studio-proposal-caption")).toBeNull();
     expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
-    expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
   });
 });

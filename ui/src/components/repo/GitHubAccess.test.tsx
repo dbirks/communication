@@ -258,7 +258,7 @@ describe("GitHubAccess — the change dialog", () => {
     expect(await screen.findByTestId("github-access-no-secrets")).toBeTruthy();
     expect(screen.queryByTestId("github-access-select")).toBeNull();
     const link = screen.getByTestId("github-access-settings-link");
-    expect(link.getAttribute("href")).toBe(`/p/${projectFixture.id}/settings`);
+    expect(link.getAttribute("href")).toBe(`/manage/projects/${projectFixture.id}`);
     // Nothing to pick and nothing to clear: Save has no honest action.
     expect((screen.getByTestId("github-access-save") as HTMLButtonElement).disabled).toBe(true);
   });

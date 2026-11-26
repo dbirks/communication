@@ -34,7 +34,7 @@ const SOURCE = {
 const CREATED = { ...SOURCE, id: "t-2", slug: "code-reviewer-copy" };
 
 function LocationProbe() {
-  return <span data-testid="location">{useLocation().pathname}</span>;
+  return <span data-testid="location">{useLocation().pathname + useLocation().search}</span>;
 }
 
 function harness(routes: RouteStub[]) {
@@ -44,9 +44,9 @@ function harness(routes: RouteStub[]) {
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/workflows/steps/t-1"]}>
+      <MemoryRouter initialEntries={["/manage/agents?tab=steps&item=t-1"]}>
         <Routes>
-          <Route path="/workflows/steps/:id" element={<LocationProbe />} />
+          <Route path="/manage/agents" element={<LocationProbe />} />
         </Routes>
         <DuplicateDialog open onClose={() => {}} source={SOURCE} />
       </MemoryRouter>
@@ -76,7 +76,7 @@ describe("DuplicateDialog", () => {
     fireEvent.click(screen.getByTestId("duplicate-submit"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe("/workflows/steps/t-2"),
+      expect(screen.getByTestId("location").textContent).toBe("/manage/agents?tab=steps&item=t-2"),
     );
     const post = requestsTo(requests, "/api/v1/node-templates/t-1/duplicate", "POST")[0];
     expect(JSON.parse(String(post.body))).toEqual({

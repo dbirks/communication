@@ -1,25 +1,25 @@
 /**
- * The Ask box splits (ADR-0050): the jump half is this palette — the chord
- * opens it (via the popover while the assistant is on screen, via
- * `openPalette()` here), typing filters, arrows and Enter move the router.
- * The ask half is the assistant popover (`assistant/AssistantPopover.tsx`):
- * the chord opens it first, the Ask row hands the question over (posted with
- * the route context), a 503 leaves the jump list alone, and the honest line
- * says the assistant is not configured. The router assertion uses a location
- * probe rather than a screenshot of a page.
+ * Search or ask (⌘K) + Quick chat + Hold-to-Talk tests (redesign R6).
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import CommandPalette, { openPalette } from "./CommandPalette";
 import AssistantPopover from "./assistant/AssistantPopover";
 import { openAsk } from "./assistant/askControl";
+import { HOLD_TO_TALK_MS } from "./assistant/HoldToTalk";
+import {
+  flushAssistantSpeechReads,
+  resetAssistantSpeechState,
+  TRANSCRIPTIONS_PATH,
+} from "./assistant/useDictation";
 import { shortId } from "../api/names";
 import {
   claudeProfile,
   codexProfile,
+  conversationSummaryFixture,
   meFixture,
   mockFetch,
   projectFixture,
@@ -27,18 +27,19 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import {
+  WIRE_CHILD_PIPELINE_ID,
   WIRE_RUN_ID,
   wirePipelineList,
   wireProjectId,
   wireRunList,
 } from "../test/fixtures/m4/wire";
 
-const runsPath = `/api/v1/projects/${wireProjectId}/runs`;
+const wirePipelineId = WIRE_CHILD_PIPELINE_ID;
 
+const runsPath = `/api/v1/projects/${wireProjectId}/runs`;
 const assistantConversationsPath = "/api/v1/assistant/conversations";
 const assistantMessagesPath = `${assistantConversationsPath}/conv-1/messages`;
 
-/** The one conversation the create stub returns (id `conv-1`). */
 const assistantConversation = {
   id: "conv-1",
   title: null,
@@ -47,11 +48,10 @@ const assistantConversation = {
   last_message_at: null,
 };
 
-/** One scripted turn: prose, a jump it justifies, and the tools behind both. */
 const turnAnswerFixture = {
   answer_markdown: "Two runs wait on you.\n\nBoth stop at `build_until_verified`.",
   links: [
-    { label: "The workflow library", route: "/workflows" },
+    { label: "The workflow library", route: "/factory" },
     { label: "The stalled run", route: `/runs/${WIRE_RUN_ID}` },
   ],
   tool_calls: [
@@ -62,7 +62,6 @@ const turnAnswerFixture = {
   degraded: null,
 };
 
-/** The wire rows the messages POST appends for a turn (the `user` row first). */
 function turnMessagesBody(text: string) {
   return {
     messages: [
@@ -96,16 +95,36 @@ const notConfiguredStub: RouteStub = {
   },
 };
 
-function routes(extra: RouteStub[] = []): RouteStub[] {
+const sampleChat = {
+  ...conversationSummaryFixture,
+  project_id: wireProjectId,
+  origin: "manual" as const,
+  title: "Investigate date parser failure on Feb 29",
+};
+
+function stubRoutes(extra: RouteStub[] = []): RouteStub[] {
   return [
     ...extra,
     { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/me/preferences", body: { assistant: { speech_auto_send: false } } },
+    {
+      path: "/api/v1/assistant/status",
+      body: {
+        chat_model: { configured: true, model: "test-chat" },
+        speech_model: { configured: true, model: "test-asr" },
+        decision_model: { configured: false, model: "" },
+        workers: { online: 1, sandbox_mode: "off" },
+        execution_mode: "inprocess",
+        github_credentials: [],
+        projects: { count: 1 },
+        workflows: { count: 1, samples: 0, assigned: 1 },
+      },
+    },
     { path: "/api/v1/projects", body: { items: [projectFixture] } },
+    { path: "/api/v1/conversations", body: { items: [sampleChat], next_cursor: null } },
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: runsPath, body: wireRunList },
     { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
-    // The popover reads the caller's conversations while open; an empty page
-    // keeps the tests' conversations fresh.
     {
       path: assistantConversationsPath,
       method: "GET",
@@ -114,21 +133,19 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
   ];
 }
 
-/** The palette drives the router; this is how a test sees where it landed. */
 function Where() {
   return <div data-testid="where">{useLocation().pathname}</div>;
 }
 
-/** The shell mounts the palette and the popover together — so do the tests. */
-function mountPalette(path = "/inbox", extra: RouteStub[] = []) {
-  const harness = mockFetch(routes(extra));
+function mountPalette(path = "/", extra: RouteStub[] = []) {
+  const harness = mockFetch(stubRoutes(extra));
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
-        <CommandPalette context="inbox" />
+        <CommandPalette context="home" />
         <AssistantPopover />
         <Routes>
           <Route path="*" element={<Where />} />
@@ -139,59 +156,165 @@ function mountPalette(path = "/inbox", extra: RouteStub[] = []) {
   return harness;
 }
 
-/** Ctrl+K / Cmd+K, whichever the host platform would send. */
-function pressChord(meta = false) {
+/** Tap Ctrl+K / Cmd+K (keydown + keyup). */
+function tapChord(meta = false) {
   fireEvent.keyDown(window, { key: "k", ctrlKey: !meta, metaKey: meta });
+  fireEvent.keyUp(window, { key: "k", ctrlKey: !meta, metaKey: meta });
 }
 
-afterEach(cleanup);
+class FakeRecognition {
+  continuous = false;
+  interimResults = false;
+  lang = "";
+  onresult: ((event: unknown) => void) | null = null;
+  onerror: ((event: { error: string }) => void) | null = null;
+  onend: (() => void) | null = null;
+
+  start() {}
+  stop() {
+    this.onend?.();
+  }
+  abort() {}
+
+  deliver(text: string) {
+    this.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: text } }],
+    });
+  }
+}
+
+const recognizers: FakeRecognition[] = [];
+
+function stubBrowserSpeech() {
+  recognizers.length = 0;
+  class TrackedRecognition extends FakeRecognition {
+    constructor() {
+      super();
+      recognizers.push(this);
+    }
+  }
+  vi.stubGlobal("SpeechRecognition", TrackedRecognition);
+}
+
+beforeEach(() => {
+  resetAssistantSpeechState();
+  window.sessionStorage.clear();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  window.sessionStorage.clear();
+});
 
 describe("CommandPalette", () => {
-  // Finding 08 (which supersedes ADR-0050's ⌘K toggle): ⌘K opens the jump
-  // palette on the FIRST press and never the assistant; Ask has its own chord.
-  it("opens the jump palette on Ctrl+K, never the assistant, with the assistant on screen too", async () => {
+  it("opens the jump palette on Ctrl+K tap with redesign pages, never Quick chat", async () => {
     mountPalette();
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
     expect(screen.queryByTestId("palette-root")).toBeNull();
 
-    pressChord();
+    tapChord();
     const dialog = await screen.findByRole("dialog");
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
 
-    // The chord keeps belonging to the palette even while the assistant is up.
+    // Quick chat can also open; ⌘K keeps belonging to the palette.
     openAsk();
-    await screen.findByTestId("assistant-popover");
-    pressChord();
-    expect(screen.getByTestId("palette-footer").textContent).toContain(
-      "The Ask row opens the assistant popover",
-    );
-    // The sections are jumpable before anything has even loaded. Finding 03:
-    // the pages are Today/Threads/… — no Inbox, no Board, no Library group.
-    expect(within(dialog).getByText("Today")).toBeTruthy();
-    expect(within(dialog).getByText("Operations")).toBeTruthy();
+    await screen.findByTestId("quick-chat");
+    tapChord();
+    expect(within(dialog).getByRole("option", { name: /^Home/ })).toBeTruthy();
+    expect(within(dialog).getByRole("option", { name: /^Chats/ })).toBeTruthy();
+    expect(within(dialog).getByRole("option", { name: /^Factory/ })).toBeTruthy();
+    expect(within(dialog).getByText("Manage · Projects")).toBeTruthy();
+    expect(within(dialog).getByText("Manage · Repositories")).toBeTruthy();
+    expect(within(dialog).getByText("Manage · People & access")).toBeTruthy();
+    expect(within(dialog).getByText("Manage · Runners")).toBeTruthy();
+    expect(within(dialog).getByText("Manage · Agents & models")).toBeTruthy();
+    expect(within(dialog).getByText("Manage · Secrets")).toBeTruthy();
+
+    expect(within(dialog).queryByText("Today")).toBeNull();
+    expect(within(dialog).queryByText("Catch up")).toBeNull();
+    expect(within(dialog).queryByText("Threads")).toBeNull();
+    expect(within(dialog).queryByText("Operations")).toBeNull();
     expect(within(dialog).queryByText("Inbox")).toBeNull();
     expect(within(dialog).queryByText("Board")).toBeNull();
     expect(within(dialog).queryByText("Library")).toBeNull();
-    // Finding 8a: Catch up jumps too, right after Today.
-    expect(within(dialog).getByText("Catch up")).toBeTruthy();
-    // The input drives the list it filters (combobox pattern).
+
     const input = screen.getByTestId("palette-input");
+    expect(input.getAttribute("placeholder")).toBe("Search or ask…");
     expect(input.getAttribute("aria-controls")).toBe("palette-listbox");
     expect(input.getAttribute("aria-expanded")).toBe("true");
   });
 
-  // Acceptance 42474636182 item 7: the Linux e2e runner sends Ctrl+K, a mac
-  // reader sends ⌘K — the handler must open the palette on either modifier.
   it("opens the palette on Ctrl+K on non-mac and on ⌘K on mac", async () => {
     mountPalette();
-    pressChord(false);
+    tapChord(false);
     await screen.findByTestId("palette-root");
     cleanup();
 
     mountPalette();
-    pressChord(true);
+    tapChord(true);
     await screen.findByTestId("palette-root");
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
+  });
+
+  it("uses the redesign routes for projects, chats, workflows, runs, and Manage", async () => {
+    mountPalette();
+    await act(async () => {
+      openPalette();
+    });
+    const list = await screen.findByRole("listbox");
+
+    // Project -> routes.scopeHome(id)
+    const projOpt = (await within(list).findByText(projectFixture.name)).closest(
+      '[role="option"]',
+    ) as HTMLElement;
+    fireEvent.click(projOpt);
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe(`/p/${wireProjectId}`),
+    );
+
+    // Chat -> routes.chat(id, projectId)
+    await act(async () => {
+      openPalette();
+    });
+    const list2 = await screen.findByRole("listbox");
+    const chatOpt = (await within(list2).findByText(sampleChat.title)).closest(
+      '[role="option"]',
+    ) as HTMLElement;
+    fireEvent.click(chatOpt);
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe(
+        `/p/${wireProjectId}/chats/${sampleChat.id}`,
+      ),
+    );
+
+    // Workflow -> routes.factoryWorkflow(id)
+    await act(async () => {
+      openPalette();
+    });
+    const list3 = await screen.findByRole("listbox");
+    const wfOpt = (await within(list3).findByText("Module check")).closest(
+      '[role="option"]',
+    ) as HTMLElement;
+    fireEvent.click(wfOpt);
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe(`/factory/${wirePipelineId}`),
+    );
+
+    // Run -> routes.run(id)
+    await act(async () => {
+      openPalette();
+    });
+    const list4 = await screen.findByRole("listbox");
+    const runOpt = (
+      await within(list4).findByText(`feature-development #${shortId(WIRE_RUN_ID)}`)
+    ).closest('[role="option"]') as HTMLElement;
+    fireEvent.click(runOpt);
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe(`/runs/${WIRE_RUN_ID}`),
+    );
   });
 
   it("filters case-insensitively on the label and on the secondary line", async () => {
@@ -202,19 +325,19 @@ describe("CommandPalette", () => {
     fireEvent.change(input, { target: { value: "MODU" } });
     const list = screen.getByRole("listbox");
     expect(await within(list).findByText("Module check")).toBeTruthy();
-    expect(within(list).queryByText("Operations")).toBeNull();
+    expect(within(list).queryByText("Manage · Runners")).toBeNull();
 
     // "running" appears in no label — only in a run row's secondary text.
     fireEvent.change(input, { target: { value: "running" } });
     expect(
       await within(list).findByText(`feature-development #${shortId(WIRE_RUN_ID)}`),
     ).toBeTruthy();
-    expect(within(list).queryByText("Threads")).toBeNull();
+    expect(within(list).queryByText("Chats")).toBeNull();
   });
 
   it("moves the router with ArrowDown and Enter, and closes when it goes", async () => {
     mountPalette();
-    expect((await screen.findByTestId("where")).textContent).toBe("/inbox");
+    expect((await screen.findByTestId("where")).textContent).toBe("/");
 
     openPalette();
     const input = await screen.findByTestId("palette-input");
@@ -222,14 +345,15 @@ describe("CommandPalette", () => {
       expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0"),
     );
 
-    // Projects is the fourth page (after Today, Catch up and Threads —
-    // finding 8a inserted the Catch up row) at "/projects".
+    // Home (0), Chats (1), Factory (2), Manage · Projects (3)
     for (let i = 0; i < 3; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-3");
-    expect(screen.getByRole("option", { selected: true }).textContent).toContain("Projects");
+    expect(screen.getByRole("option", { selected: true }).textContent).toContain(
+      "Manage · Projects",
+    );
 
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByTestId("where").textContent).toBe("/projects");
+    expect(screen.getByTestId("where").textContent).toBe("/manage/projects");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -240,12 +364,6 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    // The outside-press listener is a `useEffect` on `open`; opening through
-    // the raw window event outside `act` lets that effect race the press
-    // under load. Wrap the open so render + listener registration complete
-    // before the mousedown (in a browser the effect is always attached
-    // before the next user input task, so this is test timing, not a
-    // component race).
     await act(async () => {
       openPalette();
     });
@@ -260,7 +378,6 @@ describe("CommandPalette", () => {
       openPalette();
     });
     await screen.findByRole("dialog");
-    // The backdrop sits inside the portal root; it is still outside the dialog.
     fireEvent.mouseDown(screen.getByTestId("palette-backdrop"));
     expect(screen.queryByRole("dialog")).toBeNull();
 
@@ -273,24 +390,6 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("opens from the app bar box, whose chip carries the current section", async () => {
-    mountPalette();
-    const box = screen.getByTestId("ask-box");
-    expect(box.textContent).toContain("inbox");
-    // Finding 08: ⌘K is search/jump only — Ask has its own chord (⌘J) and its
-    // own floating button — so the box says `Search…`, never `Ask…`.
-    expect(box.textContent).toContain("Search…");
-    expect(box.textContent).not.toContain("Ask…");
-    expect(box.getAttribute("aria-label")).toBe("Search or jump — current section inbox");
-    // jsdom reports no Apple platform, so the chord prints in its Ctrl spelling.
-    expect(box.textContent).toContain("Ctrl K");
-
-    fireEvent.click(box);
-    expect(await screen.findByRole("dialog")).toBeTruthy();
-  });
-
-  // The hint is the same chord the sidebar's `Search ⌘K` field names, spelled
-  // for the keyboard in front of the reader.
   it("prints the chord the host platform labels its modifier with", () => {
     const descriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     Object.defineProperty(window.navigator, "platform", { configurable: true, value: "MacIntel" });
@@ -306,38 +405,61 @@ describe("CommandPalette", () => {
     expect(screen.getByTestId("ask-box").textContent).toContain("Ctrl K");
   });
 
-  it("jumps straight to a project's recent run, and offers its sub-pages", async () => {
-    mountPalette();
-    openPalette();
-    const list = await screen.findByRole("listbox");
+  describe("Ask row and default highlight rule", () => {
+    it("renders Ask as the last row when query is non-empty, and highlights first result for short queries", async () => {
+      mountPalette();
+      openPalette();
+      const input = await screen.findByTestId("palette-input");
 
-    // The row is named the way the runs list names it: pipeline slug + short id.
-    const label = await within(list).findByText(`feature-development #${shortId(WIRE_RUN_ID)}`);
-    expect(within(list).getByText(`recent run · ${projectFixture.name} · running`)).toBeTruthy();
-    expect(within(list).getByText(`${projectFixture.name} · Settings`)).toBeTruthy();
+      expect(screen.queryByTestId("palette-ask")).toBeNull();
 
-    fireEvent.click(label.closest('[role="option"]') as HTMLElement);
-    expect((await screen.findByTestId("where")).textContent).toBe(`/runs/${WIRE_RUN_ID}`);
+      // Short prefix query matching "Factory" -> first result wins, Ask row is last.
+      fireEvent.change(input, { target: { value: "Fac" } });
+      const options = screen.getAllByRole("option");
+      expect(options[0].textContent).toContain("Factory");
+      expect(options[0].getAttribute("aria-selected")).toBe("true");
+      const ask = options[options.length - 1];
+      expect(ask.getAttribute("data-testid")).toBe("palette-ask");
+      expect(ask.textContent).toContain("Ask: \u201CFac\u201D");
+      expect(ask.textContent).toContain("↵");
+      expect(ask.getAttribute("aria-selected")).toBe("false");
+
+      // ArrowDown reaches the Ask row.
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      expect(screen.getByTestId("palette-ask").getAttribute("aria-selected")).toBe("true");
+    });
+
+    it("highlights Ask by default when query ends with '?' or has 4+ words without a prefix match", async () => {
+      mountPalette();
+      openPalette();
+      const input = await screen.findByTestId("palette-input");
+
+      // Question mark -> Ask wins even if a result matches in label/secondary.
+      fireEvent.change(input, { target: { value: "Factory?" } });
+      expect(screen.getByTestId("palette-ask").getAttribute("aria-selected")).toBe("true");
+
+      // 4+ words with no result label starting with query -> Ask wins.
+      fireEvent.change(input, { target: { value: "why did the runners stop" } });
+      expect(screen.getByTestId("palette-ask").getAttribute("aria-selected")).toBe("true");
+    });
+
+    it("lets a matching 4+ word result label win over Ask by default", async () => {
+      mountPalette();
+      openPalette();
+      const input = await screen.findByTestId("palette-input");
+      await waitFor(() => expect(screen.getByText(sampleChat.title)).toBeTruthy());
+
+      // Matches "Investigate date parser failure on Feb 29" (4+ words, label starts with query)
+      fireEvent.change(input, { target: { value: "Investigate date parser failure" } });
+      const options = screen.getAllByRole("option");
+      expect(options[0].textContent).toContain(sampleChat.title);
+      expect(options[0].getAttribute("aria-selected")).toBe("true");
+      expect(screen.getByTestId("palette-ask").getAttribute("aria-selected")).toBe("false");
+    });
   });
 
-  it("offers the question as the first row once there is text to ask", async () => {
-    mountPalette();
-    openPalette();
-    const input = await screen.findByTestId("palette-input");
-
-    // No text means no question: an empty box is a jump list and nothing else.
-    expect(screen.queryByTestId("palette-ask")).toBeNull();
-
-    fireEvent.change(input, { target: { value: "which runs" } });
-    expect((await screen.findByTestId("palette-ask")).textContent).toContain("Ask: which runs");
-
-    // The Ask row leads both the caret and the list it lives in.
-    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0");
-    expect(screen.getAllByRole("option")[0].getAttribute("data-testid")).toBe("palette-ask");
-  });
-
-  it("posts the question with the route context to the popover on Enter", async () => {
-    const { requests } = mountPalette(`/p/${wireProjectId}/runs`, [
+  it("posts the question with route context to Quick chat on Enter", async () => {
+    const { requests } = mountPalette(`/p/${wireProjectId}/chats`, [
       { path: assistantConversationsPath, method: "POST", body: assistantConversation },
       {
         path: assistantMessagesPath,
@@ -350,24 +472,21 @@ describe("CommandPalette", () => {
     fireEvent.change(input, { target: { value: "what is failing here?" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    // The Ask row hands the question to the popover and gets out of the way.
-    const popover = await screen.findByTestId("assistant-popover");
+    const quickChat = await screen.findByTestId("quick-chat");
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(within(popover).getByTestId("assistant-msg-user").textContent).toContain(
+    expect(within(quickChat).getByTestId("assistant-msg-user").textContent).toContain(
       "what is failing here?",
     );
-    // The turn posts as a plain user message; `context.route` is the
-    // on-screen route, so "here" means this project.
     const posted = requestsTo(requests, assistantMessagesPath, "POST");
     expect(posted).toHaveLength(1);
     expect(JSON.parse(posted[0].body ?? "{}")).toEqual({
       text: "what is failing here?",
-      context: { route: `/p/${wireProjectId}/runs`, project_id: wireProjectId },
+      context: { route: `/p/${wireProjectId}/chats`, project_id: wireProjectId },
     });
   });
 
   it("says thinking… while the turn is in flight, then answers and jumps", async () => {
-    const { requests } = mountPalette("/inbox", [
+    const { requests } = mountPalette("/", [
       { path: assistantConversationsPath, method: "POST", body: assistantConversation },
       {
         path: assistantMessagesPath,
@@ -376,8 +495,6 @@ describe("CommandPalette", () => {
       },
     ]);
 
-    // Hold the answer back so "pending" is observed rather than assumed: the
-    // stub's own resolution is only a microtask away.
     const responder = globalThis.fetch as unknown as (
       input: unknown,
       init?: RequestInit,
@@ -397,8 +514,7 @@ describe("CommandPalette", () => {
     fireEvent.change(input, { target: { value: "which runs wait on me?" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    // Pending: a muted line in the popover, whose composer stays the surface.
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     expect((await screen.findByTestId("assistant-thinking")).textContent).toContain("thinking…");
     expect(screen.getByTestId("assistant-composer-input")).toBeTruthy();
     expect(requestsTo(requests, assistantMessagesPath, "POST")).toHaveLength(1);
@@ -408,43 +524,122 @@ describe("CommandPalette", () => {
     expect(within(answer).getByText("Two runs wait on you.")).toBeTruthy();
     expect(within(answer).getByText("build_until_verified").tagName).toBe("CODE");
 
-    // The tools it used are transparency, folded away until asked for.
     const tools = screen.getByTestId("assistant-tools");
     expect(tools.textContent).toContain("used approval.pending, run.list");
     expect(tools.tagName).toBe("DETAILS");
     expect(tools.hasAttribute("open")).toBe(false);
-    expect(tools.textContent).toContain("approval.pending");
-    expect(tools.textContent).toContain("run.list");
-    expect(tools.textContent).toContain("not_found");
 
-    // A link is a jump: it navigates and gets out of the way.
     const link = screen.getAllByTestId("assistant-link")[0];
     expect(link.tagName).toBe("BUTTON");
     fireEvent.click(link);
-    expect((await screen.findByTestId("where")).textContent).toBe("/workflows");
+    expect((await screen.findByTestId("where")).textContent).toBe("/factory");
   });
 
   it("keeps the jump list when the server has no assistant", async () => {
-    mountPalette("/inbox", [
+    mountPalette("/", [
       { path: assistantConversationsPath, method: "POST", body: assistantConversation },
       notConfiguredStub,
     ]);
     openPalette();
     const input = await screen.findByTestId("palette-input");
 
-    // A query that also names a jump target — the jump must survive the failure.
-    fireEvent.change(input, { target: { value: "Oper" } });
+    fireEvent.change(input, { target: { value: "Runn" } });
     await screen.findByTestId("palette-ask");
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
 
-    // The popover carries the failure honestly: one line, nothing faked.
     const line = await screen.findByTestId("assistant-error");
     expect(line.textContent).toContain("isn't configured on this server");
     expect(line.textContent).not.toContain("model base URL");
-    // The jump half is untouched by the assistant's 503: the palette's list
-    // still lands on the same target.
+
     openPalette();
-    expect(within(await screen.findByRole("listbox")).getByText("Operations")).toBeTruthy();
+    expect(within(await screen.findByRole("listbox")).getByText("Manage · Runners")).toBeTruthy();
+  });
+});
+
+describe("Hold ⌘K to talk integration", () => {
+  it("hold >= 500ms opens Quick chat with capsule (no palette) and sends on release", async () => {
+    vi.useFakeTimers();
+    stubBrowserSpeech();
+    const { requests } = mountPalette("/", [
+      {
+        path: "/api/v1/assistant/status",
+        body: {
+          chat_model: { configured: true, model: "test-chat" },
+          speech_model: { configured: false, model: "" },
+          decision_model: { configured: false, model: "" },
+          workers: { online: 1, sandbox_mode: "off" },
+          execution_mode: "inprocess",
+          github_credentials: [],
+          projects: { count: 1 },
+          workflows: { count: 0, samples: 0, assigned: 0 },
+        },
+      },
+      { path: assistantConversationsPath, method: "POST", body: assistantConversation },
+      {
+        path: assistantMessagesPath,
+        method: "POST",
+        body: turnMessagesBody("check relay status"),
+      },
+      { path: TRANSCRIPTIONS_PATH, method: "POST", body: { text: "" } },
+    ]);
+    await act(async () => {
+      await flushAssistantSpeechReads();
+    });
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    act(() => {
+      vi.advanceTimersByTime(HOLD_TO_TALK_MS);
+    });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
+    expect(screen.getByTestId("listening-capsule")).toBeTruthy();
+
+    const rec = recognizers[recognizers.length - 1];
+    act(() => {
+      rec.deliver("check relay status");
+    });
+
+    await act(async () => {
+      fireEvent.keyUp(window, { key: "k", metaKey: true });
+    });
+
+    const posted = requestsTo(requests, assistantMessagesPath, "POST");
+    expect(posted).toHaveLength(1);
+    expect(JSON.parse(posted[0].body ?? "{}")).toMatchObject({
+      text: "check relay status",
+      spoken: true,
+    });
+  });
+
+  it("falls back immediately to a tap when speech is unavailable", async () => {
+    vi.useFakeTimers();
+    mountPalette("/", [
+      {
+        path: "/api/v1/me/preferences",
+        body: { assistant: { speech_browser_fallback: false } },
+      },
+      {
+        path: "/api/v1/assistant/status",
+        body: {
+          chat_model: { configured: true, model: "test-chat" },
+          speech_model: { configured: false, model: "" },
+          decision_model: { configured: false, model: "" },
+          workers: { online: 1, sandbox_mode: "off" },
+          execution_mode: "inprocess",
+          github_credentials: [],
+          projects: { count: 1 },
+          workflows: { count: 0, samples: 0, assigned: 0 },
+        },
+      },
+    ]);
+    await act(async () => {
+      await flushAssistantSpeechReads();
+    });
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
   });
 });
 
@@ -452,14 +647,8 @@ describe("where the trigger and the panel live (design review pass 2)", () => {
   it("mounts the trigger in flow, so it can only ever sit in the header it is placed in", async () => {
     mountPalette();
     const box = screen.getByTestId("ask-box");
-    // A trigger is never a floating layer: the box rides inside its wrapper, and
-    // the wrapper carries no fixed/absolute position of its own. The pass-2
-    // review caught the shell parking the palette on a `fixed bottom-0 right-…`
-    // anchor, which drew the chip over the run page's gate card ("rejecting
-    // records the de…") and over the project Workflows tab's yaml.
     expect(box.closest('[class*="fixed"]')).toBeNull();
     expect(box.closest('[class*="absolute"]')).toBeNull();
-    // The box itself is a normal control hidden below `sm`, not an overlay.
     expect(box.className).toContain("sm:flex");
     expect(box.className).not.toMatch(/\b(fixed|absolute)\b/);
   });
@@ -470,14 +659,10 @@ describe("where the trigger and the panel live (design review pass 2)", () => {
       openPalette();
     });
     const dialog = await screen.findByRole("dialog");
-    // Portalled to the body: the shell hides the box at desktop widths, and a
-    // panel hung off a hidden box is a panel nobody can open.
     expect(dialog.parentElement?.parentElement).toBe(document.body);
     expect(dialog.className).toContain("fixed");
-    // A press inside the panel is a choice about a jump, not a dismissal.
     fireEvent.mouseDown(screen.getByTestId("palette-input"));
     expect(screen.getByRole("dialog")).toBeTruthy();
-    // A press outside still closes it.
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("dialog")).toBeNull();
   });

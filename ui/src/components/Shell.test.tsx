@@ -1,57 +1,70 @@
 /**
- * The shell's signed-in chrome (`components/Shell.tsx`) after handoff 2c/3c
- * and finding 07: the left column is the desktop chrome and there is NO top
- * bar at 768px and above — the phone strip (hamburger, brand, Ask box) is a
- * *phone* frame that below 768px owns the drawer. Between 768 and 1023px the
- * collapsed rail is FORCED (the saved preference is not touched); from 1024px
- * up the preference decides between the 220px column and the rail. `New chat`
- * starts things, so it only exists for a member that is actually signed in;
- * the identity row the old bar carried (`user-badge`) sits in the sidebar
- * footer as the account menu trigger; and the Ask placement preference moves
- * the Ask button between the sidebar row and a fixed corner button. The API is
- * mocked at the fetch boundary; the page content under the shell is not the
- * subject here.
+ * The app shell after redesign R1: the 64px project rail and the 60px top bar
+ * are the frame, and the content region scrolls itself (`h-dvh overflow-hidden`
+ * on the root, `min-h-0 flex-1 overflow-auto` on `<main>`).
  *
- * Which frame mounts is a `matchMedia` question (see `useMediaQuery` /
- * `useIsNarrow`), so each test states the viewport it means; the stub answers
- * the shell's real queries from the width.
+ * What the rewrite took away is part of the contract, so it is asserted: the
+ * 220px `Sidebar` column, the phone drawer and its hamburger, the forced-rail
+ * overlay, the ⌘\ chord and the floating `ask-fab` are gone; what it must keep
+ * is mounted — the ⌘K palette engine (invisible, the bar's field is its
+ * trigger) and the ⌘J Quick chat panel — plus every name other modules import from
+ * this file.
+ *
+ * Which frame mounts is a `matchMedia` question (see `useMediaQuery`), so each
+ * test states the viewport it means; the stub answers the shell's real queries
+ * from the width.
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { meFixture, requestsTo, type RouteStub } from "../test/fakes";
-import { renderApp } from "../test/render";
-import {
-  PHONE_ASK_RESERVE_PX,
-  phoneAskReserveCss,
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Project } from "../api/types";
+import type { Flag } from "../lib/sidebarFlags";
+import { mockFetch, type RouteStub } from "../test/fakes";
+import Shell, {
+  ASSISTANT_PAGE_PATH,
+  PHONE_MAX_WIDTH_PX,
+  RAIL_MAX_WIDTH_PX,
+  isAssistantPagePath,
   sectionOf,
-  ASK_FAB_SIZE_PHONE_PX,
-  ASK_FAB_OFFSET_PHONE_PX,
+  useIsNarrow,
+  useIsRailWidth,
+  useMediaQuery,
 } from "./Shell";
 
-/** Wait budget for the `/me` round trip the shell waits on. */
+/** Wait budget for a stubbed read's round trip. */
 const READ_MS = 5_000;
 
-const signedIn: RouteStub[] = [
-  { path: "/api/v1/me", body: meFixture },
-  { path: "/api/v1/projects", body: { items: [] } },
-];
+const projects = vi.hoisted(() => ({ current: [] as Project[] }));
+const flags = vi.hoisted(() => ({ current: {} as Record<string, Flag> }));
 
-const notSignedIn: RouteStub[] = [
-  {
-    path: "/api/v1/me",
-    method: "GET",
-    status: 401,
-    body: {
-      type: "https://communication.dev/errors/unauthorized",
-      title: "Unauthorized",
-      status: 401,
-      detail: "not signed in",
-    },
-  },
-  { path: "/api/v1/projects", body: { items: [] } },
-];
+vi.mock("../api/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/queries")>()),
+  useProjects: () => ({ data: { items: projects.current }, isPending: false }),
+}));
+vi.mock("../lib/sidebarFlags", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/sidebarFlags")>()),
+  useSidebarFlags: () => ({
+    inbox: { needsYou: 0, failed: 0 },
+    board: { running: 0 },
+    threads: null,
+    projects: flags.current,
+  }),
+}));
 
-/** Answer the shell's frame queries (phone <768, rail 768–1023) as a
+function project(id: string, name: string): Project {
+  return {
+    id,
+    slug: id,
+    name,
+    description: "",
+    created_at: "2026-10-14T18:00:00Z",
+    version: 1,
+    my_role: "maintainer",
+  };
+}
+
+/** Answer the shell's frame queries (phone <768, rail band 768–1023) as a
  * `width` px viewport would. */
 function stubViewport(width: number): void {
   vi.stubGlobal("matchMedia", (query: string) => {
@@ -73,686 +86,178 @@ function stubViewport(width: number): void {
   });
 }
 
-/** Restore jsdom's real `matchMedia` after a `stubViewport` test. Re-stubbing
- * the native function (NOT `vi.unstubAllGlobals()` — that also drops the
- * session-wide `EventSource` stub while the rendered app is still mounted,
- * and a reconnect tick without it throws through the NEXT test). */
+/** Restore jsdom's real `matchMedia` (NOT `vi.unstubAllGlobals()` — that also
+ * drops the session-wide `EventSource` stub while the app is still mounted). */
 const nativeMatchMedia = window.matchMedia;
 function restoreViewport(): void {
   vi.stubGlobal("matchMedia", nativeMatchMedia);
 }
 
-describe("the shell's New thread follows the session", () => {
-  it("shows New thread when a member is signed in", async () => {
-    renderApp({ path: "/", routes: signedIn });
-    expect(await screen.findByTestId("new-chat", undefined, { timeout: READ_MS })).toBeTruthy();
+const signedIn: RouteStub[] = [{ path: "/api/v1/me", body: meStub() }];
+
+function meStub(): unknown {
+  // `useMe` is real here (the account row and the assistant engine read it).
+  return {
+    id: "01987a61-2345-7000-8000-abcdef012345",
+    display_name: "Ada Lovelace",
+    email: "ada@example.com",
+    is_org_admin: false,
+    organization: {
+      id: "01987a6b-9c1d-7e5f-8a0b-1c2d3e4f5a60",
+      slug: "default",
+      name: "Default organization",
+    },
+    csrf_token: "csrf-token-value",
+  };
+}
+
+function renderShell(path = "/", children = <span>the page</span>) {
+  stubViewport(1280);
+  mockFetch(signedIn);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[path]}>
+        <Shell>{children}</Shell>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderPhone(path = "/") {
+  stubViewport(390);
+  mockFetch(signedIn);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[path]}>
+        <Shell>{<span>the page</span>}</Shell>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  restoreViewport();
+  projects.current = [];
+  flags.current = {};
+  document.body.style.overflow = "";
+});
+
+describe("the names other modules import from Shell", () => {
+  it("still names the sections the assistant's chip reads", () => {
+    expect(sectionOf("/p/a/chats")).toBe("chats");
+    expect(sectionOf("/")).toBe("home");
+    expect(sectionOf("/factory/wf-1")).toBe("factory");
+    expect(sectionOf("/manage/people")).toBe("manage");
+    // Outside the pill's three, the path names itself by its own first segment.
+    expect(sectionOf("/runs/run-9")).toBe("factory");
+    expect(sectionOf("/profile")).toBe("profile");
+    expect(sectionOf("/login")).toBe("login");
   });
 
-  it("hides New thread when nobody is signed in", async () => {
-    renderApp({ path: "/", routes: notSignedIn });
-    // A signed-out visitor sees the sign-in screen only — no sidebar, no app
-    // chrome, no New thread — for the deep link they opened.
-    await screen.findByTestId("sign-in", undefined, { timeout: READ_MS });
-    expect(screen.queryByTestId("sidebar")).toBeNull();
-    expect(screen.queryByTestId("new-chat")).toBeNull();
+  it("still owns the assistant page's path rule and the frame constants", () => {
+    expect(ASSISTANT_PAGE_PATH).toBe("/assistant");
+    expect(isAssistantPagePath("/assistant/thread-1")).toBe(true);
+    expect(isAssistantPagePath("/assistantx")).toBe(false);
+    expect(PHONE_MAX_WIDTH_PX).toBe(767.98);
+    expect(RAIL_MAX_WIDTH_PX).toBe(1023.98);
+    for (const fn of [useMediaQuery, useIsNarrow, useIsRailWidth]) {
+      expect(typeof fn).toBe("function");
+    }
   });
 });
 
-describe("the sidebar is the whole desktop chrome (2c/3c)", () => {
-  it("mounts no top bar at all at desktop width", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    expect(await screen.findByTestId("sidebar", undefined, { timeout: READ_MS })).toBeTruthy();
-    // No strip, no hamburger, no header brand: the column owns the left edge.
-    expect(screen.queryByTestId("phone-top-strip")).toBeNull();
+describe("the desktop frame (>= 768px)", () => {
+  it("is the rail, the bar and one scrolling region — and nothing else", () => {
+    projects.current = [project("p-1", "Project One")];
+    renderShell("/");
+    expect(screen.getByTestId("project-rail")).toBeTruthy();
+    expect(screen.getByTestId("top-bar")).toBeTruthy();
+    expect(screen.getByRole("main").className).toContain("overflow-auto");
+    expect(screen.getByText("the page")).toBeTruthy();
+    // Gone: the old column, its drawer button, the floating Ask button.
+    expect(screen.queryByTestId("ask-fab")).toBeNull();
     expect(screen.queryByTestId("sidebar-open")).toBeNull();
-    expect(document.querySelector("header")).toBeNull();
-    // The old top app bar's `aria-label="Primary"` header/nav stays gone.
-    expect(screen.queryByRole("navigation", { name: "Primary" })).toBeNull();
-  });
-
-  it("shows Today and Threads, and no Board or Inbox rows", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-    const scope = within(sidebar);
-    expect(scope.getByTestId("sidebar-link-home").getAttribute("aria-current")).toBe("page");
-    expect(scope.getByTestId("sidebar-link-home").textContent).toContain("Today");
-    expect(scope.getByTestId("sidebar-link-threads").textContent).toContain("Threads");
-    expect(scope.queryByTestId("sidebar-link-inbox")).toBeNull();
-    expect(scope.queryByTestId("sidebar-link-board")).toBeNull();
-    // The label the row used to carry is gone from the column, too.
-    expect(scope.queryByText("Home", { exact: true })).toBeNull();
-  });
-
-  it("renders a page whose route is not a nav row under the same shell", async () => {
-    // /inbox is no longer a nav row (it folded into Today), but the route
-    // still answers: the shell mounts around it and claims no active row.
-    stubViewport(1280);
-    renderApp({ path: "/inbox", routes: signedIn });
-    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-    expect(
-      within(sidebar).getByTestId("sidebar-link-home").getAttribute("aria-current"),
-    ).toBeNull();
+    expect(screen.queryByTestId("sidebar")).toBeNull();
     expect(screen.queryByTestId("phone-top-strip")).toBeNull();
+    expect(screen.queryByTestId("scope-open")).toBeNull();
+    expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
+    // ⌘\ no longer toggles anything.
+    fireEvent.keyDown(window, { key: "\\", metaKey: true });
+    expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
   });
 
-  it("keeps the identity row the old bar carried, in the sidebar footer", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    const user = await screen.findByTestId("user-badge", undefined, { timeout: READ_MS });
-    expect(user.textContent).toContain("Ada Lovelace");
-    // The footer now opens the account menu; the sign-out lives in it.
-    expect(screen.getByTestId("user-menu")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("user-menu"));
-    expect(
-      await screen.findByTestId("user-menu-list", undefined, { timeout: READ_MS }),
-    ).toBeTruthy();
-    expect(screen.getByTestId("sign-out")).toBeTruthy();
-    // The replica name moved to Settings (the About this server line).
-    expect(screen.queryByTestId("replica-badge")).toBeNull();
+  it("keeps the scope in both chrome pieces at once", () => {
+    projects.current = [project("p-1", "Project One"), project("p-2", "Project Two")];
+    renderShell("/p/p-2/chats");
+    expect(screen.getByTestId("rail-tile-p-2").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("top-bar-scope-name").textContent).toBe("Project Two");
+    expect(screen.getByTestId("pill-chats").getAttribute("aria-current")).toBe("page");
   });
 
-  // Finding 10 (with finding 08): Ask is ALWAYS the floating bottom-right
-  // button — there is no `askPlacement` preference any more, and the sidebar
-  // carries the `Search ⌘K` field instead. The button names its own chord.
-  it("draws the floating Ask button on every page and no Ask row in the sidebar", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
-    expect(fab.textContent).toContain("Ask");
-    expect(fab.textContent).toContain("⌘J");
-    expect(fab.getAttribute("aria-label")).toBe("Ask the assistant (⌘J)");
-    // The primary treatment: accent fill + the 2px offset shadow (`ds-btn`).
-    expect(fab.className).toContain("ds-btn--primary");
-    expect(screen.queryByTestId("ask-float")).toBeNull();
-    expect(screen.queryByTestId("ask-sidebar")).toBeNull();
-    // The sidebar's own second entry is Search.
-    expect(screen.getByTestId("sidebar-search")).toBeTruthy();
-  });
-
-  // Finding 08: ⌘J opens Ask; the old first-⌘K-opens-the-assistant toggle
-  // (ADR-0050) is gone — ⌘K opens the jump palette and never the assistant.
-  it("⌘J opens Ask and ⌘K opens the jump palette", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
-
-    fireEvent.keyDown(window, { key: "j", metaKey: true });
-    expect(
-      await screen.findByTestId("assistant-popover", undefined, { timeout: READ_MS }),
-    ).toBeTruthy();
-
-    fireEvent.keyDown(document.body, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
-
+  it("leaves ⌘K to the palette and ⌘J to Ask, with no button to show for them", async () => {
+    renderShell("/");
+    expect(screen.queryByTestId("palette-input")).toBeNull();
     fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    fireEvent.keyUp(document.body, { key: "k", metaKey: true });
     expect(
       await screen.findByTestId("palette-input", undefined, { timeout: READ_MS }),
     ).toBeTruthy();
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
-  });
-
-  // Finding 8a: the Catch up row is nav, so the section the Ask box names
-  // follows it.
-  it("names the catch-up section for the Ask box's context chip", () => {
-    expect(sectionOf("/catch-up")).toBe("catch up");
-    expect(sectionOf("/")).toBe("today");
-  });
-});
-
-describe("the rail is forced between 768 and 1024px (finding 07)", () => {
-  it("shows the collapsed rail even though the preference says expanded", async () => {
-    stubViewport(900);
-    renderApp({ path: "/", routes: signedIn });
-    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-    // The rail, not the column: the expand control is the rail's, and the
-    // expanded column's collapse control and labels are not there.
-    expect(within(sidebar).getByTestId("sidebar-expand")).toBeTruthy();
-    expect(within(sidebar).queryByTestId("sidebar-collapse")).toBeNull();
-    // The phone frame does not mount here: 768–1023 is a tablet, not a phone.
-    expect(screen.queryByTestId("phone-top-strip")).toBeNull();
-    // The preference itself is not touched: nothing PATCHed the rail flag.
-    expect(within(sidebar).queryByText("Threads")).toBeNull();
-  });
-});
-
-describe("the saved preference decides at desktop width (≥1024px)", () => {
-  it("shows the rail when `sidebar:collapsed` is saved", async () => {
-    stubViewport(1280);
-    renderApp({
-      path: "/",
-      routes: [
-        ...signedIn,
-        {
-          path: "/api/v1/me/preferences",
-          body: {
-            layout: {
-              projects_mode: "tree",
-              ask_placement: "sidebar",
-              show_workflow_folders: true,
-              expanded: { "sidebar:collapsed": true },
-            },
-            assistant: { trust_level: "ask_risky" },
-            updated_at: "2026-01-01T00:00:00Z",
-          },
-        },
-      ],
-    });
-    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-    expect(sidebar).toBeTruthy();
-    // Query the live document: when the saved prefs land, the Rail REPLACES
-    // the expanded column's node, so a captured `within(sidebar)` scope
-    // would poll a detached element.
-    await waitFor(() => expect(screen.getByTestId("sidebar-expand")).toBeTruthy());
-    expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
-  });
-
-  it("shows the expanded column when the preference is not collapsed", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-    expect(within(sidebar).getByTestId("sidebar-collapse")).toBeTruthy();
-  });
-});
-
-// Redesign 4a: three ways between the rail and the column — the expand
-// button (covered in `Sidebar.test.tsx`), ⌘\\ from anywhere, and the edge
-// drag (`Sidebar.test.tsx`). At ≥1024px ⌘\\ writes the stored preference; in
-// the forced-rail zone (768–1023px) it opens the full column as an OVERLAY
-// and the preference is never touched.
-describe("⌘\\ toggles the sidebar (4a)", () => {
-  const PREFS_PATH = "/api/v1/me/preferences";
-  const COLLAPSED = "sidebar:collapsed";
-
-  function prefsDoc(expanded: Record<string, boolean>): unknown {
-    return {
-      layout: {
-        projects_mode: "tree",
-        ask_placement: "sidebar",
-        show_workflow_folders: true,
-        expanded,
-      },
-      assistant: { trust_level: "ask_risky" },
-      updated_at: "2026-01-01T00:00:00Z",
-    };
-  }
-
-  it("flips the stored preference at desktop width, both directions", async () => {
-    stubViewport(1280);
-    try {
-      const { requests } = renderApp({
-        path: "/",
-        routes: [
-          ...signedIn,
-          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
-          {
-            path: PREFS_PATH,
-            method: "PATCH",
-            // The server echoes the write it was given: collapse on the
-            // first ⌘\, expand on the second (a constant `true` answer
-            // would snap the rail back over the expanded column).
-            body: (n: number) => prefsDoc({ [COLLAPSED]: n === 1 }),
-          },
-        ],
-      });
-      const column = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-      expect(within(column).getByTestId("sidebar-collapse")).toBeTruthy();
-
-      // The chord does nothing while the saved document is still in flight
-      // (a toggle must not stamp over a read), so the press waits for the
-      // GET to settle — then fires exactly once.
-      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "GET")).toHaveLength(1), {
-        timeout: READ_MS,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      fireEvent.keyDown(window, { key: "\\", metaKey: true });
-      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1), {
-        timeout: READ_MS,
-      });
-      expect(
-        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[0].body ?? "{}").layout.expanded[
-          COLLAPSED
-        ],
-      ).toBe(true);
-      // The rail replaced the column: expand is back, collapse is gone.
-      await waitFor(() => expect(screen.queryByTestId("sidebar-collapse")).toBeNull(), {
-        timeout: READ_MS,
-      });
-      expect(screen.getByTestId("sidebar-expand")).toBeTruthy();
-
-      // Ctrl+backslash works the same on non-mac platforms.
-      fireEvent.keyDown(window, { key: "\\", ctrlKey: true });
-      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(2), {
-        timeout: READ_MS,
-      });
-      expect(
-        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[1].body ?? "{}").layout.expanded[
-          COLLAPSED
-        ],
-      ).toBe(false);
-      await waitFor(() => expect(screen.getByTestId("sidebar-collapse")).toBeTruthy(), {
-        timeout: READ_MS,
-      });
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  // lab-e2e acceptance 42456100374: the rail the ⌘\ collapses to at a desktop
-  // width has to be a rail someone can leave. The hung run was the e2e clicking
-  // the FORCED rail's expand mid-resize, but the contract it aims at — after ⌘\
-  // at 1500px the `sidebar-expand` tile is mounted, enabled, unobstructed (no
-  // rail-zone overlay, no drawer backdrop) and expands by the preference — lives
-  // here, where nothing can race it.
-  it("collapses to a clickable rail at 1500px, and the rail's expand brings the column back", async () => {
-    stubViewport(1500);
-    try {
-      const { requests } = renderApp({
-        path: "/",
-        routes: [
-          ...signedIn,
-          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
-          {
-            path: PREFS_PATH,
-            method: "PATCH",
-            // The server echoes the write it was given, so the second toggle
-            // (the rail's expand) genuinely returns the expanded column.
-            body: (n: number) => prefsDoc({ [COLLAPSED]: n === 1 }),
-          },
-        ],
-      });
-      const column = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-      expect(within(column).getByTestId("sidebar-collapse")).toBeTruthy();
-      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "GET")).toHaveLength(1), {
-        timeout: READ_MS,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // 1500px is outside the forced-rail zone: the chord writes the
-      // preference, and the rail that replaces the column is the CHOSEN one.
-      fireEvent.keyDown(window, { key: "\\", metaKey: true });
-      await waitFor(() => expect(screen.queryByTestId("sidebar-collapse")).toBeNull(), {
-        timeout: READ_MS,
-      });
-
-      // The expand tile is there, in the rail, enabled, and nothing stands
-      // over it: at this width the overlay (768–1023px) and the phone drawer
-      // never mount, so neither backdrop can swallow the click.
-      const rail = screen.getByTestId("sidebar-rail");
-      const expand = within(rail).getByTestId("sidebar-expand");
-      expect(expand.getAttribute("aria-hidden")).not.toBe("true");
-      expect(expand.hasAttribute("disabled")).toBe(false);
-      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
-      expect(screen.queryByTestId("sidebar-backdrop")).toBeNull();
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1);
-
-      // Way one (the tile) still owns the preference at this width — no
-      // overlay opens, the write says `false`, the labelled column returns.
-      fireEvent.click(expand);
-      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(2), {
-        timeout: READ_MS,
-      });
-      expect(
-        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[1].body ?? "{}").layout.expanded[
-          COLLAPSED
-        ],
-      ).toBe(false);
-      const wide = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-      expect(within(wide).getByTestId("sidebar-collapse")).toBeTruthy();
-      expect(within(wide).getByText("Threads")).toBeTruthy();
-      expect(screen.queryByTestId("sidebar-rail")).toBeNull();
-      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("stays out of the way while someone is typing in a text field", async () => {
-    stubViewport(1280);
-    try {
-      const { requests } = renderApp({
-        path: "/",
-        routes: [
-          ...signedIn,
-          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
-          { path: PREFS_PATH, method: "PATCH", body: prefsDoc({ [COLLAPSED]: true }) },
-        ],
-      });
-      await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-      // The palette's own input is the app's nearest real text field: the
-      // chord fired inside it must NOT toggle the column.
-      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
-      const input = await screen.findByTestId("palette-input", undefined, { timeout: READ_MS });
-      fireEvent.keyDown(input, { key: "\\", metaKey: true });
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("opens the column as an overlay in the rail zone without touching the preference", async () => {
-    stubViewport(900);
-    try {
-      const { requests } = renderApp({
-        path: "/",
-        routes: [
-          ...signedIn,
-          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
-          { path: PREFS_PATH, method: "PATCH", body: prefsDoc({ [COLLAPSED]: true }) },
-        ],
-      });
-      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
-      expect(within(rail).getByTestId("sidebar-expand")).toBeTruthy();
-
-      // The rail's expand button opens the overlay — not a preference write.
-      fireEvent.click(within(rail).getByTestId("sidebar-expand"));
-      const overlay = await screen.findByTestId("rail-overlay-backdrop", undefined, {
-        timeout: READ_MS,
-      });
-      const column = overlay.parentElement?.querySelector('[data-testid="sidebar"]');
-      expect(column).toBeTruthy();
-      // The overlay column is the real one: labels and the ‹‹ collapse button.
-      expect(within(column as HTMLElement).getByTestId("sidebar-collapse")).toBeTruthy();
-      expect(within(column as HTMLElement).queryByText("Threads")).toBeTruthy();
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-
-      // Its ‹‹ button closes it, and the keyboard returns to the expand tile.
-      const expandTile = within(rail).getByTestId("sidebar-expand");
-      fireEvent.click(within(column as HTMLElement).getByTestId("sidebar-collapse"));
-      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
-        timeout: READ_MS,
-      });
-      expect(document.activeElement).toBe(expandTile);
-
-      // ⌘\\ opens it again; Esc closes it.
-      fireEvent.keyDown(window, { key: "\\", metaKey: true });
-      await screen.findByTestId("rail-overlay-backdrop", undefined, { timeout: READ_MS });
-      fireEvent.keyDown(window, { key: "Escape" });
-      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
-        timeout: READ_MS,
-      });
-
-      // A click on the backdrop closes it too.
-      fireEvent.click(expandTile);
-      const backdrop = await screen.findByTestId("rail-overlay-backdrop", undefined, {
-        timeout: READ_MS,
-      });
-      fireEvent.click(backdrop);
-      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
-        timeout: READ_MS,
-      });
-      // None of it ever touched the stored preference.
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-    } finally {
-      restoreViewport();
-    }
-  });
-});
-
-describe("the assistant full page collapses the app nav to the rail", () => {
-  const PREFS_PATH = "/api/v1/me/preferences";
-  const COLLAPSED = "sidebar:collapsed";
-
-  /** The saved document with the preference set to EXPANDED. Any write the
-   * shell made on the full page would land in `layout.expanded`. */
-  function prefsDoc(): unknown {
-    return {
-      layout: {
-        projects_mode: "tree",
-        ask_placement: "sidebar",
-        show_workflow_folders: true,
-        expanded: { [COLLAPSED]: false },
-      },
-      assistant: { trust_level: "ask_risky" },
-      updated_at: "2026-01-01T00:00:00Z",
-    };
-  }
-
-  function routesWithPrefs(): RouteStub[] {
-    return [
-      ...signedIn,
-      { path: PREFS_PATH, method: "GET", body: prefsDoc() },
-      { path: PREFS_PATH, method: "PATCH", body: prefsDoc() },
-    ];
-  }
-
-  // The user's words on the full page: the expanded column beside the page's
-  // own thread column read as "two left panels". At `/assistant` the shell is
-  // the 52px rail whatever `sidebarCollapsed` says — and the preference is
-  // never written, so leaving the page gives the column back.
-  it("renders the rail on /assistant with the preference still saying expanded", async () => {
-    stubViewport(1440);
-    try {
-      const { requests } = renderApp({ path: "/assistant", routes: routesWithPrefs() });
-      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
-      // The rail replaced the 220px column: no labels, and the assistant
-      // page's own thread list is the only left panel on screen.
-      expect(within(rail).getByTestId("sidebar-expand")).toBeTruthy();
-      expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
-      expect(screen.queryByTestId("sidebar-link-threads")).toBeNull();
-      // Nothing wrote the preference — the collapse is the route's, not the
-      // person's.
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("gives the expanded column back on / — and only there", async () => {
-    stubViewport(1440);
-    try {
-      const { requests } = renderApp({ path: "/assistant", routes: routesWithPrefs() });
-      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
-      // Leaving the full page by the rail's own Today tile: the preference
-      // still says expanded, so the 220px column returns (no overlay, no
-      // sticky forced-rail state).
-      fireEvent.click(within(rail).getByTestId("rail-item-today"));
-      const column = (await screen.findByTestId("sidebar", undefined, {
-        timeout: READ_MS,
-      })) as HTMLElement;
-      expect(within(column).getByTestId("sidebar-collapse")).toBeTruthy();
-      expect(screen.queryByTestId("sidebar-rail")).toBeNull();
-      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  // Same geometry as the 768–1023px forced rail: the expand (button or ⌘\)
-  // opens the column as an OVERLAY over the page, never a layout push, and
-  // Esc / an outside press closes it.
-  it("opens the column as an overlay over the page, and Escape closes it", async () => {
-    stubViewport(1440);
-    try {
-      const { requests } = renderApp({ path: "/assistant", routes: routesWithPrefs() });
-      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
-
-      fireEvent.click(within(rail).getByTestId("sidebar-expand"));
-      const overlay = await screen.findByTestId("rail-overlay-backdrop", undefined, {
-        timeout: READ_MS,
-      });
-      const column = overlay.parentElement?.querySelector('[data-testid="sidebar"]');
-      expect(column).toBeTruthy();
-      expect(within(column as HTMLElement).getByTestId("sidebar-collapse")).toBeTruthy();
-      // The overlay stands OVER the page; the rail behind it does not widen to
-      // push the three columns sideways.
-      expect(screen.getByTestId("sidebar-rail")).toBeTruthy();
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-
-      fireEvent.keyDown(window, { key: "Escape" });
-      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
-        timeout: READ_MS,
-      });
-
-      // ⌘\ opens it again; an outside press (the backdrop) closes it.
-      fireEvent.keyDown(window, { key: "\\", metaKey: true });
-      const backdrop = await screen.findByTestId("rail-overlay-backdrop", undefined, {
-        timeout: READ_MS,
-      });
-      fireEvent.click(backdrop);
-      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
-        timeout: READ_MS,
-      });
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  // The phone frame (<768px) is unchanged by the route: still the drawer, no
-  // forced rail, no overlay.
-  it("changes nothing below 768px — the drawer stays the only column", async () => {
-    stubViewport(390);
-    try {
-      renderApp({ path: "/assistant", routes: routesWithPrefs() });
-      const open = await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS });
-      expect(screen.queryByTestId("sidebar-rail")).toBeNull();
-      fireEvent.click(open);
-      expect(
-        await screen.findByTestId("sidebar-close", undefined, { timeout: READ_MS }),
-      ).toBeTruthy();
-      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
-    } finally {
-      restoreViewport();
-    }
-  });
-});
-
-describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
-  it("mounts the strip with the palette trigger, never over the page", async () => {
-    stubViewport(390);
-    renderApp({ path: "/", routes: signedIn });
-    const box = await screen.findByTestId("ask-box", undefined, { timeout: READ_MS });
-    // The box renders inside the phone strip, next to the drawer button — the
-    // one header the phone frame has. At desktop widths the strip does not
-    // mount at all and the sidebar's `⌘K` row is the trigger; either way the
-    // box cannot cover page content, which is what the pass-2 review saw it do
-    // on the run page (over the gate card's decision copy) and on Workflows
-    // (over the yaml).
-    const header = box.closest("header");
-    expect(header).toBeTruthy();
-    expect(header!.getAttribute("data-testid")).toBe("phone-top-strip");
-    expect(header!.querySelector('[data-testid="sidebar-open"]')).toBeTruthy();
-    expect(box.closest('[class*="fixed"]')).toBeNull();
-    expect(box.closest("main")).toBeNull();
-    // At phone width the desktop column does not mount at all: the only
-    // sidebar the phone frame has is the drawer's, and that one arrives on
-    // demand (see the drawer test below).
-    expect(screen.queryByTestId("sidebar")).toBeNull();
-  });
-
-  it("opens the drawer, and the drawer shows the EXPANDED sidebar", async () => {
-    stubViewport(390);
-    renderApp({ path: "/", routes: signedIn });
-    const open = await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS });
-    // Nothing stands over the page until the hamburger is pressed.
-    expect(screen.queryByTestId("sidebar-close")).toBeNull();
-    fireEvent.click(open);
-    const drawer = await screen.findByTestId("sidebar-close", undefined, { timeout: READ_MS });
-    // One column, not two: the phone frame owns the whole width.
-    expect(screen.getAllByTestId("sidebar")).toHaveLength(1);
-    const column = drawer.closest('[data-testid="sidebar"]') as HTMLElement;
-    // The rail is a desktop affordance: the phone drawer is the 220px column,
-    // labels and all.
-    expect(within(column).getByTestId("new-chat")).toBeTruthy();
-    expect(within(column).getByText("Threads")).toBeTruthy();
-    expect(within(column).queryByTestId("sidebar-expand")).toBeNull();
-    expect(screen.getByTestId("sidebar-backdrop")).toBeTruthy();
-    // Esc closes it and the keyboard goes back to the button that opened it.
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByTestId("sidebar-close")).toBeNull();
-    expect(open.getAttribute("aria-expanded")).toBe("false");
-  });
-
-  // Lab-e2e (acceptance 42452527578, shell-p1): the sign-in helper leaves the
-  // drawer open WITH the footer's account menu open, and one Escape must take
-  // the whole frame away. The menu consumes its own Escape (`preventDefault`),
-  // so the drawer answers the key regardless — and the rail, a desktop
-  // affordance, never renders at 390px (its root carries the same `sidebar`
-  // test id the drawer's column does).
-  it("one Escape closes the drawer even with the account menu open, at 390px", async () => {
-    stubViewport(390);
-    renderApp({ path: "/", routes: signedIn });
-    const open = await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS });
-    fireEvent.click(open);
-    await screen.findByTestId("sidebar-close", undefined, { timeout: READ_MS });
-    // No rail under the drawer: the phone frame's only column is the drawer's.
-    expect(screen.queryByTestId("sidebar-rail")).toBeNull();
-    expect(screen.getAllByTestId("sidebar")).toHaveLength(1);
-    fireEvent.click(screen.getByTestId("user-menu"));
-    expect(
-      await screen.findByTestId("user-menu-list", undefined, { timeout: READ_MS }),
-    ).toBeTruthy();
-    // The key travels the browser's path: body → document (the menu's own
-    // handler, which consumes it) → window (the drawer's).
     fireEvent.keyDown(document.body, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId("user-menu-list")).toBeNull());
-    expect(screen.queryByTestId("sidebar-close")).toBeNull();
-    expect(screen.queryByTestId("sidebar")).toBeNull();
-    expect(open.getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(open);
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    expect(await screen.findByTestId("quick-chat", undefined, { timeout: READ_MS })).toBeTruthy();
   });
 
-  // Review finding (phone, round 2): the wide `Ask ⌘J` pill sat on top of
-  // whatever was mid-page — a card's "Start here" link, a narrative line, the
-  // Running-now corner — and no bottom padding rescues content that scrolls
-  // UNDER a fixed overlay. Below 768px the button is now a 44×44 ROUND icon
-  // button (the word and the chord live in `title`/`aria-label`); the shell
-  // still reserves the button's band so the LAST row stays reachable.
-  it("shrinks the Ask button to a 44px round icon at 390px and reserves its band", async () => {
-    stubViewport(390);
-    renderApp({ path: "/", routes: signedIn });
-    const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
-    // The reserve is the round button's own box plus its 12px offset, and the
-    // safe area rides on top of it.
-    expect(PHONE_ASK_RESERVE_PX).toBe(ASK_FAB_SIZE_PHONE_PX + ASK_FAB_OFFSET_PHONE_PX);
-    const main = screen.getByRole("main");
-    expect(main.getAttribute("style")).toContain(`padding-bottom: ${phoneAskReserveCss()}`);
-    // A 44×44 circle, not a pill: the size and the radius are its own.
-    expect(fab.className).toContain("h-[44px]");
-    expect(fab.className).toContain("w-[44px]");
-    expect(fab.className).toContain("rounded-full");
-    // 12px off both edges, safe-area included.
-    const fabStyle = fab.getAttribute("style") ?? "";
-    expect(fabStyle).toContain(`right: calc(${ASK_FAB_OFFSET_PHONE_PX}px`);
-    expect(fabStyle).toContain(`bottom: calc(${ASK_FAB_OFFSET_PHONE_PX}px`);
-    // Icon only: no visible word, no chord — both move to the names.
-    expect(fab.textContent).toBe("");
-    expect(fab.querySelector("svg")).toBeTruthy();
-    expect(fab.getAttribute("title")).toBe("Ask");
-    expect(fab.getAttribute("aria-label")).toBe("Ask the assistant (⌘J)");
-    restoreViewport();
+  it("opens the palette from the field in the bar", async () => {
+    renderShell("/");
+    fireEvent.click(screen.getByTestId("search-or-ask"));
+    expect(
+      await screen.findByTestId("palette-input", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
+  });
+});
+
+describe("the phone frame (< 768px)", () => {
+  it("mounts no rail and puts the scope behind a button", () => {
+    projects.current = [project("p-1", "Project One")];
+    renderPhone("/p/p-1");
+    expect(screen.queryByTestId("project-rail")).toBeNull();
+    expect(screen.getByTestId("scope-open").getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("scope-open").textContent).toContain("PO");
+    expect(screen.getByTestId("top-bar")).toBeTruthy();
+    expect(screen.queryByTestId("ask-fab")).toBeNull();
   });
 
-  it("leaves the desktop content column unpadded and the Ask button full", async () => {
-    stubViewport(1280);
-    renderApp({ path: "/", routes: signedIn });
-    const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
-    const main = screen.getByRole("main");
-    expect(main.getAttribute("style")).toBe(null);
-    expect(fab.className).not.toContain("rounded-full");
-    expect(fab.getAttribute("title")).toBe(null);
-    expect(fab.textContent).toContain("Ask");
-    expect(fab.textContent).toContain("⌘J");
-    restoreViewport();
+  it("opens the scope sheet from the button and closes it on Escape", async () => {
+    projects.current = [project("p-1", "Project One")];
+    renderPhone("/");
+    const open = screen.getByTestId("scope-open");
+    fireEvent.click(open);
+    const sheet = await screen.findByTestId("scope-sheet");
+    expect(within(sheet).getByText("All projects")).toBeTruthy();
+    expect(screen.getByTestId("scope-open").getAttribute("aria-expanded")).toBe("true");
+    expect(document.body.style.overflow).toBe("hidden");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("scope-sheet")).toBeNull());
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("scope-open");
   });
 
-  it("wraps the strip's brand in a non-selectable, non-draggable link (issue #61)", async () => {
-    stubViewport(390);
-    renderApp({ path: "/", routes: signedIn });
-    const header = await screen.findByTestId("phone-top-strip", undefined, { timeout: READ_MS });
-    const brand = within(header).getByTestId("brand-home");
-    expect(brand.tagName).toBe("A");
-    expect(brand.getAttribute("href")).toBe("/");
-    expect(brand.getAttribute("draggable")).toBe("false");
-    expect(brand.className).toContain("select-none");
-    expect(brand.textContent).toContain("Communication");
-    const mark = within(brand).getByRole("img", { name: "Communication" });
-    expect(mark.className).toContain("select-none");
-    expect(mark.getAttribute("draggable")).toBe("false");
+  it("closes the sheet when a row is chosen and on the backdrop", async () => {
+    projects.current = [project("p-1", "Project One")];
+    renderPhone("/chats");
+    fireEvent.click(screen.getByTestId("scope-open"));
+    const sheet = await screen.findByTestId("scope-sheet");
+    expect(within(sheet).getByTestId("scope-row-p-1").getAttribute("href")).toBe("/p/p-1/chats");
+    fireEvent.click(screen.getByTestId("scope-backdrop"));
+    await waitFor(() => expect(screen.queryByTestId("scope-sheet")).toBeNull());
+    expect(screen.getByTestId("scope-open").getAttribute("aria-expanded")).toBe("false");
   });
 });

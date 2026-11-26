@@ -291,7 +291,7 @@ function leadLine(tiles: Tile[], pendingCount: number): string {
  * The Operations surface: a lead line, six tiles, and the panels they walk to —
  * workers, queue, models, sandbox, agents, identity & storage, about.
  */
-export function OperationsBody() {
+export function OperationsBody({ embedded = false }: { embedded?: boolean } = {}) {
   const health = useHealth();
   const readiness = useReadiness();
   const workers = useWorkers();
@@ -375,13 +375,16 @@ export function OperationsBody() {
 
       <QueuePanel scheduler={scheduler} />
 
-      <ModelsPanel
-        overview={overview.data ?? null}
-        pending={overview.isPending}
-        error={overview.error}
-        onRetry={() => void overview.refetch()}
-        isAdmin={me.data?.is_org_admin === true}
-      />
+      {/* Inside Manage → Runners the models live under Agents & models. */}
+      {embedded ? null : (
+        <ModelsPanel
+          overview={overview.data ?? null}
+          pending={overview.isPending}
+          error={overview.error}
+          onRetry={() => void overview.refetch()}
+          isAdmin={me.data?.is_org_admin === true}
+        />
+      )}
 
       <SandboxPanel
         sandbox={sandbox}

@@ -156,4 +156,49 @@ describe("WrapPanel", () => {
     fireEvent.click(screen.getByLabelText("Close"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("renders only the reason sentence when reason is provided", () => {
+    render(
+      <WrapPanel
+        count={2}
+        reason="Selected steps must be contiguous without gaps."
+        onWrapRepeat={vi.fn()}
+        onWrapSideBySide={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("wrap-panel-reason").textContent).toBe(
+      "Selected steps must be contiguous without gaps.",
+    );
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.queryByTestId("wrap-submit")).toBeNull();
+  });
+
+  it("supports edit mode with prefilled goal, Update button, and Unwrap link", () => {
+    const onWrapRepeat = vi.fn();
+    const onUnwrap = vi.fn();
+    render(
+      <WrapPanel
+        count={3}
+        mode="edit"
+        initialGoal={{ kind: "command", text: "pnpm test", maxRounds: 5 }}
+        onUnwrap={onUnwrap}
+        onWrapRepeat={onWrapRepeat}
+        onWrapSideBySide={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect((screen.getByTestId("wrap-goal-input") as HTMLInputElement).value).toBe("pnpm test");
+    expect(screen.getByTestId("wrap-rounds-value").textContent).toBe("5");
+    expect(screen.getByTestId("wrap-submit").textContent).toBe("Update");
+    fireEvent.click(screen.getByTestId("wrap-submit"));
+    expect(onWrapRepeat).toHaveBeenCalledWith({
+      kind: "command",
+      text: "pnpm test",
+      maxRounds: 5,
+    });
+    fireEvent.click(screen.getByTestId("goal-unwrap"));
+    expect(onUnwrap).toHaveBeenCalledTimes(1);
+  });
 });

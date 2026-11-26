@@ -5,10 +5,14 @@
  * stay dumb enough to render in isolation.
  */
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
+import { IconBolt, IconCheck } from "@tabler/icons-react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import { useState } from "react";
 import { StepKindIcon } from "../../lib/stepIcons";
 import { StepPicker } from "./StepPicker";
+import { GoalFrame } from "./wrap/GoalFrame";
+import type { GoalSpec } from "./wrap/wrapModel";
+import { VerdictStack, type VerdictRound } from "./wrap/VerdictStack";
 
 export type StepNodeRender = {
   id: string;
@@ -45,6 +49,8 @@ export type ScopeNodeRender = {
   kind: string;
   headerText: string;
   loopNote: string | null;
+  goal?: GoalSpec | null;
+  verdicts?: VerdictRound[];
   emptyBody: boolean;
   readOnly: boolean;
   stale: boolean;
@@ -52,9 +58,39 @@ export type ScopeNodeRender = {
   status: { state: string; label: string } | null;
   /** Layout direction for the handle positions; falls back to the canvas's last layout. */
   direction?: "LR" | "TB";
+  /** Width/height from flow layout so GoalFrame fills the scope node cleanly. */
+  boxWidth?: number;
+  boxHeight?: number;
+  /** Clicking a GoalFrame header opens its edit card. */
+  onEditGoal?: () => void;
   /** Present only when the body is empty: opens the picker, then adds inside. */
   onAddInside: ((kind: string) => void) | null;
 };
+
+export type TriggerNodeRender = {
+  subline: string;
+  direction?: "LR" | "TB";
+  onClick?: () => void;
+};
+
+type StepStateCategory = "done" | "running" | "waiting" | "failed" | null;
+
+function stepStateCategory(state: string | undefined): StepStateCategory {
+  if (!state) return null;
+  const s = state.toLowerCase();
+  if (
+    s.includes("succe") ||
+    s.includes("done") ||
+    s.includes("complet") ||
+    s.includes("verified") ||
+    s.includes("approved")
+  )
+    return "done";
+  if (s.includes("run") || s === "active") return "running";
+  if (s.includes("wait")) return "waiting";
+  if (s.includes("fail") || s.includes("error")) return "failed";
+  return null;
+}
 
 /** The status glyph always travels with the word — colour is never the signal. */
 function statusGlyph(state: string): string {
@@ -151,12 +187,37 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   // line's text is the accessible content, so `title` and `textContent` stay
   // the same string.
   const secondLine = keyFact ? `${data.kindWord} · ${keyFact}` : data.kindWord;
+  const stateCat = stepStateCategory(data.status?.state);
+  const cardSurfaceClass = selected
+    ? stateCat === "running"
+      ? "border-accent bg-st-running-pale-body"
+      : stateCat === "waiting"
+        ? "border-accent bg-st-waiting-pale-body"
+        : stateCat === "failed"
+          ? "border-accent bg-st-failed-pale-body"
+          : "border-accent bg-surface"
+    : stateCat === "running"
+      ? "border-st-running-strong bg-st-running-pale-body"
+      : stateCat === "waiting"
+        ? "border-st-waiting-pale-edge bg-st-waiting-pale-body"
+        : stateCat === "failed"
+          ? "border-st-failed-pale-edge bg-st-failed-pale-body"
+          : "border-line bg-surface";
+  const tileClass =
+    stateCat === "done"
+      ? "bg-st-done-tag text-st-done-tag-fg"
+      : data.kind === "model.chat" || data.kind === "agent.acp"
+        ? "bg-accent-tint text-accent-edge"
+        : data.kind === "human.approval"
+          ? "bg-st-waiting-tag text-st-waiting-tag-fg"
+          : "bg-fill text-ink-2";
 
   return (
     <div
       className="group relative"
       data-highlight={data.highlight ? "assistant-proposed" : undefined}
       data-step-node-id={data.id}
+      data-state-kind={stateCat ?? undefined}
       data-testid={`canvas-step-${data.id}`}
     >
       <Handle id="in" type="target" position={inPosition} className={handleClass(interactive)} />
@@ -167,12 +228,17 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         aria-label={`${data.label} step ${data.id}`}
         onClick={() => data.onSelect()}
         onKeyDown={pick}
-        className={`flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border bg-surface px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${selected ? "border-accent" : "border-line"} ${data.stale ? "opacity-70" : ""}`}
+        className={`flex ${data.status ? "min-h-[56px] py-1" : "h-[56px]"} w-[168px] items-center gap-[10px] rounded-[10px] border px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${cardSurfaceClass} ${data.stale ? "opacity-70" : ""}`}
       >
         <span
-          className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[8px] ${data.kind === "model.chat" || data.kind === "agent.acp" ? "bg-accent-tint text-accent-edge" : data.kind === "human.approval" ? "bg-st-waiting-tag text-st-waiting-tag-fg" : "bg-fill text-ink-2"}`}
+          data-testid={`canvas-step-tile-${data.id}`}
+          className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[8px] ${tileClass}`}
         >
-          <StepKindIcon kind={data.kind} />
+          {stateCat === "done" ? (
+            <IconCheck size={17} stroke={1.75} aria-hidden />
+          ) : (
+            <StepKindIcon kind={data.kind} size={16} />
+          )}
         </span>
         <span className={`min-w-0 flex-1 ${menuPad}`}>
           <span
@@ -295,43 +361,78 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   );
 }
 
-/** The recurrence arrow: drawn inside the box, aria-hidden, never serialized. */
-function RecurrenceArrow() {
-  return (
-    <svg
-      className="pointer-events-none absolute right-1 top-7 h-[calc(100%-2.5rem)] w-10 text-faint"
-      viewBox="0 0 40 80"
-      fill="none"
-      aria-hidden="true"
-      preserveAspectRatio="none"
-    >
-      <title>repeats until the pass condition holds — illustration only</title>
-      <path
-        d="M 20 74 C 38 62, 38 18, 20 6"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeDasharray="3 3"
-      />
-      <path d="M 14 10 L 20 5 L 25 11" stroke="currentColor" strokeWidth="1.5" fill="none" />
-    </svg>
-  );
-}
-
 export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
   const { data } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
   const interactive = !data.readOnly && !data.stale;
-  // The Studio canvas is ALWAYS top-to-bottom (design 1g): the handles ride
-  // the scope group's top and bottom (a scope is a node like any other).
   const inPosition = data.direction === "LR" ? Position.Left : Position.Top;
   const outPosition = data.direction === "LR" ? Position.Right : Position.Bottom;
+  const width = props.width ?? data.boxWidth ?? 224;
+  const height = props.height ?? data.boxHeight ?? 160;
+  const running = stepStateCategory(data.status?.state) === "running";
+
+  const emptyBodyNode = data.emptyBody ? (
+    <div className="flex h-[calc(100%-2.25rem)] w-full items-center justify-center">
+      {interactive && data.onAddInside ? (
+        <button
+          type="button"
+          data-testid={`add-inside-${data.id}`}
+          className="rounded-md border border-dashed border-line-strong bg-surface px-2.5 py-1 text-[12px] text-ink-2 hover:border-accent hover:text-accent"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            setPickerOpen(true);
+          }}
+        >
+          + Add step inside
+        </button>
+      ) : (
+        <span className="text-[12px] text-muted">empty body</span>
+      )}
+      {pickerOpen && (
+        <div className="absolute left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2">
+          <StepPicker
+            title={`Add a step inside ${data.id}`}
+            onPick={(kind) => {
+              setPickerOpen(false);
+              data.onAddInside?.(kind);
+            }}
+            onClose={() => setPickerOpen(false)}
+          />
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  if (data.goal) {
+    return (
+      <div className="relative h-full w-full" data-testid={`canvas-scope-${data.id}`}>
+        <Handle id="in" type="target" position={inPosition} className={handleClass(false)} />
+        <Handle id="out" type="source" position={outPosition} className={handleClass(false)} />
+        <GoalFrame
+          rect={{ x: 0, y: 0, width, height }}
+          goal={data.goal}
+          running={running}
+          onHeaderClick={interactive ? data.onEditGoal : undefined}
+        >
+          {emptyBodyNode}
+        </GoalFrame>
+        {data.verdicts && data.verdicts.length > 0 ? (
+          <div
+            className="pointer-events-auto absolute left-full top-0 z-10 ml-[14px]"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <VerdictStack rounds={data.verdicts} />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   const style: CSSProperties = {
-    // The dagre group box already reserves the header bar; the border just
-    // traces it.
-    borderRadius: 8,
-    border: `1px solid var(--color-line-strong)`,
-    background: "color-mix(in srgb, var(--color-fill) 55%, transparent)",
+    borderRadius: 16,
+    border: "1.5px solid var(--color-line-strong)",
+    background: "transparent",
   };
 
   return (
@@ -340,10 +441,8 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
        * they need the handles the edges resolve against — never draggable. */}
       <Handle id="in" type="target" position={inPosition} className={handleClass(false)} />
       <Handle id="out" type="source" position={outPosition} className={handleClass(false)} />
-      <div className="flex items-center gap-1.5 rounded-t-lg border-b border-line-strong bg-fill px-2.5 py-1">
-        <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-ink-2">
-          {data.headerText}
-        </span>
+      <div className="flex items-center gap-1.5 px-[14px] pt-[10px]">
+        <span className="truncate font-mono text-[10.5px] text-muted">{data.headerText}</span>
         {data.status && (
           <span
             className="ml-auto shrink-0 text-[11px] font-semibold leading-none text-ink"
@@ -355,42 +454,42 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
           </span>
         )}
       </div>
-      <RecurrenceArrow />
-      {data.emptyBody && (
-        <div className="flex h-[calc(100%-1.75rem)] w-full items-center justify-center">
-          {interactive && data.onAddInside ? (
-            <button
-              type="button"
-              data-testid={`add-inside-${data.id}`}
-              className="rounded-md border border-dashed border-line-strong bg-surface px-2.5 py-1 text-[12px] text-ink-2 hover:border-accent hover:text-accent"
-              // Same "+" contract as the edge/terminal affordances: the
-              // pointerdown must not reach the scope node, or the click that
-              // opens the picker also selects the scope.
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                setPickerOpen(true);
-              }}
-            >
-              + Add step inside
-            </button>
-          ) : (
-            <span className="text-[12px] text-muted">empty body</span>
-          )}
-          {pickerOpen && (
-            <div className="absolute left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2">
-              <StepPicker
-                title={`Add a step inside ${data.id}`}
-                onPick={(kind) => {
-                  setPickerOpen(false);
-                  data.onAddInside?.(kind);
-                }}
-                onClose={() => setPickerOpen(false)}
-              />
-            </div>
-          )}
-        </div>
-      )}
+      {emptyBodyNode}
+    </div>
+  );
+}
+
+export function TriggerNode(props: NodeProps<Node<TriggerNodeRender>>) {
+  const { data } = props;
+  const outPosition = data.direction === "LR" ? Position.Right : Position.Bottom;
+  return (
+    <div className="relative" data-testid="canvas-trigger-node">
+      <Handle id="out" type="source" position={outPosition} className={handleClass(false)} />
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          data.onClick?.();
+        }}
+        disabled={!data.onClick}
+        aria-label={`Trigger: ${data.subline}`}
+        className="flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border border-line bg-surface px-3 text-left outline-none hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
+      >
+        <span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[8px] bg-ink text-surface">
+          <IconBolt size={17} stroke={1.5} aria-hidden />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13.5px] font-semibold leading-[17px] text-ink">
+            Trigger
+          </span>
+          <span
+            className="block truncate font-mono text-[11px] leading-[15px] text-muted"
+            title={data.subline}
+          >
+            {data.subline}
+          </span>
+        </span>
+      </button>
     </div>
   );
 }

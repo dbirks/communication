@@ -147,19 +147,20 @@ export interface SetupChecklistProps {
   status: AssistantSystemStatus;
   /** Send this prompt as the person's next message. */
   onPrompt: (text: string) => void;
+  /** `"quick"` applies Quick chat's radius-10, shadowless styling. */
+  variant?: "default" | "quick";
 }
 
-/**
- * The checklist as the transcript row it is: the local message A3 §2 puts in
- * an empty thread, holding its own read. It is a separate component so the
- * transcript that shows no checklist makes no status request and needs no
- * query client at all; nothing renders until the read answers, because half a
- * checklist of rows guessed from nothing would be worse than none.
- */
-export function SetupMessage({ onPrompt }: { onPrompt: (text: string) => void }) {
+export function SetupMessage({
+  onPrompt,
+  variant = "default",
+}: {
+  onPrompt: (text: string) => void;
+  variant?: "default" | "quick";
+}) {
   const { data } = useSystemStatus(true);
   if (!data) return null;
-  return <SetupChecklist status={data} onPrompt={onPrompt} />;
+  return <SetupChecklist status={data} onPrompt={onPrompt} variant={variant} />;
 }
 
 /**
@@ -188,12 +189,31 @@ export function ToolRuleLine({
   );
 }
 
-export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
+export function SetupChecklist({ status, onPrompt, variant = "default" }: SetupChecklistProps) {
   const rows = setupRowsOf(status);
+  const quick = variant === "quick";
   return (
-    <div data-testid="assistant-setup" className="flex flex-col gap-[6px] px-[10px] py-[6px]">
-      <p className="m-0 text-[13px] leading-[1.5] text-ink">Checked this server.</p>
-      <div data-testid="assistant-setup-card" className="rounded-[3px] border border-line p-[4px]">
+    <div
+      data-testid="assistant-setup"
+      className={quick ? "flex flex-col gap-[8px]" : "flex flex-col gap-[6px] px-[10px] py-[6px]"}
+    >
+      <p
+        className={
+          quick
+            ? "m-0 text-[13.5px] leading-[21px] text-ink"
+            : "m-0 text-[13px] leading-[1.5] text-ink"
+        }
+      >
+        Checked this server.
+      </p>
+      <div
+        data-testid="assistant-setup-card"
+        className={
+          quick
+            ? "rounded-[10px] border border-line p-[6px]"
+            : "rounded-[3px] border border-line p-[4px]"
+        }
+      >
         {rows.map((row) => (
           <div
             key={`${row.label}-${row.meta ?? ""}`}
@@ -270,7 +290,9 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
             type="button"
             data-testid="assistant-starter"
             onClick={() => onPrompt(text)}
-            className={`cursor-pointer rounded-[4px] border border-line bg-surface px-[9px] py-[5px] text-left text-[12px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${KEEP_COMPOSER_SIZE_PX}`}
+            className={`cursor-pointer ${
+              quick ? "rounded-[10px]" : "rounded-[4px]"
+            } border border-line bg-surface px-[9px] py-[5px] text-left text-[12px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${KEEP_COMPOSER_SIZE_PX}`}
           >
             {text}
           </button>

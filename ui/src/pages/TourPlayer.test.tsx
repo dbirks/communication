@@ -314,7 +314,7 @@ describe("TourPlayer — the catch-up tour", () => {
     await screen.findByTestId("tour-open-fix");
     // T16: the player stands OUTSIDE the Shell, so it mounts the Ask surface
     // itself — and until the chord is pressed there is no surface on screen.
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
     const asks = () =>
       requests.filter(
         (request) =>
@@ -324,7 +324,7 @@ describe("TourPlayer — the catch-up tour", () => {
       );
 
     fireEvent.keyDown(window, { key: "j", metaKey: true });
-    const popover = await screen.findByTestId("assistant-popover");
+    const popover = await screen.findByTestId("quick-chat");
     await waitFor(() => expect(asks()).toHaveLength(1));
     // The whole stop travels: its title, the PIECE it belongs to, and the refs
     // the server named — not a bare title the assistant cannot act on.
@@ -341,9 +341,9 @@ describe("TourPlayer — the catch-up tour", () => {
 
     // The footer verb is the same ask (one handle, two paths).
     fireEvent.keyDown(popover, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("quick-chat")).toBeNull());
     fireEvent.click(screen.getByTestId("tour-ask"));
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     await waitFor(() => expect(asks()).toHaveLength(2));
     expect(asks()[1]!.body).toContain("Refund duplicates: found, cause, fix");
 

@@ -19,6 +19,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   useReactFlow,
+  useViewport,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -37,15 +38,36 @@ import { nearestEdge, stepLabel, toFlow, type FlowModel } from "./flowModel";
 import {
   ErrorEdge,
   InsertableEdge,
+  TriggerEdge,
   type ErrorEdgeRender,
   type InsertableEdgeRender,
+  type TriggerEdgeRender,
 } from "./edges";
-import { ScopeNode, StepNode, type ScopeNodeRender, type StepNodeRender } from "./nodes";
+import {
+  ScopeNode,
+  StepNode,
+  TriggerNode,
+  type ScopeNodeRender,
+  type StepNodeRender,
+  type TriggerNodeRender,
+} from "./nodes";
 import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
 import { ToolIsland, type CanvasTool } from "./ToolIsland";
 import { PALETTE_DRAG_TYPE } from "./StudioPalette";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { MarchingAnts, type MarchingAntsRect } from "./wrap/MarchingAnts";
+import { WrapPanel } from "./wrap/WrapPanel";
+import { canWrap, type GoalSpec } from "./wrap/wrapModel";
+import type { VerdictRound } from "./wrap/VerdictStack";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 
 export type UiLayout = { nodes?: Record<string, { x: number; y: number }> };
 
@@ -118,6 +140,21 @@ export interface StudioCanvasProps {
   hideStepList?: boolean;
   showToolIsland?: boolean;
   onIslandAdd?(kind: string, position: { x: number; y: number }): void;
+  /** Controlled active canvas tool (falls back to internal state when omitted). */
+  tool?: CanvasTool;
+  onToolChange?(tool: CanvasTool): void;
+  phone?: boolean;
+  onWrapRepeat?(nodeIds: string[], goal: GoalSpec): void;
+  onWrapSideBySide?(nodeIds: string[]): void;
+  onEditGoal?(scopeId: string, goal: GoalSpec): void;
+  onUnwrap?(scopeId: string): void;
+  verdictsByScope?: Record<string, VerdictRound[]>;
+  trigger?: { subline: string; onClick?: () => void } | null;
+  renderNodeOverlay?: (info: {
+    nodeId: string;
+    placement: { left: number; top: number; side: "right" | "left" };
+    sheet: boolean;
+  }) => ReactNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,12 +207,88 @@ export function evaluateConnect(
 const nodeTypes = {
   step: StepNode,
   scope: ScopeNode,
+  trigger: TriggerNode,
 };
 
 const edgeTypes = {
   insertable: InsertableEdge,
   error: ErrorEdge,
+  trigger: TriggerEdge,
 };
+
+export function chooseFloatingPanelPlacement(
+  target: { x: number; y: number; width: number; height: number },
+  panel: { w: number; h: number },
+  pane: { w: number; h: number },
+  gap = 16,
+): { left: number; top: number; side: "right" | "left" } {
+  const rightLeft = target.x + target.width + gap;
+  const leftLeft = target.x - gap - panel.w;
+  let side: "right" | "left" = "right";
+  let left = rightLeft;
+  if (pane.w > 0 && rightLeft + panel.w > pane.w - 8) {
+    if (leftLeft >= 8) {
+      side = "left";
+      left = leftLeft;
+    } else {
+      left = Math.max(8, pane.w - panel.w - 8);
+    }
+  }
+  const top =
+    pane.h > 0 ? Math.max(8, Math.min(target.y, Math.max(8, pane.h - panel.h - 8))) : target.y;
+  return { left, top, side };
+}
+
+export function computeSelectionPaneRect(
+  selectedIds: string[],
+  nodes: Node[],
+  viewport: { x: number; y: number; zoom: number },
+  padding = 14,
+): MarchingAntsRect | null {
+  if (selectedIds.length === 0) return null;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const absPos = (n: Node): { x: number; y: number } => {
+    let x = n.position.x;
+    let y = n.position.y;
+    let pid = n.parentId;
+    const seen = new Set<string>();
+    while (pid && !seen.has(pid)) {
+      seen.add(pid);
+      const parent = byId.get(pid);
+      if (!parent) break;
+      x += parent.position.x;
+      y += parent.position.y;
+      pid = parent.parentId;
+    }
+    return { x, y };
+  };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let count = 0;
+  for (const n of nodes) {
+    if (n.type === "trigger") continue;
+    const nodeId = (n.data as { id?: string } | undefined)?.id;
+    if (!nodeId || !selectedIds.includes(nodeId)) continue;
+    const pos = absPos(n);
+    const w = n.measured?.width ?? (typeof n.style?.width === "number" ? n.style.width : 168);
+    const h = n.measured?.height ?? (typeof n.style?.height === "number" ? n.style.height : 56);
+    minX = Math.min(minX, pos.x);
+    minY = Math.min(minY, pos.y);
+    maxX = Math.max(maxX, pos.x + w);
+    maxY = Math.max(maxY, pos.y + h);
+    count += 1;
+  }
+  if (count === 0 || !Number.isFinite(minX)) return null;
+  const z = viewport.zoom || 1;
+  return {
+    x: minX * z + viewport.x - padding,
+    y: minY * z + viewport.y - padding,
+    width: (maxX - minX) * z + padding * 2,
+    height: (maxY - minY) * z + padding * 2,
+  };
+}
 
 /** The pointer must be within this many px of the segment to count as an
  * "insert here" drop (design doc §3.2). The smooth-step path bows well off the
@@ -683,18 +796,35 @@ function CanvasInner({
   showToolIsland = false,
   onIslandAdd,
   direction = "TB",
+  tool: controlledTool,
+  onToolChange,
+  phone = false,
+  onWrapRepeat,
+  onWrapSideBySide,
+  onEditGoal,
+  onUnwrap,
+  verdictsByScope,
+  trigger = null,
+  renderNodeOverlay,
 }: StudioCanvasProps) {
   const { setViewport, zoomIn, zoomOut } = useReactFlow();
+  const rfViewport = useViewport();
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The pane the graph fills — observed so a dock drag/collapse refits. */
   const paneRef = useRef<HTMLDivElement | null>(null);
+  const triggerSubline = trigger?.subline ?? null;
   // `toFlow` also places every route label, and where it may put one depends on
   // the "+" squares this canvas draws: an editor draws them (so a label seats
   // beside its own "+"), a read-only or stale canvas draws none (the label keeps
   // its seat centred on the line).
   const base: FlowModel = useMemo(
-    () => toFlow(model, document, layout, { addButtons: !readOnly && !stale, direction }),
-    [model, document, layout, readOnly, stale, direction],
+    () =>
+      toFlow(model, document, layout, {
+        addButtons: !readOnly && !stale,
+        direction,
+        trigger: triggerSubline ? { subline: triggerSubline } : null,
+      }),
+    [model, document, layout, readOnly, stale, direction, triggerSubline],
   );
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -703,18 +833,66 @@ function CanvasInner({
   const [refused, setRefused] = useState<string | null>(null);
   const [canvasPickerOpen, setCanvasPickerOpen] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
-  const [tool, setTool] = useState<CanvasTool>("select");
+  const [internalTool, setInternalTool] = useState<CanvasTool>("select");
+  const tool = controlledTool ?? internalTool;
+  const setTool = useCallback(
+    (next: CanvasTool) => {
+      if (controlledTool === undefined) setInternalTool(next);
+      onToolChange?.(next);
+    },
+    [controlledTool, onToolChange],
+  );
   const [source, setSource] = useState<string | null>(null);
   const [islandPicker, setIslandPicker] = useState(false);
+  const [editingScopeId, setEditingScopeId] = useState<string | null>(null);
   const toolRef = useRef(tool);
   const sourceRef = useRef(source);
   toolRef.current = tool;
   sourceRef.current = source;
+  const onSelectRef = useRef(onSelect);
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  const onAddAfterRef = useRef(onAddAfter);
+  const onInsertOnEdgeRef = useRef(onInsertOnEdge);
+  const onDuplicateRef = useRef(onDuplicate);
+  const canConnectRef = useRef(canConnect);
+  const onConnectRef = useRef(onConnect);
+  const onTriggerClickRef = useRef(trigger?.onClick);
+  onSelectRef.current = onSelect;
+  onSelectionChangeRef.current = onSelectionChange;
+  onAddAfterRef.current = onAddAfter;
+  onInsertOnEdgeRef.current = onInsertOnEdge;
+  onDuplicateRef.current = onDuplicate;
+  canConnectRef.current = canConnect;
+  onConnectRef.current = onConnect;
+  onTriggerClickRef.current = trigger?.onClick;
+
+  useEffect(() => {
+    if (!islandPicker) return;
+    const onPointerDown = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.("[data-testid='island-step-picker']")) return;
+      if (target?.closest?.("[aria-label='More steps…']")) return;
+      setIslandPicker(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIslandPicker(false);
+    };
+    globalThis.document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      globalThis.document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [islandPicker]);
+
   useEffect(() => {
     if (!showToolIsland) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setSource(null);
+        setEditingScopeId(null);
+        onSelectionChangeRef.current?.([]);
+        onSelectRef.current?.(null);
         return;
       }
       const target = event.target;
@@ -738,27 +916,7 @@ function CanvasInner({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showToolIsland, readOnly, stale]);
-
-  // The page's callbacks are NOT stable (the page re-creates `handleAddAfter`
-  // and the inline `onInsertOnEdge` arrow on every render). The rebuild effect
-  // must not depend on their identity, or it re-runs on every page render and
-  // re-pushes a fresh node array into the store on every selection change —
-  // which is what ping-ponged the selection into "Maximum update depth
-  // exceeded". Read them through refs so the rebuild's dependency array stays
-  // structural (model/layout/presentation) only.
-  const onConnectRef = useRef(onConnect);
-  const canConnectRef = useRef(canConnect);
-  onConnectRef.current = onConnect;
-  canConnectRef.current = canConnect;
-  const onSelectRef = useRef(onSelect);
-  const onAddAfterRef = useRef(onAddAfter);
-  const onInsertOnEdgeRef = useRef(onInsertOnEdge);
-  const onDuplicateRef = useRef(onDuplicate);
-  onSelectRef.current = onSelect;
-  onAddAfterRef.current = onAddAfter;
-  onInsertOnEdgeRef.current = onInsertOnEdge;
-  onDuplicateRef.current = onDuplicate;
+  }, [showToolIsland, readOnly, stale, setTool]);
 
   // The node content's click handler calls `onSelect` unconditionally (it has
   // no access to the event). While Shift is held, React Flow's own click
@@ -1096,7 +1254,10 @@ function CanvasInner({
   const handleSelectionChange = useCallback(
     (selection: { nodes: Node[] } | undefined) => {
       if (!selection) return;
-      const ids = selection.nodes.map((n) => (n.data as { id?: string }).id ?? "").filter(Boolean);
+      const ids = selection.nodes
+        .filter((n) => n.type !== "trigger")
+        .map((n) => (n.data as { id?: string }).id ?? "")
+        .filter(Boolean);
       onSelectionChange?.(ids);
     },
     [onSelectionChange],
@@ -1181,6 +1342,25 @@ function CanvasInner({
     // `prevMeasured`) start unmeasured and get measured on first paint.
     const prevMeasured = new Map(nodes.map((n) => [n.id, n.measured]));
     const rfNodes: Node[] = base.nodes.map((b) => {
+      if (b.type === "trigger") {
+        const triggerData: TriggerNodeRender = {
+          subline: b.data.triggerSubline ?? "",
+          direction,
+          onClick: () => onTriggerClickRef.current?.(),
+        };
+        return {
+          id: b.id,
+          type: "trigger",
+          position: b.position,
+          data: triggerData,
+          style: { width: b.width, height: b.height },
+          measured: prevMeasured.get(b.id),
+          draggable: false,
+          selectable: false,
+          deletable: false,
+          connectable: false,
+        };
+      }
       const scope = b.data;
       const data: StepNodeRender & Partial<ScopeNodeRender> = {
         id: scope.nodeId,
@@ -1195,10 +1375,17 @@ function CanvasInner({
         stale,
         highlight: highlight?.includes(scope.nodeId) ?? false,
         status: statusOverlay?.[scope.nodeId] ?? null,
+        goal: scope.goal,
+        verdicts: verdictsByScope?.[scope.nodeId],
+        boxWidth: b.width,
+        boxHeight: b.height,
+        onEditGoal:
+          !readOnly && !stale && scope.goal ? () => setEditingScopeId(scope.nodeId) : undefined,
         onSelect: () => {
           // Shift+click: React Flow multi-selects and reports via
           // onSelectionChange; the page's single-select would clobber it.
           if (shiftHeld.current) return;
+          setEditingScopeId(null);
           // Issue #66: a plain click SELECTS — and nothing else. The
           // Duplicate/Delete menu no longer follows the click; it answers
           // right-click, the ⋯ on the selected step, and the keyboard only.
@@ -1258,6 +1445,23 @@ function CanvasInner({
       return node;
     });
     const rfEdges: Edge[] = base.edges.map((b) => {
+      if (b.type === "trigger") {
+        const trigData: TriggerEdgeRender = {
+          edge: b.data.edge,
+          sourceBox: b.sourceBox,
+          targetBox: b.targetBox,
+          axis: b.axis,
+        };
+        return {
+          id: b.id,
+          source: b.source,
+          target: b.target,
+          type: "trigger",
+          selectable: false,
+          deletable: false,
+          data: trigData,
+        };
+      }
       const data: InsertableEdgeRender & ErrorEdgeRender = {
         edge: b.data.edge,
         readOnly,
@@ -1279,7 +1483,7 @@ function CanvasInner({
     });
     setNodes(rfNodes);
     setEdges(rfEdges);
-  }, [base, readOnly, stale, highlight, statusOverlay, preview, direction]);
+  }, [base, readOnly, stale, highlight, statusOverlay, verdictsByScope, preview, direction]);
 
   /* --------------------------------------------- viewport fitting & repair
    * The canvas owns its own fit — React Flow's mount-time `fitView` prop is
@@ -1640,6 +1844,53 @@ function CanvasInner({
     return () => window.removeEventListener("keydown", onKey);
   }, [readOnly, deleteGuarded]);
 
+  const activeSelection = useMemo(
+    () =>
+      selectedIds && selectedIds.length > 0 ? selectedIds : selectedId !== null ? [selectedId] : [],
+    [selectedIds, selectedId],
+  );
+  const showWrapBox =
+    !readOnly &&
+    !stale &&
+    Boolean(onWrapRepeat && onWrapSideBySide) &&
+    (activeSelection.length >= 2 || (tool === "box" && activeSelection.length === 1));
+  const domViewport = parseViewportTransform(viewportEl()?.style.transform ?? null);
+  const effectiveViewport = domViewport ?? rfViewport;
+  const paneSize = {
+    w: paneRef.current?.clientWidth ?? 0,
+    h: paneRef.current?.clientHeight ?? 0,
+  };
+  const antsRect = showWrapBox
+    ? computeSelectionPaneRect(activeSelection, nodes, effectiveViewport, 14)
+    : null;
+  const wrapCheck = useMemo(
+    () => (showWrapBox ? canWrap(model, activeSelection) : null),
+    [showWrapBox, model, activeSelection],
+  );
+  const wrapPlacement = antsRect
+    ? chooseFloatingPanelPlacement(antsRect, { w: 340, h: 420 }, paneSize, 16)
+    : null;
+
+  const editingScopeFlow = editingScopeId
+    ? (base.nodes.find((n) => n.data.nodeId === editingScopeId && n.type === "scope") ?? null)
+    : null;
+  const editingScopeGoal = editingScopeFlow?.data.goal ?? null;
+  const editingScopeRect =
+    editingScopeId && editingScopeGoal
+      ? computeSelectionPaneRect([editingScopeId], nodes, effectiveViewport, 0)
+      : null;
+  const editGoalPlacement = editingScopeRect
+    ? chooseFloatingPanelPlacement(editingScopeRect, { w: 340, h: 380 }, paneSize, 16)
+    : null;
+
+  const singleSelectedRect =
+    !showWrapBox && !editingScopeId && selectedId && renderNodeOverlay
+      ? computeSelectionPaneRect([selectedId], nodes, effectiveViewport, 0)
+      : null;
+  const singleOverlayPlacement = singleSelectedRect
+    ? chooseFloatingPanelPlacement(singleSelectedRect, { w: 340, h: 340 }, paneSize, 16)
+    : null;
+
   return (
     <div
       ref={canvasRef}
@@ -1701,9 +1952,24 @@ function CanvasInner({
           multiSelectionKeyCode="Shift"
           onSelectionChange={handleSelectionChange}
           onNodesDelete={(deleted) =>
-            deleteGuarded(deleted.map((n) => (n.data as { id?: string }).id ?? "").filter(Boolean))
+            deleteGuarded(
+              deleted
+                .filter((n) => n.type !== "trigger")
+                .map((n) => (n.data as { id?: string }).id ?? "")
+                .filter(Boolean),
+            )
           }
-          onEdgesDelete={(deleted) => deleteGuarded(deleted.map((e) => e.id))}
+          onEdgesDelete={(deleted) =>
+            deleteGuarded(deleted.filter((e) => e.type !== "trigger").map((e) => e.id))
+          }
+          onPaneClick={() => {
+            setSource(null);
+            setEditingScopeId(null);
+            setCanvasPickerOpen(false);
+            setIslandPicker(false);
+            onSelectionChange?.([]);
+            onSelect(null);
+          }}
           onNodeContextMenu={onNodeContextMenu}
           panOnDrag={tool !== "box"}
           selectionOnDrag={tool === "box"}
@@ -1718,12 +1984,14 @@ function CanvasInner({
             <ToolIsland
               tool={tool}
               onTool={(next) => {
+                setIslandPicker(false);
                 setTool(next);
                 setSource(null);
               }}
               disabled={readOnly || stale}
-              onMoreSteps={() => setIslandPicker(true)}
+              onMoreSteps={() => setIslandPicker((open) => !open)}
               onAddStep={(kind) => {
+                setIslandPicker(false);
                 const rect = paneRef.current?.getBoundingClientRect();
                 const pos = rect
                   ? clientToFlow(rect.left + rect.width / 2, rect.top + rect.height / 2)
@@ -1737,7 +2005,14 @@ function CanvasInner({
               }}
             />
             {islandPicker && (
-              <div className="absolute left-[68px] top-4 z-30">
+              <div
+                data-testid="island-step-picker"
+                className={
+                  phone
+                    ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-2 shadow-[var(--shadow-modal)]"
+                    : "absolute left-[68px] top-4 z-30"
+                }
+              >
                 <StepPicker
                   title="Add a step"
                   onClose={() => setIslandPicker(false)}
@@ -1814,6 +2089,72 @@ function CanvasInner({
             onClose={closeMenu}
           />
         )}
+        {antsRect && showWrapBox ? (
+          <MarchingAnts
+            rect={antsRect}
+            label={`${activeSelection.length} ${activeSelection.length === 1 ? "step" : "steps"} selected`}
+          />
+        ) : null}
+        {showWrapBox && wrapPlacement ? (
+          <div
+            data-testid="wrap-panel-anchor"
+            data-side={phone ? "sheet" : wrapPlacement.side}
+            className={phone ? "fixed inset-x-0 bottom-0 z-40" : "absolute z-30"}
+            style={phone ? undefined : { left: wrapPlacement.left, top: wrapPlacement.top }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <WrapPanel
+              count={activeSelection.length}
+              reason={wrapCheck && !wrapCheck.ok ? wrapCheck.reason : null}
+              sheet={phone}
+              onWrapRepeat={(goal) => {
+                onWrapRepeat?.(activeSelection, goal);
+                setTool("select");
+              }}
+              onWrapSideBySide={() => {
+                onWrapSideBySide?.(activeSelection);
+                setTool("select");
+              }}
+              onClose={() => {
+                onSelectionChange?.([]);
+                onSelect(null);
+              }}
+            />
+          </div>
+        ) : null}
+        {editingScopeId && editingScopeGoal && editGoalPlacement && !readOnly && !stale ? (
+          <div
+            data-testid="goal-edit-anchor"
+            data-side={phone ? "sheet" : editGoalPlacement.side}
+            className={phone ? "fixed inset-x-0 bottom-0 z-40" : "absolute z-30"}
+            style={phone ? undefined : { left: editGoalPlacement.left, top: editGoalPlacement.top }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <WrapPanel
+              mode="edit"
+              count={0}
+              initialGoal={editingScopeGoal}
+              sheet={phone}
+              onUnwrap={() => {
+                onUnwrap?.(editingScopeId);
+                setEditingScopeId(null);
+              }}
+              onWrapRepeat={(nextGoal) => {
+                onEditGoal?.(editingScopeId, nextGoal);
+                setEditingScopeId(null);
+              }}
+              onWrapSideBySide={() => {}}
+              onClose={() => setEditingScopeId(null)}
+            />
+          </div>
+        ) : null}
+        {selectedId && singleOverlayPlacement && renderNodeOverlay
+          ? renderNodeOverlay({
+              nodeId: selectedId,
+              placement: singleOverlayPlacement,
+              sheet: phone,
+            })
+          : null}
       </div>
 
       {/* The pane is too short to hold even the one-row menu (a canvas the

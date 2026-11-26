@@ -20,8 +20,12 @@ import type { DictationPhase } from "./useDictation";
 export interface MicButtonProps {
   phase: DictationPhase;
   onToggle: () => void;
-  /** A turn is in flight, or the clip is at the server: nothing to tap. */
+  /** A turn is in flight, the clip is at the server, or speech is unavailable. */
   disabled?: boolean;
+  /** Shown as title/aria-label when disabled because speech is unavailable. */
+  disabledReason?: string;
+  /** Circular 32px redesign variant used in Quick chat. */
+  circle?: boolean;
   className?: string;
 }
 
@@ -35,18 +39,48 @@ export default function MicButton({
   phase,
   onToggle,
   disabled = false,
+  disabledReason,
+  circle = false,
   className = "",
 }: MicButtonProps) {
   const recording = phase === "recording";
   const waiting = phase === "transcribing";
+  const isDisabled = disabled || waiting;
+  const label = disabled && disabledReason ? disabledReason : TITLES[phase];
+  if (circle) {
+    return (
+      <button
+        type="button"
+        data-testid="mic-button"
+        aria-pressed={recording}
+        aria-label={label}
+        title={label}
+        disabled={isDisabled}
+        onClick={onToggle}
+        className={`grid h-[32px] w-[32px] shrink-0 place-items-center rounded-full border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+          recording
+            ? "border-[#2f4bd6] bg-[#2f4bd6] text-surface"
+            : isDisabled
+              ? "cursor-not-allowed border-line bg-disabled-bg text-disabled-fg"
+              : "border-line bg-surface text-ink-2 hover:bg-fill"
+        } ${className}`}
+      >
+        {recording ? (
+          <IconPlayerStop size={15} stroke={1.75} aria-hidden className="shrink-0" />
+        ) : (
+          <IconMicrophone size={15} stroke={1.75} aria-hidden className="shrink-0" />
+        )}
+      </button>
+    );
+  }
   return (
     <button
       type="button"
       data-testid="mic-button"
       aria-pressed={recording}
-      aria-label={TITLES[phase]}
-      title={TITLES[phase]}
-      disabled={disabled || waiting}
+      aria-label={label}
+      title={label}
+      disabled={isDisabled}
       onClick={onToggle}
       className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[4px] border ${KEEP_COMPOSER_SIZE_PX} focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
         recording

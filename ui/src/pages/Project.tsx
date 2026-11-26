@@ -1,104 +1,144 @@
 /**
- * `/p/:projectId` — the project overview (Projects Review design 1b).
+ * `/p/:projectId` — the project's home (redesign R2, README §2 "Project home",
+ * docs/design/redesign/CONTRACT.md "Routes and scope").
  *
- * One navigation, in the page header: the section tabs are ROUTES
- * (Overview · Runs · Threads · Workflows · Artifacts · Settings), which replaced
- * the 160px `ProjectSectionNav` rail this page used to mount beside its own
- * panels. Below the band it is the handoff's shared two-column body — the work
- * that asks something of you on the left, the project's inventory on the right,
- * `minmax(0,1fr) 300px` down to 1024px and stacked below it.
+ * One project, at a glance: the prompt box that starts work in it, the three
+ * pills that start the specific things this project has, what is happening
+ * right now, what happened while the reader was away, and — in the right column
+ * — the repositories and the workflows that live here. The old page's tab band
+ * is gone: the rail and the pill in the top bar are the navigation now, so this
+ * page is not framed by a second copy of it.
  *
- * The attention read is the inbox's (`../lib/attention.ts`) narrowed to this
- * project, so a stalled run never reads as fine here and urgent there. Run rows
- * obey the run pages' honesty rule: no invented title, only what the wire
- * serves. What the design shows that the API does not serve — a repository on a
- * run, an issue count per repository, a subject line on a thread — is said
- * rather than drawn: see the notes in `RunningNow`, `Repositories` and
- * `RecentThreads`.
+ * Layout is the handoff's: max-width 1180, `1fr 300px`, gap 40, padding 28 36 —
+ * one column below 900px, and the phone's 20/16 inset below 768 (CONTRACT.md
+ * "Phone"). Everything on it comes from a read; what the wire does not serve is
+ * said, never drawn (see `WorkflowsHere`, `RepoList`, `HappeningNow`).
+ *
+ * The unusable branches keep today's behaviour exactly: a `404`/`403` is
+ * `ProjectUnavailable`'s one sentence, any other failure quotes the server, and
+ * neither prints a half page. The project journal subscription stays too — it is
+ * what coalesces a replaying stream into one invalidation, so the counts and
+ * cards here refresh without a read storm (see `ProjectRefetch.test.tsx`).
  */
-import { Link, useParams } from "react-router";
+import { useState } from "react";
+import { useParams } from "react-router";
+import { IconBuildingFactory2 } from "@tabler/icons-react";
+import { useProject } from "../api/queries";
 import { useProjectEvents } from "../api/events";
-import { ProjectFrame } from "../components/project/ProjectFrame";
-import { NeedsYou } from "../components/project/NeedsYou";
-import { RecentThreads } from "../components/project/RecentThreads";
-import { Repositories } from "../components/project/Repositories";
-import { RunningNow } from "../components/project/RunningNow";
-import { WorkflowsPanel } from "../components/project/WorkflowsPanel";
+import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
+import { ProblemBanner, Spinner } from "../components/Feedback";
+import Page from "../components/ds/Page";
+import { PromptChip } from "../components/ds/PromptBox";
+import { StartRunDialog } from "../components/home/StartRunDialog";
+import { HappeningNow } from "../components/home/HappeningNow";
+import { HomePrompt } from "../components/home/HomePrompt";
+import { RepoList } from "../components/home/RepoList";
+import { SinceYouLeft } from "../components/home/SinceYouLeft";
+import { StarterPills } from "../components/home/StarterPills";
+import { WorkflowsHere } from "../components/home/WorkflowsHere";
 import { routes } from "../lib/routes";
-
-/**
- * The remote a person recognises — `github.com/example/app` — from https, ssh or
- * scp-style `git@host:path` URLs. Re-exported from
- * `../components/project/gitRemote` (where it now lives, because the repositories
- * panel and the repository page print the same line).
- */
-export { gitRemote } from "../components/project/gitRemote";
 
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = projectId ?? "";
-  return (
-    <ProjectFrame
-      projectId={id}
-      active="overview"
-      testid="project-page"
-      heading="Project"
-      headingId="project-heading"
-      notFoundTestid="project-not-found"
-      bodyClassName="grid flex-1 items-start gap-[20px] px-[22px] py-[22px] lg:grid-cols-[minmax(0,1fr)_300px] md:px-[28px]"
-    >
-      {(project, openNewThread) => {
-        const canStartWork = project.my_role === "maintainer" || project.my_role === "contributor";
-        return (
-          <>
-            {/* The project journal subscription stays on this page even though
-                the visible event feed moved off it: `useProjectEvents` is what
-                coalesces frames into one invalidation per window, so a gate
-                decided in another tab (or a run that just broke) refreshes the
-                counts and callouts here instead of sitting stale until a
-                reload. The feed's list is what left; the subscription did not. */}
-            <ProjectJournal projectId={project.id} />
-            {/* ------------------------------------------------- what asks things */}
-            <div className="min-w-0 space-y-[16px]">
-              <NeedsYou project={project} />
-              <RunningNow project={project} />
-              <RecentThreads
-                project={project}
-                canStartThread={canStartWork}
-                onNewThread={openNewThread}
-              />
-            </div>
+  const project = useProject(id);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
 
-            {/* --------------------------------------------------- inventory */}
-            <div className="min-w-0 space-y-[16px]">
-              <Repositories project={project} />
-              <WorkflowsPanel project={project} />
-              <p
-                className="font-mono text-[10.5px] leading-[16px] text-faint"
-                data-testid="project-moved-off-note"
-              >
-                Members, workspaces and the event feed moved off this page:{" "}
-                <Link to={`${routes.project(project.id)}/members`} className="underline">
-                  members &amp; activity
-                </Link>{" "}
-                ·{" "}
-                <Link to={routes.projectTab(project.id, "settings")} className="underline">
-                  workspaces &amp; secrets
-                </Link>
-                .
-              </p>
-            </div>
-          </>
-        );
-      }}
-    </ProjectFrame>
+  if (project.isPending) {
+    return (
+      <Page layout="canvas" testid="project-home-loading">
+        <div className="px-[22px] pt-[20px] md:px-[28px]">
+          <Spinner label="Loading the project home" />
+        </div>
+      </Page>
+    );
+  }
+
+  if (projectAccessRefused(project.error)) {
+    return (
+      <Page layout="canvas" testid="project-home-refused">
+        <div className="px-[22px] pt-[20px] md:px-[28px]">
+          <ProjectUnavailable
+            heading="Project"
+            headingId="project-home-heading"
+            testid="project-not-found"
+            missing="Project"
+            hint="Check the link, or go back to Projects and open one you belong to — a project you cannot open reads exactly like one that is not there."
+            back={{
+              to: routes.projects(),
+              label: "Projects",
+              testid: "project-home-back-to-projects",
+            }}
+            backButton={{ label: "← Projects", testid: "project-home-back-to-projects-action" }}
+          />
+        </div>
+      </Page>
+    );
+  }
+
+  if (project.error || !project.data) {
+    return (
+      <Page layout="canvas" testid="project-home-error">
+        <div className="max-w-[70ch] px-[22px] pt-[20px] md:px-[28px]">
+          <ProblemBanner
+            error={project.error}
+            fallback="The project home could not be loaded."
+            subject="the project home"
+            hint="The project could not be loaded, so this page has nothing to show yet."
+            retry={{
+              onClick: () => void project.refetch(),
+              pending: project.isFetching,
+              testid: "project-home-retry",
+            }}
+          />
+        </div>
+      </Page>
+    );
+  }
+
+  const data = project.data;
+  return (
+    <div className="min-h-full bg-surface" data-testid="project-home">
+      {/* The journal subscription: what keeps these cards honest without a
+          poll. It renders nothing. */}
+      <ProjectJournal projectId={data.id} />
+      <div className="mx-auto grid max-w-[1180px] grid-cols-1 gap-[40px] px-[36px] pt-[28px] pb-[48px] max-md:px-[16px] max-md:pt-[20px] min-[900px]:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="flex min-w-0 flex-col gap-[24px]">
+          <div className="flex flex-col gap-[10px]">
+            <HomePrompt
+              projectId={data.id}
+              placeholder={`What should we do in ${data.name}?`}
+              extraChips={
+                <PromptChip
+                  testid="home-prompt-run"
+                  icon={<IconBuildingFactory2 size={14} stroke={1.5} aria-hidden />}
+                  title="Start a run of one of this project's workflows"
+                  onClick={() => setRunDialogOpen(true)}
+                >
+                  or run a workflow
+                </PromptChip>
+              }
+            />
+            <StarterPills projectId={data.id} />
+          </div>
+          <HappeningNow projectId={data.id} />
+          <SinceYouLeft projectId={data.id} />
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-[28px]">
+          <RepoList projectId={data.id} />
+          <WorkflowsHere projectId={data.id} />
+        </div>
+      </div>
+
+      {runDialogOpen ? <StartRunDialog onClose={() => setRunDialogOpen(false)} /> : null}
+    </div>
   );
 }
 
 /**
- * The overview's live subscription, in a component of its own so the hook
- * stays a hook: `useProjectEvents` is called from a real component that mounts
- * only once the project read has answered, and returns nothing.
+ * The live subscription, in a component of its own so the hook stays a hook:
+ * it mounts only once the project read has answered, and returns nothing.
  */
 function ProjectJournal({ projectId }: { projectId: string }) {
   useProjectEvents(projectId);

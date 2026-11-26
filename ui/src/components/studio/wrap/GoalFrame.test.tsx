@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoalFrame } from "./GoalFrame";
 
 afterEach(cleanup);
@@ -56,5 +56,18 @@ describe("GoalFrame", () => {
     );
     expect(screen.getByTestId("goal-frame-ants")).toBeTruthy();
     expect(screen.getByTestId("goal-frame").style.border).toContain("transparent");
+  });
+
+  it("renders a clickable header button when onHeaderClick is passed", () => {
+    const onHeaderClick = vi.fn();
+    render(
+      <GoalFrame
+        rect={RECT}
+        goal={{ kind: "judge", text: "Ready", maxRounds: 3 }}
+        onHeaderClick={onHeaderClick}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("goal-frame-header"));
+    expect(onHeaderClick).toHaveBeenCalledTimes(1);
   });
 });

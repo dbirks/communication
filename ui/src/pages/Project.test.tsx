@@ -1,1146 +1,287 @@
 /**
- * `/p/:projectId` — the project overview (Projects Review design 1b): the
- * header band with its route tabs, the callouts that ask something of a person,
- * the running-now list, and the two inventory panels.
+ * The redesigned project home (`/p/:projectId`, redesign R2): what the page is
+ * allowed to say about this project, and where its links go.
  *
- * The states each block can be in are asserted deliberately: populated from a
- * stubbed wire, honestly empty, refused (`404`) and broken (`5xx`). What the
- * design shows that no API serves — a run title, a repository on a run —
- * is asserted as *said*, never drawn as a number; the repository row's open
- * issues are the exception since ADR-0065: they read the repository page's
- * own GitHub route, count included, with `50+` honesty at the page cap.
+ * The two blocks the Home brief shares with the other half of the job
+ * (`HomePrompt`, `SinceYouLeft`) are mocked here — the page's contract with
+ * them is the props it passes, which this suite pins, and their own behaviour is
+ * tested beside them rather than through this page.
+ *
+ * Everything else mounts for real against the fake wire, because the point of
+ * the page is honesty: a card shows the run's own step, a repository row says
+ * nothing when the issue read cannot answer, and a workflow's trigger line is
+ * the Factory's own sentence for the assignment's real schedules.
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
-import type { GitHubIssue } from "../api/issues";
 import {
-  claudeProfile,
-  codexProfile,
   conversationSummaryFixture,
   meFixture,
   projectFixture,
   repositoryId,
   requestsTo,
-  workspaceFixture,
   type RouteStub,
 } from "../test/fakes";
-import {
-  WIRE_APPROVAL_ID,
-  WIRE_PIPELINE_ID,
-  WIRE_REVISION_ID,
-  WIRE_RUN_ID,
-  wireApproval,
-  wirePipelineList,
-  wireRevision,
-  wireRun,
-} from "../test/fixtures/m4/wire";
-import type { CrossProjectRun } from "../components/board/columns";
-import type { Assignment, Member, Project, Repository, RunSummary } from "../api/types";
-import { shortId, testidOf } from "../lib/format";
+import type { CrossProjectRunSummary } from "../api/home";
+import type { Assignment, Repository } from "../api/types";
+import { shortId } from "../lib/format";
 
-const me: RouteStub = { path: "/api/v1/me", body: meFixture };
+// The sibling half of the Home job owns those two components; this page only
+// hands them props, so the mocks render the props back for the assertions.
+vi.mock("../components/home/HomePrompt", () => ({
+  HomePrompt: ({
+    projectId,
+    placeholder,
+    extraChips,
+  }: {
+    projectId?: string;
+    placeholder?: string;
+    extraChips?: React.ReactNode;
+  }) => (
+    <div data-testid="home-prompt" data-project-id={projectId ?? ""} data-placeholder={placeholder}>
+      {extraChips}
+    </div>
+  ),
+}));
+vi.mock("../components/home/SinceYouLeft", () => ({
+  SinceYouLeft: ({ projectId }: { projectId?: string }) => (
+    <div data-testid="since-you-left" data-project-id={projectId ?? ""} />
+  ),
+}));
+
 const projectId = projectFixture.id;
 const projectPath = `/api/v1/projects/${projectId}`;
-const reposPath = `${projectPath}/repos`;
-const membersPath = `${projectPath}/members`;
-const approvalsPath = `${projectPath}/approvals`;
-const decidePath = `/api/v1/approvals/${WIRE_APPROVAL_ID}/decide`;
-const runsPath = `${projectPath}/runs`;
-const crossRunsPath = "/api/v1/runs";
-const conversationsPath = `${projectPath}/conversations`;
-const assignmentsPath = `${projectPath}/assignments`;
-const schedulesPath = `${projectPath}/schedules`;
-const issueTriggersPath = `${projectPath}/issue-triggers`;
-const workspacesPath = `${projectPath}/workspaces`;
-const issuesPath = `${projectPath}/repos/${repositoryId}/issues`;
-const revisionPath = `/api/v1/revisions/${wireRevision.revision_digest}`;
+const pipelineId = "01987b20-0000-7000-8000-abcdef012345";
+const scheduleId = "01987b50-0000-7000-8000-0000000000s1";
 
 const repository: Repository = {
   id: repositoryId,
   project_id: projectId,
-  name: "communication",
-  git_url: "https://github.com/example/communication.git",
+  name: "app",
+  git_url: "https://github.com/example/app.git",
   default_branch: "main",
   created_at: "2026-10-14T18:00:00Z",
-  credential: "configured",
 };
 
-/** A local remote: the issues route could only answer `422
- * not_a_github_repository` for it, so the row must not ask (ADR-0065). */
-const localRepository: Repository = {
-  ...repository,
-  id: "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f1",
-  name: "lab",
-  git_url: "file:///srv/git/lab.git",
-};
-
-/** One open GitHub issue, as the issues route serves it. */
-function issue(number: number): GitHubIssue {
+function run(overrides: Partial<CrossProjectRunSummary> = {}): CrossProjectRunSummary {
   return {
-    number,
-    title: `Issue ${number}`,
-    body: "Something is broken.",
-    labels: [],
-    html_url: `https://github.com/example/communication/issues/${number}`,
-    state: "open",
-    updated_at: "2026-10-14T17:00:00Z",
-    body_truncated: false,
-  };
-}
-
-const member: Member = { user_id: meFixture.id, display_name: "Ada Lovelace", role: "maintainer" };
-const directoryUser = {
-  id: "01987a61-2345-7000-8000-abcdef012399",
-  display_name: "Grace Hopper",
-  email: null,
-};
-
-/** The project pins this workflow, in this repository. */
-function assignment(overrides: Partial<Assignment> = {}): Assignment {
-  return {
-    id: "01987b22-0000-7000-8000-abcdef012345",
+    id: "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
     project_id: projectId,
-    pipeline_id: WIRE_PIPELINE_ID,
-    pinned_revision_id: WIRE_REVISION_ID,
-    pinned_revision_digest: wireRevision.revision_digest,
-    pinned_version_label: "7.0.0",
-    repository_id: repository.id,
-    repository_name: repository.name,
-    max_concurrent_runs: 1,
-    budget_overrides: {},
-    effective_budgets: {},
-    enabled: true,
-    version: 1,
-    created_at: "2026-07-30T09:00:00Z",
-    updated_at: "2026-07-30T09:00:00Z",
-    ...overrides,
-  };
-}
-
-/** A cross-project run row (`GET /api/v1/runs`): the run list the board and
- * Home share, which is the only run read that embeds steps. */
-function crossRun(overrides: Partial<CrossProjectRun> = {}): CrossProjectRun {
-  const now = new Date().toISOString();
-  return {
-    id: WIRE_RUN_ID,
-    project_id: projectId,
-    pipeline_id: WIRE_PIPELINE_ID,
-    pipeline_revision_id: WIRE_REVISION_ID,
-    assignment_id: null,
-    revision_digest: wireRevision.revision_digest,
-    plan_digest: `sha256:${"0d0c".repeat(32)}`,
+    pipeline_id: pipelineId,
+    pipeline_revision_id: "01987b10-0000-7000-8000-000000000001",
+    revision_digest: "sha256:1",
+    plan_digest: "sha256:2",
     status: "running",
-    failed_cause: null,
     depth: 0,
-    parent_run_id: null,
-    triggered_by: meFixture.id,
     priority: 0,
-    created_at: new Date(Date.now() - 14 * 60_000).toISOString(),
-    started_at: new Date(Date.now() - 13 * 60_000).toISOString(),
-    finished_at: null,
+    created_at: "2026-11-20T10:00:00Z",
     project_name: projectFixture.name,
-    pipeline_slug: "feature-development",
-    pipeline_display_name: "Feature development",
-    steps: [],
+    pipeline_slug: "wf-1",
+    pipeline_display_name: "Workflow One",
+    steps: [
+      { node_id: "plan", kind: "agent.acp", state: "succeeded" },
+      { node_id: "implement", kind: "agent.acp", state: "running" },
+    ],
     ...overrides,
-    // `finished_at` is non-null exactly when the run is terminal; a fixture
-    // that says `completed` without one would be an illegal row.
-    ...(overrides.finished_at === undefined &&
-    overrides.status !== undefined &&
-    ["completed", "failed", "cancelled", "interrupted"].includes(String(overrides.status))
-      ? { finished_at: now }
-      : {}),
-  } as CrossProjectRun;
+  };
 }
 
-/** Every read the overview touches, answering with something. A route a test
- * overrides goes in `extra` (searched first, so a stub shadows these). */
-function projectRoutes(project: Project, extra: RouteStub[] = []): RouteStub[] {
-  return [
-    me,
-    ...extra,
-    { path: projectPath, method: "GET", body: project },
-    { path: reposPath, method: "GET", body: { items: [repository] } },
-    { path: membersPath, method: "GET", body: { items: [member] } },
-    { path: "/api/v1/users", method: "GET", body: { items: [directoryUser] } },
+const assignment: Assignment = {
+  id: "01987b55-0000-7000-8000-0000000000a1",
+  project_id: projectId,
+  pipeline_id: pipelineId,
+  pinned_revision_id: "01987b10-0000-7000-8000-000000000001",
+  pinned_revision_digest: "sha256:1",
+  max_concurrent_runs: 1,
+  budget_overrides: {},
+  effective_budgets: {},
+  enabled: true,
+  version: 1,
+  created_at: "2026-11-20T10:00:00Z",
+  updated_at: "2026-11-20T10:00:00Z",
+};
+
+/** The whole page's reads, in the state the assertions below describe. */
+function routesFor(overrides: Partial<Record<string, RouteStub>> = {}): RouteStub[] {
+  const base: RouteStub[] = [
+    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/projects", body: { items: [projectFixture] } },
+    { path: projectPath, method: "GET", body: projectFixture },
+    { path: `${projectPath}/repos`, body: { items: [repository] } },
     {
-      path: "/api/v1/agent-profiles",
-      method: "GET",
-      body: { items: [claudeProfile, codexProfile] },
+      path: `${projectPath}/conversations`,
+      body: {
+        items: [
+          {
+            ...conversationSummaryFixture,
+            id: "01987b30-0000-7000-8000-0000000000a1",
+            title: "Thread One",
+            updated_at: "2026-11-20T10:05:00Z",
+          },
+        ],
+      },
     },
-    { path: "/api/v1/pipelines", method: "GET", body: wirePipelineList },
-    // The attention read is approvals + the project's runs + its conversations.
-    // Unstubbed they would 404, and the panels would honestly report that rather
-    // than show the state the test is about.
-    { path: approvalsPath, method: "GET", body: { approvals: [] } },
-    { path: runsPath, method: "GET", body: { runs: [] } },
-    { path: crossRunsPath, method: "GET", body: { runs: [], next_cursor: null } },
-    { path: conversationsPath, method: "GET", body: { items: [conversationSummaryFixture] } },
-    { path: assignmentsPath, method: "GET", body: { assignments: [] } },
-    { path: schedulesPath, method: "GET", body: { schedules: [] } },
-    { path: issueTriggersPath, method: "GET", body: { issue_triggers: [] } },
-    { path: workspacesPath, method: "GET", body: { workspaces: [workspaceFixture] } },
-    { path: revisionPath, method: "GET", body: wireRevision },
+    { path: "/api/v1/runs", body: { runs: [], next_cursor: null } },
+    { path: `${projectPath}/assignments`, body: { assignments: [assignment] } },
+    {
+      path: "/api/v1/pipelines",
+      body: {
+        pipelines: [
+          {
+            id: pipelineId,
+            slug: "wf-1",
+            display_name: "Workflow One",
+            latest_revision_number: 1,
+            revision_count: 1,
+            archived: false,
+          },
+        ],
+      },
+    },
+    { path: `${projectPath}/schedules`, body: { schedules: [] } },
+    { path: `${projectPath}/issue-triggers`, body: { issue_triggers: [] } },
+    { path: "/api/v1/agent-profiles", body: { items: [] } },
+    {
+      path: "/api/v1/catch-up/items",
+      body: { items: [], total_unseen: 0, oldest_unseen_at: null },
+    },
+    { path: "/api/v1/catch-up/brief", body: { headline: { state: "ready", text: "" } } },
   ];
+  return base.map((stub) => overrides[stub.path] ?? stub);
 }
 
-const mounted = (extra: RouteStub[] = [], project: Project = projectFixture) =>
-  renderApp({ path: `/p/${projectId}`, routes: projectRoutes(project, extra) });
+describe("/p/:projectId — the project home", () => {
+  it("hands the prompt box this project and names it in the placeholder", async () => {
+    renderApp({ path: `/p/${projectId}`, routes: routesFor() });
 
-describe("/p/:projectId — the header band and its tabs", () => {
-  it("shows the project's own name and description, and the two verbs", async () => {
-    mounted();
-    expect((await screen.findByTestId("project-name")).textContent).toBe("Widgets");
-    expect(screen.getByText("Widget incubator")).toBeTruthy();
-    // "Conversations" is out of this page's vocabulary: the verb is a thread.
-    expect(screen.queryByText(/New conversation/i)).toBeNull();
-    expect(screen.getByTestId("project-new-conversation").textContent).toBe("New thread");
-    expect(screen.getByTestId("project-start-run").getAttribute("href")).toBe(
-      // The band's `Start run` is the Runs tab's one door into the form — it
-      // navigates with `?new=1` (the panel's own "New run" button is gone).
-      `/p/${projectId}/runs?new=1`,
+    const prompt = await screen.findByTestId("home-prompt");
+    expect(prompt.getAttribute("data-project-id")).toBe(projectId);
+    expect(prompt.getAttribute("data-placeholder")).toBe(
+      `What should we do in ${projectFixture.name}?`,
+    );
+    // The project home also hands the box its one extra chip, and the chip
+    // opens the run form that already exists.
+    expect(screen.getByTestId("home-prompt-run").textContent).toContain("or run a workflow");
+    fireEvent.click(screen.getByTestId("home-prompt-run"));
+    expect(await screen.findByTestId("home-start-run-dialog")).toBeTruthy();
+  });
+
+  it("scopes the since-you-left block to this project", async () => {
+    renderApp({ path: `/p/${projectId}`, routes: routesFor() });
+    const block = await screen.findByTestId("since-you-left");
+    expect(block.getAttribute("data-project-id")).toBe(projectId);
+  });
+
+  it("offers the starter pills the project really has, and links each one", async () => {
+    renderApp({ path: `/p/${projectId}`, routes: routesFor() });
+
+    const resume = await screen.findByTestId(
+      `starter-pill-resume-${shortId("01987b30-0000-7000-8000-0000000000a1")}`,
+    );
+    expect(resume.textContent).toContain("Thread One");
+    expect(resume.getAttribute("href")).toBe(
+      `/p/${projectId}/chats/01987b30-0000-7000-8000-0000000000a1`,
+    );
+
+    const runPill = await screen.findByTestId(`starter-pill-run-${shortId(pipelineId)}`);
+    expect(runPill.textContent).toBe("Run Workflow One");
+    expect(runPill.getAttribute("href")).toBe(`/p/${projectId}/factory/${pipelineId}`);
+
+    expect(screen.getByTestId("starter-pill-chat").getAttribute("href")).toBe(
+      `/p/${projectId}/chats/new`,
     );
   });
 
-  it("mounts the six section tabs as routes, with Overview current", async () => {
-    mounted();
-    await screen.findByTestId("project-name");
+  it("shows the live run as a happening-now card with the run's own step", async () => {
+    renderApp({
+      path: `/p/${projectId}`,
+      routes: routesFor({
+        "/api/v1/runs": { path: "/api/v1/runs", body: { runs: [run()], next_cursor: null } },
+      }),
+    });
 
-    const nav = screen.getByRole("navigation", { name: "Project sections" });
-    const items = within(nav).getAllByRole("link");
-    expect(items.map((item) => item.getAttribute("data-testid"))).toEqual([
-      "project-tab-overview",
-      "project-tab-runs",
-      "project-tab-threads",
-      "project-tab-workflows",
-      "project-tab-artifacts",
-      "project-tab-settings",
-    ]);
-    expect(items.map((item) => item.getAttribute("href"))).toEqual([
-      `/p/${projectId}`,
-      `/p/${projectId}/runs`,
-      `/p/${projectId}/threads`,
-      `/p/${projectId}/workflows`,
-      `/p/${projectId}/artifacts`,
-      `/p/${projectId}/settings`,
-    ]);
-    expect(within(nav).getByTestId("project-tab-overview").getAttribute("aria-current")).toBe(
-      "page",
+    const card = await screen.findByTestId(
+      `happening-run-${shortId("01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c")}`,
     );
-    // The rail is gone: no second "Project sections" navigation on the page, and
-    // no legacy `/projects/<id>` href left on it.
-    expect(screen.getAllByRole("navigation", { name: "Project sections" })).toHaveLength(1);
-    expect(document.querySelectorAll(`a[href^="/projects/${projectId}"]`)).toHaveLength(0);
+    expect(card.getAttribute("href")).toBe("/runs/01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c");
+    expect(card.textContent).toContain("Workflow One");
+    expect(card.textContent).toContain("on implement");
+    expect(screen.queryByTestId("happening-now-empty")).toBeNull();
   });
 
-  it("flags the Runs tab with what needs you, and counts threads and workflows", async () => {
-    mounted([
-      { path: approvalsPath, method: "GET", body: { approvals: [wireApproval] } },
-      { path: runsPath, method: "GET", body: { runs: [{ ...wireRun } as RunSummary] } },
-      {
-        path: conversationsPath,
-        method: "GET",
-        body: {
-          items: [
-            conversationSummaryFixture,
-            { ...conversationSummaryFixture, id: "01987a70-2222-7000-8000-abcdef012345" },
-          ],
-        },
-      },
-      { path: assignmentsPath, method: "GET", body: { assignments: [assignment()] } },
-    ]);
-
-    await screen.findByTestId("project-name");
-    const tabs = screen.getByRole("navigation", { name: "Project sections" });
-    // One open gate, and the `waiting_human` run it belongs to is the same fact
-    // once — the count is the attention read's, not a sum of both lists.
-    await waitFor(() =>
-      expect(within(tabs).getByTestId("project-tab-runs").textContent).toContain("! 1"),
-    );
-    expect(within(tabs).getByTestId("project-tab-runs").textContent).toContain("need you");
-    expect(within(tabs).getByTestId("project-tab-threads").textContent).toContain("2");
-    expect(within(tabs).getByTestId("project-tab-workflows").textContent).toContain("1");
+  it("says so when nothing is happening", async () => {
+    renderApp({ path: `/p/${projectId}`, routes: routesFor() });
+    await screen.findByText("Nothing is happening right now.");
   });
 
-  it("reads each tab count from the request the section below already makes", async () => {
-    const { requests } = mounted([
-      { path: assignmentsPath, method: "GET", body: { assignments: [assignment()] } },
-    ]);
-    await screen.findByTestId("project-name");
-    await waitFor(() => expect(screen.getByTestId("project-workflows-assign")).toBeTruthy());
-    // The header's counts and the panels share one cache entry each: the tab row
-    // must not fan a second conversations/assignments read (the read-storm class
-    // of bug `ProjectRefetch.test.tsx` guards on the live lab).
-    expect(requestsTo(requests, conversationsPath, "GET")).toHaveLength(1);
-    expect(requestsTo(requests, assignmentsPath, "GET")).toHaveLength(1);
-    expect(requestsTo(requests, workspacesPath, "GET")).toHaveLength(1);
-  });
-
-  it("hides the verbs from a viewer, who cannot start either", async () => {
-    mounted([], { ...projectFixture, my_role: "viewer" });
-    await screen.findByTestId("project-name");
-    expect(screen.queryByTestId("project-new-conversation")).toBeNull();
-    expect(screen.queryByTestId("project-start-run")).toBeNull();
-    expect(screen.getByTestId("project-role-hint").textContent).toContain("read-only");
-    expect(screen.queryByTestId("repo-add-toggle")).toBeNull();
-    expect(screen.queryByTestId("project-workflows-assign")).toBeNull();
-  });
-});
-
-describe("/p/:projectId — what needs you", () => {
-  it("says nothing needs attention when the project has no open work", async () => {
-    mounted();
-    expect((await screen.findByTestId("project-attention-empty")).textContent).toContain(
-      "Nothing needs attention in this project.",
+  it("lists the repositories with their names as links", async () => {
+    renderApp({ path: `/p/${projectId}`, routes: routesFor() });
+    const row = await screen.findByTestId("repo-row-app");
+    expect(row.querySelector("a")?.getAttribute("href")).toBe(`/p/${projectId}/app`);
+    expect(screen.getByTestId("repo-list-add").getAttribute("href")).toBe(
+      `/manage/repositories?project=${projectId}`,
     );
   });
 
-  it("turns an open gate into a callout with Read plan and the fixed decision verbs", async () => {
-    const decided = {
-      ...wireApproval,
-      state: "decided",
-      decision: "approved",
-      version: 2,
-    };
-    const { requests } = mounted([
-      { path: approvalsPath, method: "GET", body: { approvals: [wireApproval] } },
-      { path: decidePath, method: "POST", body: decided },
-    ]);
-
-    const key = testidOf(WIRE_APPROVAL_ID);
-    const callout = await screen.findByTestId(`project-attention-decision-${key}`);
-    // The gate's own text, never an invented subject line.
-    expect(callout.textContent).toContain("The plan is ready");
-    // Design 1b: ONE header strip (the state word, then the workflow slug and
-    // its age) over ONE body sentence. The internal `! APPROVAL · run #id ·
-    // node path` line the pass-3 review named is gone — and the state word in
-    // the bar is not color-alone (handoff rule 06), so nothing was lost.
-    const bar = callout.querySelector("[data-ds-bar]");
-    expect(bar?.textContent).toContain("NEEDS YOUR DECISION");
-    // The strip's right slot carries the meta the wire really serves — the
-    // workflow slug (honestly `workflow unknown` when this read has no pipeline
-    // to name) and the relative age — and that is all of it.
-    expect(bar?.textContent).toMatch(/· \d+[smhd]/);
-    expect(callout.textContent).not.toContain(`run #${shortId(WIRE_APPROVAL_ID)}`);
-    expect(callout.textContent).not.toContain("/approve");
-    expect(within(callout).getByTestId(`project-read-plan-${key}`).getAttribute("href")).toBe(
-      `/approvals/${WIRE_APPROVAL_ID}`,
-    );
-    // Finding 04: deciding is the shared bar, so the overview shows the SAME
-    // three fixed verbs as every other gate surface — and no confirm step.
-    expect(within(callout).getByTestId("decision-approve").textContent).toBe("Approve");
-    expect(within(callout).getByTestId("decision-request-changes").textContent).toBe(
-      "Request changes",
-    );
-    expect(within(callout).getByTestId("decision-reject").textContent).toBe("Reject");
-
-    vi.useFakeTimers();
-    try {
-      fireEvent.click(within(callout).getByTestId("decision-approve"));
-      expect(within(callout).getByRole("status").textContent).toContain(
-        "Approved. The run continues in 5s.",
-      );
-      expect(requestsTo(requests, decidePath, "POST")).toHaveLength(0);
-      // Undo closes the window without deciding.
-      fireEvent.click(within(callout).getByTestId("decision-undo"));
-      await vi.advanceTimersByTimeAsync(6100);
-      expect(requestsTo(requests, decidePath, "POST")).toHaveLength(0);
-
-      // Letting the window expire posts the row's own `version` as the CAS
-      // token, with the CSRF header.
-      fireEvent.click(within(callout).getByTestId("decision-approve"));
-      await vi.advanceTimersByTimeAsync(5000);
-      const [request] = requestsTo(requests, decidePath, "POST");
-      expect(request.headers.get("x-csrf-token")).toBe(meFixture.csrf_token);
-      expect(JSON.parse(request.body ?? "{}")).toEqual({ decision: "approved", version: 1 });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps a gate decided elsewhere on screen, naming who decided it", async () => {
-    const decidedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    const { requests } = mounted([
-      { path: approvalsPath, method: "GET", body: { approvals: [wireApproval] } },
-      // The winner's row: the click loses, and the adoption re-reads the gate.
-      {
-        path: decidePath,
-        method: "POST",
-        status: 409,
-        body: {
-          type: "https://communication.dev/errors/approval-already-decided",
-          title: "Approval Already Decided",
-          status: 409,
-          detail: "someone else won the click",
-          approval_id: WIRE_APPROVAL_ID,
-          approval: {
-            state: "decided",
-            decision: "approved",
-            decided_by: directoryUser.id,
-            decided_at: decidedAt,
-            version: 2,
+  it("words an assigned workflow's trigger in the Factory's plain English", async () => {
+    renderApp({
+      path: `/p/${projectId}`,
+      routes: routesFor({
+        [`${projectPath}/schedules`]: {
+          path: `${projectPath}/schedules`,
+          body: {
+            schedules: [
+              {
+                id: scheduleId,
+                project_id: projectId,
+                assignment_id: assignment.id,
+                cron_expr: "0 9 * * 1-5",
+                inputs: {},
+                enabled: true,
+                next_run_at: "2026-11-23T09:00:00Z",
+                version: 1,
+                created_by: meFixture.id,
+                created_at: "2026-11-20T10:00:00Z",
+                updated_at: "2026-11-20T10:00:00Z",
+              },
+            ],
           },
         },
-      },
-    ]);
-
-    const key = testidOf(WIRE_APPROVAL_ID);
-    const callout = await screen.findByTestId(`project-attention-decision-${key}`);
-
-    vi.useFakeTimers();
-    try {
-      fireEvent.click(within(callout).getByTestId("decision-reject"));
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(requestsTo(requests, decidePath, "POST")).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(500);
-
-      // Finding 04/12: no race metaphor and no unnamed line — the callout
-      // stays (the host keeps the row it lost outside the pending read) and
-      // names the winner, with the way to the decision that did land.
-      const lost = screen.getByTestId("decision-conflict");
-      expect(lost.textContent).toContain("Grace Hopper approved this 2m ago.");
-      expect(lost.textContent).toContain("Your decision wasn't recorded.");
-      expect(screen.queryByTestId("decision-approve")).toBeNull();
-      expect(screen.getByTestId("decision-conflict-run").getAttribute("href")).toBe(
-        `/runs/${WIRE_RUN_ID}`,
-      );
-      expect(screen.getByTestId(`project-attention-decision-${key}`)).toBeTruthy();
-
-      // Dismiss clears the sentence.
-      fireEvent.click(screen.getByTestId(`project-decision-dismiss-${key}`));
-      expect(screen.queryByTestId("decision-conflict")).toBeNull();
-      expect(screen.queryByTestId(`project-decision-dismiss-${key}`)).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("names a step failure by the step, and retries that step", async () => {
-    const failed = {
-      ...wireRun,
-      status: "failed",
-      failed_cause: "node_execution_failed:/implement",
-      finished_at: "2026-07-31T10:20:00Z",
-    } as unknown as RunSummary;
-    const { requests } = mounted([{ path: runsPath, method: "GET", body: { runs: [failed] } }]);
-
-    const key = testidOf(WIRE_RUN_ID);
-    const callout = await screen.findByTestId(`project-attention-run-${key}`);
-    // Named by the workflow slug the library serves, in the ONE header strip the
-    // design draws (state word · workflow · age) — and by nothing else: the
-    // pass-3 review cut the second mono line, so the callout prints no run
-    // short-id and no node path (`run #af9713f0 · /approve`). The run is
-    // reached by its links, not by an id a person cannot read.
-    expect(callout.textContent).toContain("A step failed: implement");
-    expect(callout.textContent).toContain("feature-development");
-    expect(callout.textContent).not.toContain(`run #${shortId(WIRE_RUN_ID)}`);
-    expect(callout.textContent).not.toContain("/implement");
-    expect(callout.textContent).not.toContain("node_execution_failed");
-    expect(within(callout).getByTestId(`project-open-run-${key}`).getAttribute("href")).toBe(
-      `/runs/${WIRE_RUN_ID}`,
-    );
-    expect(within(callout).getByTestId(`project-retry-${key}`).textContent).toBe(
-      "Retry from implement",
-    );
-
-    fireEvent.click(within(callout).getByTestId(`project-retry-${key}`));
-    await waitFor(() => {
-      const [request] = requestsTo(requests, `/api/v1/runs/${WIRE_RUN_ID}/retry`, "POST");
-      expect(JSON.parse(request.body ?? "{}")).toEqual({ node_instance_keys: ["/implement"] });
+      }),
     });
+
+    const row = await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`);
+    expect(row.textContent).toContain("Workflow One");
+    expect(row.querySelector("em")?.textContent).toBe("every weekday at 09:00 UTC");
   });
 
-  it("quotes the server's own cause when it is not a step failure", async () => {
-    const failed = {
-      ...wireRun,
-      status: "failed",
-      failed_cause: "run_duration_exceeded",
-    } as unknown as RunSummary;
-    mounted([{ path: runsPath, method: "GET", body: { runs: [failed] } }]);
-
-    const key = testidOf(WIRE_RUN_ID);
-    const callout = await screen.findByTestId(`project-attention-run-${key}`);
-    expect(callout.textContent).toContain("The run passed its total duration budget.");
-    // With no step to name, the verb is the plain one and no target is sent.
-    expect(within(callout).getByTestId(`project-retry-${key}`).textContent).toBe("Retry");
-  });
-
-  it("offers Resume, not Retry, to a paused run", async () => {
-    const paused = { ...wireRun, status: "paused", failed_cause: null } as unknown as RunSummary;
-    const { requests } = mounted([{ path: runsPath, method: "GET", body: { runs: [paused] } }]);
-
-    const key = testidOf(WIRE_RUN_ID);
-    const callout = await screen.findByTestId(`project-attention-run-${key}`);
-    expect(within(callout).queryByTestId(`project-retry-${key}`)).toBeNull();
-    fireEvent.click(within(callout).getByTestId(`project-resume-${key}`));
-    await waitFor(() =>
-      expect(requestsTo(requests, `/api/v1/runs/${WIRE_RUN_ID}/resume`, "POST")).toHaveLength(1),
-    );
-  });
-
-  it("lists a waiting run with no open gate once, as a stalled run", async () => {
-    mounted([
-      {
-        path: approvalsPath,
-        method: "GET",
-        body: { approvals: [{ ...wireApproval, state: "decided" }] },
-      },
-      {
-        path: runsPath,
-        method: "GET",
-        body: { runs: [{ ...wireRun, status: "waiting_human" } as RunSummary] },
-      },
-    ]);
-    const callout = await screen.findByTestId(`project-attention-run-${testidOf(WIRE_RUN_ID)}`);
-    expect(screen.queryAllByTestId(/^project-attention-decision-/)).toHaveLength(0);
-    // The state word is spelled out in the ONE header strip (handoff rule 06:
-    // never color alone) — it used to be repeated by a chip under the body, and
-    // that second line is what design 1b does not have.
-    expect(callout.querySelector("[data-ds-bar]")?.textContent).toContain("NEED YOU");
-    expect(callout.textContent).not.toContain(`run #${shortId(WIRE_RUN_ID)}`);
-  });
-});
-
-describe("/p/:projectId — running now", () => {
-  it("lists the active runs with their step segments and what finished today", async () => {
-    const running = crossRun({
-      steps: [
-        { node_id: "plan", kind: "agent.acp", state: "succeeded" },
-        { node_id: "approve", kind: "pipeline_gate", state: "succeeded" },
-        { node_id: "implement", kind: "agent.acp", state: "running" },
-        { node_id: "test", kind: "process.exec", state: "pending" },
+  it("keeps today's refusal: a project the caller cannot open is one sentence, not a half page", async () => {
+    const { requests } = renderApp({
+      path: `/p/${projectId}`,
+      routes: [
+        { path: "/api/v1/me", body: meFixture },
+        { path: "/api/v1/projects", body: { items: [] } },
+        { path: projectPath, method: "GET", status: 404, body: {} },
       ],
     });
-    const completed = crossRun({
-      id: "01987b11-0000-7000-8000-abcdef000001",
-      status: "completed",
-    });
-    const cancelled = crossRun({
-      id: "01987b11-0000-7000-8000-abcdef000002",
-      status: "cancelled",
-    });
-    mounted([
-      {
-        path: crossRunsPath,
-        method: "GET",
-        body: { runs: [running, completed, cancelled], next_cursor: null },
-      },
-    ]);
-
-    const key = testidOf(WIRE_RUN_ID);
-    const row = await screen.findByTestId(`recent-run-${key}`);
-    expect(within(row).getByTestId(`recent-run-status-${key}`).textContent).toBe("running");
-    // The workflow's display name and slug the wire serves, the run's short id,
-    // and the step it is on. This row carries no `title` (a pre-ADR-0064
-    // server or an unnamed run), so the fallback is drawn — never an invented
-    // subject line.
-    expect(row.textContent).toContain("Feature development");
-    expect(row.textContent).toContain("feature-development");
-    expect(row.textContent).toContain("on implement");
-    // The bar is one segment per step, with its counts spelled out (rule 06).
-    const bar = within(row).getByTestId(`running-now-progress-${key}`);
-    expect(bar.children).toHaveLength(4);
-    expect(bar.getAttribute("aria-label")).toBe("2 of 4 steps done, 1 running");
-
-    // A completed and a cancelled run are not "running now", but they are the
-    // footer's arithmetic.
-    const list = screen.getByTestId("running-now-list");
-    expect(within(list).getAllByRole("link")).toHaveLength(1);
-    expect(screen.getByTestId("running-now-finished-today").textContent).toBe(
-      "1 finished today · 1 cancelled",
-    );
-    expect(screen.getByTestId("recent-runs-all").getAttribute("href")).toBe(`/p/${projectId}/runs`);
+    expect(await screen.findByTestId("project-not-found")).toBeTruthy();
+    expect(screen.queryByTestId("project-home")).toBeNull();
+    // The refusal does not go asking for the sub-resources of a project the
+    // caller may not open.
+    expect(requestsTo(requests, `${projectPath}/repos`).length).toBe(0);
   });
 
-  it("serves the run's own title and repository when the API carries them (ADR-0064)", async () => {
-    mounted([
-      {
-        path: crossRunsPath,
-        method: "GET",
-        body: {
-          runs: [
-            crossRun({
-              title: "Add saved cards to checkout",
-              repository_id: repository.id,
-              repository_name: "widgets-core",
-            }),
-          ],
-          next_cursor: null,
-        },
-      },
-    ]);
-    const key = testidOf(WIRE_RUN_ID);
-    const row = await screen.findByTestId(`recent-run-${key}`);
-    // The design's line: the run's title leads, its repository rides the mono
-    // line — the workflow display name steps back to the fallback role.
-    expect(row.textContent).toContain("Add saved cards to checkout");
-    expect(row.textContent).toContain("widgets-core");
-    expect(row.querySelector('[title="Add saved cards to checkout"]')?.textContent).toBe(
-      "Add saved cards to checkout",
-    );
-    // Nothing is invented twice: the slug stays in its mono-line seat.
-    expect(row.textContent).toContain("feature-development");
-  });
-
-  it("keeps child runs out of the list — they belong to their parent's tree", async () => {
-    const child = crossRun({ id: WIRE_RUN_ID, depth: 1 });
-    mounted([{ path: crossRunsPath, method: "GET", body: { runs: [child], next_cursor: null } }]);
-    expect((await screen.findByTestId("running-now-empty")).textContent).toContain(
-      "Nothing is queued or running.",
-    );
-    expect(screen.queryByTestId(`recent-run-${testidOf(WIRE_RUN_ID)}`)).toBeNull();
-  });
-
-  it("says a project that has never run has never run", async () => {
-    mounted();
-    expect((await screen.findByTestId("recent-runs-empty")).textContent).toContain("No runs yet");
-    expect(screen.queryByTestId("running-now-empty")).toBeNull();
-    expect(screen.queryByTestId("running-now-finished-today")).toBeNull();
-  });
-
-  it("says nothing is running when today's runs have all finished", async () => {
-    mounted([
-      {
-        path: crossRunsPath,
-        method: "GET",
-        body: {
-          runs: [crossRun({ id: WIRE_RUN_ID, status: "completed" })],
-          next_cursor: null,
-        },
-      },
-    ]);
-    expect((await screen.findByTestId("running-now-empty")).textContent).toContain(
-      "Nothing is queued or running.",
-    );
-    // …and the day's arithmetic is still on the page.
-    expect(screen.getByTestId("running-now-finished-today").textContent).toBe(
-      "1 finished today · 0 cancelled",
-    );
-  });
-
-  it("says step progress is unavailable when the server predates the run read", async () => {
-    mounted([
-      {
-        path: crossRunsPath,
-        method: "GET",
-        status: 404,
-        body: {
-          type: "https://communication.dev/errors/not-found",
-          title: "Not found",
-          status: 404,
-          detail: "No such route.",
-        },
-      },
-    ]);
-    expect((await screen.findByTestId("running-now-unavailable")).textContent).toContain(
-      "can't load on this server version",
-    );
-    expect(screen.queryByTestId("running-now-empty")).toBeNull();
-  });
-
-  it("reports a failed run read rather than an empty panel", async () => {
-    mounted([
-      {
-        path: crossRunsPath,
-        method: "GET",
-        status: 500,
-        body: {
-          type: "https://communication.dev/errors/internal",
-          title: "Internal error",
-          status: 500,
-          detail: "The run list is unavailable.",
-        },
-      },
-    ]);
-    expect(await screen.findByText(/The run list is unavailable\./)).toBeTruthy();
-    expect(screen.queryByTestId("running-now-empty")).toBeNull();
-  });
-});
-
-describe("/p/:projectId — the inventory column", () => {
-  it("lists a repository with its remote, branch, live work and workflow count", async () => {
-    mounted([{ path: assignmentsPath, method: "GET", body: { assignments: [assignment()] } }]);
-
-    const repoRow = await screen.findByTestId("repo-row-communication");
-    // The compact line shortens the remote for a 300px column, but the whole URL
-    // is still on the row (a screen reader gets it, and so does an operator).
-    expect(repoRow.textContent).toContain("github.com/example/communication · main");
-    expect(repoRow.textContent).toContain("https://github.com/example/communication.git");
-    expect(repoRow.textContent).toContain("1 workflow");
-    // `workspaceFixture` is a ready workspace of THIS repository: one live.
-    expect(within(repoRow).getByTestId("repo-live-communication").textContent).toContain("1");
-    // ADR-0065: the open-issue count rides the issues route, per row. Here
-    // the read refused (no stub → 404), and the row prints nothing rather
-    // than a number nobody served — no fake count, no proxy complaint.
-    expect(within(repoRow).queryByTestId("repo-issues-communication")).toBeNull();
-    expect(within(repoRow).getByRole("link").getAttribute("href")).toBe(
-      `/p/${projectId}/communication`,
-    );
-  });
-
-  it("counts a GitHub repository's open issues from the issues route, in its own words", async () => {
-    const { requests } = mounted([
-      {
-        path: issuesPath,
-        method: "GET",
-        body: {
-          repository: "example/communication",
-          state: "open",
-          items: [issue(1), issue(2), issue(3)],
-        },
-      },
-    ]);
-
-    const repoRow = await screen.findByTestId("repo-row-communication");
-    expect(await within(repoRow).findByTestId("repo-issues-communication")).toBeTruthy();
-    expect(repoRow.textContent).toContain("3 open issues");
-    // The repository page's own query key: one request, cache-shared.
-    expect(requestsTo(requests, issuesPath, "GET").length).toBe(1);
-  });
-
-  it("says `50+ open issues` at the route's page cap and `no open issues` at zero", async () => {
-    const capped = Array.from({ length: 50 }, (_, i) => issue(i + 1));
-    mounted([
-      {
-        path: issuesPath,
-        method: "GET",
-        body: { repository: "example/communication", state: "open", items: capped },
-      },
-    ]);
-    const repoRow = await screen.findByTestId("repo-row-communication");
-    expect(await within(repoRow).findByTestId("repo-issues-communication")).toBeTruthy();
-    expect(repoRow.textContent).toContain("50+ open issues");
-  });
-
-  it("prints `no open issues` when GitHub answers with none", async () => {
-    mounted([
-      {
-        path: issuesPath,
-        method: "GET",
-        body: { repository: "example/communication", state: "open", items: [] },
-      },
-    ]);
-    const repoRow = await screen.findByTestId("repo-row-communication");
-    expect(await within(repoRow).findByTestId("repo-issues-communication")).toBeTruthy();
-    expect(repoRow.textContent).toContain("no open issues");
-  });
-
-  it("never asks the issues route for a non-GitHub remote and prints no count", async () => {
-    const { requests } = mounted([
-      { path: reposPath, method: "GET", body: { items: [localRepository] } },
-    ]);
-    const repoRow = await screen.findByTestId("repo-row-lab");
-    // The row still renders everything the repos read serves…
-    expect(repoRow.textContent).toContain("file:///srv/git/lab.git");
-    // …and the count is simply absent: no request, no fake number.
-    expect(within(repoRow).queryByTestId("repo-issues-lab")).toBeNull();
-    expect(requestsTo(requests, issuesPath, "GET").length).toBe(0);
-  });
-
-  it("opens the existing add-repository form in a dialog and posts it", async () => {
-    const { requests } = mounted([
-      { path: reposPath, method: "POST", status: 201, body: { ...repository, name: "web" } },
-    ]);
-
-    fireEvent.click(await screen.findByTestId("repo-add-toggle"));
-    const dialog = await screen.findByTestId("add-repository-dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
-    fireEvent.change(within(dialog).getByTestId("repo-name"), { target: { value: "web" } });
-    fireEvent.change(within(dialog).getByTestId("repo-git-url"), {
-      target: { value: "https://github.com/example/web.git" },
-    });
-    expect(within(dialog).getByTestId("repo-default-branch").getAttribute("placeholder")).toBe(
-      "main",
-    );
-    fireEvent.click(within(dialog).getByTestId("repo-submit"));
-
-    await waitFor(() => {
-      const [request] = requestsTo(requests, reposPath, "POST");
-      expect(request.headers.get("x-csrf-token")).toBe(meFixture.csrf_token);
-      expect(JSON.parse(request.body ?? "{}")).toEqual({
-        name: "web",
-        git_url: "https://github.com/example/web.git",
-        default_branch: "main",
-      });
-    });
-    // A create closes the dialog and refetches the list it changed.
-    await waitFor(() => expect(screen.queryByTestId("add-repository-dialog")).toBeNull());
-    await waitFor(() => expect(requestsTo(requests, reposPath, "GET").length).toBeGreaterThan(1));
-  });
-
-  it("keeps a duplicate-name refusal in the server's words, with the dialog open", async () => {
-    mounted([
-      {
-        path: reposPath,
-        method: "POST",
-        status: 409,
-        body: {
-          type: "https://communication.dev/errors/conflict",
-          title: "Conflict",
-          status: 409,
-          detail: "A repository named web already exists in this project.",
-        },
-      },
-    ]);
-
-    fireEvent.click(await screen.findByTestId("repo-add-toggle"));
-    const dialog = await screen.findByTestId("add-repository-dialog");
-    fireEvent.change(within(dialog).getByTestId("repo-name"), { target: { value: "web" } });
-    fireEvent.change(within(dialog).getByTestId("repo-git-url"), {
-      target: { value: "https://github.com/example/web.git" },
-    });
-    fireEvent.click(within(dialog).getByTestId("repo-submit"));
-
-    expect(await screen.findByTestId("repo-add-conflict")).toBeTruthy();
-    expect((await screen.findByTestId("form-error")).textContent).toContain(
-      "already exists in this project",
-    );
-    expect(screen.getByTestId("add-repository-dialog")).toBeTruthy();
-  });
-
-  it("lists the workflows this project uses with their pin, trigger and repository", async () => {
-    mounted([{ path: assignmentsPath, method: "GET", body: { assignments: [assignment()] } }]);
-
-    const key = testidOf(assignment().id);
-    const row = await screen.findByTestId(`project-workflow-row-${key}`);
-    // The revision number is read, not the assignment's version label.
-    await waitFor(() =>
-      expect(within(row).getByTestId(`project-workflow-meta-${key}`).textContent).toContain("r7"),
-    );
-    // Neither trigger list answered anything for this assignment.
-    expect(row.textContent).toContain("started by hand");
-    expect(row.textContent).toContain(repository.name);
-    expect(within(row).getByTestId(`project-workflow-edit-${key}`).getAttribute("href")).toBe(
-      `/workflows/${WIRE_PIPELINE_ID}`,
-    );
-    // Assigning is the Workflows tab's form, not a second copy of it here.
-    expect(screen.getByTestId("project-workflows-assign").getAttribute("href")).toBe(
-      `/p/${projectId}/workflows`,
-    );
-  });
-
-  it("says what starts a workflow when it is scheduled", async () => {
-    const pin = assignment();
-    mounted([
-      { path: assignmentsPath, method: "GET", body: { assignments: [pin] } },
-      {
-        path: schedulesPath,
-        method: "GET",
-        body: {
-          schedules: [
-            {
-              id: "sch-1",
-              project_id: projectId,
-              assignment_id: pin.id,
-              cron_expr: "0 6 * * 1",
-              inputs: {},
-              enabled: true,
-              next_run_at: "2026-10-19T06:00:00Z",
-              version: 1,
-              created_by: meFixture.id,
-              created_at: "2026-10-01T09:00:00Z",
-              updated_at: "2026-10-01T09:00:00Z",
-            },
-          ],
-        },
-      },
-    ]);
-    const key = testidOf(pin.id);
-    const row = await screen.findByTestId(`project-workflow-row-${key}`);
-    expect(await within(row).findByText(/weekly Monday 06:00 UTC/)).toBeTruthy();
-  });
-
-  it("refuses to claim a workflow is hand-started when its trigger read failed", async () => {
-    const pin = assignment();
-    mounted([
-      { path: assignmentsPath, method: "GET", body: { assignments: [pin] } },
-      {
-        path: schedulesPath,
-        method: "GET",
-        status: 500,
-        body: {
-          type: "https://communication.dev/errors/internal",
-          title: "Internal error",
-          status: 500,
-        },
-      },
-    ]);
-    const key = testidOf(pin.id);
-    const broken = await screen.findByTestId(`project-workflow-row-${key}`);
-    // A trigger read that failed is not "started by hand".
-    expect(await within(broken).findByText(/triggers unavailable/)).toBeTruthy();
-    expect(broken.textContent).not.toContain("started by hand");
-  });
-
-  it("shows a project-wide pin as the whole project, not a missing repository", async () => {
-    const pin = assignment({ repository_id: null, repository_name: null });
-    mounted([{ path: assignmentsPath, method: "GET", body: { assignments: [pin] } }]);
-    const row = await screen.findByTestId(`project-workflow-row-${testidOf(pin.id)}`);
-    expect(row.textContent).toContain("whole project");
-  });
-
-  it("shows the honest empty states when the project holds nothing", async () => {
-    mounted([
-      { path: reposPath, method: "GET", body: { items: [] } },
-      { path: conversationsPath, method: "GET", body: { items: [] } },
-      { path: workspacesPath, method: "GET", body: { workspaces: [] } },
-    ]);
-
-    expect((await screen.findByTestId("repo-list-empty")).textContent).toContain(
-      "No repositories yet",
-    );
-    expect(screen.getByTestId("project-threads-empty").textContent).toContain(
-      "No threads in this project yet.",
-    );
-    expect(screen.getByTestId("project-workflows-empty").textContent).toContain(
-      "No workflows are used in this project yet.",
-    );
-    expect(screen.getByTestId("recent-runs-empty")).toBeTruthy();
-    expect(screen.getByTestId("project-attention-empty")).toBeTruthy();
-    // Zero is printed as zero — the reads answered, so the count is a fact.
-    expect(screen.getByTestId("project-tab-workflows").textContent).toContain("Workflows");
-    expect(screen.getByTestId("project-tab-workflows").textContent).toContain("0");
-  });
-
-  it("names the agent profile, and the repository a workspace says the thread is in", async () => {
-    mounted();
-    const row = await screen.findByTestId(
-      `project-thread-${testidOf(conversationSummaryFixture.id)}`,
-    );
-    // `workspaceFixture` is this conversation's workspace, holding `backend`.
-    // The fixture row carries no ADR-0065 `repository_name`, so the workspace
-    // index is still the honest source — the fallback stays drawn.
-    expect(row.textContent).toContain(conversationSummaryFixture.title);
-    expect(row.textContent).toContain("backend");
-    expect(row.textContent).toContain(claudeProfile.name);
-    expect(
-      screen.queryByTestId(`project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`),
-    ).toBeNull();
-    expect(screen.getByTestId("project-all-threads").getAttribute("href")).toBe(
-      `/p/${projectId}/threads`,
-    );
-  });
-
-  it("prefers ADR-0065's served repository and draws the served last line — title line at md with the preview under it, stacked at 390", async () => {
-    mounted([
-      {
-        path: conversationsPath,
-        method: "GET",
-        body: {
-          items: [
-            {
-              ...conversationSummaryFixture,
-              repository_id: repository.id,
-              repository_name: "communication",
-              last_agent_line: "Landed the checkpoint; waiting on review.",
-            },
-          ],
-        },
-      },
-    ]);
-    const row = await screen.findByTestId(
-      `project-thread-${testidOf(conversationSummaryFixture.id)}`,
-    );
-    // The served name wins over the workspace index's guess (`backend`).
-    expect(row.textContent).toContain("communication · Claude Code");
-    expect(row.textContent).not.toContain("backend");
-    const lastLine = screen.getByTestId(
-      `project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`,
-    );
-    expect(lastLine.textContent).toContain("Landed the checkpoint; waiting on review.");
-    // The design's row (pass-1 review, this brief): at `md` the FIRST line is
-    // glyph · title · `repo · agent` · age — the preview never shares it, so
-    // the title keeps everything the short mono cells do not need and
-    // ellipsises only when the row really runs out. The agent's last line is
-    // its own second row, aligned under the title; below `md` the same grid
-    // stacks (title line, last line, meta) as the earlier pass-2 review
-    // demands. Every cell is a direct child, placed by grid coordinates that
-    // re-park at `md`.
-    const cells = Array.from(row.querySelectorAll(":scope > span")).filter(
-      (cell) => !cell.className.includes("sr-only") && !cell.hasAttribute("aria-hidden"),
-    );
-    expect(cells).toHaveLength(4);
-    // The three text cells truncate; the age is a short right-aligned token.
-    const [titleCellEl, ageCell, lastLineCell, metaCell] = cells;
-    for (const cell of [titleCellEl, lastLineCell, metaCell])
-      expect(cell.className.split(/\s+/)).toContain("truncate");
-    expect(ageCell.className.split(/\s+/)).toContain("shrink-0");
-    // One grid at every width: the title and the meta take the `minmax(0,1fr)`
-    // body column; the preview sits under the title (row 2) at both widths;
-    // at `md` the meta re-parks onto the title line (row 1, column 3) and the
-    // age onto column 4.
-    expect(row.className).toContain("grid");
-    expect(row.className).toContain("md:grid-cols-[auto_minmax(0,1fr)_auto_auto]");
-    expect(titleCellEl.className).toContain("row-start-1");
-    expect(metaCell.className).toContain("md:col-start-3");
-    expect(metaCell.className).toContain("md:row-start-1");
-    expect(lastLineCell.className).toContain("col-start-2");
-    expect(lastLineCell.className).toContain("row-start-2");
-    // The title is ink 600, not the link's blue (the review: title in ink).
-    expect(titleCellEl.className.split(/\s+/)).toContain("text-ink");
-    // The title and the last line keep their whole text as a tooltip, so
-    // truncating on screen never loses it.
-    expect(lastLine.getAttribute("title")).toBe("Landed the checkpoint; waiting on review.");
-    const titleCell = row.querySelector(".truncate.font-semibold") as HTMLElement | null;
-    expect(titleCell?.textContent).toBe(conversationSummaryFixture.title);
-    expect(titleCell?.getAttribute("title")).toBe(conversationSummaryFixture.title);
-  });
-
-  it("says the agent is unread rather than printing a profile id", async () => {
-    mounted([{ path: "/api/v1/agent-profiles", method: "GET", body: { items: [] } }]);
-    const row = await screen.findByTestId(
-      `project-thread-${testidOf(conversationSummaryFixture.id)}`,
-    );
-    expect(row.textContent).toContain("agent unread");
-    expect(row.textContent).not.toContain(claudeProfile.id);
-  });
-
-  it("points the panels that left the overview at where they went", async () => {
-    mounted();
-    const note = await screen.findByTestId("project-moved-off-note");
-    expect(
-      within(note)
-        .getAllByRole("link")
-        .map((link) => link.getAttribute("href")),
-    ).toEqual([`/p/${projectId}/members`, `/p/${projectId}/settings`]);
-    // They are off this page: members, the event feed and workspaces are gone
-    // from the overview, and nothing else silently took their requests either.
-    expect(screen.queryByTestId("member-list")).toBeNull();
-    expect(screen.queryByTestId("activity-list")).toBeNull();
-    expect(screen.queryByTestId("workspace-list")).toBeNull();
-  });
-
-  it("tells a maintainer there is nothing to add without hiding the form", async () => {
-    mounted([
-      { path: reposPath, method: "GET", body: { items: [] } },
-      { path: workspacesPath, method: "GET", body: { workspaces: [] } },
-    ]);
-    fireEvent.click(await screen.findByTestId("repo-add-empty"));
-    expect(screen.getByTestId("add-repository-dialog")).toBeTruthy();
-  });
-});
-
-describe("/p/:projectId — the project itself cannot be read", () => {
-  it("says the project was not found when the API returns 404", async () => {
+  it("quotes the server when the project read breaks", async () => {
     renderApp({
       path: `/p/${projectId}`,
       routes: [
-        me,
-        {
-          path: projectPath,
-          status: 404,
-          body: {
-            type: "https://communication.dev/errors/not-found",
-            title: "Not found",
-            status: 404,
-            detail: "No such project.",
-          },
-        },
+        { path: "/api/v1/me", body: meFixture },
+        { path: "/api/v1/projects", body: { items: [] } },
+        { path: projectPath, method: "GET", status: 500, body: {} },
       ],
     });
-
-    await screen.findByTestId("project-not-found");
-    expect(screen.getByTestId("project-not-found").textContent).toBe(
-      "Project not found or you do not have access",
-    );
-    // The refusal is one sentence: no shell around a project the reader cannot
-    // open, and no tab row promising sections they cannot reach.
-    expect(screen.queryByTestId("project-tabs")).toBeNull();
-    expect(screen.queryByTestId("repo-list")).toBeNull();
-  });
-
-  // `/p/:projectId` is a full-bleed route (App.tsx): the shell gives the page the
-  // whole content column with NO padding of its own, so a branch that mounts no
-  // header band must carry the band's padding itself. Without it the refusal sat
-  // flush against the sidebar at x=240, y=0 — reported by the verification loop.
-  const PAGE_PAD = ["px-[22px]", "pt-[20px]", "md:px-[28px]"];
-
-  /** The padded column inside one of the page's unusable branches. */
-  function paddedColumn(shellTestId: string): HTMLElement {
-    const shell = screen.getByTestId(shellTestId);
-    const column = shell.firstElementChild;
-    expect(column, `${shellTestId} wraps its content in a padded column`).not.toBeNull();
-    const classes = (column as HTMLElement).className.split(/\s+/);
-    for (const pad of PAGE_PAD) {
-      expect(classes, `${shellTestId} carries the header band's ${pad}`).toContain(pad);
-    }
-    return shell;
-  }
-
-  it("pads the not-found branch with the header band's own page padding", async () => {
-    renderApp({
-      path: `/p/${projectId}`,
-      routes: [
-        me,
-        {
-          path: projectPath,
-          status: 404,
-          body: {
-            type: "https://communication.dev/errors/not-found",
-            title: "Not found",
-            status: 404,
-            detail: "No such project.",
-          },
-        },
-      ],
-    });
-    await screen.findByTestId("project-not-found");
-    paddedColumn("project-page-not-found");
-  });
-
-  it("pads the broken-read branch with the header band's own page padding", async () => {
-    renderApp({
-      path: `/p/${projectId}`,
-      routes: [
-        me,
-        {
-          path: projectPath,
-          status: 503,
-          body: {
-            type: "https://communication.dev/errors/unavailable",
-            title: "Service unavailable",
-            status: 503,
-            detail: "The control plane is still migrating.",
-          },
-        },
-      ],
-    });
-    await screen.findByRole("alert");
-    paddedColumn("project-page-error");
-  });
-
-  it("pads the loading branch the same way the header band is padded", async () => {
-    // The same classes the usable page draws: one inset for the whole route,
-    // so the page never shifts sideways when the project arrives.
-    mounted();
-    const header = await screen.findByTestId("project-header");
-    const classes = header.className.split(/\s+/);
-    for (const pad of PAGE_PAD) {
-      expect(classes, `the header band carries ${pad}`).toContain(pad);
-    }
-  });
-
-  it("quotes the server when the read fails for another reason", async () => {
-    renderApp({
-      path: `/p/${projectId}`,
-      routes: [
-        me,
-        {
-          path: projectPath,
-          status: 503,
-          body: {
-            type: "https://communication.dev/errors/unavailable",
-            title: "Service unavailable",
-            status: 503,
-            detail: "The control plane is still migrating.",
-          },
-        },
-      ],
-    });
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Service unavailable");
-    expect(alert.textContent).toContain("still migrating");
+    await screen.findByTestId("project-home-error");
+    expect(await screen.findByTestId("project-home-retry")).toBeTruthy();
   });
 });

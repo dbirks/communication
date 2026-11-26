@@ -79,36 +79,46 @@ export const routes = {
    * stay because they are the addresses the redirect answers. */
   inbox: (): string => "/inbox",
   board: (): string => "/board",
-  threads: (): string => "/threads",
-  thread: (id: string): string => `/threads/${encode(id)}`,
-  projects: (): string => "/projects",
+  threads: (): string => "/chats",
+  thread: (id: string): string => `/chats/${encode(id)}`,
+  projects: (): string => "/manage/projects",
   project: (id: string): string => `/p/${encode(id)}`,
   /** A project tab: `/p/:projectId/{runs|workflows|artifacts|threads|settings}`
    * (finding 02: the tab is `workflows`; the old `pipelines` segment redirects). */
-  projectTab: (id: string, tab: ProjectTab): string => `/p/${encode(id)}/${tab}`,
+  projectTab: (id: string, tab: ProjectTab): string => {
+    if (tab === "threads") return `/p/${encode(id)}/chats`;
+    if (tab === "runs" || tab === "workflows") return `/p/${encode(id)}/factory`;
+    if (tab === "settings") return `/manage/projects/${encode(id)}`;
+    return `/p/${encode(id)}/${tab}`;
+  },
   /** A project's members page: `/p/:projectId/members` — who to ask for access. */
-  projectMembers: (id: string): string => `/p/${encode(id)}/members`,
+  projectMembers: (id: string): string => `/manage/people?project=${encode(id)}`,
   /** A thread inside a project's URL space: `/p/:projectId/threads/:threadId`
    * (finding 01 renamed the segment; the resource is still a conversation). */
   projectThread: (projectId: string, threadId: string): string =>
-    `/p/${encode(projectId)}/threads/${encode(threadId)}`,
+    `/p/${encode(projectId)}/chats/${encode(threadId)}`,
   /** A repository page: `/p/:projectId/:repo` (the repository's own name). */
   repository: (projectId: string, repo: string): string =>
     `/p/${encode(projectId)}/${encode(repo)}`,
-  workflows: (): string => "/workflows",
-  workflow: (id: string): string => `/workflows/${encode(id)}`,
+  workflows: (): string => "/factory",
+  workflow: (id: string): string => `/factory/${encode(id)}`,
   /** A workflow-page tab: `overview` is the page itself (`/workflows/:id`),
    * the rest are their own routes (`/workflows/:id/yaml` …). */
   workflowTab: (id: string, tab: WorkflowTab): string =>
-    tab === "overview" ? `/workflows/${encode(id)}` : `/workflows/${encode(id)}/${tab}`,
+    tab === "overview"
+      ? `/factory/${encode(id)}`
+      : `/factory/${encode(id)}?panel=${tab === "history" ? "versions" : tab}`,
   draft: (pipelineId: string, draftId: string): string =>
-    `/workflows/${encode(pipelineId)}/drafts/${encode(draftId)}`,
+    `/factory/${encode(pipelineId)}?draft=${encode(draftId)}`,
   /** Steps lives under Workflows now (finding 02): `/workflows/steps` is a
    * tab of the Workflows page; the old `/steps` paths redirect. */
-  steps: (): string => "/workflows/steps",
-  step: (id: string): string => `/workflows/steps/${encode(id)}`,
-  profiles: (): string => "/profiles",
-  profile: (id: string): string => `/profiles/${encode(id)}`,
+  steps: (): string => "/manage/agents?tab=steps",
+  step: (id: string): string => `/manage/agents?tab=steps&item=${encode(id)}`,
+  /** Skill collections: a tab of Manage → Agents & models. */
+  collections: (): string => "/manage/agents?tab=skills",
+  collection: (id: string): string => `/manage/agents?tab=skills&item=${encode(id)}`,
+  profiles: (): string => "/manage/agents",
+  profile: (id: string): string => `/manage/agents/${encode(id)}`,
   /**
    * `/runs/:runId` — the project-less workbench deep link. `params` carries
    * the ADR-0043 URL state (`view`, `node`, `instance`, `attempt`, `scopes`)
@@ -120,12 +130,16 @@ export const routes = {
    * `/ops` — the legacy Operations URL. It now redirects to the real Settings
    * tab (`/settings/operations`); the builder returns the canonical path.
    */
-  ops: (): string => "/settings/operations",
+  ops: (): string => "/manage/runners",
   /** User settings: `/settings/:tab` (`layout`, `assistant`, `accounts`,
       `operations`); `/settings` → `layout`. `accounts` is the ADR-0085 agent
       sign-in tab — an organization admin's, so the nav hides it for everyone
       else while the URL still resolves to the body's own refusal. */
-  settings: (tab?: string): string => (tab ? `/settings/${encode(tab)}` : "/settings/layout"),
+  settings: (tab?: string): string => {
+    if (tab === "operations") return "/manage/runners";
+    if (tab === "assistant") return "/manage/agents?tab=assistant";
+    return "/manage/agents";
+  },
   /**
    * `/profile` — the signed-in PERSON's own page (their name, picture and
    * organization, all read-only because the identity provider owns them). It

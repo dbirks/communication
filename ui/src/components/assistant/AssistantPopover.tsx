@@ -48,7 +48,16 @@ import AssistantPanel, {
   AssistantPageSideColumn,
   AssistantThreadColumn,
 } from "./AssistantPanel";
-import { openAsk, useAskOpen, type AskOpenContext } from "./askControl";
+import QuickChat, { type VoiceCommand } from "./QuickChat";
+import {
+  ASSISTANT_HOLD_EVENT,
+  ASSISTANT_VOICE_ASK_EVENT,
+  openAsk,
+  startVoiceAsk,
+  useAskOpen,
+  type AskOpenContext,
+  type HoldAction,
+} from "./askControl";
 import {
   sectionOf,
   useMediaQuery,
@@ -106,11 +115,8 @@ const ASSISTANT_THREADS_KEY = ["assistant", "conversations"] as const;
 import type { ComposerRestore } from "./AssistantPanel";
 import type { ComposerSendOptions } from "./Composer";
 
-/** The palette's Ask row opens the popover (and carries its question). */
+/** The palette's Ask row opens Quick chat (and carries its question). */
 export const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
-
-/** The side panel's width (handoff §1): the 450px right-hand column. */
-const DOCK_WIDTH_PX = 450;
 
 /**
  * The full page's breakpoints (handoff §1): below ~1240px the context column
@@ -131,7 +137,7 @@ const PAGE_CONTEXT_QUERY = "(min-width: 1240px)";
  * first browser pass crashed the whole app on
  * `ReferenceError: Cannot access 'ASSISTANT_PAGE_PATH' before initialization`.
  */
-export { ASSISTANT_PAGE_ROUTE };
+export { ASSISTANT_PAGE_ROUTE, startVoiceAsk };
 
 /**
  * The threads read's two sizes: the header's title lookup needs the newest
@@ -141,36 +147,9 @@ const THREADS_LIMIT = 5;
 const THREADS_MENU_LIMIT = 30;
 
 /**
- * rcn-2f round 7: while the dock stands, the SHELL's content column reserves
- * the dock's width instead of letting the 450px sheet cover it. Design §1 docks
- * the panel BESIDE the chat: the column narrows, nothing is covered.
- *
- * The reservation is applied only while `html[data-assistant-dock="on"]` is set
- * and only at the desktop width where the dock is a column — below 1024 the
- * sheet is full-screen and reserves nothing. On the thread page the two fixed
- * rails step aside while the dock is open, so the transcript keeps a real
- * column instead of a sliver.
- *
- * The second rule is handoff §1's other half: the full page owns the content
- * column too, and the floating `Ask` button is hidden while the surface is
- * open — the page has its own thread list and composer, so a floating button
- * over it would be a second, contradictory door.
+ * The palette's Ask row opens Quick chat; the `⌘J` chord toggles it; `startVoiceAsk`
+ * and `HoldToTalk` drive dictation in it.
  */
-const DOCK_RESERVATION_CSS = `@media (min-width: 1024px) {
-  html[data-assistant-dock=on] main {
-    margin-right: ${DOCK_WIDTH_PX}px;
-    width: calc(100% - ${DOCK_WIDTH_PX}px);
-    max-width: none;
-  }
-  html[data-assistant-dock=on] [data-testid="thread-list-pane"],
-  html[data-assistant-dock=on] [data-testid="thread-side-panel-aside"] {
-    display: none;
-  }
-}
-html[data-assistant-open=on] [data-testid="ask-fab"] {
-  display: none;
-}
-`;
 
 /** The jump palette's open event; a page that owns the Ask chord claims it
  * through `askControl`, not by dispatching this. */
@@ -436,7 +415,19 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * time; `page` is the `/assistant` route itself — see `onAssistantRoute`
    * below, which keeps this state and the URL in step in both directions.
    */
-  const [mode, setMode] = useState<"popover" | "dock" | "page">("popover");
+  const [mode, setMode] = useState<"popover" | "page">("popover");
+  const focusSeq = useRef(0);
+  const [focusToken, setFocusToken] = useState(0);
+  const voiceSeq = useRef(0);
+  const [voiceCommand, setVoiceCommand] = useState<VoiceCommand | null>(null);
+  const triggerFocus = useCallback(() => {
+    focusSeq.current += 1;
+    setFocusToken(focusSeq.current);
+  }, []);
+  const issueVoiceCommand = useCallback((type: VoiceCommand["type"]) => {
+    voiceSeq.current += 1;
+    setVoiceCommand({ type, seq: voiceSeq.current });
+  }, []);
   /**
    * What the surface was opened ABOUT, in words: the chat the 2f draft ask was
    * drafted from, or the thing a page that mounts the surface itself has on
@@ -467,6 +458,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     (choice?.conversationId ?? null) === null,
   );
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<FailureLine | null>(null);
   /**
    * assistant-lost-ask: an ask the composer never held (the palette carries
@@ -652,6 +644,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
         payload: { kind: "user", text: trimmed, ...(options?.spoken ? { spoken: true } : {}) },
         created_at: new Date().toISOString(),
         local: { state: "pending" },
+        ...(options?.spoken ? { via: "voice" as const } : {}),
       };
       setMessages((current) => [...current, optimistic]);
       // The composer owns what rides with the ask: its page context (with the
@@ -695,11 +688,19 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
             const rest = current.filter((message) => message.id !== localId);
             // The server echoes the user row first on success; if a turn
             // returned none, keep the local bubble as a plain row so the
-            // ask that WAS sent never vanishes from the screen.
-            const head = result.some((message) => message.kind === "user")
-              ? []
-              : [{ ...optimistic, local: undefined }];
-            return [...rest, ...head, ...result];
+            // ask that WAS sent never vanishes from the screen. If the server
+            // echoed the user row without a `spoken` field, preserve the
+            // session-only `via: "voice"` flag on it.
+            const hasEchoedUser = result.some((message) => message.kind === "user");
+            const echoed = options?.spoken
+              ? result.map((message) =>
+                  message.kind === "user" && !message.via
+                    ? { ...message, via: "voice" as const }
+                    : message,
+                )
+              : result;
+            const head = hasEchoedUser ? [] : [{ ...optimistic, local: undefined }];
+            return [...rest, ...head, ...echoed];
           });
           // F-1: the turn asked to open a page, so the screen moves to it —
           // after the rows are on screen, which is what makes the answer's own
@@ -783,12 +784,8 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * page the ask came from. */
   const toggleDock = useCallback(() => {
     setThreadsMenuOpen(false);
-    if (mode === "dock") {
-      setMode("popover");
-      return;
-    }
     if (mode === "page" && pageReturnRoute !== null) navigate(pageReturnRoute);
-    setMode("dock");
+    setMode("popover");
   }, [mode, navigate, pageReturnRoute]);
 
   /**
@@ -821,9 +818,10 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   // claimant all travel the same path.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.repeat) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
         event.preventDefault();
-        openAsk();
+        openAsk({ toggle: true });
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -833,40 +831,74 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   // This component is the Ask surface `openAsk()` reaches — unless a page claims
   // the chord while it is on screen (the Studio draft footer). A request with no
   // question of its own takes the page's `askContext` (the tour player's current
-  // stop), so the chord and the floating button answer with what the reader is
-  // looking at.
+  // stop), so the chord and the button answer with what the reader is looking at.
   useAskOpen((request) => {
+    if (request.voice) {
+      closeOtherMenus();
+      if (onAssistantRoute && pageReturnRoute !== null) navigate(pageReturnRoute);
+      setMode("popover");
+      setOpen(true);
+      issueVoiceCommand("voice-toggle");
+      return;
+    }
+    if (request.toggle && open && mode !== "page") {
+      setOpen(false);
+      setThreadsMenuOpen(false);
+      return;
+    }
     const context = askContextRef.current?.() ?? {};
     const question = (request.text?.trim() ? request.text : (context.text ?? "")).trim();
     const subject = (request.subject ?? context.subject ?? "").trim();
     closeOtherMenus();
     setDockedChatTitle(subject.length > 0 ? subject : null);
     setOpen(true);
+    triggerFocus();
     if (question.length > 0) void send(question, true);
   });
 
-  // The palette's Ask row (a bare string) and the structured 2f draft ask
-  // both open the surface here: the string opens the popover, an
-  // `AssistantOpenRequest` opens the side panel (docked) or the full page, and
-  // names its entity as the ask's structured context. A panel the draft ask
-  // opened closes completely on esc (it never falls back to the floating
-  // popover over the chat's composer — the 2f review).
-  const openedByDraftAsk = useRef(false);
+  // `startVoiceAsk()` and `HoldToTalk` drive Quick chat dictation over custom events.
+  useEffect(() => {
+    const onVoiceAsk = () => {
+      closeOtherMenus();
+      if (mode === "page" && pageReturnRoute !== null) navigate(pageReturnRoute);
+      setMode("popover");
+      setOpen(true);
+      issueVoiceCommand("voice-toggle");
+    };
+    const onHold = (event: Event) => {
+      const action = (event as CustomEvent<HoldAction>).detail;
+      if (action === "start") {
+        closeOtherMenus();
+        if (mode === "page" && pageReturnRoute !== null) navigate(pageReturnRoute);
+        setMode("popover");
+        setOpen(true);
+        issueVoiceCommand("hold-start");
+      } else if (action === "stop") {
+        issueVoiceCommand("hold-stop");
+      } else if (action === "cancel") {
+        issueVoiceCommand("hold-cancel");
+      }
+    };
+    window.addEventListener(ASSISTANT_VOICE_ASK_EVENT, onVoiceAsk);
+    window.addEventListener(ASSISTANT_HOLD_EVENT, onHold);
+    return () => {
+      window.removeEventListener(ASSISTANT_VOICE_ASK_EVENT, onVoiceAsk);
+      window.removeEventListener(ASSISTANT_HOLD_EVENT, onHold);
+    };
+  }, [issueVoiceCommand, mode, navigate, pageReturnRoute]);
+
   useEffect(() => {
     const onOpen = (event: Event) => {
       closeOtherMenus();
       const detail = (event as CustomEvent<string | AssistantOpenRequest | undefined>).detail;
       const request: AssistantOpenRequest =
         typeof detail === "string" ? { text: detail } : (detail ?? { text: "" });
-      if (request.expanded) {
-        openedByDraftAsk.current = true;
-        if (request.docked) {
-          setMode("dock");
-        } else {
-          if (location.pathname !== ASSISTANT_PAGE_ROUTE) setPageReturnRoute(location.pathname);
-          navigate(ASSISTANT_PAGE_ROUTE);
-          setMode("page");
-        }
+      if (request.expanded && !request.docked) {
+        if (location.pathname !== ASSISTANT_PAGE_ROUTE) setPageReturnRoute(location.pathname);
+        navigate(ASSISTANT_PAGE_ROUTE);
+        setMode("page");
+      } else {
+        setMode("popover");
       }
       // Name the chat the panel opened from in the header; every other open (a
       // bare ⌘K ask, the palette) carries no chat title and clears it.
@@ -876,12 +908,13 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           : null,
       );
       setOpen(true);
+      triggerFocus();
       const text = typeof request.text === "string" ? request.text.trim() : "";
       if (text.length > 0) void send(text, true, request.entity);
     };
     window.addEventListener(ASSISTANT_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(ASSISTANT_OPEN_EVENT, onOpen);
-  }, [location.pathname, navigate, send]);
+  }, [location.pathname, navigate, send, triggerFocus]);
 
   // The conversation survives page changes: the newest one the caller has,
   // adopted while the popover is open; a fresh one is created on first send.
@@ -902,16 +935,6 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * element are the only state the injected CSS reads, so a close releases the
    * column and the button the instant the surface stands down.
    */
-  useEffect(() => {
-    const root = document.documentElement;
-    if (open && mode === "dock") {
-      root.setAttribute("data-assistant-dock", "on");
-    } else {
-      root.removeAttribute("data-assistant-dock");
-    }
-    return () => root.removeAttribute("data-assistant-dock");
-  }, [open, mode]);
-
   useEffect(() => {
     const root = document.documentElement;
     if (open) {
@@ -1005,20 +1028,6 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     setThreadsMenuOpen(false);
   }, []);
 
-  /** Handoff §1: the popover ⇄ side panel ⇄ full page moves. `shrink` is what
-   * esc and Close do in the side panel — back to the popover; a panel the
-   * draft ask opened closes completely instead (the 2f review). */
-  const closeExpanded = useCallback(() => {
-    setThreadsMenuOpen(false);
-    if (openedByDraftAsk.current) {
-      openedByDraftAsk.current = false;
-      setOpen(false);
-      setMode("popover");
-    } else {
-      setMode("popover");
-    }
-  }, []);
-
   /** ui-newconv: the Threads menu's rows, newest first (the API's order). */
   const recentConversations = (
     threads.data?.conversations ??
@@ -1091,6 +1100,8 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     onDock: toggleDock,
     onExpandPage: togglePage,
     busy: post.isPending || createConversation.isPending,
+    draft,
+    onDraftChange: setDraft,
   };
 
   /**
@@ -1135,7 +1146,6 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
 
   return (
     <>
-      <style data-testid="assistant-frame-css">{DOCK_RESERVATION_CSS}</style>
       {onAssistantRoute && pageHost !== null
         ? createPortal(
             <>
@@ -1146,54 +1156,13 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           )
         : null}
       {showPopover ? (
-        // ONE element for both floating sizes, with the error slot and the
-        // holder in the same positions: a size change swaps classes, never the
-        // tree, so the panel instance — its draft, a turn in flight — survives
-        // popover ⇄ side panel.
-        <div
-          className={
-            mode === "dock"
-              ? // Handoff §1's side panel (and the 2f thread → workflow draft):
-                // the sheet is the right-hand column, and the injected
-                // reservation shrinks the shell's content column by the same
-                // width, so the page beside it stays on screen whole. §3: it is
-                // pinned to the VIEWPORT (`inset-0` → `lg:inset-y-0` with
-                // `lg:left-auto`), so its 48px head stays at y=0 while the page
-                // behind it scrolls. Below 1024px a column would leave nothing
-                // of the page, so the panel takes the screen and reserves no
-                // width.
-                "fixed inset-0 z-40 flex flex-col border-l border-ink bg-surface lg:inset-y-0 lg:left-auto lg:w-[450px]"
-              : // Handoff §1's popover: the 400px box anchored 16px off the
-                // bottom-right corner. The holder is the relative anchor the
-                // Threads menu — a SIBLING of the panel, which clips with
-                // `overflow: hidden` — places its box against.
-                "fixed bottom-4 right-4 z-40 flex max-w-[calc(100vw-32px)] flex-col items-end gap-[6px]"
-          }
-          data-testid="assistant-popover"
-          data-dock={mode === "dock" ? "right" : undefined}
-        >
-          {/* §3: the side panel is pinned to the viewport (`fixed`, top 0,
-              bottom 0), so its 48px head sits flush with the top of the window
-              even while the page behind it is scrolled. The error slot is
-              therefore drawn ONLY when there is an error to draw — an empty
-              padded wrapper above the panel pushed that head down 8px. */}
-          {sendError ? (
-            <div className={mode === "dock" ? "px-[10px] pt-[8px]" : "contents"}>{errorLine}</div>
-          ) : null}
-          <div
-            className={
-              mode === "dock"
-                ? "relative flex min-h-0 flex-1 flex-col"
-                : "relative flex w-[400px] max-w-full flex-col items-stretch"
-            }
-          >
-            <AssistantPanel
-              variant={mode}
-              {...panelProps}
-              onClose={mode === "dock" ? closeExpanded : close}
-            />
-          </div>
-        </div>
+        <QuickChat
+          {...panelProps}
+          onClose={close}
+          errorLine={errorLine}
+          focusToken={focusToken}
+          voiceCommand={voiceCommand}
+        />
       ) : null}
     </>
   );

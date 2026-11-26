@@ -43,6 +43,8 @@ export type DictationSource = "server" | "browser";
 export interface UseDictationOptions {
   /** A finished transcript — the caller owns appending it to the draft. */
   onTranscript: (text: string, source: DictationSource) => void;
+  /** Called when dictation finishes with an empty transcript. */
+  onEmpty?: () => void;
   /** A short honest line for a dictation that produced nothing. */
   onError?: (message: string) => void;
   /** `speech_browser_fallback`: may the browser's own speech service take over? */
@@ -56,14 +58,26 @@ export interface Dictation {
   phase: DictationPhase;
   /** Seconds of audio captured so far (the composer prints `m:ss`). */
   seconds: number;
+  /** Live transcript captured so far when browser speech is running. */
+  liveTranscript: string;
   /** True while the Web Speech path is what is running. */
   usingBrowser: boolean;
   /** True when any dictation path exists at all. */
   supported: boolean;
   start: () => void;
   stop: () => void;
+  cancel: () => void;
   toggle: () => void;
 }
+
+/** True when either server speech is configured or browser fallback is enabled and supported. */
+export function isSpeechAvailable(status: SpeechStatus, prefs: SpeechPrefs): boolean {
+  return status.configured || (prefs.browserFallback && isSpeechRecognitionSupported());
+}
+
+/** Human-readable reason when speech input is unavailable. */
+export const SPEECH_UNAVAILABLE_REASON =
+  "Speech input unavailable: no server speech model or browser fallback.";
 
 /** --- preferences and the speech model ------------------------------------ */
 
@@ -228,20 +242,30 @@ function speechEndpointDown(error: unknown): boolean {
  */
 export function useDictation({
   onTranscript,
+  onEmpty,
   onError,
   browserFallback = true,
   serverSpeech = true,
 }: UseDictationOptions): Dictation {
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [seconds, setSeconds] = useState(0);
+  const [liveTranscript, setLiveTranscript] = useState("");
   const [usingBrowser, setUsingBrowser] = useState(false);
   const speech = useSpeechToText();
   const speechTextRef = useRef("");
+  const cancelledRef = useRef(false);
+  const stoppedWhilePendingRef = useRef(false);
+  const gettingMediaRef = useRef(false);
   // The browser fallback's words so far (final + the live interim tail): the
   // stop/silence hand-off below reads this ref, so it must track every result.
   useEffect(() => {
     if (!browserModeRef.current) return;
-    speechTextRef.current = [speech.final, speech.interim].filter((s) => s && s.trim()).join(" ");
+    const joined = [speech.final, speech.interim]
+      .filter((s) => s && s.trim())
+      .join(" ")
+      .trim();
+    speechTextRef.current = joined;
+    setLiveTranscript(joined);
   }, [speech.final, speech.interim]);
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -278,9 +302,12 @@ export function useDictation({
       onError?.("This browser can neither record audio nor transcribe it locally.");
       return false;
     }
+    cancelledRef.current = false;
+    stoppedWhilePendingRef.current = false;
     browserModeRef.current = true;
     speech.reset();
     speechTextRef.current = "";
+    setLiveTranscript("");
     setUsingBrowser(true);
     setSeconds(0);
     setPhase("recording");
@@ -303,6 +330,7 @@ export function useDictation({
           headers,
           credentials: "same-origin",
         });
+        if (cancelledRef.current || !aliveRef.current) return;
         if (!response.ok) {
           const body: unknown = await response.json().catch(() => null);
           throw new ApiError(
@@ -316,15 +344,18 @@ export function useDictation({
           );
         }
         const payload = (await response.json()) as { text?: unknown };
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || cancelledRef.current) return;
         const text = typeof payload.text === "string" ? payload.text.trim() : "";
         setPhase("idle");
+        setLiveTranscript("");
         if (text) onTranscript(text, "server");
+        else if (onEmpty) onEmpty();
         else onError?.("Nothing came back from that recording.");
       } catch (error) {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || cancelledRef.current) return;
         if (browserFallback && speechEndpointDown(error) && startBrowser()) return;
         setPhase("idle");
+        setLiveTranscript("");
         onError?.(
           error instanceof ApiError && error.detail
             ? error.detail
@@ -332,11 +363,14 @@ export function useDictation({
         );
       }
     },
-    [browserFallback, onTranscript, onError, startBrowser],
+    [browserFallback, onEmpty, onError, onTranscript, startBrowser],
   );
 
   const start = useCallback(() => {
-    if (phase !== "idle") return;
+    if (phase !== "idle" || gettingMediaRef.current) return;
+    cancelledRef.current = false;
+    stoppedWhilePendingRef.current = false;
+    setLiveTranscript("");
     if (!serverSpeech && browserFallback) {
       startBrowser();
       return;
@@ -351,11 +385,20 @@ export function useDictation({
     }
     chunksRef.current = [];
     setSeconds(0);
+    gettingMediaRef.current = true;
     navigator.mediaDevices
       .getUserMedia({ audio: true })
       .then((stream) => {
-        if (!aliveRef.current) {
+        gettingMediaRef.current = false;
+        if (!aliveRef.current || cancelledRef.current) {
           stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        if (stoppedWhilePendingRef.current) {
+          stoppedWhilePendingRef.current = false;
+          stream.getTracks().forEach((track) => track.stop());
+          setPhase("idle");
+          onEmpty?.();
           return;
         }
         streamRef.current = stream;
@@ -373,28 +416,40 @@ export function useDictation({
           recorderRef.current = null;
           const clip = new Blob(chunksRef.current, { type: mime || "audio/webm" });
           chunksRef.current = [];
-          if (aliveRef.current) void transcribe(clip);
+          if (aliveRef.current && !cancelledRef.current) void transcribe(clip);
         };
         setUsingBrowser(false);
         setPhase("recording");
         recorder.start();
       })
       .catch(() => {
-        if (!aliveRef.current) return;
+        gettingMediaRef.current = false;
+        if (!aliveRef.current || cancelledRef.current) return;
+        if (stoppedWhilePendingRef.current) {
+          stoppedWhilePendingRef.current = false;
+          setPhase("idle");
+          return;
+        }
         if (browserFallback) startBrowser();
         else onError?.("Microphone access is blocked — allow the mic and try again.");
       });
-  }, [browserFallback, onError, phase, serverSpeech, startBrowser, transcribe]);
+  }, [browserFallback, onEmpty, onError, phase, serverSpeech, startBrowser, transcribe]);
 
   const stop = useCallback(() => {
+    if (gettingMediaRef.current) {
+      stoppedWhilePendingRef.current = true;
+      return;
+    }
     if (browserModeRef.current) {
       speech.stop();
       browserModeRef.current = false;
       setUsingBrowser(false);
       const text = speechTextRef.current.trim();
       speechTextRef.current = "";
+      setLiveTranscript("");
       setPhase("idle");
       if (text) onTranscript(text, "browser");
+      else onEmpty?.();
       return;
     }
     const recorder = recorderRef.current;
@@ -403,9 +458,36 @@ export function useDictation({
       recorder.stop();
     } else {
       stopTracks();
+      setLiveTranscript("");
       setPhase("idle");
     }
-  }, [onTranscript, speech, stopTracks]);
+  }, [onEmpty, onTranscript, speech, stopTracks]);
+
+  const cancel = useCallback(() => {
+    cancelledRef.current = true;
+    stoppedWhilePendingRef.current = false;
+    if (browserModeRef.current) {
+      browserModeRef.current = false;
+      speech.stop();
+      setUsingBrowser(false);
+      speechTextRef.current = "";
+    }
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.onstop = null;
+      try {
+        recorder.stop();
+      } catch {
+        // ignore if already inactive
+      }
+      recorderRef.current = null;
+    }
+    stopTracks();
+    chunksRef.current = [];
+    setLiveTranscript("");
+    setSeconds(0);
+    setPhase("idle");
+  }, [speech, stopTracks]);
 
   const toggle = useCallback(() => {
     if (phase === "idle") start();
@@ -420,14 +502,16 @@ export function useDictation({
     setUsingBrowser(false);
     const text = speechTextRef.current.trim();
     speechTextRef.current = "";
+    setLiveTranscript("");
     setPhase("idle");
     if (text) onTranscript(text, "browser");
-  }, [onTranscript, speech.listening]);
+    else if (!cancelledRef.current) onEmpty?.();
+  }, [onEmpty, onTranscript, speech.listening]);
 
   useEffect(() => {
-    if (speech.error && usingBrowser) onError?.(speech.error);
+    if (speech.error && usingBrowser && !cancelledRef.current) onError?.(speech.error);
   }, [speech.error, usingBrowser, onError]);
 
   const supported = canRecord() || isSpeechRecognitionSupported();
-  return { phase, seconds, usingBrowser, supported, start, stop, toggle };
+  return { phase, seconds, liveTranscript, usingBrowser, supported, start, stop, cancel, toggle };
 }

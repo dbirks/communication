@@ -58,6 +58,8 @@ export interface ApprovalRequestCardProps {
   request: AssistantApprovalRequestPayload;
   onConfirm: (messageId: string) => void;
   onDismiss: (messageId: string) => void;
+  /** `"quick"` applies Quick chat's radius-10, shadowless styling. */
+  variant?: "default" | "quick";
 }
 
 /** `github.com/dbirks/home-lab` or its URL → the `owner/repo` the row names. */
@@ -75,16 +77,19 @@ export function ApprovalRequestCard({
   request,
   onConfirm,
   onDismiss,
+  variant = "default",
 }: ApprovalRequestCardProps) {
   const pending = request.state === "pending";
   const reason = reasonOf(request) ?? DEFAULT_REASON;
   const proposal = PROPOSAL_TOOLS.includes(request.action);
+  const quick = variant === "quick";
   return proposal ? (
     <ProposalCard
       messageId={messageId}
       request={request}
       reason={reason}
       pending={pending}
+      quick={quick}
       onConfirm={onConfirm}
       onDismiss={onDismiss}
     />
@@ -94,6 +99,7 @@ export function ApprovalRequestCard({
       request={request}
       reason={reason}
       pending={pending}
+      quick={quick}
       onConfirm={onConfirm}
       onDismiss={onDismiss}
     />
@@ -169,6 +175,7 @@ function ProposalCard({
   request,
   reason,
   pending,
+  quick,
   onConfirm,
   onDismiss,
 }: {
@@ -176,6 +183,7 @@ function ProposalCard({
   request: AssistantApprovalRequestPayload;
   reason: string;
   pending: boolean;
+  quick: boolean;
   onConfirm: (messageId: string) => void;
   onDismiss: (messageId: string) => void;
 }) {
@@ -189,10 +197,11 @@ function ProposalCard({
       data-proposal={request.action}
       role="group"
       aria-label={`Proposal: ${request.summary}`}
-      // Design L306: the card is INSET in the message column (the other
-      // blocks' side margins, the prototype's `margin: 2px 10px`) with a
-      // 4px-rounded ink border — never edge-to-edge across the panel.
-      className="my-[2px] mx-[10px] overflow-hidden rounded-[4px] border border-ink bg-surface px-0 py-0"
+      className={
+        quick
+          ? "overflow-hidden rounded-[10px] border border-line-strong bg-surface px-0 py-0"
+          : "my-[2px] mx-[10px] overflow-hidden rounded-[4px] border border-ink bg-surface px-0 py-0"
+      }
     >
       <Banner tone={pending ? "waiting" : request.state === "confirmed" ? "done" : "quiet"}>
         {pending
@@ -226,22 +235,45 @@ function ProposalCard({
       </div>
       {pending ? (
         <div className="flex flex-wrap gap-[8px] px-[9px] pb-[9px]">
-          <Button
-            variant="primary"
-            compact
-            data-testid="assistant-approval-confirm"
-            onClick={() => onConfirm(messageId)}
-          >
-            {approvalConfirmLabel(request.action)}
-          </Button>
-          <Button
-            variant="ghost"
-            compact
-            data-testid="assistant-approval-dismiss"
-            onClick={() => onDismiss(messageId)}
-          >
-            Not now
-          </Button>
+          {quick ? (
+            <>
+              <button
+                type="button"
+                data-testid="assistant-approval-confirm"
+                onClick={() => onConfirm(messageId)}
+                className="cursor-pointer rounded-[8px] border-none bg-accent px-[12px] py-[6px] text-[12.5px] font-semibold text-surface hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                {approvalConfirmLabel(request.action)}
+              </button>
+              <button
+                type="button"
+                data-testid="assistant-approval-dismiss"
+                onClick={() => onDismiss(messageId)}
+                className="cursor-pointer rounded-[8px] border-none bg-transparent px-[10px] py-[6px] text-[12.5px] font-semibold text-accent-text hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                Not now
+              </button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="primary"
+                compact
+                data-testid="assistant-approval-confirm"
+                onClick={() => onConfirm(messageId)}
+              >
+                {approvalConfirmLabel(request.action)}
+              </Button>
+              <Button
+                variant="ghost"
+                compact
+                data-testid="assistant-approval-dismiss"
+                onClick={() => onDismiss(messageId)}
+              >
+                Not now
+              </Button>
+            </>
+          )}
         </div>
       ) : request.state === "confirmed" ? (
         <p className="m-0 flex items-center gap-[6px] px-[9px] pb-[9px] font-mono text-[10.5px] text-st-done-pale-fg">
@@ -261,6 +293,7 @@ function GateCard({
   request,
   reason,
   pending,
+  quick,
   onConfirm,
   onDismiss,
 }: {
@@ -268,6 +301,7 @@ function GateCard({
   request: AssistantApprovalRequestPayload;
   reason: string;
   pending: boolean;
+  quick: boolean;
   onConfirm: (messageId: string) => void;
   onDismiss: (messageId: string) => void;
 }) {
@@ -285,14 +319,22 @@ function GateCard({
       data-approval-ref={ref || undefined}
       role="group"
       aria-label={`Needs approval: ${request.summary}`}
-      className="overflow-hidden px-[10px] py-[8px]"
-      style={{
-        border: "1px solid var(--color-st-waiting-pale-edge)",
-        borderRadius: 4,
-        background: "var(--color-st-waiting-pale-body)",
-        display: "inline-block",
-        maxWidth: "100%",
-      }}
+      className={
+        quick
+          ? "inline-block max-w-full overflow-hidden rounded-[10px] border border-st-waiting-pale-edge bg-st-waiting-pale-body px-[10px] py-[8px]"
+          : "overflow-hidden px-[10px] py-[8px]"
+      }
+      style={
+        quick
+          ? undefined
+          : {
+              border: "1px solid var(--color-st-waiting-pale-edge)",
+              borderRadius: 4,
+              background: "var(--color-st-waiting-pale-body)",
+              display: "inline-block",
+              maxWidth: "100%",
+            }
+      }
     >
       <p
         data-testid="assistant-approval-header"
@@ -330,22 +372,45 @@ function GateCard({
       </p>
       {pending ? (
         <div className="mt-[8px] flex gap-[8px]">
-          <Button
-            variant="primary"
-            compact
-            data-testid="assistant-approval-confirm"
-            onClick={() => onConfirm(messageId)}
-          >
-            {approvalConfirmLabel(request.action)}
-          </Button>
-          <Button
-            variant="secondary"
-            compact
-            data-testid="assistant-approval-dismiss"
-            onClick={() => onDismiss(messageId)}
-          >
-            Not now
-          </Button>
+          {quick ? (
+            <>
+              <button
+                type="button"
+                data-testid="assistant-approval-confirm"
+                onClick={() => onConfirm(messageId)}
+                className="cursor-pointer rounded-[8px] border-none bg-accent px-[12px] py-[6px] text-[12.5px] font-semibold text-surface hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                {approvalConfirmLabel(request.action)}
+              </button>
+              <button
+                type="button"
+                data-testid="assistant-approval-dismiss"
+                onClick={() => onDismiss(messageId)}
+                className="cursor-pointer rounded-[8px] border border-line bg-surface px-[10px] py-[6px] text-[12.5px] font-semibold text-ink hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                Not now
+              </button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="primary"
+                compact
+                data-testid="assistant-approval-confirm"
+                onClick={() => onConfirm(messageId)}
+              >
+                {approvalConfirmLabel(request.action)}
+              </Button>
+              <Button
+                variant="secondary"
+                compact
+                data-testid="assistant-approval-dismiss"
+                onClick={() => onDismiss(messageId)}
+              >
+                Not now
+              </Button>
+            </>
+          )}
         </div>
       ) : request.state === "confirmed" ? (
         <p className="m-0 mt-[6px] font-mono text-[10.5px] text-st-done-pale-fg">

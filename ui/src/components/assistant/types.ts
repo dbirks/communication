@@ -204,6 +204,9 @@ export interface AssistantMessage {
   created_at: string;
   /** Present only on the container's own optimistic rows (issue #63). */
   local?: AssistantMessageLocal;
+  /** Session-only marker set when the message came from dictation (if the
+   *  persisted message carries no `spoken` field, this lives for the session). */
+  via?: "voice";
 }
 
 /**

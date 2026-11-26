@@ -375,7 +375,7 @@ export default function TourPlayer() {
       } else if (event.key === "Escape") {
         // With the Ask surface standing open, esc is ITS key (it closes the
         // surface); the player does not also leave the tour.
-        if (document.querySelector('[data-testid="assistant-popover"]')) return;
+        if (document.querySelector('[data-testid="quick-chat"]')) return;
         close();
       } else if (event.key === "s" || event.key === "S") {
         event.preventDefault();

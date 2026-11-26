@@ -43,6 +43,9 @@ const routes: RouteStub[] = [
   { path: `${projectPath}/artifacts`, method: "GET", body: { artifacts: [] } },
   { path: `${projectPath}/workspaces`, method: "GET", body: { workspaces: [] } },
   { path: "/api/v1/pipelines", method: "GET", body: { pipelines: [] } },
+  { path: `${projectPath}/schedules`, method: "GET", body: { schedules: [] } },
+  { path: `${projectPath}/issue-triggers`, method: "GET", body: { issue_triggers: [] } },
+  { path: "/api/v1/agent-profiles", method: "GET", body: { items: [] } },
 ];
 
 /** Flush the microtask queue (the mocked fetches resolve with no real time)
@@ -85,7 +88,9 @@ describe("/projects/:projectId read storm", () => {
     try {
       const { requests } = renderApp({ path: `/projects/${projectId}`, routes });
       await landMountReads();
-      screen.getByTestId("project-name");
+      // The redesign's project home (R2): the page's own handle replaced the old
+      // header band's `project-name`, which the rail and the top bar now carry.
+      screen.getByTestId("project-home");
 
       const source = FakeEventSource.instances.find(
         (instance) => instance.url === `${projectPath}/events`,
@@ -112,7 +117,9 @@ describe("/projects/:projectId read storm", () => {
     try {
       const { requests } = renderApp({ path: `/projects/${projectId}`, routes });
       await landMountReads();
-      screen.getByTestId("project-name");
+      // The redesign's project home (R2): the page's own handle replaced the old
+      // header band's `project-name`, which the rail and the top bar now carry.
+      screen.getByTestId("project-home");
 
       const source = FakeEventSource.instances.find(
         (instance) => instance.url === `${projectPath}/events`,

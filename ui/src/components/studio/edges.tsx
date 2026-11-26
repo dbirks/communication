@@ -53,6 +53,10 @@ export type ErrorEdgeRender = RoutedGeometry & {
   labelAnchor: { x: number; y: number } | null;
 };
 
+export type TriggerEdgeRender = RoutedGeometry & {
+  edge: GraphEdge;
+};
+
 /**
  * The "+" is a 44px button wearing a 22px circle. The app-shell phone band
  * (`styles/tokens.css`, `main button { min-height: 44px }`) and the emulator's
@@ -327,5 +331,20 @@ export function ErrorEdge(props: EdgeProps<Edge<ErrorEdgeRender>>) {
         </span>
       </EdgeLabelRenderer>
     </>
+  );
+}
+
+export function TriggerEdge(props: EdgeProps<Edge<TriggerEdgeRender>>) {
+  const { id, data } = props;
+  const [path] = edgePath(data, props);
+  return (
+    <BaseEdge
+      id={id}
+      path={path}
+      style={{
+        stroke: "var(--color-ink-2)",
+        strokeWidth: 1.5,
+      }}
+    />
   );
 }

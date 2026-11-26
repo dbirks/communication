@@ -12,9 +12,11 @@ import { parse } from "yaml";
 import { addNode, parseGraph, type OpResult } from "../../lib/pipeline/graphDoc";
 import {
   centerOnBox,
+  chooseFloatingPanelPlacement,
   chooseNodeMenuPlacement,
   clampViewportToGraph,
   computeFitViewport,
+  computeSelectionPaneRect,
   computeTopFitViewport,
   evaluateConnect,
   fitMinZoom,
@@ -1330,5 +1332,198 @@ describe("canvas tools", () => {
     fireEvent.click(plan);
     expect(canConnect).toHaveBeenCalledWith("check", "plan");
     expect(onConnect).toHaveBeenCalledWith("check", "plan");
+  });
+});
+
+describe("R5 editor canvas additions", () => {
+  it("places floating panels 16px right of target and flips left near the right edge", () => {
+    const right = chooseFloatingPanelPlacement(
+      { x: 100, y: 120, width: 200, height: 100 },
+      { w: 340, h: 300 },
+      { w: 1200, h: 800 },
+      16,
+    );
+    expect(right.side).toBe("right");
+    expect(right.left).toBe(316);
+
+    const flipped = chooseFloatingPanelPlacement(
+      { x: 750, y: 120, width: 180, height: 100 },
+      { w: 340, h: 300 },
+      { w: 1000, h: 800 },
+      16,
+    );
+    expect(flipped.side).toBe("left");
+    expect(flipped.left).toBe(750 - 16 - 340);
+  });
+
+  it("computes selection bounding box with 14px padding under pan/zoom and renders MarchingAnts + WrapPanel", async () => {
+    const rect = computeSelectionPaneRect(
+      ["plan", "check"],
+      [
+        {
+          id: "plan",
+          position: { x: 40, y: 80 },
+          data: { id: "plan" },
+          measured: { width: 168, height: 56 },
+        },
+        {
+          id: "check",
+          position: { x: 260, y: 80 },
+          data: { id: "check" },
+          measured: { width: 168, height: 56 },
+        },
+      ] as Parameters<typeof computeSelectionPaneRect>[1],
+      { x: 10, y: 20, zoom: 1.5 },
+      14,
+    );
+    expect(rect).not.toBeNull();
+    expect(rect!.x).toBeCloseTo(40 * 1.5 + 10 - 14, 4);
+    expect(rect!.y).toBeCloseTo(80 * 1.5 + 20 - 14, 4);
+    expect(rect!.width).toBeCloseTo((260 + 168 - 40) * 1.5 + 28, 4);
+
+    const onSelectionChange = vi.fn();
+    renderCanvas({
+      showToolIsland: true,
+      selectedIds: ["plan", "check"],
+      onSelectionChange,
+      onWrapRepeat: vi.fn(),
+      onWrapSideBySide: vi.fn(),
+    });
+    expect(await screen.findByTestId("marching-ants")).toBeTruthy();
+    expect(screen.getByTestId("marching-ants-label").textContent).toBe("2 steps selected");
+    expect(screen.getByTestId("wrap-panel")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onSelectionChange).toHaveBeenCalledWith([]);
+  });
+
+  it("renders R5 step state colours across done, running, waiting, and failed states", async () => {
+    const yaml = `kind: Pipeline
+spec:
+  nodes:
+    - id: plan
+      kind: agent.acp
+    - id: check
+      kind: process.exec
+      dependsOn: [plan]
+    - id: gate
+      kind: human.approval
+      dependsOn: [check]
+    - id: notify
+      kind: notify
+      dependsOn: [gate]
+`;
+    const parsed = parseGraph(yaml);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const doc = parse(yaml);
+    const statusOverlay: Record<string, { state: string; label: string }> = {
+      plan: { state: "succeeded", label: "done" },
+      check: { state: "running", label: "running" },
+      gate: { state: "waiting", label: "waiting" },
+      notify: { state: "failed", label: "failed" },
+    };
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <div style={{ width: 960, height: 640 }}>
+          <StudioCanvas
+            model={parsed.model}
+            document={doc}
+            layout={{}}
+            selectedId={null}
+            stale={false}
+            onSelect={() => {}}
+            readOnly
+            statusOverlay={statusOverlay}
+          />
+        </div>
+      </QueryClientProvider>,
+    );
+
+    expect((await screen.findByTestId("canvas-step-plan")).getAttribute("data-state-kind")).toBe(
+      "done",
+    );
+    expect(screen.getByTestId("canvas-step-tile-plan").className).toContain("bg-st-done-tag");
+    expect(screen.getByTestId("canvas-step-check").getAttribute("data-state-kind")).toBe("running");
+    expect(
+      screen.getByTestId("canvas-step-check").querySelector("[role='button']")?.className,
+    ).toContain("border-st-running-strong");
+    expect(screen.getByTestId("canvas-step-gate").getAttribute("data-state-kind")).toBe("waiting");
+    expect(screen.getByTestId("canvas-step-notify").getAttribute("data-state-kind")).toBe("failed");
+  });
+
+  it("renders GoalFrame for recognized until scopes and quiet frame for non-goal scopes without back-edges", async () => {
+    const goalDocText = `kind: Pipeline
+spec:
+  nodes:
+    - id: build_loop
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: 'nodes.judge.outputs.text.contains("GOAL_MET")'
+        body:
+          nodes:
+            - id: code
+              kind: agent.acp
+            - id: judge
+              kind: agent.acp
+              dependsOn: [code]
+              config:
+                prompt: 'Decide whether this goal is met: "Tests pass". Answer with exactly GOAL_MET or NOT_YET on the first line, then one sentence why.'
+    - id: fan
+      kind: for_each
+      dependsOn: [build_loop]
+      config:
+        items: ["a"]
+        body:
+          nodes:
+            - id: step_a
+              kind: process.exec
+`;
+    const parsed = parseGraph(goalDocText);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const doc = parse(goalDocText);
+
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <div style={{ width: 960, height: 640 }}>
+          <StudioCanvas
+            model={parsed.model}
+            document={doc}
+            layout={{}}
+            selectedId={null}
+            stale={false}
+            onSelect={() => {}}
+            readOnly
+            statusOverlay={{ build_loop: { state: "running", label: "running" } }}
+            verdictsByScope={{
+              build_loop: [{ n: 1, verdict: "not_yet", reason: "Lint failed." }],
+            }}
+          />
+        </div>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByTestId("goal-frame")).toBeTruthy();
+    expect(screen.getByTestId("goal-frame-text").textContent).toContain("Tests pass");
+    expect(screen.getByTestId("goal-frame-footer").textContent).toBe("up to 3 rounds · then stop");
+    expect(screen.getByTestId("goal-frame-ants")).toBeTruthy();
+    expect(screen.getByTestId("verdict-stack")).toBeTruthy();
+    expect(screen.getByTestId("verdict-round-1").textContent).toContain("Lint failed.");
+    expect(screen.getByTestId("canvas-scope-fan").style.borderRadius).toBe("16px");
+    expect(container.querySelector("[data-testid='canvas-recurrence-arrow']")).toBeNull();
+  });
+
+  it("renders synthetic TriggerNode when trigger prop is set and invokes onClick", async () => {
+    const onClick = vi.fn();
+    renderCanvas({
+      showToolIsland: true,
+      trigger: { subline: "Every weekday at 9am", onClick },
+    });
+    const node = await screen.findByTestId("canvas-trigger-node");
+    expect(node.textContent).toContain("Every weekday at 9am");
+    const btn = node.querySelector("button")!;
+    fireEvent.click(btn);
+    expect(onClick).toHaveBeenCalledTimes(1);
   });
 });

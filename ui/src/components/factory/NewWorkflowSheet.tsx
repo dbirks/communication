@@ -1,0 +1,400 @@
+/**
+ * NewWorkflowSheet — the one way to start a workflow in the Factory
+ * (redesign R4; the prototype's `sheet`).
+ *
+ * Four ways in, all real:
+ * 1. **Describe it** — a sentence, then `Sketch it`. This creates the workflow
+ *    and its first draft exactly as `NewWorkflowDialog` does (the pipeline
+ *    first, then its first draft — ADR-0002's logical create), and lands on the
+ *    editor carrying `?draft=&describe=1`. The description travels through
+ *    `sessionStorage` under `communication.factory.describe.<pipelineId>`,
+ *    where the editor's assistant box picks it up in a later brief. **No model
+ *    is called here**: sketching is the editor's job.
+ * 2. **From something you keep doing in chats** — no API serves detected
+ *    chains yet, so this section carries its label and one honest sentence
+ *    (CONTRACT: real data only, never fake rows).
+ * 3. **Copy** — the chips are the org's real workflows; a click runs the same
+ *    `useDuplicatePipeline` the Workflows index's `Duplicate` runs.
+ * 4. **Blank canvas / Import YAML** — the skeleton create and the existing
+ *    import dialog.
+ *
+ * Accessible-modal contract (the `NewWorkflowDialog` pattern): `role="dialog"`
+ * + `aria-modal`, labelled by its own title, focus trapped while open, Escape
+ * and the backdrop close, focus returns to the opener.
+ */
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { IconMicrophone, IconPlus, IconSparkles, IconX } from "@tabler/icons-react";
+import { useCreatePipeline, useDuplicatePipeline } from "../../api/pipelines";
+import type { Draft, Pipeline, PipelineSummary } from "../../api/types";
+import { apiFetch } from "../../api/client";
+import { queryKeys } from "../../api/queries";
+import { generateSlug } from "../workflows/NewWorkflowDialog";
+import { ImportYamlDialog } from "../workflows/ImportYamlDialog";
+import { BLANK_SKELETON_YAML, withMetadataName } from "../../lib/pipeline/templates";
+import { routes } from "../../lib/routes";
+import { FormError } from "../Feedback";
+import { useSpeechToText } from "../../lib/speech";
+
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** The editor's assistant box reads the description back from here (a later
+ * brief); the key is per pipeline, so two sketches never mix. */
+export function describeKey(pipelineId: string): string {
+  return `communication.factory.describe.${pipelineId}`;
+}
+
+export function writeDescription(pipelineId: string, text: string): void {
+  try {
+    window.sessionStorage.setItem(describeKey(pipelineId), text);
+  } catch {
+    /* storage may be blocked; the editor then starts with an empty box */
+  }
+}
+
+/** A name for a workflow nobody named: the first five words of the sentence
+ * the person typed. The slug comes from it through the same helper
+ * `NewWorkflowDialog` uses, so the id is never a surprise. */
+export function nameFromDescription(text: string): string {
+  return text
+    .trim()
+    .split(/\s+/)
+    .slice(0, 5)
+    .join(" ")
+    .replace(/[.,;:!?]+$/g, "");
+}
+
+/** The section label style the whole redesign shares (CONTRACT). */
+function SectionLabel({ children, id, testid }: { children: string; id: string; testid: string }) {
+  return (
+    <span
+      id={id}
+      data-testid={testid}
+      className="font-mono text-[10.5px] font-semibold tracking-[.06em] text-muted uppercase"
+    >
+      {children}
+    </span>
+  );
+}
+
+export interface NewWorkflowSheetProps {
+  /** The page's scope: a project id, or null for All projects. */
+  scope: string | null;
+  /** The org's real workflows, for the `OR COPY` chips (up to 8 are shown). */
+  workflows: PipelineSummary[];
+  onClose: () => void;
+}
+
+export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheetProps) {
+  const navigate = useNavigate();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<Element | null>(null);
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState<"" | "sketch" | "blank">("");
+  const [failure, setFailure] = useState<unknown>(null);
+  /** The sentence held nothing a slug could be made from — the server would
+   * answer `400`, and its words are about JSON, not about what to type. */
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+
+  const speech = useSpeechToText();
+  const create = useCreatePipeline();
+  const queryClient = useQueryClient();
+  const duplicate = useDuplicatePipeline(workflows.map((workflow) => workflow.slug));
+
+  /** `POST /pipelines/{id}/drafts` for a pipeline that exists only as the
+   * answer of the write before it — the reason `useCreateDraft(pipelineId)`
+   * cannot be used here (its id has to be known when the hook opens). Same
+   * two writes, same cache rolls, as `ImportYamlDialog` performs. */
+  async function createFirstDraft(pipelineId: string, documentYaml: string): Promise<Draft> {
+    const draft = await apiFetch<Draft>(`/api/v1/pipelines/${pipelineId}/drafts`, {
+      method: "POST",
+      json: { document_yaml: documentYaml },
+    });
+    queryClient.setQueryData(queryKeys.draft(draft.id), draft);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.pipelineDrafts(pipelineId) });
+    return draft;
+  }
+
+  // The dictated words land in the box; the person still presses Sketch it.
+  useEffect(() => {
+    const words = [speech.final, speech.interim].filter((part) => part && part.trim()).join(" ");
+    if (words === "") return;
+    setDescription((current) => (current.trim() === "" ? words : `${current.trim()} ${words}`));
+    speech.reset();
+    // `speech.reset` is stable; the effect reads the two transcript fields only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speech.final, speech.interim]);
+
+  useLayoutEffect(() => {
+    openerRef.current = document.activeElement;
+    // The description box opens the sheet's one job, so it — not the × that
+    // precedes it in the DOM — takes the caret.
+    containerRef.current?.querySelector<HTMLTextAreaElement>("#new-workflow-description")?.focus();
+    return () => {
+      const opener = openerRef.current;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        // The import dialog owns the screen while it is open; Esc closes it,
+        // not the sheet behind it.
+        if (importOpen) return;
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const container = containerRef.current;
+      if (!container) return;
+      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (node) => node.closest('[data-testid="import-yaml-dialog"]') === null,
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !container.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose, importOpen]);
+
+  /** The two writes every create on this sheet makes: the logical pipeline,
+   * then its first draft (ADR-0002 — never a draft against an id the server
+   * has not accepted). */
+  async function createWorkflow(
+    name: string,
+    documentYaml: string,
+  ): Promise<{
+    pipeline: Pipeline;
+    draft: Draft;
+  }> {
+    const slug = generateSlug(name);
+    const pipeline = await create.mutateAsync({
+      slug,
+      display_name: name || undefined,
+    });
+    const draft = await createFirstDraft(pipeline.id, withMetadataName(documentYaml, slug));
+    return { pipeline, draft };
+  }
+
+  function sketch() {
+    const text = description.trim();
+    if (text === "" || busy) return;
+    if (generateSlug(nameFromDescription(text)) === "") {
+      setNameError("That holds no words to name a workflow — type a few.");
+      return;
+    }
+    setNameError(null);
+    setBusy("sketch");
+    setFailure(null);
+    void (async () => {
+      try {
+        const { pipeline, draft } = await createWorkflow(
+          nameFromDescription(text),
+          BLANK_SKELETON_YAML,
+        );
+        writeDescription(pipeline.id, text);
+        onClose();
+        navigate(routes.factoryWorkflow(pipeline.id, scope, { draft: draft.id, describe: "1" }));
+      } catch (error) {
+        setFailure(error);
+        setBusy("");
+      }
+    })();
+  }
+
+  function blankCanvas() {
+    if (busy) return;
+    setBusy("blank");
+    setFailure(null);
+    void (async () => {
+      try {
+        // Exactly the dialog's Blank path: the skeleton draft, named Untitled
+        // workflow — the person renames it on the canvas, not in a form here.
+        const { pipeline, draft } = await createWorkflow("Untitled workflow", BLANK_SKELETON_YAML);
+        onClose();
+        navigate(routes.factoryWorkflow(pipeline.id, scope, { draft: draft.id }));
+      } catch (error) {
+        setFailure(error);
+        setBusy("");
+      }
+    })();
+  }
+
+  function copy(workflow: PipelineSummary) {
+    if (duplicate.isPending) return;
+    setFailure(null);
+    duplicate.mutate(workflow.id, {
+      onSuccess: ({ pipeline, draft }) => {
+        onClose();
+        navigate(routes.factoryWorkflow(pipeline.id, scope, { draft: draft.id }));
+      },
+      onError: (error) => setFailure(error),
+    });
+  }
+
+  const primaryButton =
+    "flex h-[34px] items-center gap-[6px] rounded-[9px] bg-accent px-[14px] text-[13px] font-semibold text-white no-underline hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4 max-md:items-end max-md:p-0"
+      data-testid="new-workflow-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-workflow-sheet-title"
+        data-testid="new-workflow-sheet"
+        className="flex max-h-[calc(100vh-4rem)] w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[18px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85vh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
+      >
+        <div className="flex items-center gap-[10px]">
+          <h2 id="new-workflow-sheet-title" className="m-0 text-[18px] font-bold">
+            New workflow
+          </h2>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            data-testid="new-workflow-close"
+            className="ml-auto flex h-[30px] w-[30px] items-center justify-center rounded-[8px] text-muted hover:bg-fill hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <IconX size={18} stroke={1.5} aria-hidden />
+          </button>
+        </div>
+
+        {/* 1. Describe it */}
+        <div className="flex flex-col gap-[12px]">
+          <label htmlFor="new-workflow-description" className="sr-only">
+            Describe the workflow
+          </label>
+          <div className="flex flex-col gap-[10px] rounded-[14px] border-[1.5px] border-accent p-[14px_16px] ring-4 ring-accent-ring">
+            <textarea
+              id="new-workflow-description"
+              rows={4}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="When an issue gets the 'ready' label, plan it, implement it, run the tests, and ask me before merging."
+              data-testid="new-workflow-description"
+              className="w-full resize-none border-0 bg-transparent text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint"
+            />
+            <div className="flex items-center gap-[8px]">
+              {speech.supported ? (
+                <button
+                  type="button"
+                  onClick={() => (speech.listening ? speech.stop() : speech.start())}
+                  aria-pressed={speech.listening}
+                  data-testid="new-workflow-say-it"
+                  className={`flex h-[30px] items-center gap-[6px] rounded-full border border-line px-[11px] text-[12.5px] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                    speech.listening ? "bg-accent text-white" : "bg-surface"
+                  }`}
+                >
+                  <IconMicrophone size={14} stroke={1.5} aria-hidden />
+                  {speech.listening ? "Listening…" : "Say it"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={sketch}
+                disabled={description.trim() === "" || Boolean(busy)}
+                data-testid="new-workflow-sketch"
+                className={`${primaryButton} ml-auto`}
+              >
+                <IconSparkles size={15} stroke={1.5} aria-hidden />
+                {busy === "sketch" ? "Sketching…" : "Sketch it"}
+              </button>
+            </div>
+          </div>
+          <p className="m-0 text-[12.5px] text-muted">
+            Steps get sketched on the canvas. Nothing runs until you make it live.
+          </p>
+          {speech.error ? (
+            <p className="m-0 text-[12px] text-st-failed-tag-fg">{speech.error}</p>
+          ) : null}
+        </div>
+
+        {/* 2. From a repeated chat chain: no API serves detected chains yet,
+            so this section carries its label and the one sentence that is
+            true — never a row of invented "you keep doing this". */}
+        <div className="flex flex-col gap-[8px]">
+          <SectionLabel id="new-workflow-chats-label" testid="new-workflow-chats-label">
+            Or from something you keep doing in chats
+          </SectionLabel>
+          <p className="m-0 text-[12.5px] text-muted" data-testid="new-workflow-chats-empty">
+            Nothing spotted yet. When the same steps keep happening in chats, they show up here.
+          </p>
+        </div>
+
+        {/* 3. Copy something that already exists */}
+        <div className="flex flex-wrap items-center gap-[8px]">
+          <SectionLabel id="new-workflow-copy-label" testid="new-workflow-copy-label">
+            Or copy
+          </SectionLabel>
+          {workflows.slice(0, 8).map((workflow) => (
+            <button
+              key={workflow.id}
+              type="button"
+              onClick={() => copy(workflow)}
+              disabled={duplicate.isPending}
+              data-testid={`new-workflow-copy-${workflow.id}`}
+              className="rounded-full border border-line px-[11px] py-[5px] text-[12.5px] hover:border-line-strong disabled:cursor-not-allowed disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            >
+              {workflow.display_name || workflow.slug}
+            </button>
+          ))}
+        </div>
+
+        {/* 4. The two ways that skip both */}
+        <div className="flex flex-wrap items-center gap-[14px]">
+          <button
+            type="button"
+            onClick={blankCanvas}
+            disabled={Boolean(busy)}
+            data-testid="new-workflow-blank"
+            className="flex items-center gap-[5px] text-[12.5px] font-semibold text-accent-text no-underline hover:underline disabled:cursor-not-allowed disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            <IconPlus size={13} stroke={1.5} aria-hidden />
+            Blank canvas
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            data-testid="new-workflow-import"
+            className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            Import YAML
+          </button>
+        </div>
+
+        {nameError ? (
+          <p
+            className="m-0 text-[12.5px] text-st-failed-tag-fg"
+            data-testid="new-workflow-name-error"
+            role="alert"
+          >
+            {nameError}
+          </p>
+        ) : null}
+        {failure ? <FormError error={failure} testid="new-workflow-sheet-error" /> : null}
+        <ImportYamlDialog open={importOpen} onClose={() => setImportOpen(false)} />
+      </div>
+    </div>
+  );
+}

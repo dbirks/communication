@@ -31,38 +31,24 @@ const M4PreviewPage = import.meta.env.DEV ? lazy(() => import("./pages/M4Preview
  * the same specifier and share one chunk per page.
  */
 const StudioPage = lazy(() => import("./pages/Studio"));
-const AgentsPage = lazy(() => import("./pages/Agents"));
+const ChatsPage = lazy(() => import("./pages/Chats"));
+const FactoryPage = lazy(() => import("./pages/Factory"));
+const ManagePage = lazy(() => import("./pages/Manage"));
 const Home = lazy(() => import("./pages/Home"));
 const ArtifactPage = lazy(() => import("./pages/Artifact"));
 const Artifacts = lazy(() => import("./pages/Artifacts"));
 const ApprovalPage = lazy(() => import("./pages/Approval"));
-const CatchUpPage = lazy(() => import("./pages/CatchUp"));
 const CatchUpItemPage = lazy(() => import("./pages/CatchUpItem"));
 // The tour player is the one page that renders OUTSIDE `Shell` (below), so it
 // is still a route chunk: the shell's chrome never enters the tour's viewport.
 const TourPlayerPage = lazy(() => import("./pages/TourPlayer"));
-const ConversationPage = lazy(() => import("./pages/Conversation"));
-const ProjectConversations = lazy(() => import("./pages/ProjectConversations"));
-const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default: m.LibraryPage })));
-const PipelinePage = lazy(() =>
-  import("./pages/Library").then((m) => ({ default: m.PipelinePage })),
-);
 const Project = lazy(() => import("./pages/Project"));
-const ProjectMembersPage = lazy(() => import("./components/project/ProjectMembersPage"));
-const ProjectPipelines = lazy(() => import("./pages/ProjectRunsPipelines"));
-const ProjectRuns = lazy(() => import("./pages/ProjectRuns"));
 const Repository = lazy(() => import("./pages/Repository"));
 // The deep link is its own module because it is what mounts the run header —
 // and through it the run's definition graph (dagre). Here, it would be first
 // paint.
 const RunDeepLink = lazy(() => import("./pages/RunDeepLink"));
-const ProjectSettings = lazy(() => import("./pages/ProjectSettings"));
-const Projects = lazy(() => import("./pages/Projects"));
-const SettingsPage = lazy(() => import("./pages/Settings"));
 const ProfilePage = lazy(() => import("./pages/Profile"));
-const Steps = lazy(() => import("./pages/Steps"));
-const Collections = lazy(() => import("./pages/Collections"));
-const Threads = lazy(() => import("./pages/Threads"));
 // The assistant's full page (handoff §1): a real route so the URL is shareable
 // and the sidebar stays; the conversation engine is mounted by `Shell` and
 // portals its page-mode frame into this route's host element.
@@ -99,17 +85,16 @@ function Redirect({
   const { search, hash } = useLocation();
   const params = useParams();
   const target = typeof to === "function" ? to(params) : to;
-  return <Navigate to={{ pathname: target, search, hash }} replace />;
-}
-
-/** The thread page behind a project-scoped route (`/p/:id/threads/:id`):
- *  the standalone page keeps its own pending line while the chunk arrives. */
-function ConversationRoute() {
-  return (
-    <Suspense fallback={<Spinner label="Loading thread" />}>
-      <ConversationPage />
-    </Suspense>
-  );
+  // A redesign target may carry its own query (`/factory/x?draft=y`,
+  // `/manage/agents?tab=steps`): the target's parameters win, the old URL's
+  // other parameters ride along, and the hash is kept.
+  const [pathname = "/", own = ""] = target.split("?");
+  const merged = new URLSearchParams(own);
+  for (const [key, value] of new URLSearchParams(search)) {
+    if (!merged.has(key)) merged.append(key, value);
+  }
+  const query = merged.toString();
+  return <Navigate to={{ pathname, search: query === "" ? "" : `?${query}`, hash }} replace />;
 }
 
 /** The workbench deep link's route chunk is `RunDeepLink`, which prints the
@@ -201,7 +186,8 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
 
-          {/* ------------------------------------------------ new canonical table */}
+          {/* The redesign's route table (docs/design/redesign/CONTRACT.md). The
+            selected project is the `/p/:projectId` prefix; no prefix = All. */}
           <Route
             path="/"
             element={
@@ -211,21 +197,109 @@ export default function App() {
             }
           />
           <Route
-            path="/projects"
+            path="/p/:projectId"
             element={
               <RequireAuth>
-                <Projects />
+                <Project />
               </RequireAuth>
             }
           />
-          {/* Finding 03: `/inbox` and `/board` redirected to `/` (exactly
-            like `/ops` above) — their content lives in Today and the
-            repository Lanes view, and the pages are unmounted. */}
-          <Route path="/inbox" element={<Navigate to="/" replace />} />
-          <Route path="/board" element={<Navigate to="/" replace />} />
-          {/* The assistant's full page (handoff §1: "the full page is a real
-              route"). Inside the Shell, so the sidebar stays; the conversation
-              engine lives in `Shell` and portals its page-mode frame here. */}
+          <Route
+            path="/chats/:conversationId?"
+            element={
+              <RequireAuth>
+                <ChatsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/factory"
+            element={
+              <RequireAuth>
+                <FactoryPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/factory/:pipelineId"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<RouteFallback label="Loading the editor" />}>
+                  <StudioPage />
+                </Suspense>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/p/:projectId/chats/:conversationId?"
+            element={
+              <RequireAuth>
+                <ChatsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/p/:projectId/factory"
+            element={
+              <RequireAuth>
+                <FactoryPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/p/:projectId/factory/:pipelineId"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<RouteFallback label="Loading the editor" />}>
+                  <StudioPage />
+                </Suspense>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/manage/:section?/:itemId?"
+            element={
+              <RequireAuth>
+                <ManagePage />
+              </RequireAuth>
+            }
+          />
+
+          {/* Kept pages, reached from the new places. */}
+          <Route
+            path="/runs/:runId"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<RunRouteFallback />}>
+                  <RunDeepLink />
+                </Suspense>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/approvals/:approvalId"
+            element={
+              <RequireAuth>
+                <ApprovalPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/artifacts/:artifactId"
+            element={
+              <RequireAuth>
+                <ArtifactPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/catch-up/:workId"
+            element={
+              <RequireAuth>
+                <CatchUpItemPage />
+              </RequireAuth>
+            }
+          />
           <Route
             path="/assistant"
             element={
@@ -236,52 +310,11 @@ export default function App() {
               </RequireAuth>
             }
           />
-          {/* Catch up (design 8a, ADR-0078): the reader's own pile of pieces of
-            work. The piece page and the tour player are built separately; only
-            this route is mounted here. */}
           <Route
-            path="/catch-up"
+            path="/profile"
             element={
               <RequireAuth>
-                <CatchUpPage />
-              </RequireAuth>
-            }
-          />
-          {/* gh-69: one optional-param route serves `/threads` and
-              `/threads/:conversationId` on ONE mounted screen
-              (`pages/Threads.tsx` → `ThreadScreen`). It used to be two routes
-              with two elements, and the deep-link element returned a one-line
-              spinner while its conversation read was cold — so the first
-              click on a run remounted the whole screen (list pane included)
-              into that spinner, and the first click on another run flashed it
-              again. Clicking a row now changes a param: the pane never
-              leaves, and the thread column keeps its previous content (or the
-              same-size loading frame) while the next read lands. */}
-          <Route
-            path="/threads/:conversationId?"
-            element={
-              <RequireAuth>
-                <Threads />
-              </RequireAuth>
-            }
-          />
-
-          <Route
-            path="/p/:projectId"
-            element={
-              <RequireAuth>
-                <Project />
-              </RequireAuth>
-            }
-          />
-          {/* One piece of work (design 8b, ADR-0078): the shared tour of a
-            single issue/PR/push and this reader's debt against it. `/catch-up/tour`
-            answered above, so nothing here can mistake the tour for a piece. */}
-          <Route
-            path="/catch-up/:workId"
-            element={
-              <RequireAuth>
-                <CatchUpItemPage />
+                <ProfilePage />
               </RequireAuth>
             }
           />
@@ -294,60 +327,6 @@ export default function App() {
             }
           />
           <Route
-            path="/p/:projectId/runs"
-            element={
-              <RequireAuth>
-                <ProjectRuns />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/p/:projectId/workflows"
-            element={
-              <RequireAuth>
-                <ProjectPipelines />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/p/:projectId/settings"
-            element={
-              <RequireAuth>
-                <ProjectSettings />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/p/:projectId/threads"
-            element={
-              <RequireAuth>
-                <ProjectConversations />
-              </RequireAuth>
-            }
-          />
-          {/* Where the overview's Members panel and event feed went (Projects
-            Review design 1b). The handoff names Settings as their home, and
-            `pages/ProjectSettings.tsx` is outside that brief, so the two panels
-            sit on their own project route — a static segment, so it wins over
-            the `/p/:projectId/:repo` repository catch-all the same way `runs`
-            and `settings` already do. */}
-          <Route
-            path="/p/:projectId/members"
-            element={
-              <RequireAuth>
-                <ProjectMembersPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/p/:projectId/threads/:conversationId"
-            element={
-              <RequireAuth>
-                <ConversationRoute />
-              </RequireAuth>
-            }
-          />
-          <Route
             path="/p/:projectId/:repo"
             element={
               <RequireAuth>
@@ -356,177 +335,105 @@ export default function App() {
             }
           />
 
+          {/* Every address the app used before the redesign still answers, as a
+            replace redirect that keeps the query string and the hash. */}
+          <Route path="/catch-up" element={<Redirect to={routes.home()} />} />
+          <Route path="/inbox" element={<Redirect to={routes.home()} />} />
+          <Route path="/board" element={<Redirect to={routes.home()} />} />
+          <Route path="/threads" element={<Redirect to={routes.chats()} />} />
           <Route
-            path="/workflows"
-            element={
-              <RequireAuth>
-                <LibraryPage />
-              </RequireAuth>
-            }
+            path="/threads/:conversationId"
+            element={<Redirect to={(p) => routes.chat(p.conversationId ?? "")} />}
           />
           <Route
-            path="/workflows/steps"
-            element={
-              <RequireAuth>
-                <Steps />
-              </RequireAuth>
-            }
+            path="/p/:projectId/threads"
+            element={<Redirect to={(p) => routes.chats(p.projectId)} />}
           />
-          {/* Declared before `/workflows/:pipelineId` (and ranked static-over-
-            dynamic by the router) so `/workflows/steps` is the Steps tab,
-            never a pipeline id called "steps" (finding 02). */}
+          <Route
+            path="/p/:projectId/threads/:conversationId"
+            element={<Redirect to={(p) => routes.chat(p.conversationId ?? "", p.projectId)} />}
+          />
+          <Route
+            path="/p/:projectId/conversations"
+            element={<Redirect to={(p) => routes.chats(p.projectId)} />}
+          />
+          <Route
+            path="/p/:projectId/conversations/:conversationId"
+            element={<Redirect to={(p) => routes.chat(p.conversationId ?? "", p.projectId)} />}
+          />
+          <Route
+            path="/projects/:projectId/conversations"
+            element={<Redirect to={(p) => routes.chats(p.projectId)} />}
+          />
+          <Route
+            path="/projects/:projectId/conversations/:conversationId"
+            element={<Redirect to={(p) => routes.chat(p.conversationId ?? "", p.projectId)} />}
+          />
+          <Route path="/workflows" element={<Redirect to={routes.factory()} />} />
+          <Route path="/library" element={<Redirect to={routes.factory()} />} />
+          <Route path="/workflows/steps" element={<Redirect to={routes.steps()} />} />
+          <Route path="/steps" element={<Redirect to={routes.steps()} />} />
           <Route
             path="/workflows/steps/:id"
-            element={
-              <RequireAuth>
-                <Steps />
-              </RequireAuth>
-            }
+            element={<Redirect to={(p) => routes.step(p.id ?? "")} />}
           />
-          {/* ADR-0084: the Collections tab and one collection's editor, same
-            static-over-dynamic placement as the Steps routes. */}
-          <Route
-            path="/workflows/collections"
-            element={
-              <RequireAuth>
-                <Collections />
-              </RequireAuth>
-            }
-          />
+          <Route path="/steps/:id" element={<Redirect to={(p) => routes.step(p.id ?? "")} />} />
+          <Route path="/workflows/collections" element={<Redirect to={routes.collections()} />} />
           <Route
             path="/workflows/collections/:id"
-            element={
-              <RequireAuth>
-                <Collections />
-              </RequireAuth>
-            }
+            element={<Redirect to={(p) => routes.collection(p.id ?? "")} />}
           />
           <Route
             path="/workflows/:pipelineId"
-            element={
-              <RequireAuth>
-                <PipelinePage />
-              </RequireAuth>
-            }
+            element={<Redirect to={(p) => routes.factoryWorkflow(p.pipelineId ?? "")} />}
           />
-          {/* The workflow page's tabs are routes (design 1e): Overview is the
-            page itself; YAML, Used in and History are these. */}
+          <Route
+            path="/library/:pipelineId"
+            element={<Redirect to={(p) => routes.factoryWorkflow(p.pipelineId ?? "")} />}
+          />
           <Route
             path="/workflows/:pipelineId/yaml"
             element={
-              <RequireAuth>
-                <PipelinePage />
-              </RequireAuth>
+              <Redirect
+                to={(p) => routes.factoryWorkflow(p.pipelineId ?? "", null, { panel: "yaml" })}
+              />
             }
           />
           <Route
             path="/workflows/:pipelineId/used-in"
             element={
-              <RequireAuth>
-                <PipelinePage />
-              </RequireAuth>
+              <Redirect
+                to={(p) => routes.factoryWorkflow(p.pipelineId ?? "", null, { panel: "used-in" })}
+              />
             }
           />
           <Route
             path="/workflows/:pipelineId/history"
             element={
-              <RequireAuth>
-                <PipelinePage />
-              </RequireAuth>
+              <Redirect
+                to={(p) => routes.factoryWorkflow(p.pipelineId ?? "", null, { panel: "versions" })}
+              />
             }
           />
           <Route
             path="/workflows/:pipelineId/drafts/:draftId"
-            element={
-              <RequireAuth>
-                <Suspense fallback={<RouteFallback label="Loading the studio" />}>
-                  <StudioPage />
-                </Suspense>
-              </RequireAuth>
-            }
-          />
-          <Route path="/steps" element={<Redirect to={routes.steps()} />} />
-          <Route path="/steps/:id" element={<Redirect to={(p) => routes.step(p.id ?? "")} />} />
-          <Route
-            path="/profiles"
-            element={
-              <RequireAuth>
-                <AgentsPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/profiles/:id"
-            element={
-              <RequireAuth>
-                <AgentsPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:runId"
-            element={
-              <RequireAuth>
-                <Suspense fallback={<RunRouteFallback />}>
-                  <RunDeepLink />
-                </Suspense>
-              </RequireAuth>
-            }
-          />
-          {/* User settings (contract C1): `/settings/:tab` (`layout`, `assistant`,
-            `operations`) with `/settings` landing on the default tab. */}
-          <Route
-            path="/settings/:tab"
-            element={
-              <RequireAuth>
-                <SettingsPage />
-              </RequireAuth>
-            }
-          />
-          <Route path="/settings" element={<Redirect to={routes.settings()} />} />
-          {/* The signed-in person's own page (`/profile`, singular — the
-            plural `/profiles` is the agent-profile library). Read-only: the
-            identity provider owns the name, the email and the picture. */}
-          <Route
-            path="/profile"
-            element={
-              <RequireAuth>
-                <ProfilePage />
-              </RequireAuth>
-            }
-          />
-          {/* Operations is a real Settings tab (`/settings/:tab` → `operations`);
-            the old `/ops` URL stays alive as a replace redirect to the tab. */}
-          <Route path="/ops" element={<Navigate to={routes.ops()} replace />} />
-          <Route
-            path="/artifacts/:artifactId"
-            element={
-              <RequireAuth>
-                <ArtifactPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/approvals/:approvalId"
-            element={
-              <RequireAuth>
-                <ApprovalPage />
-              </RequireAuth>
-            }
-          />
-
-          {/* ------------------------------------------------ legacy routes */}
-          <Route path="/library" element={<Redirect to={routes.workflows()} />} />
-          <Route
-            path="/library/:pipelineId"
-            element={<Redirect to={(p) => routes.workflow(p.pipelineId ?? "")} />}
+            element={<Redirect to={(p) => routes.draft(p.pipelineId ?? "", p.draftId ?? "")} />}
           />
           <Route
             path="/library/:pipelineId/drafts/:draftId"
             element={<Redirect to={(p) => routes.draft(p.pipelineId ?? "", p.draftId ?? "")} />}
           />
+          <Route path="/profiles" element={<Redirect to={routes.profiles()} />} />
           <Route path="/agents" element={<Redirect to={routes.profiles()} />} />
+          <Route
+            path="/profiles/:id"
+            element={<Redirect to={(p) => routes.profile(p.id ?? "")} />}
+          />
           <Route path="/agents/:id" element={<Redirect to={(p) => routes.profile(p.id ?? "")} />} />
+          <Route path="/settings" element={<Redirect to={routes.manage("agents")} />} />
+          <Route path="/settings/:tab" element={<Redirect to={(p) => routes.settings(p.tab)} />} />
+          <Route path="/ops" element={<Redirect to={routes.ops()} />} />
+          <Route path="/projects" element={<Redirect to={routes.projects()} />} />
           <Route
             path="/projects/:projectId"
             element={<Redirect to={(p) => routes.project(p.projectId ?? "")} />}
@@ -537,46 +444,43 @@ export default function App() {
           />
           <Route
             path="/projects/:projectId/runs"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "runs")} />}
+            element={<Redirect to={(p) => routes.factory(p.projectId)} />}
           />
           <Route
             path="/projects/:projectId/pipelines"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "workflows")} />}
+            element={<Redirect to={(p) => routes.factory(p.projectId)} />}
           />
           <Route
             path="/projects/:projectId/settings"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "settings")} />}
+            element={<Redirect to={(p) => routes.manage("projects", p.projectId)} />}
           />
           <Route
             path="/projects/:projectId/runs/:runId"
             element={<Redirect to={(p) => routes.run(p.runId ?? "")} />}
           />
           <Route
-            path="/projects/:projectId/conversations"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "threads")} />}
+            path="/p/:projectId/runs"
+            element={<Redirect to={(p) => routes.factory(p.projectId)} />}
           />
           <Route
-            path="/projects/:projectId/conversations/:conversationId"
-            element={<Redirect to={(p) => routes.thread(p.conversationId ?? "")} />}
+            path="/p/:projectId/workflows"
+            element={<Redirect to={(p) => routes.factory(p.projectId)} />}
           />
-          {/* Finding 02: the project Workflows tab is `/p/:id/workflows`; the
-            old `pipelines` spelling stays alive as a redirect. */}
           <Route
             path="/p/:projectId/pipelines"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "workflows")} />}
-          />
-          {/* Finding 01: the project Threads tab is `/p/:id/threads`; the old
-            `conversations` spelling of the same two routes stays alive as a
-            query-and-hash-preserving redirect. */}
-          <Route
-            path="/p/:projectId/conversations"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "threads")} />}
+            element={<Redirect to={(p) => routes.factory(p.projectId)} />}
           />
           <Route
-            path="/p/:projectId/conversations/:conversationId"
+            path="/p/:projectId/settings"
+            element={<Redirect to={(p) => routes.manage("projects", p.projectId)} />}
+          />
+          <Route
+            path="/p/:projectId/members"
             element={
               <Redirect
-                to={(p) => routes.projectThread(p.projectId ?? "", p.conversationId ?? "")}
+                to={(p) =>
+                  `${routes.manage("people")}?project=${encodeURIComponent(p.projectId ?? "")}`
+                }
               />
             }
           />

@@ -55,11 +55,20 @@ export interface ChangeChipProps {
   onUndoAll: () => void;
   /** Start expanded (the expanded assistant view opens on the list). */
   defaultOpen?: boolean;
+  /** `"quick"` applies Quick chat's radius-10, shadowless styling. */
+  variant?: "default" | "quick";
 }
 
-export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: ChangeChipProps) {
+export function ChangeChip({
+  changes,
+  onUndo,
+  onUndoAll,
+  defaultOpen = false,
+  variant = "default",
+}: ChangeChipProps) {
   const [open, setOpen] = useState(defaultOpen);
   if (changes.length === 0) return null;
+  const quick = variant === "quick";
 
   const count = changes.length;
   const countText = `${count} change${count === 1 ? "" : "s"}`;
@@ -77,11 +86,16 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
   return (
     <div
       data-testid="assistant-change-chip"
-      style={{
-        border: "1px solid var(--color-ink)",
-        borderRadius: 4,
-        background: "var(--color-surface)",
-      }}
+      className={quick ? "overflow-hidden rounded-[10px] border border-line bg-surface" : undefined}
+      style={
+        quick
+          ? undefined
+          : {
+              border: "1px solid var(--color-ink)",
+              borderRadius: 4,
+              background: "var(--color-surface)",
+            }
+      }
     >
       <div className="flex items-center gap-[8px] px-[8px] py-[4px] font-mono text-[10.5px] text-ink">
         <button

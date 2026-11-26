@@ -526,3 +526,71 @@ describe("clearLabelAnchor", () => {
     expect(shifted.length).toBeGreaterThan(0);
   });
 });
+
+describe("R5 flowModel LR + GoalFrame + Trigger", () => {
+  it("lays out initial LR graph left-to-right, preserves saved positions, and tidyLayout resets to LR", () => {
+    const seqYaml = `kind: Pipeline
+spec:
+  nodes:
+    - id: first
+      kind: agent.acp
+    - id: second
+      kind: process.exec
+      dependsOn: [first]
+`;
+    const seqDoc = parseDocument(seqYaml).toJS();
+    const seqParsed = parseGraph(seqYaml);
+    if (!seqParsed.ok) throw new Error(seqParsed.error);
+    const lr = toFlow(seqParsed.model, seqDoc, undefined, { direction: "LR" });
+    const first = lr.nodes.find((n) => n.id === "first")!;
+    const second = lr.nodes.find((n) => n.id === "second")!;
+    expect(second.position.x).toBeGreaterThan(first.position.x);
+
+    const saved = { nodes: { second: { x: 420, y: 180 } } };
+    const withSaved = toFlow(seqParsed.model, seqDoc, saved, { direction: "LR" });
+    expect(withSaved.nodes.find((n) => n.id === "second")?.position).toEqual({ x: 420, y: 180 });
+
+    const tidied = toFlow(seqParsed.model, seqDoc, tidyLayout(saved), { direction: "LR" });
+    const tFirst = tidied.nodes.find((n) => n.id === "first")!;
+    const tSecond = tidied.nodes.find((n) => n.id === "second")!;
+    expect(tSecond.position.x).toBeGreaterThan(tFirst.position.x);
+  });
+
+  it("attaches GoalSpec to recognized until scopes and adds synthetic TriggerNode when trigger is set", () => {
+    const goalYaml = `kind: Pipeline
+spec:
+  nodes:
+    - id: loop
+      kind: until
+      config:
+        maxIterations: 4
+        passWhen: 'nodes.judge.outputs.text.contains("GOAL_MET")'
+        body:
+          nodes:
+            - id: code
+              kind: agent.acp
+            - id: judge
+              kind: agent.acp
+              dependsOn: [code]
+              config:
+                prompt: 'Decide whether this goal is met: "Build succeeds". Answer with exactly GOAL_MET or NOT_YET on the first line, then one sentence why.'
+`;
+    const goalDoc = parseDocument(goalYaml).toJS();
+    const gParsed = parseGraph(goalYaml);
+    if (!gParsed.ok) throw new Error(gParsed.error);
+    const flow = toFlow(gParsed.model, goalDoc, undefined, {
+      direction: "LR",
+      trigger: { subline: "On every pull request" },
+    });
+    const loopNode = flow.nodes.find((n) => n.id === "loop");
+    expect(loopNode?.data.goal).toEqual({
+      kind: "judge",
+      text: "Build succeeds",
+      maxRounds: 4,
+    });
+    const trig = flow.nodes.find((n) => n.id === "__trigger__");
+    expect(trig?.type).toBe("trigger");
+    expect(trig?.data.triggerSubline).toBe("On every pull request");
+    expect(flow.edges.some((e) => e.id === "__trigger__->loop")).toBe(true);
+  });
+});

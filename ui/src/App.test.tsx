@@ -1,12 +1,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { setCsrfToken } from "./api/client";
 import { renderApp } from "./test/render";
 import { meFixture, mockFetch, projectFixture, requestsTo } from "./test/fakes";
 import type { RouteStub } from "./test/fakes";
+
+vi.mock("./pages/Studio", () => ({ default: () => <div data-testid="studio-page" /> }));
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture, replica: "replica-b" };
 const unauthenticated: RouteStub = {
@@ -52,7 +54,7 @@ describe("auth", () => {
   });
 
   it("shows the signed-in user and the replica that answered", async () => {
-    renderApp({ path: "/settings/layout", routes: projectRoutes, replica: "replica-b" });
+    renderApp({ path: "/manage/runners", routes: projectRoutes, replica: "replica-b" });
 
     const badge = await screen.findByTestId("user-badge", undefined, { timeout: READ_MS });
     expect(badge.textContent).toContain("Ada Lovelace");
@@ -73,7 +75,7 @@ describe("auth", () => {
       // up, and the post-navigation read (the Operations health line) answers
       // from replica-b — the mock resolves `replica` per request.
       renderApp({
-        path: "/settings/layout",
+        path: "/manage/projects",
         replica: "replica-a",
         routes: [
           me,
@@ -134,14 +136,12 @@ describe("auth", () => {
         ],
       });
 
-      await screen.findByTestId("replica-badge");
-      await waitFor(() =>
-        expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-a"),
+      // Manage → Projects is answered by replica-a. Navigate to Runners: its
+      // own health read answers from a different replica, and the replica line
+      // there shows the latest one.
+      fireEvent.click(
+        await screen.findByTestId("manage-nav-runners", undefined, { timeout: READ_MS }),
       );
-
-      // Navigate to the Operations tab: the page's own health read answers from
-      // a different replica, and the About line shows the latest one.
-      fireEvent.click(screen.getByTestId("settings-ops-link"));
       await waitFor(() => expect(screen.getByTestId("ops-health-line")).toBeTruthy(), {
         timeout: READ_MS,
       });
@@ -187,7 +187,7 @@ describe("auth", () => {
 describe("/ops", () => {
   it("shows health, readiness and the empty workers table", async () => {
     renderApp({
-      path: "/settings/operations",
+      path: "/manage/runners",
       routes: [
         me,
         {
@@ -211,7 +211,7 @@ describe("/ops", () => {
 
   it("renders registered workers with their status as text", async () => {
     renderApp({
-      path: "/settings/operations",
+      path: "/manage/runners",
       routes: [
         me,
         {
@@ -247,7 +247,7 @@ describe("/ops", () => {
 
   it("shows the readiness problem detail when a replica is not ready", async () => {
     renderApp({
-      path: "/settings/operations",
+      path: "/manage/runners",
       routes: [
         me,
         {
@@ -323,7 +323,9 @@ describe("catch-up routes", () => {
       { timeout: READ_MS },
     );
     // Inside the shell: the column that carries the projects is on screen.
-    expect(screen.getByTestId("sidebar")).toBeTruthy();
+    expect(screen.getByTestId("project-rail")).toBeTruthy();
+    expect(screen.getByTestId("top-bar")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar")).toBeNull();
   });
 
   it("plays the tour at /catch-up/tour with no sidebar, not as a piece id", async () => {
@@ -382,69 +384,94 @@ function renderAt(path: string) {
   return screen.getByTestId("probe-location");
 }
 
+describe("redesign routes", () => {
+  it.each([
+    ["/", "home-all"],
+    ["/chats", "chats"],
+    ["/chats/c-1", "chats"],
+    ["/p/p-1/chats", "chats"],
+    ["/p/p-1/chats/c-1", "chats"],
+    ["/factory", "factory-index"],
+    ["/p/p-1/factory", "factory-index"],
+    ["/factory/pl-1", "studio-page"],
+    ["/p/p-1/factory/pl-1", "studio-page"],
+    ["/manage/projects", "manage"],
+  ])("mounts %s in the shell", async (path, page) => {
+    renderAt(path);
+    expect(await screen.findByTestId(page, undefined, { timeout: READ_MS })).toBeTruthy();
+    expect(screen.getByTestId("project-rail")).toBeTruthy();
+    expect(screen.getByTestId("top-bar")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar")).toBeNull();
+  });
+});
+
 describe("legacy route redirects", () => {
-  /** [legacy URL, final pathname + search + hash] */
   const REDIRECTS: [string, string][] = [
-    ["/library", "/workflows"],
-    ["/library?x=1", "/workflows?x=1"],
-    ["/library/pl-1", "/workflows/pl-1"],
-    ["/library/pl-1?draft=d-1", "/workflows/pl-1/drafts/d-1"],
-    ["/library/pl-1/drafts/d-1", "/workflows/pl-1/drafts/d-1"],
-    ["/agents", "/profiles"],
-    ["/agents/ap-1", "/profiles/ap-1"],
-    ["/projects/p-1", "/p/p-1"],
-    ["/projects/p-1/runs", "/p/p-1/runs"],
-    ["/projects/p-1/runs/r-1", "/runs/r-1"],
-    [
-      "/projects/p-1/runs/r-1?view=timeline&node=build&instance=n-1",
-      "/runs/r-1?view=timeline&node=build&instance=n-1",
-    ],
-    ["/projects/p-1/pipelines", "/p/p-1/workflows"],
-    // Finding 02: the project Workflows tab moved to `/p/:id/workflows`; the
-    // old `pipelines` spelling redirects. Steps moved under Workflows; the
-    // old `/steps` paths redirect too.
-    ["/p/p-1/pipelines", "/p/p-1/workflows"],
-    ["/p/p-1/pipelines?x=1", "/p/p-1/workflows?x=1"],
-    ["/steps", "/workflows/steps"],
-    ["/steps?x=1", "/workflows/steps?x=1"],
-    ["/steps/s-1", "/workflows/steps/s-1"],
-    // Finding 03: Board and Inbox left the nav and their pages unmounted —
-    // both URLs redirect to Today the way `/ops` redirects to Settings. The
-    // plain `<Navigate>` does not carry the query over (same as `/ops`).
+    ["/catch-up", "/"],
     ["/inbox", "/"],
-    ["/inbox?tab=attention", "/"],
     ["/board", "/"],
-    ["/ops", "/settings/operations"],
+    ["/threads", "/chats"],
+    ["/threads/c-1", "/chats/c-1"],
+    ["/p/p-1/threads", "/p/p-1/chats"],
+    ["/p/p-1/threads/c-1", "/p/p-1/chats/c-1"],
+    ["/p/p-1/conversations", "/p/p-1/chats"],
+    ["/p/p-1/conversations/c-1", "/p/p-1/chats/c-1"],
+    ["/projects/p-1/conversations", "/p/p-1/chats"],
+    ["/projects/p-1/conversations/c-1", "/p/p-1/chats/c-1"],
+    ["/workflows", "/factory"],
+    ["/library", "/factory"],
+    ["/workflows/steps", "/manage/agents?tab=steps"],
+    ["/steps", "/manage/agents?tab=steps"],
+    ["/workflows/steps/s-1", "/manage/agents?tab=steps&item=s-1"],
+    ["/steps/s-1", "/manage/agents?tab=steps&item=s-1"],
+    ["/workflows/collections", "/manage/agents?tab=skills"],
+    ["/workflows/collections/c-1", "/manage/agents?tab=skills&item=c-1"],
+    ["/workflows/pl-1", "/factory/pl-1"],
+    ["/library/pl-1", "/factory/pl-1"],
+    ["/workflows/pl-1/yaml", "/factory/pl-1?panel=yaml"],
+    ["/workflows/pl-1/used-in", "/factory/pl-1?panel=used-in"],
+    ["/workflows/pl-1/history", "/factory/pl-1?panel=versions"],
+    ["/workflows/pl-1/drafts/d-1", "/factory/pl-1?draft=d-1"],
+    ["/library/pl-1/drafts/d-1", "/factory/pl-1?draft=d-1"],
+    ["/profiles", "/manage/agents"],
+    ["/agents", "/manage/agents"],
+    ["/profiles/ap-1", "/manage/agents/ap-1"],
+    ["/agents/ap-1", "/manage/agents/ap-1"],
+    ["/settings", "/manage/agents"],
+    ["/settings/assistant", "/manage/agents?tab=assistant"],
+    ["/settings/accounts", "/manage/agents"],
+    ["/settings/operations", "/manage/runners"],
+    ["/ops", "/manage/runners"],
+    ["/projects", "/manage/projects"],
+    ["/projects/p-1", "/p/p-1"],
     ["/projects/p-1/artifacts", "/p/p-1/artifacts"],
-    ["/projects/p-1/conversations", "/p/p-1/threads"],
-    ["/projects/p-1/conversations/c-1", "/threads/c-1"],
-    // Finding 01: the project Threads tab moved to `/p/:id/threads`; the old
-    // `conversations` spelling of both project routes redirects to it.
-    ["/p/p-1/conversations", "/p/p-1/threads"],
-    ["/p/p-1/conversations?origin=run", "/p/p-1/threads?origin=run"],
-    ["/p/p-1/conversations/c-1", "/p/p-1/threads/c-1"],
-    ["/p/p-1/threads", "/p/p-1/threads"],
-    ["/projects/p-1/settings", "/p/p-1/settings"],
-    ["/settings", "/settings/layout"],
+    ["/projects/p-1/runs", "/p/p-1/factory"],
+    ["/projects/p-1/pipelines", "/p/p-1/factory"],
+    ["/projects/p-1/settings", "/manage/projects/p-1"],
+    ["/projects/p-1/runs/r-1", "/runs/r-1"],
+    ["/p/p-1/runs", "/p/p-1/factory"],
+    ["/p/p-1/workflows", "/p/p-1/factory"],
+    ["/p/p-1/pipelines", "/p/p-1/factory"],
+    ["/p/p-1/settings", "/manage/projects/p-1"],
+    ["/p/p-1/members", "/manage/people?project=p-1"],
   ];
 
-  for (const [from, to] of REDIRECTS) {
-    it(`resolves ${from} on ${to}`, async () => {
-      const probe = renderAt(from);
-      await waitFor(() => expect(probe.textContent).toBe(to), { timeout: 5_000 });
+  it.each(REDIRECTS)("redirects %s to %s and preserves query and hash", async (from, to) => {
+    const probe = renderAt(`${from}?x=1#section`);
+    const separator = to.includes("?") ? "&" : "?";
+    await waitFor(() => expect(probe.textContent).toBe(`${to}${separator}x=1#section`), {
+      timeout: 5_000,
     });
-  }
-
-  it("keeps a new canonical route in place", async () => {
-    // Finding 02: the Steps tab is canonical at its new address and does NOT
-    // redirect (the old `/steps` URL above does).
-    const probe = renderAt("/workflows/steps?x=1");
-    expect(probe.textContent).toBe("/workflows/steps?x=1");
   });
 
-  it("serves the Steps tab at /workflows/steps/:id, not a workflow page", async () => {
-    const probe = renderAt("/workflows/steps/01j-tpl-build");
-    expect(probe.textContent).toBe("/workflows/steps/01j-tpl-build");
+  it("keeps a new canonical route in place", async () => {
+    const probe = renderAt("/factory?x=1");
+    expect(probe.textContent).toBe("/factory?x=1");
+  });
+
+  it("serves the Steps tab at its new address", async () => {
+    const probe = renderAt("/manage/agents?tab=steps&item=01j-tpl-build");
+    expect(probe.textContent).toBe("/manage/agents?tab=steps&item=01j-tpl-build");
   });
 
   it("mounts the repository page at /p/:projectId/:repo instead of redirecting", async () => {

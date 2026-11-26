@@ -7,6 +7,8 @@ import {
   canWrap,
   goalSentence,
   readGoal,
+  updateUntilGoal,
+  verdictStepId,
   wrapInUntil,
   wrapSideBySide,
   type GoalKind,
@@ -347,5 +349,51 @@ describe("goalSentence", () => {
     expect(goalSentence("command")).toBe("Repeat until this command passes:");
     expect(goalSentence("contains")).toBe("Repeat until the output contains:");
     expect(goalSentence({ kind: "judge" })).toBe("Repeat until a judge says:");
+  });
+});
+
+describe("updateUntilGoal + verdictStepId", () => {
+  it("updates goal text/rounds in place and switches across goal kinds cleanly", () => {
+    const wrapped = wrapInUntil(SAMPLE_PIPELINE, ["implement", "test"], {
+      kind: "judge",
+      text: "Tests pass",
+      maxRounds: 3,
+    });
+    expect(wrapped.ok).toBe(true);
+    if (!wrapped.ok) return;
+
+    const updatedSame = updateUntilGoal(wrapped.text, "until", {
+      kind: "judge",
+      text: "All unit and integration tests pass",
+      maxRounds: 6,
+    });
+    expect(updatedSame.ok).toBe(true);
+    if (!updatedSame.ok) return;
+    let jsDoc = parseDocument(updatedSame.text).toJS() as { spec: { nodes: DefinitionNode[] } };
+    expect(validateAgainstSchemaDefs(jsDoc as unknown as Record<string, unknown>)).toEqual([]);
+    let untilNode = jsDoc.spec.nodes.find((n) => n.id === "until");
+    expect(readGoal(untilNode)).toEqual({
+      kind: "judge",
+      text: "All unit and integration tests pass",
+      maxRounds: 6,
+    });
+    expect(verdictStepId(untilNode)).toBe("judge");
+
+    const switchedCmd = updateUntilGoal(updatedSame.text, "until", {
+      kind: "command",
+      text: "pnpm test",
+      maxRounds: 4,
+    });
+    expect(switchedCmd.ok).toBe(true);
+    if (!switchedCmd.ok) return;
+    jsDoc = parseDocument(switchedCmd.text).toJS() as { spec: { nodes: DefinitionNode[] } };
+    expect(validateAgainstSchemaDefs(jsDoc as unknown as Record<string, unknown>)).toEqual([]);
+    untilNode = jsDoc.spec.nodes.find((n) => n.id === "until");
+    expect(readGoal(untilNode)).toEqual({
+      kind: "command",
+      text: "pnpm test",
+      maxRounds: 4,
+    });
+    expect(verdictStepId(untilNode)).toBe("check");
   });
 });

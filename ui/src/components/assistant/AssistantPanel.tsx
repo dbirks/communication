@@ -164,6 +164,9 @@ export interface AssistantPanelProps {
   onClose: () => void;
   /** A turn is in flight: shows `thinking…` and locks the composer. */
   busy?: boolean;
+  /** Optional controlled draft so switching between Quick chat and full page keeps typed words. */
+  draft?: string;
+  onDraftChange?: (text: string) => void;
 }
 
 /** The header's height in the popover and the side panel (padding 6/6 + 26 + border). */
@@ -306,6 +309,8 @@ export function ThreadsMenu({
   onSwitch,
   onNewConversation,
   headerHeightPx = HEADER_HEIGHT_PX,
+  arrowRightPx = THREADS_BUTTON_CENTRE_PX - MENU_INSET_PX - 4.5,
+  variant = "default",
   onClose,
 }: {
   conversations: RecentConversation[];
@@ -313,8 +318,11 @@ export function ThreadsMenu({
   onSwitch: (id: string) => void;
   onNewConversation: () => void;
   headerHeightPx?: number;
+  arrowRightPx?: number;
+  variant?: "default" | "quick";
   onClose: () => void;
 }) {
+  const quick = variant === "quick";
   const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -377,23 +385,29 @@ export function ThreadsMenu({
       aria-label="Threads"
       data-testid="assistant-history-menu"
       onKeyDown={onMenuKeyDown}
-      className="absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[4px] border border-ink bg-surface p-2 shadow-raised"
+      className={
+        quick
+          ? "absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[12px] border border-line bg-surface p-2 shadow-[var(--shadow-pop)]"
+          : "absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[4px] border border-ink bg-surface p-2 shadow-raised"
+      }
       style={{ top: headerHeightPx + 5, right: MENU_INSET_PX }}
     >
       {/* The ds pointer arrow (9px rotated square) centred on the Threads
           button: 111px from the header's right edge, less the box's own 8px
           inset and half the square. `MenuArrow` takes the placement a surface
           that positions its own box computes (as `ComposerMenu` does). */}
-      <MenuArrow
-        side="bottom"
-        className="z-40"
-        style={{
-          left: "auto",
-          right: THREADS_BUTTON_CENTRE_PX - MENU_INSET_PX - 4.5,
-          top: -5,
-          transform: "rotate(45deg)",
-        }}
-      />
+      {quick ? null : (
+        <MenuArrow
+          side="bottom"
+          className="z-40"
+          style={{
+            left: "auto",
+            right: arrowRightPx,
+            top: -5,
+            transform: "rotate(45deg)",
+          }}
+        />
+      )}
       <ThreadSearch value={query} onChange={setQuery} />
       <button
         type="button"
@@ -662,8 +676,25 @@ export function AssistantPanel({
   showThreadControls = true,
   onClose,
   busy = false,
+  draft: controlledDraft,
+  onDraftChange,
 }: AssistantPanelProps) {
-  const [draft, setDraft] = useState("");
+  const [localDraft, setLocalDraft] = useState("");
+  const draft = controlledDraft ?? localDraft;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const setDraft = useCallback(
+    (next: string | ((current: string) => string)) => {
+      if (onDraftChange) {
+        const resolved = typeof next === "function" ? next(draftRef.current) : next;
+        draftRef.current = resolved;
+        onDraftChange(resolved);
+      } else {
+        setLocalDraft(next);
+      }
+    },
+    [onDraftChange],
+  );
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // esc closes the panel. The Threads menu handles its own esc and stops it,

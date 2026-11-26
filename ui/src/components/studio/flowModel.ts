@@ -23,6 +23,7 @@ import {
   type GraphGroupView,
   type GraphNodeView,
 } from "../../lib/pipeline/layout";
+import { readGoal, type GoalSpec } from "./wrap/wrapModel";
 
 export interface LayoutOverrides {
   nodes?: Record<string, { x: number; y: number }>;
@@ -50,12 +51,16 @@ export interface FlowNodeData {
   /** The layout's whole group bar string ("Repeat until … · max 4"). */
   headerText: string | null;
   loopNote: string | null;
+  /** Structured goal for `until` scopes that `readGoal` understands. */
+  goal: GoalSpec | null;
+  /** Synthetic trigger node subline (never serialized). */
+  triggerSubline?: string;
 }
 
 export interface FlowNodeBase {
   /** Scope-qualified id — unique even when two scopes share a node id. */
   id: string;
-  type: "step" | "scope";
+  type: "step" | "scope" | "trigger";
   position: { x: number; y: number };
   width: number;
   height: number;
@@ -71,7 +76,7 @@ export interface FlowEdgeBase {
   /** Handle ids the edge is pinned to (every step/scope renders both). */
   sourceHandle: string;
   targetHandle: string;
-  type: "insertable" | "error";
+  type: "insertable" | "error" | "trigger";
   /** "on error" for error routes, the short route value for guarded edges. */
   label: string | null;
   /** The full `when` expression behind a guarded label (tooltip). */
@@ -416,6 +421,18 @@ export function canvasLayout(
   return { laid: tb, direction };
 }
 
+function rawNodeAtPointer(document: unknown, pointer: string): Record<string, unknown> | null {
+  let cur: unknown = document;
+  for (const part of pointer.split("/")) {
+    if (part === "") continue;
+    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown> | null)?.[part];
+    if (cur === null || cur === undefined) return null;
+  }
+  return cur !== null && typeof cur === "object" && !Array.isArray(cur)
+    ? (cur as Record<string, unknown>)
+    : null;
+}
+
 /**
  * Build the React Flow graph from the parsed model and the dagre layout.
  * Scope nodes become group nodes ("scope" type); `ui_layout` overrides
@@ -427,7 +444,11 @@ export function toFlow(
   model: GraphModel,
   document: unknown,
   layout: LayoutOverrides = {},
-  opts: { addButtons?: boolean; direction?: "LR" | "TB" } = {},
+  opts: {
+    addButtons?: boolean;
+    direction?: "LR" | "TB";
+    trigger?: { subline: string } | null;
+  } = {},
 ): FlowModel {
   // A missing document (draft not read yet, broken YAML with no last-good)
   // yields an empty flow — the canvas then shows its empty-canvas affordance.
@@ -442,7 +463,7 @@ export function toFlow(
   /** Absolute box of every node or group, before overrides. */
   const abs = new Map<
     string,
-    { node: GraphNode; x: number; y: number; width: number; height: number }
+    { node: GraphNode; x: number; y: number; width: number; height: number; goal: GoalSpec | null }
   >();
 
   for (const node of model.nodes) {
@@ -452,6 +473,10 @@ export function toFlow(
     const box: GraphNodeView | undefined = node.isScope
       ? undefined
       : nodeByPointer.get(node.pointer);
+    const goal =
+      node.isScope && node.kind === "until"
+        ? readGoal(rawNodeAtPointer(document, node.pointer))
+        : null;
     let size: { x: number; y: number; width: number; height: number } | null = null;
     if (group) {
       size = { x: group.x, y: group.y, width: group.width, height: group.height };
@@ -477,34 +502,50 @@ export function toFlow(
       y: size.y,
       width: size.width,
       height: size.height,
+      goal,
     });
   }
 
-  // A scope GROUP box is grown (right/bottom only — its top-left stays where
-  // the layout put it, so child-relative positions are untouched) until it
-  // contains every direct child box. Children are re-centred 200×52 render
-  // boxes and can be WIDER than the dagre slot the cluster was sized to; a
-  // group that no longer contains its body nodes reads as the old
-  // "scope border slicing through a step" bug.
+  // A scope GROUP box is grown until it contains every direct child box.
+  // GoalFrame scopes reserve extra top/bottom padding so the goal header and
+  // round footer never overlap child step cards.
   const GROUP_PAD = 8;
+  const GOAL_TOP_PAD = 76;
+  const GOAL_BOTTOM_PAD = 38;
+  const GOAL_SIDE_PAD = 22;
   // Deepest scopes first, so a nested group is expanded before its parent.
   const scopes = [...abs.values()]
     .filter((e) => e.node.isScope)
     .sort((a, b) => b.node.scope.length - a.node.scope.length);
   for (const group of scopes) {
     const parentKey = flowId(group.node.scope, group.node.id);
+    const isGoal = group.goal !== null;
+    const sidePad = isGoal ? GOAL_SIDE_PAD : GROUP_PAD;
+    const bottomPad = isGoal ? GOAL_BOTTOM_PAD : GROUP_PAD;
+    let minChildY = Infinity;
     for (const entry of abs.values()) {
       if (entry === group) continue;
       const parent = parentFlowId(entry.node.scope);
       if (parent !== parentKey) continue;
-      // Left/right/bottom only — the top edge is the group's header bar.
-      const overLeft = group.x - (entry.x - GROUP_PAD);
+      const ov = !entry.node.isScope ? overridden(entry.node.id) : null;
+      const ex = ov ? ov.x : entry.x;
+      const ey = ov ? ov.y : entry.y;
+      minChildY = Math.min(minChildY, ey);
+      const overLeft = group.x - (ex - sidePad);
       if (overLeft > 0) {
         group.x -= overLeft;
         group.width += overLeft;
       }
-      group.width = Math.max(group.width, entry.x + entry.width + GROUP_PAD - group.x);
-      group.height = Math.max(group.height, entry.y + entry.height - group.y + GROUP_PAD);
+      group.width = Math.max(group.width, ex + entry.width + sidePad - group.x);
+      group.height = Math.max(group.height, ey + entry.height - group.y + bottomPad);
+    }
+    if (isGoal && Number.isFinite(minChildY)) {
+      const targetTop = minChildY - GOAL_TOP_PAD;
+      if (targetTop < group.y) {
+        group.height += group.y - targetTop;
+        group.y = targetTop;
+      }
+      group.width = Math.max(group.width, 224);
     }
   }
 
@@ -535,6 +576,7 @@ export function toFlow(
         emptyBody: isScope && groupByPointer.get(node.pointer) === undefined,
         headerText: headerTextFor(node, groupByPointer.get(node.pointer)),
         loopNote: groupByPointer.get(node.pointer)?.loopNote ?? null,
+        goal: entry.goal,
       },
     };
     nodes.push(base);
@@ -684,6 +726,97 @@ export function toFlow(
       data: { edge },
     } as FlowEdgeBase;
   });
+
+  // Optional synthetic trigger node connected to root entry steps (never serialized).
+  if (opts.trigger && nodes.length > 0) {
+    const entryNodes = model.nodes
+      .filter((n) => n.scope.length === 0 && n.dependsOn.length === 0)
+      .map((n) => byFlowId.get(flowId(n.scope, n.id)))
+      .filter((n): n is FlowNodeBase => Boolean(n));
+    if (entryNodes.length > 0) {
+      const minX = Math.min(...entryNodes.map((n) => n.position.x));
+      const minY = Math.min(...entryNodes.map((n) => n.position.y));
+      const avgY =
+        entryNodes.reduce((sum, n) => sum + n.position.y + n.height / 2, 0) / entryNodes.length -
+        STEP_BOX.height / 2;
+      const avgX =
+        entryNodes.reduce((sum, n) => sum + n.position.x + n.width / 2, 0) / entryNodes.length -
+        STEP_BOX.width / 2;
+      const trigPos =
+        direction === "LR"
+          ? {
+              x: Math.round((minX - STEP_BOX.width - 72) / 20) * 20,
+              y: Math.round(avgY / 20) * 20,
+            }
+          : {
+              x: Math.round(avgX / 20) * 20,
+              y: Math.round((minY - STEP_BOX.height - 64) / 20) * 20,
+            };
+      const trigBox: EdgeBox = {
+        x: trigPos.x,
+        y: trigPos.y,
+        width: STEP_BOX.width,
+        height: STEP_BOX.height,
+      };
+      const trigNode: FlowNodeBase = {
+        id: "__trigger__",
+        type: "trigger",
+        position: trigPos,
+        width: STEP_BOX.width,
+        height: STEP_BOX.height,
+        parentId: null,
+        data: {
+          nodeId: "__trigger__",
+          kind: "trigger",
+          label: "Trigger",
+          kindWord: "trigger",
+          deferred: null,
+          when: null,
+          scope: [],
+          terminal: false,
+          emptyBody: false,
+          headerText: null,
+          loopNote: null,
+          goal: null,
+          triggerSubline: opts.trigger.subline,
+        },
+      };
+      nodes.unshift(trigNode);
+      for (const target of entryNodes) {
+        const targetBox: EdgeBox = {
+          x: target.position.x,
+          y: target.position.y,
+          width: target.width,
+          height: target.height,
+        };
+        edges.push({
+          id: `__trigger__->${target.id}`,
+          source: "__trigger__",
+          target: target.id,
+          sourceHandle: "out",
+          targetHandle: "in",
+          type: "trigger",
+          label: null,
+          labelTitle: null,
+          labelX: null,
+          labelY: null,
+          sourceBox: trigBox,
+          targetBox,
+          axis: direction === "LR" ? "h" : "v",
+          data: {
+            edge: {
+              id: `__trigger__->${target.id}`,
+              from: "__trigger__",
+              to: target.data.nodeId,
+              scope: [],
+              kind: "depends",
+              reasons: [],
+            },
+          },
+        });
+      }
+    }
+  }
 
   return { nodes, edges };
 }

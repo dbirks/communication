@@ -384,7 +384,7 @@ describe("StudioInspector", () => {
     const done = await screen.findByTestId("insp-save-step-done");
     expect(done.textContent).toContain("Saved as step “build” v1.0.0.");
     expect(getByTestId("insp-save-step-link").getAttribute("href")).toBe(
-      "/workflows/steps/01j-tpl-build",
+      "/manage/agents?tab=steps&item=01j-tpl-build",
     );
   });
 

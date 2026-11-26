@@ -69,7 +69,7 @@ describe("the project header's actions (finding 09)", () => {
       expect(action.className).not.toMatch(/(^|[\s:"])opacity-0([\s:"']|$)/);
     }
     expect(add.textContent).toBe("+ Repository");
-    expect(settings.getAttribute("href")).toBe(`/p/${projectId}/settings`);
+    expect(settings.getAttribute("href")).toBe(`/manage/projects/${projectId}`);
   });
 
   it("opens the add-repository dialog on the spot and posts to the project", async () => {
@@ -113,7 +113,7 @@ describe("the project header's actions (finding 09)", () => {
     expect(within(header).queryByTestId("project-start-run")).toBeNull();
     expect(within(header).queryByTestId("project-add-repository")).toBeNull();
     expect(within(header).getByTestId("project-settings-link").getAttribute("href")).toBe(
-      `/p/${projectId}/settings`,
+      `/manage/projects/${projectId}`,
     );
     // The honest line about why the verbs are gone stays.
     expect(within(header).getByTestId("project-role-hint").textContent).toContain("read-only");

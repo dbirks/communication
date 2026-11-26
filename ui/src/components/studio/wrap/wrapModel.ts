@@ -846,3 +846,222 @@ export function goalSentence(goal: GoalKind | Pick<GoalSpec, "kind">): string {
       return "Repeat until the output contains:";
   }
 }
+
+/**
+ * Identify the step id inside an `until` scope whose output determines the
+ * round verdict (`judge` step, `check` command step, or `contains` target).
+ */
+export function verdictStepId(
+  scope: DefinitionNode | Record<string, unknown> | null | undefined,
+): string | null {
+  const node = asPlainObject(scope);
+  if (!node || node.kind !== "until") return null;
+  const cfg = asPlainObject(node.config);
+  const passWhen = typeof cfg?.passWhen === "string" ? cfg.passWhen : "";
+  if (!passWhen) return null;
+  const cmdMatch = CMD_EXIT_ZERO_RE.exec(passWhen);
+  if (cmdMatch) return cmdMatch[1] ?? cmdMatch[2] ?? null;
+  const containsMatch = CONTAINS_RE.exec(passWhen);
+  if (containsMatch) return containsMatch[1] ?? null;
+  return null;
+}
+
+/**
+ * Update an existing `until` scope's goal kind, text, and maxRounds.
+ * Reuses or replaces the auto-generated `judge` / `check` helper step when
+ * the goal kind stays or switches between `judge`, `command`, and `contains`.
+ */
+export function updateUntilGoal(
+  text: string,
+  scopeId: string,
+  goal: GoalSpec,
+  opts?: { model?: string },
+): WrapResult {
+  const trimmedText = goal.text.trim();
+  if (!trimmedText) {
+    return { ok: false, error: "Enter the repeat-until condition before updating." };
+  }
+  if (
+    !Number.isInteger(goal.maxRounds) ||
+    goal.maxRounds < 1 ||
+    goal.maxRounds > MAX_ROUNDS_LIMIT
+  ) {
+    return {
+      ok: false,
+      error: `Max rounds must be a whole number between 1 and ${MAX_ROUNDS_LIMIT}.`,
+    };
+  }
+  const parsed = parseGraph(text);
+  if (!parsed.ok) {
+    return { ok: false, error: parsed.error };
+  }
+  const doc = parseDocument(text);
+  if (doc.errors.length > 0) {
+    return { ok: false, error: doc.errors[0].message };
+  }
+  const scopeItem = findNodeMapInDoc(doc, scopeId);
+  if (!scopeItem || scopeItem.get("kind") !== "until") {
+    return { ok: false, error: `Repeat-until scope "${scopeId}" was not found.` };
+  }
+  const cfg = scopeItem.get("config") as YAMLMap | undefined;
+  const body = cfg?.get("body") as YAMLMap | undefined;
+  const bodyNodes = body?.get("nodes") as YAMLSeq | undefined;
+  if (!isMap(cfg) || !isMap(body) || !isSeq(bodyNodes)) {
+    return { ok: false, error: `Scope "${scopeId}" has no body.` };
+  }
+
+  const oldGoal = readGoal(scopeItem.toJSON() as DefinitionNode);
+  const oldPassWhen = typeof cfg.get("passWhen") === "string" ? String(cfg.get("passWhen")) : "";
+  let oldHelperId: string | null = null;
+  if (oldGoal?.kind === "command") {
+    const m = CMD_EXIT_ZERO_RE.exec(oldPassWhen);
+    oldHelperId = m ? (m[1] ?? m[2] ?? null) : null;
+  } else if (oldGoal?.kind === "judge") {
+    const m = CONTAINS_RE.exec(oldPassWhen);
+    oldHelperId = m ? (m[1] ?? null) : null;
+  }
+
+  const removeHelperIfPresent = (helperId: string | null) => {
+    if (!helperId) return;
+    const idx = bodyNodes.items.findIndex(
+      (item) => isMap(item) && String(item.get("id")) === helperId,
+    );
+    if (idx < 0) return;
+    const helperMap = bodyNodes.items[idx] as YAMLMap;
+    const helperDeps = isSeq(helperMap.get("dependsOn"))
+      ? (helperMap.get("dependsOn") as YAMLSeq).items.map(String)
+      : [];
+    bodyNodes.delete(idx);
+    for (const item of bodyNodes.items) {
+      if (!isMap(item)) continue;
+      const deps = item.get("dependsOn");
+      if (!isSeq(deps) || !deps.items.some((d) => String(d) === helperId)) continue;
+      const next = [
+        ...new Set([...deps.items.map(String).filter((d) => d !== helperId), ...helperDeps]),
+      ];
+      if (next.length > 0) item.set("dependsOn", doc.createNode(next));
+      else item.delete("dependsOn");
+    }
+  };
+
+  cfg.set("maxIterations", goal.maxRounds);
+
+  if (goal.kind === "judge") {
+    const existing = oldHelperId
+      ? bodyNodes.items.find(
+          (item): item is YAMLMap =>
+            isMap(item) &&
+            String(item.get("id")) === oldHelperId &&
+            item.get("kind") === "model.chat",
+        )
+      : undefined;
+    if (existing) {
+      const existingCfg = existing.get("config");
+      if (isMap(existingCfg)) {
+        existingCfg.set(
+          "messages",
+          doc.createNode([{ role: "user", content: judgePromptFor(trimmedText) }]),
+        );
+      }
+      cfg.set(
+        "passWhen",
+        `nodes.${oldHelperId}.status == 'succeeded' && has(nodes.${oldHelperId}.outputs.text) && nodes.${oldHelperId}.outputs.text.contains('GOAL_MET')`,
+      );
+    } else {
+      removeHelperIfPresent(oldHelperId);
+      const exitIds = scopeExitNodeIds(bodyNodes);
+      const judgeId = uniqueId(parsed.model, "judge");
+      const modelName = opts?.model?.trim() || "default";
+      const judgeNode: Record<string, unknown> = {
+        id: judgeId,
+        kind: "model.chat",
+        ...(exitIds.length > 0 ? { dependsOn: exitIds } : {}),
+        config: {
+          model: modelName,
+          messages: [{ role: "user", content: judgePromptFor(trimmedText) }],
+        },
+        outputs: {
+          type: "object",
+          required: ["text"],
+          properties: { text: { type: "string" } },
+        },
+      };
+      bodyNodes.add(doc.createNode(judgeNode));
+      cfg.set(
+        "passWhen",
+        `nodes.${judgeId}.status == 'succeeded' && has(nodes.${judgeId}.outputs.text) && nodes.${judgeId}.outputs.text.contains('GOAL_MET')`,
+      );
+    }
+  } else if (goal.kind === "command") {
+    const existing = oldHelperId
+      ? bodyNodes.items.find(
+          (item): item is YAMLMap =>
+            isMap(item) &&
+            String(item.get("id")) === oldHelperId &&
+            item.get("kind") === "process.exec",
+        )
+      : undefined;
+    const cmdSpec = splitCommand(trimmedText);
+    if (existing) {
+      existing.set(
+        "config",
+        doc.createNode({ executable: cmdSpec.executable, args: cmdSpec.args }),
+      );
+      cfg.set(
+        "passWhen",
+        `nodes.${oldHelperId}.status == 'succeeded' && has(nodes.${oldHelperId}.outputs.exit_code) && nodes.${oldHelperId}.outputs.exit_code == 0`,
+      );
+    } else {
+      removeHelperIfPresent(oldHelperId);
+      const exitIds = scopeExitNodeIds(bodyNodes);
+      const cmdId = uniqueId(parsed.model, "check");
+      const cmdNode: Record<string, unknown> = {
+        id: cmdId,
+        kind: "process.exec",
+        ...(exitIds.length > 0 ? { dependsOn: exitIds } : {}),
+        config: { executable: cmdSpec.executable, args: cmdSpec.args },
+        outputs: {
+          type: "object",
+          required: ["exit_code"],
+          properties: { exit_code: { type: "integer" } },
+        },
+      };
+      bodyNodes.add(doc.createNode(cmdNode));
+      cfg.set(
+        "passWhen",
+        `nodes.${cmdId}.status == 'succeeded' && has(nodes.${cmdId}.outputs.exit_code) && nodes.${cmdId}.outputs.exit_code == 0`,
+      );
+    }
+  } else {
+    removeHelperIfPresent(oldHelperId);
+    const exitIds = scopeExitNodeIds(bodyNodes);
+    const lastId = exitIds[exitIds.length - 1];
+    if (!lastId) {
+      return { ok: false, error: "Loop body has no steps." };
+    }
+    const lastNode = findNodeMapInDoc(doc, lastId);
+    if (!lastNode) {
+      return { ok: false, error: `Last step "${lastId}" was not found inside the loop.` };
+    }
+    const { field, needsSchema } = pickStringOutputField(lastNode);
+    if (needsSchema) {
+      lastNode.set(
+        "outputs",
+        doc.createNode({
+          type: "object",
+          properties: { [field]: { type: "string" } },
+        }),
+      );
+    }
+    cfg.set(
+      "passWhen",
+      `nodes.${lastId}.status == 'succeeded' && has(nodes.${lastId}.outputs.${field}) && nodes.${lastId}.outputs.${field}.contains(${celStringLiteral(trimmedText)})`,
+    );
+  }
+
+  return {
+    ok: true,
+    text: toBlockString(doc),
+    changed: [scopeId],
+  };
+}

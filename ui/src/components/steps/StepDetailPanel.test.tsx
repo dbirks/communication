@@ -105,7 +105,7 @@ describe("StepDetailPanel — USED IN", () => {
     expect(row.textContent).toContain("Widget review");
     expect(row.textContent).toContain("v2");
     expect(screen.getByTestId(`step-usage-workflow-${workflowId}`).getAttribute("href")).toBe(
-      `/workflows/${workflowId}`,
+      `/factory/${workflowId}`,
     );
   });
 
@@ -138,7 +138,7 @@ describe("StepDetailPanel — USED IN", () => {
     const workflowLink = screen.getByTestId(
       `step-usage-workflow-${workflowId}`,
     ) as HTMLAnchorElement;
-    expect(workflowLink.getAttribute("href")).toBe(`/workflows/${workflowId}/drafts/${draftId}`);
+    expect(workflowLink.getAttribute("href")).toBe(`/factory/${workflowId}?draft=${draftId}`);
   });
 
   it("renders the honest empty when no workflow uses the step", async () => {

@@ -13,6 +13,7 @@ export interface GoalFrameProps {
   goal: GoalSpec;
   giveUpText?: string;
   running?: boolean;
+  onHeaderClick?: () => void;
   children?: ReactNode;
   className?: string;
 }
@@ -22,12 +23,30 @@ export function GoalFrame({
   goal,
   giveUpText,
   running = false,
+  onHeaderClick,
   children,
   className = "",
 }: GoalFrameProps) {
   const isMono = goal.kind === "command" || goal.kind === "contains";
   const roundWord = goal.maxRounds === 1 ? "round" : "rounds";
   const tail = giveUpText ?? "then stop";
+
+  const headerContent = (
+    <>
+      <span className="flex items-center gap-[6px] text-[12px] font-semibold text-accent-edge">
+        <IconRepeat size={15} stroke={1.5} aria-hidden className="shrink-0" />
+        <span>{goalSentence(goal)}</span>
+      </span>
+      <span
+        data-testid="goal-frame-text"
+        className={`text-pretty text-[13px] leading-[18px] text-ink ${
+          isMono ? "font-mono" : "font-ui"
+        }`}
+      >
+        “{goal.text}”
+      </span>
+    </>
+  );
 
   return (
     <div
@@ -51,20 +70,24 @@ export function GoalFrame({
         />
       ) : null}
 
-      <div className="relative z-1 flex flex-col gap-[4px] px-[14px] py-[10px]">
-        <span className="flex items-center gap-[6px] text-[12px] font-semibold text-accent-edge">
-          <IconRepeat size={15} stroke={1.5} aria-hidden className="shrink-0" />
-          <span>{goalSentence(goal)}</span>
-        </span>
-        <span
-          data-testid="goal-frame-text"
-          className={`text-pretty text-[13px] leading-[18px] text-ink ${
-            isMono ? "font-mono" : "font-ui"
-          }`}
+      {onHeaderClick ? (
+        <button
+          type="button"
+          data-testid="goal-frame-header"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onHeaderClick();
+          }}
+          className="relative z-1 flex w-full flex-col gap-[4px] rounded-t-[15px] px-[14px] py-[10px] text-left hover:bg-accent/[0.04] focus-visible:outline-2 focus-visible:outline-accent"
         >
-          “{goal.text}”
-        </span>
-      </div>
+          {headerContent}
+        </button>
+      ) : (
+        <div className="relative z-1 flex flex-col gap-[4px] px-[14px] py-[10px]">
+          {headerContent}
+        </div>
+      )}
 
       {children ? <div className="relative z-1 flex-1">{children}</div> : null}
 

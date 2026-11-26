@@ -311,7 +311,9 @@ describe("Operations tiles", () => {
     expect(tile("Models").textContent).toContain("not reported");
     expect(tile("Models").getAttribute("data-status")).toBe("off");
     expect(screen.getByTestId("ops-health-line").textContent).not.toBe("All systems normal.");
-    expect(screen.getByTestId("models-not-served")).toBeTruthy();
+    // The models panel itself lives under Manage → Agents & models now
+    // (`ModelsPanel.test.tsx` covers its `models-not-served` line).
+    expect(screen.queryByTestId("ops-models")).toBeNull();
   });
 
   it("marks a tile bad with `couldn't load` when its read failed", async () => {
@@ -421,7 +423,9 @@ describe("Operations panels", () => {
     expect(screen.getByTestId("identity-secrets").textContent).toContain(
       "7 secrets in 3 projects · 4 mounts",
     );
-    expect(screen.getByTestId("identity-secrets-link").getAttribute("href")).toBe("/projects");
+    expect(screen.getByTestId("identity-secrets-link").getAttribute("href")).toBe(
+      "/manage/projects",
+    );
   });
 
   /**

@@ -42,6 +42,10 @@ export interface AskOpenContext {
    * current stop belongs to. A caller with no subject leaves the chip on the
    * page section (`Shell`) or the chat the panel was drafted from. */
   subject?: string;
+  /** Open the Quick chat panel and toggle voice dictation. */
+  voice?: boolean;
+  /** Toggle open/closed when called from the ⌘J chord. */
+  toggle?: boolean;
 }
 
 /** An `openAsk` request is the page's context plus the caller's own words. */
@@ -52,6 +56,14 @@ type AskOpenListener = (request: AskOpenRequest) => void;
 /** The mounted Ask surfaces, oldest claim first; the top answers `openAsk`. */
 const claims: AskOpenListener[] = [];
 
+/** Event dispatched by `startVoiceAsk()` to open Quick chat and toggle dictation. */
+export const ASSISTANT_VOICE_ASK_EVENT = "communication:assistant-voice-ask";
+
+/** Event dispatched by `HoldToTalk` to control Quick chat dictation on ⌘K hold. */
+export const ASSISTANT_HOLD_EVENT = "communication:assistant-hold";
+
+export type HoldAction = "start" | "stop" | "cancel";
+
 /**
  * Open the Ask surface. A bare string is the simple ask (`Shell`'s button,
  * the ⌘J chord with nothing in hand); a caller that already holds the
@@ -61,6 +73,19 @@ const claims: AskOpenListener[] = [];
 export function openAsk(context?: string | AskOpenRequest): void {
   const request = typeof context === "string" ? { text: context } : (context ?? {});
   claims[claims.length - 1]?.(request);
+}
+
+/**
+ * Open the Quick chat panel and toggle dictation by click (clicking again
+ * stops and sends).
+ */
+export function startVoiceAsk(): void {
+  window.dispatchEvent(new CustomEvent(ASSISTANT_VOICE_ASK_EVENT));
+}
+
+/** Dispatch a hold-to-talk lifecycle command to the Quick chat surface. */
+export function dispatchHoldAction(action: HoldAction): void {
+  window.dispatchEvent(new CustomEvent<HoldAction>(ASSISTANT_HOLD_EVENT, { detail: action }));
 }
 
 /**

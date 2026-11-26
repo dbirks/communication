@@ -376,6 +376,8 @@ export interface StudioDraft {
   layout: UiLayout;
   /** The version last written (or read) from the server. */
   savedVersion: number;
+  /** Read the freshest CAS version immediately after an async save resolves. */
+  getSavedVersion: () => number;
   dirty: boolean;
   /** `parseGraph(text)` — re-derived on every change. */
   parse: ParseResult;
@@ -414,6 +416,8 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
   const [text, setTextState] = useState("");
   const [layout, setLayout] = useState<UiLayout>(() => normalizeLayout(draft.data?.ui_layout));
   const [savedVersion, setSavedVersion] = useState(draft.data?.version ?? 0);
+  const savedVersionRef = useRef(savedVersion);
+  savedVersionRef.current = savedVersion;
   const [dirty, setDirty] = useState(false);
   const [undoStack, setUndoStack] = useState<Snapshot[]>([]);
   const [redoStack, setRedoStack] = useState<Snapshot[]>([]);
@@ -443,6 +447,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
   // adopting the server's compare-and-swap version for the eventual save.
   useEffect(() => {
     if (draftId && draft.data && dirty && savedVersion === 0) {
+      savedVersionRef.current = draft.data.version;
       setSavedVersion(draft.data.version);
     }
   }, [draftId, draft.data, dirty, savedVersion]);
@@ -461,6 +466,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     const seededLayout =
       Object.keys(servedLayout.nodes ?? {}).length > 0 ? servedLayout : uiLayoutOfText(bytes);
     setLayout(seededLayout);
+    savedVersionRef.current = served.version;
     setSavedVersion(served.version);
     setUndoStack([]);
     setRedoStack([]);
@@ -477,6 +483,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     const result = op(textRef.current);
     if (result.ok) {
       pushUndo();
+      setSaveError(null);
       setTextState(result.text);
       setDirty(true);
     }
@@ -488,12 +495,14 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     const now = Date.now();
     if (now - typingAt.current > TYPING_COALESCE_MS) pushUndo();
     typingAt.current = now;
+    setSaveError(null);
     setTextState(next);
     setDirty(true);
   }
 
   function move(id: string, pos: { x: number; y: number }) {
     pushUndo();
+    setSaveError(null);
     setLayout((current) => ({
       nodes: { ...current.nodes, [id]: pos },
     }));
@@ -502,6 +511,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
 
   function tidy() {
     pushUndo();
+    setSaveError(null);
     setLayout((current) => ({ ...current, nodes: {} }));
     setDirty(true);
   }
@@ -509,6 +519,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
   function undo() {
     const previous = undoStack[undoStack.length - 1];
     if (!previous) return;
+    setSaveError(null);
     setUndoStack(undoStack.slice(0, -1));
     setRedoStack([...redoStack, { text: textRef.current, layout: layoutRef.current }]);
     setTextState(previous.text);
@@ -519,6 +530,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
   function redo() {
     const next = redoStack[redoStack.length - 1];
     if (!next) return;
+    setSaveError(null);
     setRedoStack(redoStack.slice(0, -1));
     setUndoStack([...undoStack, { text: textRef.current, layout: layoutRef.current }]);
     setTextState(next.text);
@@ -536,7 +548,9 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
         document_yaml: sentText,
         version,
       } as DraftPut);
+      savedVersionRef.current = saved.version;
       setSavedVersion(saved.version);
+      setSaveError(null);
       // The local bytes are now exactly what the server holds, ui block and
       // all; the layout state re-reads from whichever of the two carries it.
       setTextState(sentText);
@@ -562,7 +576,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
 
   /** Plain function (re-created each render) so `put` is never stale; the
    * keyboard handler reads it through `keyHandler.current` for the same reason. */
-  const save = (): Promise<boolean> => putBytes(savedVersion);
+  const save = (): Promise<boolean> => putBytes(savedVersionRef.current);
 
   function reloadTheirs() {
     setConflict(null);
@@ -617,6 +631,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     text,
     layout,
     savedVersion,
+    getSavedVersion: () => savedVersionRef.current,
     dirty,
     parse,
     lastGood,

@@ -34,9 +34,9 @@ export const apmCollectionKeys = {
 /** The Collections tab route and one collection's editor route. These live
  * here (rather than `lib/routes.ts`) only while the feature is one worker's:
  * they are the addresses `App.tsx` mounts `pages/Collections.tsx` at. */
-export const collectionsRoute = "/workflows/collections";
+export const collectionsRoute = "/manage/agents?tab=skills";
 export const collectionRoute = (id: string): string =>
-  `/workflows/collections/${encodeURIComponent(id)}`;
+  `/manage/agents?tab=skills&item=${encodeURIComponent(id)}`;
 
 /**
  * The library (`GET /api/v1/apm-collections`), ordered by slug; the whole

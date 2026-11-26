@@ -603,8 +603,14 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
  * main area (the `data-assistant-dock` flag + the injected CSS), so the
  * chat column narrows and nothing is covered.
  */
+/** Helper: open Threads menu and start a fresh thread in Quick chat. */
+function clickNewThread() {
+  fireEvent.click(screen.getByTestId("assistant-history"));
+  fireEvent.click(screen.getByTestId("assistant-menu-new-thread"));
+}
+
 describe("thread → workflow draft ask (2f)", () => {
-  it("docks the panel beside the chat: reserves its width on the shell's main area", async () => {
+  it("opens Quick chat with the chat behind it and sends the draft ask with entity context", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -612,40 +618,15 @@ describe("thread → workflow draft ask (2f)", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/p/01P/conversations/c-42"]}>
-          {/* The chat the draft is drafted FROM, still mounted beside the
-              dock: the dock reserves its column instead of covering it. */}
           <p data-testid="chat-behind">Search revamp spike</p>
           <AssistantPopover />
         </MemoryRouter>
       </QueryClientProvider>,
     );
     act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
-    const panel = await screen.findByTestId("assistant-panel");
-    expect(panel.getAttribute("data-variant")).toBe("dock");
-    // The sheet is the right-hand column, and it reserves that width on the
-    // shell's main area: the flag on the document element plus the CSS that
-    // shrinks the content column and steps the thread page's fixed rails
-    // aside while the dock is open.
-    const dock = screen.getByTestId("assistant-popover");
-    expect(dock.getAttribute("data-dock")).toBe("right");
-    expect(dock.className).toContain("lg:left-auto");
-    expect(dock.className).toContain("lg:w-[450px]");
-    expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
-    const style = screen.getByTestId("assistant-frame-css") as HTMLStyleElement;
-    expect(style?.textContent).toContain("margin-right: 450px");
-    expect(style?.textContent).toContain("width: calc(100% - 450px)");
-    expect(style?.textContent).toContain("max-width: none");
-    expect(style?.textContent).toContain("html[data-assistant-dock=on] main");
-    expect(style?.textContent).toContain('[data-testid="thread-list-pane"]');
-    expect(style?.textContent).toContain('[data-testid="thread-side-panel-aside"]');
-    // The reservation is desktop-only: below the Shell's phone width the
-    // sheet takes the screen and reserves no width at all.
-    expect(style?.textContent).toContain("@media (min-width: 1024px)");
-    // Finding 10/§1: the floating Ask button stands down while the surface is
-    // open (every size — the popover, the side panel and the full page).
-    expect(style?.textContent).toContain('html[data-assistant-open=on] [data-testid="ask-fab"]');
+    const panel = await screen.findByTestId("quick-chat");
+    expect(panel.getAttribute("role")).toBe("complementary");
     expect(document.documentElement.getAttribute("data-assistant-open")).toBe("on");
-    // And the chat it drafts from is still in the tree beside the dock.
     expect(screen.getByTestId("chat-behind")).toBeTruthy();
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     const body = JSON.parse(stub.posted[0].body) as {
@@ -656,34 +637,8 @@ describe("thread → workflow draft ask (2f)", () => {
     expect(body.text).not.toContain("c-42");
     expect(body.context?.entity).toEqual({ kind: "conversation", id: "c-42" });
   });
-
-  it("releases the reserved width the moment the dock stands down", async () => {
-    stubFetch(() => json({ messages: [], next_cursor: null }));
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/p/01P/conversations/c-42"]}>
-          <AssistantPopover />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-    act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
-    await screen.findByTestId("assistant-panel");
-    expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
-    // The side-panel button again: back to the 400px popover; the column is
-    // the chat's again (handoff §1's header verbs are a pair, not a ladder).
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
-  });
 });
 
-/**
- * Handoff §1: the header's five icon buttons. `New thread` clears the panel,
- * `Threads` opens the sibling menu of the caller's threads, and the box's
- * corner rule is that the menu is NOT inside the `overflow: hidden` panel.
- */
 describe("new thread + threads menu (handoff §1)", () => {
   it("New clears the panel and the next send posts to a FRESH conversation id", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
@@ -691,7 +646,7 @@ describe("new thread + threads menu (handoff §1)", () => {
     act(() => openAssistantPopover());
     // The caller's newest conversation is adopted and its transcript shows.
     await screen.findByTestId("assistant-approval-confirm");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    clickNewThread();
     // The panel is cleared: no transcript, no stale change chip.
     expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
     const input = screen.getByTestId("assistant-composer-input");
@@ -750,17 +705,16 @@ describe("new thread + threads menu (handoff §1)", () => {
     await waitFor(() => expect(requestCount(fetchMock, CONVS_MENU_PATH)).toBe(1));
   });
 
-  /** Handoff §1's corners rule: menus that leave the panel are SIBLINGS of it. */
-  it("the threads menu is a sibling of the overflow-hidden popover panel", async () => {
+  /** Handoff §1's corners rule: menus that leave the scroll body are not clipped by it. */
+  it("the threads menu sits outside the scroll body and filters without a round-trip", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-approval-confirm");
     fireEvent.click(screen.getByTestId("assistant-history"));
     const menu = screen.getByTestId("assistant-history-menu");
-    const panel = screen.getByTestId("assistant-panel");
-    expect(panel.className).toContain("overflow-hidden");
-    expect(panel.contains(menu)).toBe(false);
+    const body = screen.getByTestId("assistant-body");
+    expect(body.contains(menu)).toBe(false);
     // The search field filters it without a round-trip.
     fireEvent.change(screen.getByTestId("assistant-history-search"), {
       target: { value: "older" },
@@ -770,7 +724,7 @@ describe("new thread + threads menu (handoff §1)", () => {
     expect(items[0].textContent).toContain("older thread");
   });
 
-  it("esc closes the Threads menu first, the panel second", async () => {
+  it("esc closes the Threads menu first, Quick chat second (when focus is inside)", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
@@ -779,72 +733,14 @@ describe("new thread + threads menu (handoff §1)", () => {
     expect(screen.getByTestId("assistant-history-menu")).toBeTruthy();
     fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "Escape" });
     expect(screen.queryByTestId("assistant-history-menu")).toBeNull();
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
+    fireEvent.keyDown(screen.getByTestId("assistant-composer-input"), { key: "Escape" });
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
   });
 });
 
-/**
- * Handoff §1: three sizes, one conversation. The popover's side-panel button
- * docks the SAME conversation beside the page and the page narrows; the button
- * again returns it to the popover. The full-page button navigates to
- * `/assistant` — and Exit full page navigates back and comes home as the
- * POPOVER, never the side panel.
- */
-describe("the three sizes (handoff §1)", () => {
-  it("popover → side panel → popover keeps the draft and releases the column", async () => {
-    stubFetch(() => json({ messages: [], next_cursor: null }));
-    renderPopover();
-    act(() => openAssistantPopover());
-    const input = await screen.findByTestId("assistant-composer-input");
-    fireEvent.change(input, { target: { value: "a typed draft" } });
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
-    expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
-
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("dock");
-    expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
-    // Same conversation, same draft: switching size is not a new surface.
-    expect((screen.getByTestId("assistant-composer-input") as HTMLTextAreaElement).value).toBe(
-      "a typed draft",
-    );
-    // The side-panel button now says how to get back.
-    expect(screen.getByTestId("assistant-dock").title).toBe("Back to popover");
-
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
-    expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
-  });
-
-  /**
-   * §3: the side panel is pinned to the VIEWPORT, so its head is flush with the
-   * top of the window even while the page behind it is scrolled. jsdom has no
-   * layout, so the contract is structural: the sheet is `fixed` with `inset-0`
-   * (and `lg:inset-y-0` + `lg:left-auto` once it is a column), and NOTHING
-   * rides above the panel — the always-mounted error wrapper used to push that
-   * head 8px below y=0.
-   */
-  it("the dock is fixed to the viewport top with nothing above its head", async () => {
-    stubFetch(() => json({ messages: [], next_cursor: null }));
-    renderPopover();
-    act(() => openAssistantPopover());
-    await screen.findByTestId("assistant-popover");
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    const dock = screen.getByTestId("assistant-popover");
-    expect(dock.className).toContain("fixed");
-    expect(dock.className).toContain("inset-0");
-    expect(dock.className).toContain("lg:inset-y-0");
-    expect(dock.className).toContain("lg:left-auto");
-    const header = screen.getByTestId("assistant-panel-header");
-    expect(header.className).toContain("h-[48px]");
-    const first = dock.firstElementChild as HTMLElement;
-    expect(first).toBeTruthy();
-    expect(first.contains(header)).toBe(true);
-    expect(header.parentElement?.parentElement).toBe(first);
-  });
-
-  it("popover → full page → exit comes back as the popover on the route it left", async () => {
+describe("Quick chat and full page (handoff §1)", () => {
+  it("quick-chat → full page → exit comes back as Quick chat on the route it left", async () => {
     stubViewport(1440);
     stubFetch(() => json({ messages: [], next_cursor: null }));
     const queryClient = new QueryClient({
@@ -880,24 +776,23 @@ describe("the three sizes (handoff §1)", () => {
     );
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-composer-input");
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
 
-    // Open full page: the URL is /assistant, the sidebar's page is gone, and
-    // the conversation stands in three columns.
-    fireEvent.click(screen.getByTestId("assistant-expand"));
+    // Open full page via "Open as chat": the URL is /assistant, and the conversation stands in three columns.
+    fireEvent.click(screen.getByTestId("quick-chat-open-as-chat"));
     await screen.findByTestId("assistant-page");
     expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("page");
     expect(screen.getByTestId("assistant-page-threads")).toBeTruthy();
     expect(screen.getByTestId("assistant-page-side").textContent).toContain("LOOKING AT");
-    // The floating popover is gone: one surface at a time.
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    // Quick chat is gone: one surface at a time.
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
 
-    // Exit full page: back to the route the ask came from, as the POPOVER.
+    // Exit full page: back to the route the ask came from, as Quick chat.
     const exit = screen.getByTestId("assistant-expand") as HTMLButtonElement;
     expect(exit.title).toBe("Exit full page");
     fireEvent.click(exit);
     await waitFor(() => expect(screen.queryByTestId("assistant-page")).toBeNull());
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("popover");
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
     expect(screen.getByTestId("page-behind")).toBeTruthy();
     expect(seen[seen.length - 1]).toBe("/p/feature-delivery");
     vi.unstubAllGlobals();
@@ -921,12 +816,7 @@ describe("the three sizes (handoff §1)", () => {
     );
     await screen.findByTestId("assistant-page");
     expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("page");
-    // The sidebar's page is not covered up: the conversation lives IN the
-    // route's own column, and the floating popover does not also stand.
-    expect(screen.queryByTestId("assistant-popover")).toBeNull();
-    // Walk-through finding 1: the route's host owns the viewport height and
-    // clips, so the three columns below it can fill it (`flex-1` + `min-h-0`
-    // with a 0% basis was what left them at ~470px in the 1280/1440 shots).
+    expect(screen.queryByTestId("quick-chat")).toBeNull();
     const column = screen.getByTestId("assistant-page-column");
     expect(column.className).toContain("h-[calc(100vh-44px)]");
     expect(column.className).toContain("md:h-screen");
@@ -1024,7 +914,7 @@ describe("conversation continuity across turns (ui-convfix)", () => {
     const rendered = renderPopover();
     act(() => openAssistantPopover());
     const input = await screen.findByTestId("assistant-composer-input");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    clickNewThread();
     fireEvent.change(input, { target: { value: text } });
     fireEvent.click(screen.getByTestId("assistant-send"));
     await waitFor(() => expect(stub.posted).toHaveLength(1));
@@ -1098,7 +988,7 @@ describe("conversation continuity across turns (ui-convfix)", () => {
     const first = renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-composer-input");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    clickNewThread();
     first.unmount();
     const second = renderPopover();
     act(() => openAssistantPopover());
@@ -1138,13 +1028,13 @@ describe("the ⌘J chord is order-invariant (finding 08; was p789-t5 for ⌘K)",
     window.addEventListener("keydown", hijack);
     try {
       fireEvent.keyDown(document.body, { key: "j", metaKey: true });
-      await screen.findByTestId("assistant-popover");
-      // esc closes the panel — the chord effect re-runs and re-registers last.
-      fireEvent.keyDown(document.body, { key: "Escape" });
-      await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
+      await screen.findByTestId("quick-chat");
+      // esc while focus is inside Quick chat closes the panel.
+      fireEvent.keyDown(screen.getByTestId("assistant-composer-input"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("quick-chat")).toBeNull());
       // ⌘J always re-opens the ask surface, chord order be damned.
       fireEvent.keyDown(document.body, { key: "j", metaKey: true });
-      await screen.findByTestId("assistant-popover");
+      await screen.findByTestId("quick-chat");
     } finally {
       window.removeEventListener("keydown", hijack);
     }
@@ -1182,7 +1072,7 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-composer-input");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    clickNewThread();
     const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
     fireEvent.change(input, { target: { value: text } });
     expect(input.value).toBe(text);
@@ -1266,14 +1156,36 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     expect((input as HTMLInputElement).value).toBe("my new draft");
   });
 
-  it("the side panel shows the failure line and keeps the ask too", async () => {
-    const { input } = await armedComposer(stubFetch([capProblem, okTurn]), ASK);
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("dock");
+  it("the full page shows the failure line and keeps the ask too", async () => {
+    stubFetch([capProblem, okTurn]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route path="/assistant" element={<AssistantPage />} />
+            <Route path="*" element={<div />} />
+          </Routes>
+          <AssistantPopover />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-composer-input");
+    clickNewThread();
+    const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: ASK } });
+    fireEvent.click(screen.getByTestId("quick-chat-open-as-chat"));
+    await screen.findByTestId("assistant-page");
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("page");
     fireEvent.click(screen.getByTestId("assistant-send"));
     const line = await screen.findByTestId("assistant-error");
     expect(line.textContent).toContain("hit its step limit before answering");
-    await waitFor(() => expect(input.value).toBe(ASK));
+    await waitFor(() =>
+      expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).value).toBe(ASK),
+    );
   });
 
   it("a palette question that fails to send comes back into the composer", async () => {
@@ -1333,25 +1245,23 @@ describe("menu-close coordination (issue #62)", () => {
     window.addEventListener("communication:close-other-menus", listener);
     renderPopover();
     act(() => openAssistantPopover());
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     expect(closed).toHaveLength(1);
 
     act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true })));
     // Finding 08: ⌘K is the JUMP chord — it opens no ask surface, so there is
-    // no second broadcast and no popover re-open churn.
+    // no second broadcast and no re-open churn.
     expect(closed).toHaveLength(1);
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
   });
 
-  it("broadcasts close-other-menus when Ask opens over the ⌘J chord (the floating Ask press)", () => {
+  it("broadcasts close-other-menus when Ask opens over the ⌘J chord", () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     window.addEventListener("communication:close-other-menus", listener);
     renderPopover();
-    // Shell's floating button calls the same explicit handle (finding 08 —
-    // no synthetic keydown any more).
     act(() => openAsk());
     expect(closed).toHaveLength(1);
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
   });
 });
 
@@ -1412,7 +1322,7 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-composer-input");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    clickNewThread();
     const [chip] = await screen.findAllByTestId("assistant-starter");
     return { chip, text: (chip.textContent ?? "").trim() };
   }
@@ -1458,7 +1368,7 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("assistant-composer-input");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    clickNewThread();
     const [chip] = await screen.findAllByTestId("assistant-starter");
     const text = (chip.textContent ?? "").trim();
     fireEvent.click(chip);
@@ -1529,7 +1439,7 @@ describe("a mount that names its own ask context (T16)", () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover({ askContext: stopAsk });
     act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", metaKey: true })));
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     expect(JSON.parse(stub.posted[0].body).text).toBe(stopAsk().text);
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe(stopAsk().subject);
@@ -1539,7 +1449,7 @@ describe("a mount that names its own ask context (T16)", () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover({ askContext: stopAsk });
     act(() => openAsk({ text: "What failed here?", subject: "the run" }));
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     expect(JSON.parse(stub.posted[0].body).text).toBe("What failed here?");
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe("the run");
@@ -1549,28 +1459,19 @@ describe("a mount that names its own ask context (T16)", () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAsk());
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     expect(stub.posted).toHaveLength(0);
     // With nothing named, the chip stays what it always was: the page section.
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe(sectionOf("/"));
   });
 });
 
-/**
- * m5-assistant:278 replica — the exact e2e ask path on the T16 build: Ctrl+J
- * opens the popover (a bare chord ask: NOTHING posts), the question is typed
- * into the composer and Enter sends it. The 8f6f378 context change rides only
- * `openAsk()` and the header chip; this proves a typed ask still reaches the
- * conversation's message route with the same body (`{text, context.route}`)
- * the lab POST must answer — the e2e's failed run was a server-side 503
- * `model_unreachable` on that POST (the question WAS sent), not a UI change.
- */
 describe("the typed composer ask still posts (m5 ask path)", () => {
   it("Ctrl+J opens without posting; Enter in the composer posts the question to the messages route", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "J", ctrlKey: true })));
-    await screen.findByTestId("assistant-popover");
+    await screen.findByTestId("quick-chat");
     // The bare chord sends nothing (no page askContext at a Shell mount).
     expect(stub.posted).toHaveLength(0);
     // The popover adopts the caller's newest conversation — conv-1, whose
@@ -1595,46 +1496,23 @@ describe("the typed composer ask still posts (m5 ask path)", () => {
   });
 });
 
-/**
- * Walk-through finding 2: the header names the THREAD. The page the ask came
- * from (`today`, `run <id>`) belongs to the page-context button — printing it
- * as the title invented a title the conversation never had.
- */
-describe("the header names the thread (walk-through finding 2)", () => {
-  it("adopts the conversation's OWN title, not the page section", async () => {
+describe("the header names Quick chat (walk-through finding 2)", () => {
+  it("shows Quick chat in the header and keeps the page section on the context chip", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
-    await screen.findByTestId("assistant-panel");
-    // Review fix 3 (design L131–137): the POPOVER header shows only the mono
-    // ASSISTANT label — no thread title at all.
-    expect(screen.getByTestId("assistant-panel-header").textContent).toContain("ASSISTANT");
-    expect(screen.queryByTestId("assistant-thread-title")).toBeNull();
-    // The side panel shows ONLY the thread title. conv-1 (the newest) is
-    // titled `approvals`; the route behind the surface is Today, and Today
-    // stands nowhere in the header — it is the page-context button's line,
-    // shown in the composer box.
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    await waitFor(() =>
-      expect(screen.getByTestId("assistant-thread-title").textContent).toBe("approvals"),
-    );
-    expect(screen.getByTestId("assistant-panel-header").textContent).not.toContain("ASSISTANT");
-    expect(screen.getByTestId("assistant-panel-header").textContent).not.toContain("today");
-    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
+    await screen.findByTestId("quick-chat");
+    expect(screen.getByTestId("assistant-panel-header").textContent).toContain("Quick chat");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("home");
   });
 
-  it("a thread with no title of its own reads New thread", async () => {
+  it("a fresh thread keeps Quick chat in the header and home on the context chip", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
-    await screen.findByTestId("assistant-panel");
-    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
-    // The New thread is cleared: no conversation, no title — and the page's
-    // own label stays on the page-context button, where it belongs. The title
-    // itself reads only in the side panel (review fix 3): the popover header
-    // keeps just the ASSISTANT label.
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    expect(screen.getByTestId("assistant-thread-title").textContent).toBe("New thread");
-    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("today");
+    await screen.findByTestId("quick-chat");
+    clickNewThread();
+    expect(screen.getByTestId("assistant-panel-header").textContent).toContain("Quick chat");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("home");
   });
 });

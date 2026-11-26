@@ -43,11 +43,11 @@ describe("RunNotFound copy (finding 12)", () => {
 
     const back = screen.getByTestId("run-not-found-runs");
     expect(oneLine(back)).toBe("Back to Runs");
-    expect(back.getAttribute("href")).toBe(`/p/${PROJECT_ID}/runs`);
+    expect(back.getAttribute("href")).toBe(`/p/${PROJECT_ID}/factory`);
 
     const access = screen.getByTestId("run-not-found-access");
     expect(oneLine(access)).toBe("Ask for access");
-    expect(access.getAttribute("href")).toBe(`/p/${PROJECT_ID}/members`);
+    expect(access.getAttribute("href")).toBe(`/manage/people?project=${PROJECT_ID}`);
   });
 
   it("names who to ask when no project is known (the /runs/:runId deep link)", () => {

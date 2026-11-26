@@ -67,6 +67,8 @@ export interface MessageListProps {
   showSetup?: boolean;
   /** Send a checklist action's or starter's prompt as the next message. */
   onSendPrompt?: (text: string) => void;
+  /** `"quick"` renders Quick chat bubbles, 13.5/21 text, radius-10 rich parts, no hard shadows. */
+  variant?: "default" | "quick";
 }
 
 export function MessageList({
@@ -80,7 +82,9 @@ export function MessageList({
   openDraftHref = null,
   showSetup = false,
   onSendPrompt,
+  variant = "default",
 }: MessageListProps) {
+  const quick = variant === "quick";
   // Design 2f numbers the question cards the transcript really holds:
   // the ordinal is the row's position among the conversation's question
   // rows — real transcript data. The TOTAL is not passed: the assistant
@@ -127,11 +131,74 @@ export function MessageList({
     return null;
   };
   return (
-    <div data-testid="assistant-messages" className="flex flex-col gap-[8px]">
-      {showSetup ? <SetupMessage onPrompt={onSendPrompt ?? (() => undefined)} /> : null}
+    <div
+      data-testid="assistant-messages"
+      className={quick ? "flex flex-col gap-[12px]" : "flex flex-col gap-[8px]"}
+    >
+      {showSetup ? (
+        <SetupMessage onPrompt={onSendPrompt ?? (() => undefined)} variant={variant} />
+      ) : null}
       {messages.map((message) => {
         switch (message.payload.kind) {
-          case "user":
+          case "user": {
+            const dictated = message.via === "voice" || spokenOf(message.payload);
+            if (quick) {
+              return (
+                <div
+                  key={message.id}
+                  data-testid="assistant-msg-user"
+                  data-via={dictated ? "voice" : undefined}
+                  className="flex max-w-[85%] flex-col items-end self-end"
+                >
+                  <div className="flex items-start gap-[6px] whitespace-pre-wrap rounded-[12px_12px_4px_12px] bg-[#f3f1ec] px-[12px] py-[8px] text-[13.5px] leading-[20px] text-ink">
+                    {dictated ? (
+                      <IconMicrophone
+                        size={13}
+                        stroke={1.5}
+                        aria-label="Dictated"
+                        data-testid="assistant-spoken"
+                        className="mt-[3.5px] shrink-0 text-muted"
+                      />
+                    ) : null}
+                    <span>{message.payload.text}</span>
+                  </div>
+                  {message.local?.state === "failed" ? (
+                    <div className="flex flex-col items-end gap-[6px] pt-[6px]">
+                      <p
+                        data-testid="assistant-error"
+                        className="m-0 flex max-w-full items-start gap-[5px] rounded-[10px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[10px] py-[6px] text-[12px] leading-[1.4] text-st-failed-pale-fg"
+                      >
+                        <IconX size={12} stroke={1.75} aria-hidden className="mt-[2px] shrink-0" />
+                        <span>
+                          {message.local.error ?? "The assistant could not answer."}
+                          {message.local.degraded === MODEL_UNAVAILABLE ? (
+                            <>
+                              {" "}
+                              <button
+                                type="button"
+                                data-testid="assistant-error-link"
+                                onClick={() => onGo(MODEL_UNAVAILABLE_ROUTE)}
+                                className="cursor-pointer bg-transparent p-0 text-[inherit] text-accent-text underline"
+                              >
+                                {MODEL_UNAVAILABLE_LINK_LABEL}
+                              </button>
+                            </>
+                          ) : null}
+                        </span>
+                      </p>
+                      <button
+                        type="button"
+                        data-testid="assistant-send-retry"
+                        onClick={() => onRetrySend?.(message.id)}
+                        className="cursor-pointer rounded-[8px] border-none bg-accent px-[10px] py-[4px] text-[12px] font-semibold text-surface hover:brightness-95 focus-visible:outline-2 focus-visible:outline-accent"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }
             return (
               <div
                 key={message.id}
@@ -148,7 +215,7 @@ export function MessageList({
                 {/* Handoff A6 §5: the turn was dictated. The mark rides under
                     the person's own words so a spoken ask reads as what it
                     was, without restating the text. */}
-                {spokenOf(message.payload) ? (
+                {dictated ? (
                   <span
                     data-testid="assistant-spoken"
                     className="mt-[3px] inline-flex items-center gap-[4px] font-mono text-[10px] text-muted"
@@ -201,17 +268,19 @@ export function MessageList({
                 ) : null}
               </div>
             );
+          }
           case "assistant":
             return (
               <div
                 key={message.id}
                 data-testid="assistant-msg-assistant"
-                className="px-[10px] py-[8px]"
+                className={quick ? "text-left" : "px-[10px] py-[8px]"}
               >
                 <AnswerProse
                   text={message.payload.answer_markdown}
                   draftId={openDraftIdOf(message.payload.links)}
                   openQuestion={openQuestionFor(message.id)}
+                  quick={quick}
                 />
                 {/* Handoff A4 §3: the answer used the page, and says which
                     item it took. Quiet, mono, under the answer — an
@@ -219,7 +288,11 @@ export function MessageList({
                 {assumedOf(message.payload) ? (
                   <div
                     data-testid="assistant-assumed"
-                    className="mt-[4px] flex items-center gap-[5px] font-mono text-[12px] text-faint"
+                    className={
+                      quick
+                        ? "mt-[6px] flex items-center gap-[5px] rounded-[10px] border border-line-soft bg-paper px-[8px] py-[4px] font-mono text-[11.5px] text-muted"
+                        : "mt-[4px] flex items-center gap-[5px] font-mono text-[12px] text-faint"
+                    }
                   >
                     <IconCurrentLocation size={11} stroke={2} aria-hidden className="shrink-0" />
                     {`assumed you meant ${assumedOf(message.payload)} (on screen)`}
@@ -229,6 +302,7 @@ export function MessageList({
                   links={message.payload.links}
                   openDraftHref={openDraftHref}
                   onGo={onGo}
+                  variant={variant}
                 />
                 <ToolDisclosure calls={message.payload.tool_calls} />
               </div>
@@ -242,6 +316,7 @@ export function MessageList({
                 onFreeText={onFreeText}
                 ordinal={questionIds.indexOf(message.id) + 1}
                 answeredLabel={answeredLabelFor(message.payload)}
+                variant={variant}
               />
             );
           case "approval_request":
@@ -252,6 +327,7 @@ export function MessageList({
                 request={message.payload}
                 onConfirm={onConfirmApproval}
                 onDismiss={onDismissApproval}
+                variant={variant}
               />
             );
           case "change":
@@ -628,11 +704,15 @@ function answerPieces(
   return pieces;
 }
 
-function AnswerTable({ header, rows }: AnswerTableData) {
+function AnswerTable({ header, rows, quick = false }: AnswerTableData & { quick?: boolean }) {
   return (
     <div
       data-testid="assistant-table"
-      className="max-w-full overflow-x-auto rounded-[3px] border border-line bg-surface py-[2px]"
+      className={
+        quick
+          ? "max-w-full overflow-x-auto rounded-[10px] border border-line bg-surface py-[2px]"
+          : "max-w-full overflow-x-auto rounded-[3px] border border-line bg-surface py-[2px]"
+      }
     >
       <table className="w-full max-w-none border-collapse text-left text-[12.5px] leading-[1.45] text-ink">
         <thead>
@@ -684,10 +764,12 @@ function AnswerProse({
   text,
   draftId,
   openQuestion,
+  quick = false,
 }: {
   text: string;
   draftId: string | null;
   openQuestion: AssistantQuestionPayload | null;
+  quick?: boolean;
 }) {
   const paragraphs = text
     .split(/\n\s*\n/)
@@ -743,12 +825,21 @@ function AnswerProse({
           <div key={index} className="space-y-[6px]">
             {answerPieces(chunk.text).map((piece, pieceIndex) =>
               piece.type === "table" ? (
-                <AnswerTable key={pieceIndex} header={piece.header} rows={piece.rows} />
+                <AnswerTable
+                  key={pieceIndex}
+                  header={piece.header}
+                  rows={piece.rows}
+                  quick={quick}
+                />
               ) : (
                 <MarkdownBody
                   key={pieceIndex}
                   text={piece.text}
-                  paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
+                  paragraphClassName={
+                    quick
+                      ? "m-0 text-[13.5px] leading-[21px] text-ink"
+                      : "m-0 text-[13px] leading-[1.45] text-ink"
+                  }
                 />
               ),
             )}

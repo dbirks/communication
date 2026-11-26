@@ -62,7 +62,7 @@ describe("NewRevisionNotice", () => {
         "The run stays on the revision it started with.",
     );
     const link = screen.getByTestId("run-new-revision-link");
-    expect(link.getAttribute("href")).toBe("/workflows/pl_feat");
+    expect(link.getAttribute("href")).toBe("/factory/pl_feat");
     expect(link.textContent).toBe("feature-development-deterministic in the library");
   });
 

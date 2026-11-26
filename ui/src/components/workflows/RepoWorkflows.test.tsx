@@ -353,9 +353,9 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     // same destination as the name, drawn as the design's verb.
     mount();
     const name = await screen.findByText("Feature development");
-    expect(name.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    expect(name.getAttribute("href")).toBe(`/factory/${WIRE_PIPELINE_ID}`);
     const edit = screen.getByTestId(`repo-workflow-edit-${assignmentKey}`);
-    expect(edit.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    expect(edit.getAttribute("href")).toBe(`/factory/${WIRE_PIPELINE_ID}`);
     expect(edit.textContent).toBe("Edit");
     expect(edit.className).toContain("ds-btn--secondary-plain");
     expect(screen.getByTestId(`repo-workflow-add-${assignmentKey}`).textContent).toBe(

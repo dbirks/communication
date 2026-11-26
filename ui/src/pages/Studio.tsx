@@ -1,68 +1,107 @@
 /**
- * Studio.tsx — the Workflow Studio page, `/workflows/:pipelineId/drafts/:draftId`.
+ * Studio.tsx — the Workflow Editor page (`/factory/:pipelineId`,
+ * `/p/:projectId/factory/:pipelineId`, and legacy `/workflows/:pipelineId/drafts/:draftId`).
  *
- * `docs/design/studio-workbench.md` §3: the palette | canvas | inspector
- * authoring surface over one draft. The YAML text is the source of truth
- * (ADR-0042): graph gestures call the text→text ops, `useStudioDraft`
- * commits them with undo/redo, and Save/Validate/Publish hit the existing
- * version-checked draft contract unchanged. Below 1024px the canvas gives
- * way to the StepOutline fallback (§9).
+ * Full-bleed LR canvas with floating ToolIsland, top-right Versions / Try it /
+ * Make live / "…" controls, debounced 800ms autosave, TopBarLeft breadcrumb &
+ * draft status, Box select → WrapPanel → GoalFrame, AgentStepCard, `?run=`
+ * live-run canvas overlay with VerdictStack, and synthetic Trigger node.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
-import { ApiError } from "../api/client";
-import { useMe } from "../api/queries";
+import { useQueries } from "@tanstack/react-query";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+import { IconDots, IconHistory, IconPlayerPlay, IconX } from "@tabler/icons-react";
+import { parse as parseYaml } from "yaml";
+import { apiFetch, ApiError, problemOf } from "../api/client";
+import { useActorNames } from "../api/actors";
+import { useMe, useProject, queryKeys } from "../api/queries";
 import {
-  folderLabel,
-  useDraft,
   useCreateDraft,
+  useDeleteDraft,
+  useDraft,
   usePipeline,
   usePipelineDrafts,
   usePublishDraft,
   useRevision,
   useValidateDraft,
 } from "../api/pipelines";
-import { routes } from "../lib/routes";
-import { viewValidate } from "../api/m4view";
-import type { ValidateBody } from "../lib/pipeline/contract";
+import { useRun, useRunNodes } from "../api/runs";
+import { useRunEvents } from "../api/runEvents";
+import { viewNodeExecution, viewRevisionSummary, viewRun, viewValidate } from "../api/m4view";
+import type { NodeExecutionDetail } from "../api/types";
+import type {
+  NodeExecutionSummary,
+  PipelineRevisionSummary,
+  ValidateBody,
+} from "../lib/pipeline/contract";
 import { hasLibraryRole, LIBRARY_READ_ONLY_NOTE } from "../lib/pipeline/authoring";
+import {
+  isScopeKind,
+  scopeBody,
+  type DefinitionDocument,
+  type DefinitionNode,
+} from "../lib/pipeline/definition";
 import {
   addNode,
   deleteNode,
+  findNode,
+  parseGraph,
   unwrapScope,
-  wrapInScope,
   type GraphEdge,
   type GraphModel,
   type OpResult,
   type ScopePath,
 } from "../lib/pipeline/graphDoc";
+import { projectRun } from "../lib/pipeline/runEvents";
+import { semanticDiff } from "../lib/pipeline/semanticDiff";
+import { overlays } from "../lib/pipeline/workbench";
+import { duplicateNode } from "../lib/pipeline/duplicateNode";
+import { shortId } from "../lib/format";
+import { routes } from "../lib/routes";
+import { useScope } from "../lib/scope";
+import { RUN_STATE, STATES, stateOf } from "../components/ds/states";
+import { Button } from "../components/ds/Button";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
-import { Button } from "../components/ds/Button";
-import {
-  canConnectOf,
-  connectOp,
-  disconnectEdgeOp,
-  insertOnEdgeOp,
-  isAmbiguousOp,
-  toJsDocument,
-  useStudioDraft,
-} from "../components/studio/useStudioDraft";
-import { duplicateNode } from "../lib/pipeline/duplicateNode";
-import { StudioCanvas } from "../components/studio/StudioCanvas";
+import { TopBarLeft, TOP_BAR_LEFT_SLOT_ID } from "../components/shell/TopBarSlot";
+import { StartRunDialog } from "../components/home/StartRunDialog";
+import { YamlView } from "../components/workflows/YamlView";
+import { UsedInPanel } from "../components/workflows/UsedIn";
+import { TriggersDialog } from "../components/workflows/TriggersDialog";
+import { usePipelineRuns, useUsedIn } from "./workflow/useUsedIn";
+import { StudioCanvas, type UiLayout } from "../components/studio/StudioCanvas";
 import { StudioInspector } from "../components/studio/StudioInspector";
-import { SelectionToolbar, type ScopeKind } from "../components/studio/SelectionToolbar";
-import { DiffPanel } from "../components/studio/DiffPanel";
-import { StudioHeader, type StudioView } from "../components/studio/StudioHeader";
 import { AmbiguityDialog } from "../components/studio/AmbiguityDialog";
+import { AgentStepCard } from "../components/studio/AgentStepCard";
+import { VersionsPanel } from "../components/studio/VersionsPanel";
+import type { CanvasTool } from "../components/studio/ToolIsland";
 import {
   AssistantProposalBox,
   PROPOSAL_CAPTION,
   type AssistantProposalPreview,
 } from "../components/studio/AssistantProposalBox";
+import {
+  connectOp,
+  canConnectOf,
+  disconnectEdgeOp,
+  insertOnEdgeOp,
+  isAmbiguousOp,
+  toJsDocument,
+  uiLayoutOfText,
+  useStudioDraft,
+} from "../components/studio/useStudioDraft";
+import { useStudioTriggers } from "../components/studio/useStudioTriggers";
+import {
+  readGoal,
+  updateUntilGoal,
+  verdictStepId,
+  wrapInUntil,
+  wrapSideBySide,
+  type GoalSpec,
+} from "../components/studio/wrap/wrapModel";
+import type { VerdictRound } from "../components/studio/wrap/VerdictStack";
 
-/** §9: no canvas below 1024px — the step outline is the keyboard surface. */
-function useIsNarrow(query = "(max-width: 1023px)"): boolean {
+function useIsNarrow(query = "(max-width: 767px)"): boolean {
   const [narrow, setNarrow] = useState<boolean>(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
       ? window.matchMedia(query).matches
@@ -79,44 +118,68 @@ function useIsNarrow(query = "(max-width: 1023px)"): boolean {
   return narrow;
 }
 
-const EMPTY_MODEL: GraphModel = { nodes: [], edges: [] };
-
-/** The YAML view's textarea + parse diagnostic (line included when there is one). */
-function YamlEditor({
-  text,
-  error,
-  onChange,
-}: {
-  text: string;
-  error: { error: string; line: number | null } | null;
-  onChange(text: string): void;
-}) {
-  return (
-    <div className="flex h-full min-h-[16rem] flex-col gap-2 p-3">
-      <textarea
-        data-testid="studio-yaml"
-        aria-label="Workflow YAML"
-        value={text}
-        onChange={(event) => onChange(event.target.value)}
-        spellCheck={false}
-        className="min-h-0 flex-1 resize-none rounded-[3px] border border-line bg-surface p-2 font-mono text-[12px] leading-5"
-      />
-      {error ? (
-        <p className="font-mono text-[11px] text-st-failed-pale-fg" data-testid="studio-yaml-error">
-          {error.error}
-          {error.line !== null ? ` (line ${error.line})` : ""}
-        </p>
-      ) : null}
-    </div>
+/** Whether `#top-bar-left-slot` exists in the mounted Shell; falls back to an inline bar in isolated tests. */
+function useHasTopBarSlot(): boolean {
+  const [hasSlot, setHasSlot] = useState<boolean>(() =>
+    typeof document !== "undefined"
+      ? Boolean(document.getElementById(TOP_BAR_LEFT_SLOT_ID))
+      : false,
   );
+  useEffect(() => {
+    const sync = () =>
+      setHasSlot(Boolean(document.getElementById(TOP_BAR_LEFT_SLOT_ID)?.isConnected));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+  return hasSlot;
 }
 
-/**
- * The header of the Studio's failed-draft screen (issue #23): the breadcrumb and
- * the title the page would have shown, built from the pipeline read alone. The
- * draft's version chip, tabs and authoring actions are NOT drawn here — there is
- * no draft to act on, and a dead verb is the thing the design brief calls a lie.
- */
+const EMPTY_MODEL: GraphModel = { nodes: [], edges: [] };
+const AUTOSAVE_DEBOUNCE_MS = 800;
+
+function nodeConfigOf(doc: unknown, model: GraphModel, nodeId: string): Record<string, unknown> {
+  const node = findNode(model, nodeId);
+  if (!node || !doc || typeof doc !== "object") return {};
+  let cur: unknown = doc;
+  for (const part of node.pointer.split("/")) {
+    if (part === "") continue;
+    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown> | null)?.[part];
+    if (cur === null || cur === undefined) return {};
+  }
+  if (!cur || typeof cur !== "object" || Array.isArray(cur)) return {};
+  const cfg = (cur as Record<string, unknown>).config;
+  return cfg && typeof cfg === "object" && !Array.isArray(cfg)
+    ? (cfg as Record<string, unknown>)
+    : {};
+}
+
+function scopeIterationIndex(instanceKey: string, scopeId: string): number | null {
+  const re = new RegExp(`/${scopeId}\\[(\\d+)\\]`);
+  const m = re.exec(instanceKey);
+  return m ? Number(m[1]) : null;
+}
+
+function parseJudgeOutput(
+  outputs: unknown,
+): { verdict: "met" | "not_yet"; reason?: string } | null {
+  if (!outputs || typeof outputs !== "object" || Array.isArray(outputs)) return null;
+  const text = (outputs as Record<string, unknown>).text;
+  if (typeof text !== "string") return null;
+  const lines = text.trim().split(/\r?\n/);
+  const first = lines[0]?.trim() ?? "";
+  const rest = lines.slice(1).join(" ").trim();
+  if (first.includes("GOAL_MET")) {
+    return { verdict: "met", ...(rest ? { reason: rest } : {}) };
+  }
+  if (first.includes("NOT_YET")) {
+    return { verdict: "not_yet", ...(rest ? { reason: rest } : {}) };
+  }
+  return null;
+}
+
+/** Failed-draft fallback title when the draft cannot be loaded. */
 function StudioFailureTitle({
   pipelineName,
   pipelineFolder,
@@ -124,6 +187,7 @@ function StudioFailureTitle({
   pipelineName: string | null;
   pipelineFolder: string | null;
 }) {
+  const scope = useScope();
   return (
     <header
       className="flex flex-wrap items-center gap-x-[8px] gap-y-[8px] border-b border-line bg-surface px-4 py-2 md:flex-nowrap"
@@ -135,22 +199,22 @@ function StudioFailureTitle({
         data-testid="studio-breadcrumb"
       >
         <Link
-          to={routes.workflows()}
+          to={routes.factory(scope)}
           className="shrink-0 font-mono text-[12px] text-muted underline decoration-line underline-offset-2 hover:text-ink"
           data-testid="studio-breadcrumb-workflows"
         >
-          Workflows
+          Factory
         </Link>
         <span aria-hidden="true" className="shrink-0 font-mono text-[12px] text-faint">
           /
         </span>
-        {pipelineName ? (
+        {pipelineName && pipelineFolder ? (
           <>
             <span
               className="min-w-0 truncate font-mono text-[12px] text-muted"
               data-testid="studio-breadcrumb-folder"
             >
-              {folderLabel(pipelineFolder)}
+              {pipelineFolder}
             </span>
             <span aria-hidden="true" className="shrink-0 font-mono text-[12px] text-faint">
               /
@@ -169,13 +233,54 @@ function StudioFailureTitle({
   );
 }
 
+/** Lazy UsedIn panel wrapper so the project/assignment fan-out only fires when ?panel=used-in is open. */
+function StudioUsedInDrawer({
+  pipelineId,
+  revisionRows,
+  newestPublished,
+  newestPublishedId,
+}: {
+  pipelineId: string;
+  revisionRows: PipelineRevisionSummary[];
+  newestPublished: PipelineRevisionSummary | null;
+  newestPublishedId: string | null;
+}) {
+  const usedIn = useUsedIn(pipelineId);
+  return (
+    <UsedInPanel
+      groups={usedIn.groups}
+      loading={usedIn.loading}
+      error={usedIn.error}
+      onRetry={usedIn.retry}
+      failure={usedIn.failure}
+      retrying={usedIn.fetching}
+      revisions={revisionRows.map((row) => ({
+        id: row.id,
+        revision_number: row.revision_number,
+        revision_digest: row.revision_digest,
+        version_label: row.version_label,
+        status: row.status,
+      }))}
+      newestPublished={newestPublished}
+      newestPublishedId={newestPublishedId}
+    />
+  );
+}
+
 export function StudioPage() {
   const { pipelineId = "", draftId: routeDraftId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const scope = useScope();
+  const project = useProject(scope ?? "");
   const explicitDraftId = routeDraftId ?? searchParams.get("draft") ?? "";
+  const panelParam = searchParams.get("panel");
+  const runParam = searchParams.get("run") ?? "";
+
   const me = useMe();
+  const { actorLabel } = useActorNames(scope ?? undefined);
   const pipeline = usePipeline(pipelineId);
-  const drafts = usePipelineDrafts(pipelineId, !explicitDraftId);
+  const drafts = usePipelineDrafts(pipelineId, !explicitDraftId && !runParam);
   const draftId =
     explicitDraftId ||
     drafts.data?.drafts.find(
@@ -188,14 +293,43 @@ export function StudioPage() {
   const newestRevision = useRevision(newestSummary?.revision_digest ?? "");
   const studio = useStudioDraft(draftId, newestRevision.data?.document_text);
   const createDraft = useCreateDraft(pipelineId);
+  const deleteDraft = useDeleteDraft(pipelineId);
   const validate = useValidateDraft(draftId, pipelineId);
   const publish = usePublishDraft(draftId);
 
+  // Version-viewing state (clicking a version in Versions panel)
+  const [viewingDigest, setViewingDigest] = useState<string | null>(null);
+  const viewingRevision = useRevision(viewingDigest ?? "");
+
+  // Run-state mode (?run=<runId>)
+  const runQuery = useRun(runParam);
+  const runNodesQuery = useRunNodes(runParam);
+  const runEvents = useRunEvents(runParam, runQuery.data?.project_id ?? scope ?? "");
+  const runRevision = useRevision(runParam ? (runQuery.data?.pipeline_revision_id ?? "") : "");
+
+  // Synthetic Trigger node data
+  const triggers = useStudioTriggers(pipelineId, pipeline.isSuccess && !runParam);
+  const [triggersDialogOpen, setTriggersDialogOpen] = useState(false);
+
+  // Versions run counts (fetched when Versions panel is open)
+  const versionsOpen = panelParam === "versions";
+  const pipelineRunsQuery = usePipelineRuns(versionsOpen ? pipelineId : "");
+  const runCountsByDigest = useMemo(() => {
+    if (!pipelineRunsQuery.isSuccess) return undefined;
+    const map = new Map<string, number>();
+    for (const run of pipelineRunsQuery.data.runs) {
+      map.set(run.revision_digest, (map.get(run.revision_digest) ?? 0) + 1);
+    }
+    return map;
+  }, [pipelineRunsQuery.isSuccess, pipelineRunsQuery.data]);
+
+  // First-edit draft creation
   const creatingDraft = useRef(false);
   const saveFirstEdit = useRef(false);
   const [createFailure, setCreateFailure] = useState<unknown>(null);
   useEffect(() => {
     if (
+      runParam ||
       draftId ||
       explicitDraftId ||
       !pipeline.data ||
@@ -228,6 +362,7 @@ export function StudioPage() {
       })
       .catch((error: unknown) => setCreateFailure(error));
   }, [
+    runParam,
     draftId,
     explicitDraftId,
     pipeline.data,
@@ -240,6 +375,7 @@ export function StudioPage() {
     setSearchParams,
     createFailure,
   ]);
+
   useEffect(() => {
     if (!saveFirstEdit.current || !draftId || !draft.data || !studio.savedVersion || !studio.dirty)
       return;
@@ -247,110 +383,303 @@ export function StudioPage() {
     void studio.save();
   }, [draftId, draft.data, studio.savedVersion, studio.dirty, studio.save]);
 
+  // Selection, tools & panels state
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  /** Single selection (the inspector's node) — null with multi/none. */
-  const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
-  const [view, setView] = useState<StudioView>("canvas");
-  const [diffOpen, setDiffOpen] = useState(false);
+  const [tool, setTool] = useState<CanvasTool>("select");
+  const [fullInspectorForId, setFullInspectorForId] = useState<string | null>(null);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const [tryItOpen, setTryItOpen] = useState(false);
+
   const [validateOpen, setValidateOpen] = useState(false);
   const [validateOutcome, setValidateOutcome] = useState<ValidateBody | null>(null);
   const [validateFailure, setValidateFailure] = useState<unknown>(null);
   const [publishNote, setPublishNote] = useState<string | null>(null);
   const [publishFailure, setPublishFailure] = useState<unknown>(null);
   const [opError, setOpError] = useState<string | null>(null);
-  // ADR-0044 §4: the assistant's preview lives in the page — text adopted as
-  // an undoable apply, the proposed nodes ringed on the canvas.
   const [highlight, setHighlight] = useState<string[]>([]);
   const [proposalSummary, setProposalSummary] = useState<string | null>(null);
-
-  function onPreview(next: AssistantProposalPreview) {
-    const result = studio.apply(() => ({ ok: true, text: next.text, changed: next.nodeIds }));
-    if (!result.ok) {
-      setOpError(isAmbiguousOp(result) ? result.reasons.join("; ") : result.error);
-      return;
-    }
-    setOpError(null);
-    setHighlight(next.nodeIds);
-    setProposalSummary(next.summary);
-  }
-
-  async function onProposalApply() {
-    // A successful save lands the previewed bytes: clear the highlight so the
-    // canvas stops ringing and the box drops back to the plain form. A failed
-    // save keeps the preview (the save-error / conflict surface shows why) so
-    // the same proposal can be applied again once it succeeds.
-    const saved = await studio.save();
-    if (saved) {
-      setHighlight([]);
-      setProposalSummary(null);
-    }
-  }
-
-  function onProposalDiscard() {
-    studio.undo();
-    setHighlight([]);
-    setProposalSummary(null);
-  }
   const [ambiguity, setAmbiguity] = useState<{
     title: string;
     reasons: string[];
     rerun: () => void;
   } | null>(null);
-  // Design 1g phone rule: below 768px the canvas runs full width and the
-  // palette / inspector reflow UNDER it in one scrolling column (the 390
-  // reflow rule: the phone shows the 1280 content, never a drawer that is
-  // closed by default). The header's `Steps` / `Inspect` toggles jump to
-  // those panes.
+
   const phone = useIsNarrow("(max-width: 767px)");
-  const [phonePaletteOpen, setPhonePaletteOpen] = useState(false);
-  const [phoneInspectorOpen, setPhoneInspectorOpen] = useState(false);
-  const phonePaletteRef = useRef<HTMLDivElement | null>(null);
-  const phoneInspectorRef = useRef<HTMLDivElement | null>(null);
+  const hasTopBarSlot = useHasTopBarSlot();
+
+  // Close overflow menu on outside click / Esc
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    const onPointerDown = (event: Event) => {
+      const target = event.target as Node | null;
+      if (moreMenuRef.current?.contains(target)) return;
+      setMoreMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMoreMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [moreMenuOpen]);
 
   const canAuthor = hasLibraryRole(me.data);
   const status = draft.data?.status ?? "draft";
-  const readOnly = !canAuthor || status === "published";
+  const isViewingRun = Boolean(runParam);
+  const isViewingHistory = Boolean(viewingDigest);
+  const readOnly = !canAuthor || status === "published" || isViewingRun || isViewingHistory;
+
+  // Debounced 800ms autosave
+  useEffect(() => {
+    if (
+      !draftId ||
+      readOnly ||
+      !studio.dirty ||
+      studio.conflict !== null ||
+      studio.saveError !== null ||
+      studio.savedVersion <= 0 ||
+      studio.saving
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void studio.save();
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    draftId,
+    readOnly,
+    studio.dirty,
+    studio.text,
+    studio.layout,
+    studio.conflict,
+    studio.saveError,
+    studio.savedVersion,
+    studio.saving,
+    studio.save,
+  ]);
+
+  // Active canvas document / model (run pinned revision > viewed historical revision > draft)
+  const runDocumentText = runRevision.data?.document_text ?? "";
+  const runParse = useMemo(
+    () => (isViewingRun && runDocumentText ? parseGraph(runDocumentText) : null),
+    [isViewingRun, runDocumentText],
+  );
+  const viewDocumentText = viewingRevision.data?.document_text ?? "";
+  const viewParse = useMemo(
+    () => (isViewingHistory && viewDocumentText ? parseGraph(viewDocumentText) : null),
+    [isViewingHistory, viewDocumentText],
+  );
 
   const parse = studio.parse;
-  const parseOk = parse.ok;
-  const model: GraphModel = parseOk ? parse.model : (studio.lastGood?.model ?? EMPTY_MODEL);
-  // Memoized: the canvas' flow model (and thus its rebuild effect) is keyed on
-  // this object's identity — a fresh `toJsDocument(text)` on every render made
-  // the canvas rebuild on every render, re-pushing the node array into the
-  // React Flow store and oscillating the selection until React aborted with
-  // "Maximum update depth exceeded". `lastGood` only feeds the broken-YAML
-  // fallback, so it is a dependency only while the parse is broken — the
-  // effect that refreshes it runs once per text change and a plain
-  // `[…, lastGood]` list would rebuild the graph twice on every edit.
-  const document: unknown = useMemo(
-    () => (parseOk ? toJsDocument(studio.text) : (studio.lastGood?.document ?? null)),
-    [parseOk, studio.text, parseOk ? null : studio.lastGood],
+  const parseOk = isViewingRun
+    ? (runParse?.ok ?? true)
+    : isViewingHistory
+      ? (viewParse?.ok ?? true)
+      : parse.ok;
+  const model: GraphModel = isViewingRun
+    ? runParse?.ok
+      ? runParse.model
+      : EMPTY_MODEL
+    : isViewingHistory
+      ? viewParse?.ok
+        ? viewParse.model
+        : EMPTY_MODEL
+      : parse.ok
+        ? parse.model
+        : (studio.lastGood?.model ?? EMPTY_MODEL);
+
+  const documentObj: unknown = useMemo(() => {
+    if (isViewingRun) {
+      return runRevision.data?.canonical_document ?? toJsDocument(runDocumentText);
+    }
+    if (isViewingHistory) {
+      return viewingRevision.data?.canonical_document ?? toJsDocument(viewDocumentText);
+    }
+    return parse.ok ? toJsDocument(studio.text) : (studio.lastGood?.document ?? null);
+  }, [
+    isViewingRun,
+    runRevision.data,
+    runDocumentText,
+    isViewingHistory,
+    viewingRevision.data,
+    viewDocumentText,
+    parse.ok,
+    studio.text,
+    parse.ok ? null : studio.lastGood,
+  ]);
+
+  const activeLayout: UiLayout = useMemo(() => {
+    if (isViewingRun) {
+      return (
+        (runRevision.data?.ui_layout as unknown as UiLayout) ?? uiLayoutOfText(runDocumentText)
+      );
+    }
+    if (isViewingHistory) {
+      return (
+        (viewingRevision.data?.ui_layout as unknown as UiLayout) ?? uiLayoutOfText(viewDocumentText)
+      );
+    }
+    return studio.layout;
+  }, [
+    isViewingRun,
+    runRevision.data,
+    runDocumentText,
+    isViewingHistory,
+    viewingRevision.data,
+    viewDocumentText,
+    studio.layout,
+  ]);
+
+  // Run projection + VerdictStack per GoalFrame scope
+  const baseRun = useMemo(() => (runQuery.data ? viewRun(runQuery.data) : null), [runQuery.data]);
+  const baseRunNodes = useMemo(
+    () => (runNodesQuery.data?.node_executions ?? []).map(viewNodeExecution),
+    [runNodesQuery.data],
   );
-  const parseError = parseOk ? null : { error: parse.error, line: parse.line };
+  const runProjection = useMemo(
+    () =>
+      isViewingRun ? projectRun({ run: baseRun, nodes: baseRunNodes }, runEvents.events) : null,
+    [isViewingRun, baseRun, baseRunNodes, runEvents.events],
+  );
+  const statusOverlay = useMemo(
+    () => (runProjection ? overlays(runProjection.nodes, {}) : undefined),
+    [runProjection],
+  );
 
-  /** Drop selected ids the graph no longer knows (undo/redo, deletes, YAML).
-   *  The array identity is kept when nothing is stale, so the canvas' rebuild
-   *  (which depends on `selectedIds`) doesn't churn on every parse. */
-  useEffect(() => {
-    setSelectedIds((current) => {
-      const alive = current.filter((id) => model.nodes.some((n) => n.id === id));
-      return alive.length === current.length ? current : alive;
+  // Identify GoalFrame scopes & verdict-step executions to fetch outputs for VerdictStack
+  const goalScopes = useMemo(() => {
+    if (!isViewingRun || !documentObj || typeof documentObj !== "object") return [];
+    const doc = documentObj as DefinitionDocument;
+    const found: { id: string; verdictStepId: string | null }[] = [];
+    const walk = (nodes: DefinitionNode[]) => {
+      for (const n of nodes) {
+        if (n.kind === "until" && readGoal(n) !== null) {
+          found.push({ id: n.id, verdictStepId: verdictStepId(n) });
+        }
+        if (isScopeKind(n.kind)) walk(scopeBody(n));
+      }
+    };
+    if (Array.isArray(doc.spec?.nodes)) walk(doc.spec.nodes);
+    return found;
+  }, [isViewingRun, documentObj]);
+
+  const verdictStepExecutions = useMemo(() => {
+    if (!isViewingRun || !runProjection || goalScopes.length === 0) return [];
+    const wantedIds = new Set(
+      goalScopes.map((g) => g.verdictStepId).filter((id): id is string => Boolean(id)),
+    );
+    return runProjection.nodes.filter(
+      (exec) =>
+        wantedIds.has(exec.node_id) && (exec.status === "succeeded" || exec.status === "failed"),
+    );
+  }, [isViewingRun, runProjection, goalScopes]);
+
+  const verdictDetailQueries = useQueries({
+    queries: verdictStepExecutions.map((exec) => ({
+      queryKey: queryKeys.runNode(runParam, exec.id),
+      queryFn: () => apiFetch<NodeExecutionDetail>(`/api/v1/runs/${runParam}/nodes/${exec.id}`),
+      enabled: Boolean(runParam && exec.id),
+    })),
+  });
+
+  const verdictsByScope = useMemo(() => {
+    if (!isViewingRun || !runProjection || goalScopes.length === 0) return undefined;
+    const outputsByExecId = new Map<string, Record<string, unknown> | null>();
+    verdictStepExecutions.forEach((exec, idx) => {
+      const detail = verdictDetailQueries[idx]?.data;
+      const latestAttempt = detail?.attempts
+        ?.slice()
+        .sort((a, b) => a.attempt_number - b.attempt_number)
+        .at(-1);
+      outputsByExecId.set(
+        exec.id,
+        (latestAttempt?.outputs as Record<string, unknown> | null) ?? null,
+      );
     });
-  }, [model]);
+    const out: Record<string, VerdictRound[]> = {};
+    for (const scopeItem of goalScopes) {
+      const scopeRows = runProjection.nodes.filter(
+        (r) => scopeIterationIndex(r.node_instance_key, scopeItem.id) !== null,
+      );
+      const iterations = [
+        ...new Set(
+          scopeRows
+            .map((r) => scopeIterationIndex(r.node_instance_key, scopeItem.id))
+            .filter((n): n is number => n !== null && n >= 1),
+        ),
+      ].sort((a, b) => a - b);
+      if (iterations.length === 0) continue;
+      const maxIter = iterations[iterations.length - 1];
+      const scopeOverallStatus = statusOverlay?.[scopeItem.id]?.state ?? "queued";
+      const rounds: VerdictRound[] = [];
+      for (const n of iterations) {
+        const exec: NodeExecutionSummary | undefined = scopeItem.verdictStepId
+          ? scopeRows.find(
+              (r) =>
+                r.node_id === scopeItem.verdictStepId &&
+                scopeIterationIndex(r.node_instance_key, scopeItem.id) === n,
+            )
+          : undefined;
+        const outputs = exec ? outputsByExecId.get(exec.id) : null;
+        const parsedJudge = parseJudgeOutput(outputs);
+        let verdict: VerdictRound["verdict"];
+        let reason: string | undefined = parsedJudge?.reason;
+        if (parsedJudge) {
+          verdict = parsedJudge.verdict;
+        } else if (
+          exec &&
+          (exec.status === "running" || exec.status === "leased" || exec.status === "ready")
+        ) {
+          verdict = "running";
+        } else if (n < maxIter) {
+          verdict = "not_yet";
+        } else if (scopeOverallStatus === "done") {
+          verdict = "met";
+        } else if (exec?.status === "failed") {
+          verdict = "not_yet";
+        } else if (scopeOverallStatus === "running" || !exec) {
+          verdict = "running";
+        } else {
+          verdict = "not_yet";
+        }
+        if (!reason && outputs && typeof outputs.reason === "string" && outputs.reason.trim()) {
+          reason = outputs.reason.trim();
+        } else if (!reason && exec?.failed_cause) {
+          reason = exec.failed_cause;
+        }
+        rounds.push({ n, verdict, ...(reason ? { reason } : {}) });
+      }
+      if (rounds.length > 0) out[scopeItem.id] = rounds;
+    }
+    return out;
+  }, [
+    isViewingRun,
+    runProjection,
+    goalScopes,
+    verdictStepExecutions,
+    verdictDetailQueries,
+    statusOverlay,
+  ]);
 
-  /** Single-select from the steps list / node clicks / "go to node".
-   *  Stable identity: the canvas rebuild and React Flow's selection effect
-   *  both depend on these callbacks — a fresh closure on every render would
-   *  re-fire the selection effect and ping-pong with the store's own
-   *  selection state. */
+  const activeSelectedIds = useMemo(
+    () => selectedIds.filter((id) => model.nodes.some((n) => n.id === id)),
+    [selectedIds, model],
+  );
+  const selectedId = activeSelectedIds.length === 1 ? activeSelectedIds[0] : null;
+
+  useEffect(() => {
+    setFullInspectorForId((prev) => (prev === selectedId ? prev : null));
+  }, [selectedId]);
+
   const selectOne = useCallback((id: string | null) => {
     setSelectedIds(id !== null ? [id] : []);
   }, []);
 
-  /** React Flow's selection set (Shift+click, the Shift+drag box).
-   *  Bails out (same array identity) when the set already matches, so the
-   *  page state and React Flow's internal selection converge instead of
-   *  chasing each other. `model` is read through a ref for stability. */
   const modelRef = useRef(model);
   modelRef.current = model;
   const selectMany = useCallback((ids: string[]) => {
@@ -363,18 +692,6 @@ export function StudioPage() {
     });
   }, []);
 
-  /** Wrap the selection in a bounded repeat scope; on success the new scope
-   *  is selected so the inspector shows Pass when / Max iterations, etc. */
-  function handleWrap(kind: ScopeKind) {
-    runOp((text) => wrapInScope(text, selectedIds, { kind }));
-  }
-
-  /** Unwrap a single selected until / for_each scope. */
-  function handleUnwrap(scopeId: string) {
-    runOp((text) => unwrapScope(text, scopeId));
-  }
-
-  /** Commit a graph op: ok → select the changed node; otherwise name the failure. */
   function runOp(op: (text: string) => OpResult) {
     const result = studio.apply(op);
     if (result.ok) {
@@ -389,7 +706,51 @@ export function StudioPage() {
     setOpError(result.error);
   }
 
-  /** Insert on an edge — the §4 ambiguity rule opens the dialog instead of rewiring. */
+  function handleWrapRepeat(nodeIds: string[], goal: GoalSpec) {
+    const result = studio.apply((text) => {
+      const res = wrapInUntil(text, nodeIds, goal);
+      if (!res.ok && "unsupported" in res) {
+        return { ok: false, error: res.unsupported };
+      }
+      return res;
+    });
+    if (result.ok) {
+      setOpError(null);
+      setSelectedIds(result.changed[0] !== undefined ? [result.changed[0]] : []);
+      setTool("select");
+    } else if (isAmbiguousOp(result)) {
+      setOpError(result.reasons.join("; "));
+    } else {
+      setOpError(result.error);
+    }
+  }
+
+  function handleWrapSideBySide(nodeIds: string[]) {
+    runOp((text) => wrapSideBySide(text, nodeIds));
+    setTool("select");
+  }
+
+  function handleEditGoal(scopeId: string, goal: GoalSpec) {
+    const result = studio.apply((text) => {
+      const res = updateUntilGoal(text, scopeId, goal);
+      if (!res.ok && "unsupported" in res) {
+        return { ok: false, error: res.unsupported };
+      }
+      return res;
+    });
+    if (result.ok) {
+      setOpError(null);
+    } else if (isAmbiguousOp(result)) {
+      setOpError(result.reasons.join("; "));
+    } else {
+      setOpError(result.error);
+    }
+  }
+
+  function handleUnwrap(scopeId: string) {
+    runOp((text) => unwrapScope(text, scopeId));
+  }
+
   function insertOnEdge(edge: GraphEdge, kind: string, acceptAmbiguity = false) {
     const title = `Insert a step between ${edge.from} and ${edge.to}`;
     const result = studio.apply((text) => insertOnEdgeOp(text, edge, kind, { acceptAmbiguity }));
@@ -412,8 +773,8 @@ export function StudioPage() {
     setOpError(result.error);
   }
 
-  function handleAddAfter(afterId: string | null, scope: ScopePath, kind: string) {
-    runOp((text) => addNode(text, { kind, scope, after: afterId }));
+  function handleAddAfter(afterId: string | null, nodeScope: ScopePath, kind: string) {
+    runOp((text) => addNode(text, { kind, scope: nodeScope, after: afterId }));
   }
 
   function handleDelete(ids: string[]) {
@@ -430,20 +791,132 @@ export function StudioPage() {
     setSelectedIds([]);
   }
 
-  async function runValidate() {
-    if (studio.dirty && !(await studio.save())) return;
-    setValidateFailure(null);
-    try {
-      const body = await validate.mutateAsync();
-      setValidateOutcome(viewValidate(body));
-    } catch (error) {
-      setValidateFailure(error);
+  function onPreview(next: AssistantProposalPreview) {
+    const result = studio.apply(() => ({ ok: true, text: next.text, changed: next.nodeIds }));
+    if (!result.ok) {
+      setOpError(isAmbiguousOp(result) ? result.reasons.join("; ") : result.error);
+      return;
     }
-    setValidateOpen(true);
+    setOpError(null);
+    setHighlight(next.nodeIds);
+    setProposalSummary(next.summary);
   }
 
-  /** "Go to node": the deepest node the finding's pointer names (the node
-   *  itself, or a field / scoped child inside it). */
+  async function onProposalApply() {
+    const saved = await studio.save();
+    if (saved) {
+      setHighlight([]);
+      setProposalSummary(null);
+    }
+  }
+
+  function onProposalDiscard() {
+    studio.undo();
+    setHighlight([]);
+    setProposalSummary(null);
+  }
+
+  function setPanel(nextPanel: string | null) {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (nextPanel) next.set("panel", nextPanel);
+        else next.delete("panel");
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  function exitRunView() {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete("run");
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  async function onMakeLive() {
+    if (readOnly || !draftId) return;
+    setPublishFailure(null);
+    setValidateFailure(null);
+
+    const needsValidation = status !== "valid" || studio.dirty;
+    if (studio.dirty) {
+      const saved = await studio.save();
+      if (!saved) return;
+    }
+    if (needsValidation) {
+      try {
+        const body = await validate.mutateAsync();
+        const outcome = viewValidate(body);
+        setValidateOutcome(outcome);
+        if (!outcome || !outcome.valid) {
+          setValidateOpen(true);
+          return;
+        }
+        setValidateOpen(false);
+      } catch (error) {
+        setValidateFailure(error);
+        setValidateOpen(true);
+        return;
+      }
+    }
+    try {
+      const revision = await publish.mutateAsync({ version: studio.getSavedVersion() });
+      setPublishNote(`published as r${revision.revision_number} ${revision.version_label}`);
+      setValidateOpen(false);
+    } catch (error) {
+      setPublishFailure(error);
+    }
+  }
+
+  async function onDiscardDraft() {
+    if (readOnly || !draftId) return;
+    setMoreMenuOpen(false);
+    try {
+      await deleteDraft.mutateAsync(draftId);
+      setPanel(null);
+      navigate(newestSummary ? routes.factoryWorkflow(pipelineId, scope) : routes.factory(scope), {
+        replace: true,
+      });
+    } catch (error) {
+      setOpError(problemOf(error).detail || problemOf(error).title);
+    }
+  }
+
+  async function onRestoreRevision(rev: PipelineRevisionSummary) {
+    if (!canAuthor) return;
+    try {
+      const record = await apiFetch<{ id: string; document_text: string }>(
+        `/api/v1/revisions/${rev.revision_digest}`,
+      );
+      if (draftId && status !== "published") {
+        studio.apply(() => ({ ok: true, text: record.document_text, changed: [] }));
+        setViewingDigest(null);
+        setPanel(null);
+      } else {
+        const created = await createDraft.mutateAsync({ from_revision_id: record.id });
+        setViewingDigest(null);
+        setPanel(null);
+        setSearchParams(
+          (current) => {
+            const next = new URLSearchParams(current);
+            next.set("draft", created.id);
+            next.delete("panel");
+            return next;
+          },
+          { replace: true },
+        );
+      }
+    } catch (error) {
+      setOpError(problemOf(error).detail || problemOf(error).title);
+    }
+  }
+
   function goToNode(instanceLocation: string | null) {
     if (instanceLocation === null) return;
     const matches = model.nodes.filter(
@@ -454,51 +927,31 @@ export function StudioPage() {
       n.pointer.length > deepest.pointer.length ? n : deepest,
     );
     selectOne(node.id);
-    setView("canvas");
+    setValidateOpen(false);
   }
 
-  // The publish gate, in the page's own words, not just a disabled button
-  // (DraftEditor's rule: saved bytes + the server's `valid` verdict).
-  let publishReason: string | null;
-  if (status === "published") {
-    publishReason = "this draft is already published — revisions are immutable";
-  } else if (!canAuthor) {
-    publishReason = LIBRARY_READ_ONLY_NOTE;
-  } else if (studio.dirty) {
-    publishReason = "save first — publishing uses what you last saved, not your current edit";
-  } else if (status !== "valid") {
-    publishReason = `this draft is ${
-      status === "draft" ? "not validated" : status
-    } — run validation first; only a validated draft can be published`;
-  } else {
-    publishReason = null;
-  }
-
-  async function onPublish() {
-    if (publishReason !== null) return;
-    setPublishFailure(null);
+  // Semantic diff count for the draft status indicator
+  const baseDocument = newestRevision.data?.canonical_document ?? null;
+  const draftChangeCount = useMemo(() => {
+    if (!baseDocument || !parseOk) return null;
     try {
-      const revision = await publish.mutateAsync({ version: studio.savedVersion });
-      setPublishNote(`published as r${revision.revision_number} ${revision.version_label}`);
-    } catch (error) {
-      setPublishFailure(error);
+      const diff = semanticDiff(baseDocument, parseYaml(studio.text));
+      return diff.nodes.length + diff.edges.length + diff.pipeline.length;
+    } catch {
+      return null;
     }
-  }
+  }, [baseDocument, parseOk, studio.text]);
 
-  // A draft the reader cannot open is still the Studio page: the breadcrumb and
-  // the workflow's own name stand over the panel that quotes the server, the way
-  // the 1e workflow page handles its failed read (design-landmark check
-  // `studio-error-heading`). Only what the reads actually answered is named: the
-  // pipeline title when that read succeeded, a neutral `Workflow draft` when it
-  // did not — never the id. The failure keeps the `studio-draft-error` alert and
-  // offers the retry the read supports. All hooks have run by this point.
+  // Loading & error guards (all hooks ran above)
   if (
-    (!explicitDraftId &&
+    (!runParam &&
+      !explicitDraftId &&
       (!pipeline.data || !drafts.data || !me.data || (newestSummary && !newestRevision.data))) ||
-    (draftId && draft.isPending)
-  )
+    (draftId && !runParam && draft.isPending)
+  ) {
     return <Spinner label="Loading the draft" />;
-  if (draftId && draft.isError) {
+  }
+  if (draftId && !runParam && draft.isError) {
     const notFound = draft.error instanceof ApiError && draft.error.status === 404;
     return (
       <div className="min-h-[calc(100dvh-44px)] bg-paper" data-testid="studio-error-page">
@@ -513,7 +966,7 @@ export function StudioPage() {
                 testid="studio-draft-error"
                 label="Draft unavailable"
                 copy="Draft not found or you do not have access."
-                hint="The breadcrumb above opens the workflow, whose History tab lists the drafts that are there. There is nothing to retry: this draft is not here."
+                hint="The breadcrumb above opens Factory. There is nothing to retry: this draft is not here."
               />
             ) : (
               <ProblemBanner
@@ -527,8 +980,8 @@ export function StudioPage() {
                   testid: "studio-draft-retry",
                 }}
                 back={{
-                  to: routes.workflows(),
-                  label: "← Back to workflows",
+                  to: routes.factory(scope),
+                  label: "← Back to Factory",
                   testid: "studio-back-to-workflows",
                 }}
                 testid="studio-draft-error"
@@ -540,72 +993,178 @@ export function StudioPage() {
     );
   }
 
-  const baseDocument = newestRevision.data?.canonical_document ?? null;
+  const pipelineName = pipeline.data?.display_name || pipeline.data?.slug || pipelineId;
+  const projectLabel = project.data?.name || scope || "";
+  const revisions = (pipeline.data?.revisions ?? []).map(viewRevisionSummary);
+  const newestPublishedId = newestRevision.data?.id ?? null;
 
-  // Design 1g (pass 3 #3): the inspector column is a flex column at least as
-  // tall as the aside — the form fills it and the assistant row is PINNED to
-  // the bottom behind a top border, exactly where 1g draws it.
-  //
-  // The form area scrolls INSIDE its own box (`overflow-y-auto`): `min-h-0`
-  // already lets the flex child shrink below its content, so on a step whose
-  // form is taller than the aside (the model step's message textarea) the form
-  // painted straight OVER the pinned `Ask to change this draft…` row — the
-  // pass-6 overlap defect (`insp-*-content × assistant-proposal-footer`). With
-  // its own scroll box the column stays exactly the aside's tall, the pin
-  // stays pinned, and no field can bleed into it. On the phone the pane has
-  // no fixed height, so this is the same one-column page scroll as before.
-  const inspector = (
-    <div className="flex min-h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {selectedIds.length > 1 ? (
-          <div
-            className="rounded-[3px] border border-line bg-paper p-[8px]"
-            data-testid="multi-select-panel"
-          >
-            <p
-              className="font-mono text-[11px] font-semibold text-ink"
-              data-testid="multi-select-count"
+  // Draft status line in TopBarLeft
+  let draftStatusNode: React.ReactNode = null;
+  if (isViewingRun) {
+    draftStatusNode = (
+      <span
+        className="flex items-center gap-[6px] text-[12px] text-muted"
+        data-testid="studio-draft-status"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-st-running-strong" aria-hidden />
+        Run {shortId(runParam)}
+      </span>
+    );
+  } else if (studio.saving) {
+    draftStatusNode = (
+      <span
+        className="flex items-center gap-[6px] text-[12px] text-muted"
+        data-testid="studio-draft-status"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
+        Saving…
+      </span>
+    );
+  } else if (studio.saveError) {
+    const errText = problemOf(studio.saveError).detail || problemOf(studio.saveError).title;
+    draftStatusNode = (
+      <span
+        className="flex items-center gap-[6px] text-[12px] text-st-failed-tag-fg"
+        data-testid="studio-draft-status"
+      >
+        × Couldn&apos;t save: {errText}
+      </span>
+    );
+  } else if (studio.conflict) {
+    draftStatusNode = (
+      <span
+        className="flex items-center gap-[6px] text-[12px] text-st-failed-tag-fg"
+        data-testid="studio-draft-status"
+      >
+        × Conflict (server at v{studio.conflict.currentVersion})
+      </span>
+    );
+  } else if (!draftId && newestSummary) {
+    draftStatusNode = (
+      <span
+        className="flex items-center gap-[6px] text-[12px] text-muted"
+        data-testid="studio-draft-status"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-st-done-tag-fg" aria-hidden />
+        Live v{newestSummary.revision_number}
+      </span>
+    );
+  } else if (draftId) {
+    const changeSummary =
+      newestSummary !== null && draftChangeCount !== null
+        ? ` · ${draftChangeCount} ${draftChangeCount === 1 ? "change" : "changes"} from live v${newestSummary.revision_number}`
+        : newestSummary === null
+          ? " · unpublished"
+          : "";
+    draftStatusNode = (
+      <span
+        className="flex items-center gap-[6px] text-[12px] text-muted"
+        data-testid="studio-draft-status"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
+        Your draft{changeSummary}
+      </span>
+    );
+  }
+
+  const topBarContent = (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-[12px] gap-y-[2px]">
+      <nav
+        aria-label="Breadcrumb"
+        className="flex min-w-0 items-center gap-[6px] text-[14px]"
+        data-testid="studio-breadcrumb"
+      >
+        {scope ? (
+          <>
+            <Link
+              to={routes.scopeHome(scope)}
+              data-testid="studio-breadcrumb-project"
+              className="shrink-0 text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
             >
-              {selectedIds.length} steps selected
-            </p>
-            <ul className="mt-1 flex flex-wrap gap-1" data-testid="multi-select-ids">
-              {selectedIds.map((id) => (
-                <li
-                  key={id}
-                  className="rounded-[3px] bg-accent-wash px-[5px] py-[1px] font-mono text-[10px] text-accent"
-                >
-                  {id}
-                </li>
-              ))}
-            </ul>
-            <p className="mt-1.5 font-mono text-[10px] text-faint">
-              Wrap the selection in a bounded repeat scope, or clear the selection to edit a single
-              step.
-            </p>
-            <div className="mt-2">
-              <SelectionToolbar
-                variant="panel"
-                selectedIds={selectedIds}
-                model={model}
-                readOnly={readOnly}
-                onWrap={handleWrap}
-                onUnwrap={handleUnwrap}
-              />
-            </div>
-          </div>
-        ) : (
-          <StudioInspector
-            model={model}
-            nodeId={selectedId}
-            document={document}
-            text={studio.text}
-            readOnly={readOnly}
-            apply={studio.apply}
-            onDelete={(id) => handleDelete([id])}
-          />
-        )}
+              {projectLabel}
+            </Link>
+            <span aria-hidden className="text-line-strong">
+              /
+            </span>
+          </>
+        ) : null}
+        <Link
+          to={routes.factory(scope)}
+          data-testid="studio-breadcrumb-workflows"
+          className="shrink-0 text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          Factory
+        </Link>
+        <span aria-hidden className="text-line-strong">
+          /
+        </span>
+        <span
+          className="min-w-0 truncate font-bold text-ink"
+          data-testid="studio-title"
+          title={pipelineName}
+        >
+          {pipelineName}
+        </span>
+      </nav>
+      {draftStatusNode}
+    </div>
+  );
+
+  // Selected node details (for AgentStepCard vs full StudioInspector)
+  const selectedGraphNode = selectedId ? findNode(model, selectedId) : undefined;
+  const isAgentStep = selectedGraphNode?.kind === "agent.acp";
+  const showAgentCard = Boolean(
+    selectedId &&
+    isAgentStep &&
+    fullInspectorForId !== selectedId &&
+    !isViewingRun &&
+    !isViewingHistory &&
+    tool !== "box",
+  );
+  const showStepInspector =
+    Boolean(selectedId && (!isAgentStep || fullInspectorForId === selectedId)) &&
+    !showAgentCard &&
+    !isViewingRun &&
+    !isViewingHistory &&
+    tool !== "box";
+  const showSettingsInspector = panelParam === "settings" && !selectedId;
+
+  const selectedCfg = selectedId ? nodeConfigOf(documentObj, model, selectedId) : {};
+  const agentProfile = typeof selectedCfg.profile === "string" ? selectedCfg.profile : "";
+  const agentPrompt = typeof selectedCfg.prompt === "string" ? selectedCfg.prompt : "";
+
+  const inspectorPanel = (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center border-b border-line-soft px-[16px] py-[10px]">
+        <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
+          {selectedId ? "Step settings" : "Workflow settings"}
+        </span>
+        <button
+          type="button"
+          aria-label="Close inspector"
+          data-testid="editor-inspector-close"
+          onClick={() => {
+            setFullInspectorForId(null);
+            if (selectedId) selectOne(null);
+            if (panelParam === "settings") setPanel(null);
+          }}
+          className="icon-hit ml-auto inline-flex h-[24px] w-[24px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <IconX size={15} stroke={1.5} aria-hidden />
+        </button>
       </div>
-      {studio.guard.pending === null && studio.conflict === null && selectedIds.length <= 1 ? (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <StudioInspector
+          model={model}
+          nodeId={selectedId}
+          document={documentObj}
+          text={studio.text}
+          readOnly={readOnly}
+          apply={studio.apply}
+          onDelete={(id) => handleDelete([id])}
+        />
+      </div>
+      {studio.guard.pending === null && studio.conflict === null && !selectedId ? (
         <div className="shrink-0" data-testid="studio-assistant-dock">
           <AssistantProposalBox
             draftId={draftId}
@@ -632,119 +1191,14 @@ export function StudioPage() {
       ) : null}
     </div>
   );
-  const canvas = (
-    <StudioCanvas
-      model={model}
-      direction="LR"
-      document={document}
-      layout={studio.layout}
-      selectedId={selectedId}
-      selectedIds={selectedIds}
-      onSelectionChange={selectMany}
-      readOnly={readOnly || !parseOk}
-      stale={!parseOk}
-      staleMessage="YAML has errors — the canvas shows the last valid version; graph editing is paused"
-      highlight={highlight.length > 0 ? highlight : undefined}
-      onSelect={selectOne}
-      onMove={readOnly ? undefined : studio.move}
-      onInsertOnEdge={readOnly ? undefined : (edge, kind) => insertOnEdge(edge, kind)}
-      onAddAfter={readOnly ? undefined : handleAddAfter}
-      onConnect={readOnly ? undefined : (from, to) => runOp((text) => connectOp(text, from, to))}
-      onDelete={readOnly ? undefined : handleDelete}
-      onDuplicate={readOnly ? undefined : (id) => runOp((text) => duplicateNode(text, id))}
-      canConnect={readOnly ? undefined : (from, to) => canConnectOf(model, from, to)}
-      showToolIsland
-      onIslandAdd={(kind, position) => {
-        const result = studio.apply((text) =>
-          addNode(text, { kind, scope: [], after: selectedId }),
-        );
-        if (result.ok) {
-          setOpError(null);
-          const id = result.changed[0];
-          if (id) {
-            setSelectedIds([id]);
-            if (!selectedId) studio.move(id, position);
-          }
-        } else if (isAmbiguousOp(result)) setOpError(result.reasons.join("; "));
-        else setOpError(result.error);
-      }}
-      hideStepList
-    />
-  );
-  const yaml = <YamlEditor text={studio.text} error={parseError} onChange={studio.setText} />;
 
-  // The drawers live below the surface (canvas or outline), full column width:
-  // the validate results with go-to-node, and the diff against the newest
-  // published revision's canonical document.
-  const drawers = (
-    <>
-      {validateOpen ? (
-        <div
-          className="max-h-[40%] overflow-auto border-t border-line bg-surface p-3"
-          data-testid="studio-validate-drawer"
-        >
-          {validateFailure !== null ? (
-            <ProblemBanner
-              error={validateFailure}
-              fallback="The draft could not be validated."
-              testid="studio-validate-error"
-            />
-          ) : validateOutcome === null ? (
-            <p className="font-mono text-[11px] text-muted" data-testid="studio-validate-pending">
-              validating…
-            </p>
-          ) : (
-            <>
-              <p className="font-mono text-[11px]" data-testid="studio-validate-verdict">
-                {validateOutcome.valid
-                  ? `valid — ${validateOutcome.errors.length} findings`
-                  : `invalid — ${validateOutcome.errors.length} findings`}
-              </p>
-              {validateOutcome.errors.length > 0 ? (
-                <ul className="mt-1 divide-y divide-line" data-testid="studio-validate-findings">
-                  {validateOutcome.errors.map((issue, index) => (
-                    <li
-                      key={`${issue.code}-${index}`}
-                      className="flex items-start gap-[8px] py-[3px]"
-                      data-testid={`studio-validate-finding-${index}`}
-                    >
-                      <span className="min-w-0 flex-1 font-mono text-[11px] text-muted">
-                        <span className="text-ink">{issue.code}</span> · {issue.message}
-                      </span>
-                      {issue.instance_location !== null ? (
-                        <Button
-                          variant="ghost"
-                          compact
-                          data-testid={`studio-goto-node-${index}`}
-                          onClick={() => goToNode(issue.instance_location)}
-                        >
-                          go to node
-                        </Button>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
-      {diffOpen ? (
-        <div
-          className="max-h-[40%] overflow-auto border-t border-line bg-surface p-3"
-          data-testid="studio-diff-drawer"
-        >
-          {newestSummary === null ? (
-            <p className="font-mono text-[11px] text-muted" data-testid="studio-diff-empty">
-              first revision — nothing to compare
-            </p>
-          ) : (
-            <DiffPanel baseDocument={baseDocument} text={studio.text} className="!p-0" />
-          )}
-        </div>
-      ) : null}
-    </>
-  );
+  const runBannerState = runProjection?.run
+    ? STATES[stateOf(RUN_STATE[runProjection.run.status] ?? "queued")]
+    : STATES.queued;
+
+  const viewedRevSummary = viewingDigest
+    ? (revisions.find((r) => r.revision_digest === viewingDigest) ?? null)
+    : null;
 
   return (
     <div
@@ -752,55 +1206,20 @@ export function StudioPage() {
       data-testid="studio-page"
       data-phone={phone ? "true" : "false"}
     >
-      <StudioHeader
-        pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
-        pipelineFolder={pipeline.data?.folder ?? null}
-        savedVersion={studio.savedVersion || null}
-        readOnly={readOnly}
-        canUndo={studio.canUndo}
-        canRedo={studio.canRedo}
-        onUndo={studio.undo}
-        onRedo={studio.redo}
-        onSave={() => void studio.save()}
-        saving={studio.saving}
-        dirty={studio.dirty}
-        onValidate={() => void runValidate()}
-        validatePending={validate.isPending}
-        onPublish={() => void onPublish()}
-        publishPending={publish.isPending}
-        publishReason={publishReason}
-        view={view}
-        onViewChange={setView}
-        phoneToggles={
-          phone
-            ? {
-                paletteOpen: phonePaletteOpen,
-                inspectorOpen: phoneInspectorOpen,
-                onTogglePalette: () => {
-                  setPhonePaletteOpen((open) => !open);
-                  setPhoneInspectorOpen(false);
-                  phonePaletteRef.current?.scrollIntoView({ block: "start" });
-                },
-                onToggleInspector: () => {
-                  setPhoneInspectorOpen((open) => !open);
-                  setPhonePaletteOpen(false);
-                  phoneInspectorRef.current?.scrollIntoView({ block: "start" });
-                },
-              }
-            : null
-        }
-      />
+      {hasTopBarSlot ? (
+        <TopBarLeft>{topBarContent}</TopBarLeft>
+      ) : (
+        <div
+          className="flex shrink-0 items-center border-b border-line bg-surface px-4 py-2"
+          data-testid="studio-topbar-fallback"
+        >
+          {topBarContent}
+        </div>
+      )}
+
       {createFailure ? (
         <ProblemBanner error={createFailure} fallback="The draft could not be created." />
       ) : null}
-      <button
-        type="button"
-        data-testid="studio-diff"
-        onClick={() => setDiffOpen((open) => !open)}
-        className="self-end px-3 text-xs text-muted focus-visible:outline-2 focus-visible:outline-accent"
-      >
-        Compare with live
-      </button>
       {studio.guard.pending !== null ? (
         <div
           className="flex flex-wrap items-center gap-[8px] border-b border-line bg-st-waiting-pale-body px-4 py-2"
@@ -881,31 +1300,444 @@ export function StudioPage() {
       {publishFailure !== null ? (
         <FormError error={publishFailure} testid="studio-publish-error" />
       ) : null}
+      {!canAuthor ? (
+        <div
+          className="border-b border-line bg-paper px-4 py-1 font-mono text-[11px] text-muted"
+          data-testid="studio-read-only-note"
+        >
+          {LIBRARY_READ_ONLY_NOTE}
+        </div>
+      ) : null}
 
-      <div className="flex min-h-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div className="relative min-h-0 flex-1 overflow-hidden">
-            {view === "yaml" ? (
-              yaml
-            ) : (
-              <div className="flex h-full min-h-0 flex-col">
-                <SelectionToolbar
-                  variant="toolbar"
-                  selectedIds={selectedIds}
-                  model={model}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <StudioCanvas
+          model={model}
+          direction="LR"
+          document={documentObj}
+          layout={activeLayout}
+          selectedId={selectedId}
+          selectedIds={activeSelectedIds}
+          onSelectionChange={selectMany}
+          readOnly={readOnly || !parseOk}
+          stale={!parseOk}
+          staleMessage="YAML has errors — the canvas shows the last valid version; graph editing is paused"
+          highlight={highlight.length > 0 ? highlight : undefined}
+          statusOverlay={statusOverlay}
+          verdictsByScope={verdictsByScope}
+          trigger={
+            triggers.subline
+              ? {
+                  subline: triggers.subline,
+                  onClick: () => setTriggersDialogOpen(true),
+                }
+              : null
+          }
+          tool={tool}
+          onToolChange={setTool}
+          phone={phone}
+          onSelect={selectOne}
+          onMove={readOnly ? undefined : studio.move}
+          onInsertOnEdge={readOnly ? undefined : (edge, kind) => insertOnEdge(edge, kind)}
+          onAddAfter={readOnly ? undefined : handleAddAfter}
+          onConnect={
+            readOnly ? undefined : (from, to) => runOp((text) => connectOp(text, from, to))
+          }
+          onDelete={readOnly ? undefined : handleDelete}
+          onDuplicate={readOnly ? undefined : (id) => runOp((text) => duplicateNode(text, id))}
+          canConnect={readOnly ? undefined : (from, to) => canConnectOf(model, from, to)}
+          onWrapRepeat={readOnly ? undefined : handleWrapRepeat}
+          onWrapSideBySide={readOnly ? undefined : handleWrapSideBySide}
+          onEditGoal={readOnly ? undefined : handleEditGoal}
+          onUnwrap={readOnly ? undefined : handleUnwrap}
+          showToolIsland={!isViewingRun}
+          onIslandAdd={(kind, position) => {
+            const result = studio.apply((text) =>
+              addNode(text, { kind, scope: [], after: selectedId }),
+            );
+            if (result.ok) {
+              setOpError(null);
+              const id = result.changed[0];
+              if (id) {
+                setSelectedIds([id]);
+                if (!selectedId) studio.move(id, position);
+              }
+            } else if (isAmbiguousOp(result)) setOpError(result.reasons.join("; "));
+            else setOpError(result.error);
+          }}
+          hideStepList
+          renderNodeOverlay={({ nodeId: overlayNodeId, placement, sheet }) => {
+            if (!showAgentCard || overlayNodeId !== selectedId) return null;
+            return (
+              <div
+                data-testid="agent-card-anchor"
+                data-side={sheet ? "sheet" : placement.side}
+                className={sheet ? "fixed inset-x-0 bottom-0 z-40" : "absolute z-30"}
+                style={sheet ? undefined : { left: placement.left, top: placement.top }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <AgentStepCard
+                  nodeId={overlayNodeId}
+                  profile={agentProfile}
+                  prompt={agentPrompt}
+                  text={studio.text}
                   readOnly={readOnly}
-                  onWrap={handleWrap}
-                  onUnwrap={handleUnwrap}
+                  apply={studio.apply}
+                  onRenamed={(nextId) => setSelectedIds([nextId])}
+                  onMoreSettings={() => setFullInspectorForId(overlayNodeId)}
+                  onClose={() => selectOne(null)}
+                  sheet={sheet}
                 />
-                <div className="min-h-0 flex-1">{canvas}</div>
               </div>
+            );
+          }}
+        />
+
+        {/* Top-center Run Banner (?run=<runId>) */}
+        {isViewingRun ? (
+          <div
+            data-testid="studio-run-banner"
+            className="absolute left-1/2 top-4 z-20 flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-[10px] rounded-full border border-line bg-surface px-[14px] py-[6px] text-[13px] shadow-[var(--shadow-pill)] whitespace-nowrap"
+          >
+            {runQuery.isError ? (
+              <span className="text-st-failed-tag-fg">Run could not be loaded</span>
+            ) : (
+              <span className={`font-medium ${runBannerState.tagFg}`}>
+                {runBannerState.glyph} Run {shortId(runParam)} · {runBannerState.word}
+              </span>
+            )}
+            <Link
+              to={routes.run(runParam)}
+              data-testid="studio-run-open"
+              className="font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              Open run
+            </Link>
+            <button
+              type="button"
+              data-testid="studio-run-back"
+              onClick={exitRunView}
+              className="font-semibold text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              Back to editing
+            </button>
+          </div>
+        ) : null}
+
+        {/* Top-center Historical Version Banner */}
+        {!isViewingRun && isViewingHistory ? (
+          <div
+            data-testid="version-viewing-banner"
+            className="absolute left-1/2 top-4 z-20 flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-[10px] rounded-full border border-line bg-surface px-[14px] py-[6px] text-[13px] shadow-[var(--shadow-pill)] whitespace-nowrap"
+          >
+            <span className="text-ink-2">
+              Viewing v
+              {viewedRevSummary?.revision_number ?? viewingRevision.data?.revision_number ?? "?"}.
+            </span>
+            <button
+              type="button"
+              data-testid="version-back-to-draft"
+              onClick={() => setViewingDigest(null)}
+              className="font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              {draftId ? "Back to your draft" : "Back to live"}
+            </button>
+          </div>
+        ) : null}
+
+        {/* Top-right action buttons (Versions, Try it, Make live, …) */}
+        <div
+          className="absolute right-4 top-4 z-20 flex items-center gap-[8px]"
+          data-testid="editor-top-actions"
+        >
+          <button
+            type="button"
+            data-testid="editor-versions-btn"
+            aria-label="Versions"
+            aria-pressed={versionsOpen}
+            onClick={() => setPanel(versionsOpen ? null : "versions")}
+            className={`flex h-[34px] shrink-0 items-center gap-[6px] whitespace-nowrap rounded-[10px] border border-line px-[12px] text-[13px] font-semibold shadow-[var(--shadow-pill)] focus-visible:outline-2 focus-visible:outline-accent ${
+              versionsOpen
+                ? "bg-accent-tint text-accent-edge"
+                : "bg-surface text-ink hover:border-line-strong"
+            }`}
+          >
+            <IconHistory size={16} stroke={1.5} aria-hidden />
+            <span className={phone ? "sr-only" : undefined}>Versions</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="editor-try-it-btn"
+            aria-label="Try it"
+            onClick={() => setTryItOpen(true)}
+            className="flex h-[34px] shrink-0 items-center gap-[6px] whitespace-nowrap rounded-[10px] border border-line bg-surface px-[12px] text-[13px] font-semibold text-ink shadow-[var(--shadow-pill)] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <IconPlayerPlay size={14} stroke={1.5} aria-hidden />
+            <span className={phone ? "sr-only" : undefined}>Try it</span>
+          </button>
+
+          {canAuthor ? (
+            <button
+              type="button"
+              data-testid="studio-publish"
+              disabled={
+                !draftId ||
+                isViewingRun ||
+                isViewingHistory ||
+                status === "published" ||
+                publish.isPending ||
+                validate.isPending ||
+                studio.saving
+              }
+              title={
+                !draftId
+                  ? "Already live — edit the workflow to start a draft"
+                  : status === "published"
+                    ? "This draft is already live"
+                    : "Validate and make this draft live"
+              }
+              onClick={() => void onMakeLive()}
+              className="flex h-[34px] shrink-0 items-center whitespace-nowrap rounded-[10px] bg-accent px-[14px] text-[13px] font-semibold text-white shadow-[var(--shadow-pill)] hover:brightness-95 disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              {publish.isPending || validate.isPending ? "Making live…" : "Make live"}
+            </button>
+          ) : null}
+
+          <div ref={moreMenuRef} className="relative">
+            <button
+              type="button"
+              data-testid="editor-more-btn"
+              aria-label="More workflow actions"
+              aria-haspopup="menu"
+              aria-expanded={moreMenuOpen}
+              onClick={() => setMoreMenuOpen((open) => !open)}
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[10px] border border-line bg-surface text-ink shadow-[var(--shadow-pill)] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              <IconDots size={16} stroke={1.5} aria-hidden />
+            </button>
+            {moreMenuOpen ? (
+              <div
+                role="menu"
+                aria-label="Workflow actions"
+                data-testid="editor-more-menu"
+                className="absolute right-0 top-[40px] z-40 w-[190px] rounded-[12px] border border-line bg-surface py-[6px] shadow-[var(--shadow-pop)]"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="editor-menu-yaml"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setPanel("yaml");
+                  }}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-none"
+                >
+                  View YAML
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="editor-menu-used-in"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setPanel("used-in");
+                  }}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-none"
+                >
+                  Used in
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="editor-menu-settings"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    selectOne(null);
+                    setPanel("settings");
+                  }}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-none"
+                >
+                  Workflow settings
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={readOnly}
+                  data-testid="editor-menu-tidy"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    studio.tidy();
+                  }}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash disabled:opacity-40 focus-visible:bg-accent-wash focus-visible:outline-none"
+                >
+                  Tidy up
+                </button>
+                <div role="separator" className="my-1 h-px bg-line-soft" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={readOnly || !draftId || deleteDraft.isPending}
+                  data-testid="editor-menu-discard"
+                  onClick={() => void onDiscardDraft()}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-st-failed-tag-fg hover:bg-st-failed-pale-body disabled:opacity-40 focus-visible:bg-st-failed-pale-body focus-visible:outline-none"
+                >
+                  Discard draft
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Validation findings panel anchored under Make live */}
+        {validateOpen ? (
+          <div
+            data-testid="studio-validate-drawer"
+            className={
+              phone
+                ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
+                : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-80px)] w-[360px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+            }
+          >
+            <div className="mb-2 flex items-center gap-2">
+              <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
+                Validation
+              </span>
+              <button
+                type="button"
+                aria-label="Close validation findings"
+                data-testid="studio-validate-close"
+                onClick={() => setValidateOpen(false)}
+                className="icon-hit ml-auto inline-flex h-[24px] w-[24px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink"
+              >
+                <IconX size={15} stroke={1.5} aria-hidden />
+              </button>
+            </div>
+            {validateFailure !== null ? (
+              <ProblemBanner
+                error={validateFailure}
+                fallback="The draft could not be validated."
+                testid="studio-validate-error"
+              />
+            ) : validateOutcome === null ? (
+              <p className="font-mono text-[11px] text-muted" data-testid="studio-validate-pending">
+                validating…
+              </p>
+            ) : (
+              <>
+                <p className="font-mono text-[11px] text-ink" data-testid="studio-validate-verdict">
+                  {validateOutcome.valid
+                    ? `valid — ${validateOutcome.errors.length} findings`
+                    : `invalid — ${validateOutcome.errors.length} findings`}
+                </p>
+                {validateOutcome.errors.length > 0 ? (
+                  <ul
+                    className="mt-2 divide-y divide-line-soft"
+                    data-testid="studio-validate-findings"
+                  >
+                    {validateOutcome.errors.map((issue, index) => (
+                      <li
+                        key={`${issue.code}-${index}`}
+                        className="flex items-start gap-[8px] py-[6px]"
+                        data-testid={`studio-validate-finding-${index}`}
+                      >
+                        <span className="min-w-0 flex-1 font-mono text-[11px] text-muted">
+                          <span className="text-ink">{issue.code}</span> · {issue.message}
+                        </span>
+                        {issue.instance_location !== null ? (
+                          <Button
+                            variant="ghost"
+                            compact
+                            data-testid={`studio-goto-node-${index}`}
+                            onClick={() => goToNode(issue.instance_location)}
+                          >
+                            go to node
+                          </Button>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </>
             )}
           </div>
-          {drawers}
-        </main>
-        <aside className="hidden w-[320px] shrink-0 overflow-auto border-l border-line bg-surface md:block">
-          {inspector}
-        </aside>
+        ) : null}
+
+        {/* Versions panel */}
+        {versionsOpen ? (
+          <div
+            className={phone ? "fixed inset-x-0 bottom-0 z-40" : "absolute right-4 top-[58px] z-30"}
+          >
+            <VersionsPanel
+              revisions={revisions}
+              baseDocument={baseDocument}
+              draftText={studio.text}
+              hasDraft={Boolean(draftId && status !== "published")}
+              viewingDigest={viewingDigest}
+              canAuthor={canAuthor}
+              runCountsByDigest={runCountsByDigest}
+              actorName={(id) => actorLabel({ kind: "human", id })}
+              onSelectDraft={() => setViewingDigest(null)}
+              onSelectRevision={(digest) => setViewingDigest(digest)}
+              onRestoreRevision={(rev) => void onRestoreRevision(rev)}
+              onClose={() => setPanel(null)}
+              sheet={phone}
+              restoring={createDraft.isPending}
+            />
+          </div>
+        ) : null}
+
+        {/* ?panel=yaml or ?panel=used-in (420px right panel, or bottom sheet on phone) */}
+        {panelParam === "yaml" || panelParam === "used-in" ? (
+          <div
+            data-testid={`editor-panel-${panelParam}`}
+            className={
+              phone
+                ? "fixed inset-x-0 bottom-0 z-40 max-h-[80dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
+                : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-74px)] w-[420px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+            }
+          >
+            <div className="mb-2 flex items-center justify-end">
+              <button
+                type="button"
+                aria-label="Close panel"
+                data-testid="editor-panel-close"
+                onClick={() => setPanel(null)}
+                className="icon-hit inline-flex h-[24px] w-[24px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <IconX size={16} stroke={1.5} aria-hidden />
+              </button>
+            </div>
+            {panelParam === "yaml" ? (
+              <YamlView
+                text={
+                  isViewingRun ? runDocumentText : isViewingHistory ? viewDocumentText : studio.text
+                }
+                filename={`${pipeline.data?.slug ?? pipelineId}.yaml`}
+              />
+            ) : (
+              <StudioUsedInDrawer
+                pipelineId={pipelineId}
+                revisionRows={revisions}
+                newestPublished={newestSummary ? viewRevisionSummary(newestSummary) : null}
+                newestPublishedId={newestPublishedId}
+              />
+            )}
+          </div>
+        ) : null}
+
+        {/* Floating full StudioInspector (non-agent steps, "More settings", or Workflow settings) */}
+        {showStepInspector || showSettingsInspector ? (
+          <aside
+            data-testid="editor-inspector-panel"
+            className={
+              phone
+                ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface shadow-[var(--shadow-modal)]"
+                : "absolute right-4 top-[64px] z-20 max-h-[calc(100%-80px)] w-[360px] overflow-hidden rounded-[12px] border border-line bg-surface shadow-[var(--shadow-pop)]"
+            }
+          >
+            {inspectorPanel}
+          </aside>
+        ) : null}
       </div>
 
       {ambiguity !== null ? (
@@ -916,6 +1748,15 @@ export function StudioPage() {
           onCancel={() => setAmbiguity(null)}
         />
       ) : null}
+
+      {tryItOpen ? <StartRunDialog onClose={() => setTryItOpen(false)} /> : null}
+
+      <TriggersDialog
+        open={triggersDialogOpen}
+        onClose={() => setTriggersDialogOpen(false)}
+        assignments={triggers.groups}
+        editing={triggers.firstEditing}
+      />
     </div>
   );
 }

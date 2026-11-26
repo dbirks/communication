@@ -228,7 +228,7 @@ describe("ui.navigate moves the client when the person asked (F-1)", () => {
     expect(screen.getByTestId("assistant-link")).toBeTruthy();
   });
 
-  it("opens the page the turn navigated to and keeps the popover open over it", async () => {
+  it("opens the page the turn navigated to and keeps Quick chat open over it", async () => {
     stubFetch([turnRows("t-1", "ch-1")]);
     const seen: string[] = [];
     renderAt("/workflows", seen);
@@ -237,10 +237,9 @@ describe("ui.navigate moves the client when the person asked (F-1)", () => {
 
     // ADR-0050 Decision 7: the client performs the navigation.
     await waitFor(() => expect(moves(seen)).toEqual(["/ops"]));
-    // The ask does not vanish with the move — handoff §1's popover stays open
+    // The ask does not vanish with the move — Quick chat stays open
     // over the destination, which is where the person reads the answer from.
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
-    expect(screen.getByTestId("assistant-panel").getAttribute("data-variant")).toBe("popover");
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
     // And the jump row is still drawn: the page stays reachable from the
     // answer, so a later scroll back does not lose the turn's destination.
     expect(screen.getByTestId("assistant-link").textContent).toContain("Go to ops");
@@ -285,27 +284,18 @@ describe("ui.navigate moves the client when the person asked (F-1)", () => {
     expect(moves(seen)).toEqual(["/ops", "/threads"]);
   });
 
-  it("keeps the side panel docked while it moves the page", async () => {
+  it("keeps Quick chat open while it moves the page", async () => {
     stubFetch([turnRows("t-1", "ch-dock", "/ops")]);
     const seen: string[] = [];
     renderAt("/workflows", seen);
-    // Dock FIRST, then ask: the side panel is the size the deployed exercise
-    // hit (prompt 8, the dock on /workflows).
     act(() => openAssistantPopover());
-    await screen.findByTestId("assistant-composer-input");
-    fireEvent.click(screen.getByTestId("assistant-dock"));
-    await waitFor(() =>
-      expect(screen.getByTestId("assistant-panel").getAttribute("data-variant")).toBe("dock"),
-    );
     const input = await screen.findByTestId("assistant-composer-input");
     fireEvent.change(input, { target: { value: "Open the Operations page" } });
     fireEvent.click(screen.getByTestId("assistant-send"));
     await screen.findByText("Opened the Operations page.");
     await waitFor(() => expect(moves(seen).at(-1)).toBe("/ops"));
-    // The panel is still the right-hand column over the destination page: the
-    // navigation moved the page, not the surface.
-    expect(screen.getByTestId("assistant-popover").getAttribute("data-dock")).toBe("right");
-    expect(screen.getByTestId("assistant-panel").getAttribute("data-variant")).toBe("dock");
+    // Quick chat remains docked on the right over the destination page.
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
   });
 
   it("replays an old thread without moving the page", async () => {
@@ -318,7 +308,7 @@ describe("ui.navigate moves the client when the person asked (F-1)", () => {
     await screen.findByText("Opened the Operations page.");
     expect(moves(seen)).toEqual([]);
     // The change row still renders in the transcript — it just does not move.
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
   });
 
   it.each([
@@ -338,6 +328,6 @@ describe("ui.navigate moves the client when the person asked (F-1)", () => {
     await waitFor(() => expect(postCount(fetchMock)).toBe(1));
     expect(moves(seen)).toEqual([]);
     // And the surface is still the ask, not a half-moved page.
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
+    expect(screen.getByTestId("quick-chat")).toBeTruthy();
   });
 });

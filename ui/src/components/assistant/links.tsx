@@ -33,28 +33,39 @@ export function AnswerLinks({
   links,
   openDraftHref = null,
   onGo,
+  variant = "default",
 }: {
   links: readonly { label: string; route: string }[];
   /** The draft route the panel footer's `Open draft` button points at, or `null` when it shows none. */
   openDraftHref?: string | null;
   onGo: (route: string) => void;
+  variant?: "default" | "quick";
 }) {
   const rows = links
     .map((link, index) => ({ link, index }))
     .filter(({ link }) => openDraftHref === null || !sameDraftTarget(link.route, openDraftHref));
   if (rows.length === 0) return null;
+  const quick = variant === "quick";
   return (
     <div
       data-testid="assistant-links"
-      className="flex flex-col gap-[3px]"
-      style={{
-        borderTop: "1px solid var(--color-line)",
-        marginTop: 8,
-        paddingTop: 6,
-      }}
+      className={
+        quick
+          ? "mt-[8px] flex flex-col gap-[4px] border-t border-line-soft pt-[6px]"
+          : "flex flex-col gap-[3px]"
+      }
+      style={
+        quick
+          ? undefined
+          : {
+              borderTop: "1px solid var(--color-line)",
+              marginTop: 8,
+              paddingTop: 6,
+            }
+      }
     >
       {rows.map(({ link, index }) => (
-        <LinkRow key={`${link.route}-${index}`} link={link} onGo={onGo} />
+        <LinkRow key={`${link.route}-${index}`} link={link} onGo={onGo} quick={quick} />
       ))}
     </div>
   );
@@ -88,16 +99,22 @@ function linkLabelFor(link: { label: string; route: string }): ReactElement | st
 function LinkRow({
   link,
   onGo,
+  quick = false,
 }: {
   link: { label: string; route: string };
   onGo: (route: string) => void;
+  quick?: boolean;
 }) {
   return (
     <button
       type="button"
       data-testid="assistant-link"
       onClick={() => onGo(link.route)}
-      className="flex w-full cursor-pointer items-center justify-between gap-[8px] border-none bg-transparent p-0 text-left text-[12.5px] leading-[1.5] text-accent-text"
+      className={
+        quick
+          ? "flex w-full cursor-pointer items-center justify-between gap-[8px] rounded-[10px] border-none bg-transparent px-[6px] py-[4px] text-left text-[12.5px] leading-[1.5] text-accent-text hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-accent"
+          : "flex w-full cursor-pointer items-center justify-between gap-[8px] border-none bg-transparent p-0 text-left text-[12.5px] leading-[1.5] text-accent-text"
+      }
     >
       <span
         style={{

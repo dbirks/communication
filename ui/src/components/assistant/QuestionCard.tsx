@@ -48,6 +48,8 @@ export interface QuestionCardProps {
    * row names one verbatim (the ink-border-and-bold member).
    */
   answeredLabel?: string | null;
+  /** `"quick"` applies Quick chat's radius-10, shadowless styling. */
+  variant?: "default" | "quick";
 }
 
 export function QuestionCard({
@@ -57,8 +59,10 @@ export function QuestionCard({
   ordinal,
   total,
   answeredLabel,
+  variant = "default",
 }: QuestionCardProps) {
   const answered = question.answered_by != null;
+  const quick = variant === "quick";
   // The framing (design 2f "QUESTION 1 OF 2"): the index the transcript can
   // prove — this card's place among the conversation's questions. The total
   // prints ONLY when the wire supplies a real one; the one-question-per-turn
@@ -69,7 +73,11 @@ export function QuestionCard({
   return (
     <div
       data-testid="assistant-question"
-      className="rounded-[4px] border border-accent-ring bg-accent-wash px-[10px] py-[8px]"
+      className={
+        quick
+          ? "rounded-[10px] border border-accent-ring bg-accent-wash px-[12px] py-[10px]"
+          : "rounded-[4px] border border-accent-ring bg-accent-wash px-[10px] py-[8px]"
+      }
     >
       {headerShown ? (
         <p
@@ -104,26 +112,40 @@ export function QuestionCard({
               data-testid="assistant-question-option"
               data-selected={selected ? "true" : undefined}
               onClick={() => onAnswer(option.label)}
-              className="ds-btn ds-btn--secondary"
-              style={{
-                height: 32,
-                padding: "0 10px",
-                textAlign: "left",
-                justifyContent: "flex-start",
-                whiteSpace: "normal",
-                overflowWrap: "anywhere",
-                fontSize: 12.5,
-                // 2f: the selected answer carries an ink border and bold.
-                ...(selected
-                  ? {
-                      borderColor: "var(--color-ink)",
-                      fontWeight: 600,
-                      background: "var(--color-surface)",
+              className={
+                quick
+                  ? `cursor-pointer rounded-[10px] border px-[10px] py-[7px] text-left text-[12.5px] leading-[1.4] text-ink transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default ${
+                      selected
+                        ? "border-ink bg-surface font-semibold"
+                        : answered
+                          ? "border-line bg-surface opacity-60"
+                          : "border-line bg-surface hover:border-line-strong hover:bg-paper"
+                    }`
+                  : "ds-btn ds-btn--secondary"
+              }
+              style={
+                quick
+                  ? undefined
+                  : {
+                      height: 32,
+                      padding: "0 10px",
+                      textAlign: "left",
+                      justifyContent: "flex-start",
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
+                      fontSize: 12.5,
+                      // 2f: the selected answer carries an ink border and bold.
+                      ...(selected
+                        ? {
+                            borderColor: "var(--color-ink)",
+                            fontWeight: 600,
+                            background: "var(--color-surface)",
+                          }
+                        : answered
+                          ? { opacity: 0.6 }
+                          : null),
                     }
-                  : answered
-                    ? { opacity: 0.6 }
-                    : null),
-              }}
+              }
             >
               {option.label}
             </button>
