@@ -38,12 +38,7 @@
 // honest and are never weakened.
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { BASE_URL, AGENT_TURN_TIMEOUT_MS } from "./env.js";
-import {
-  decideGate,
-  gotoApp,
-  repinAssignment,
-  signIn,
-} from "./helpers.js";
+import { decideGate, gotoApp, repinAssignment, signIn } from "./helpers.js";
 import {
   IS_PI_LAUNCHER,
   LAB_LAUNCHER,
@@ -546,9 +541,9 @@ async function failedNodeReasons(
         attempt === null
           ? `${node.node_id}: failed with no attempt row`
           : `${node.node_id} attempt n${attempt.attempt_number} [${attempt.status}] ` +
-            `error_class=${attempt.error_class ?? "none"} ` +
-            `detail=${clipText(attempt.detail ?? "")} ` +
-            `output_errors=${clipText(attempt.output_errors ?? null)}`,
+              `error_class=${attempt.error_class ?? "none"} ` +
+              `detail=${clipText(attempt.detail ?? "")} ` +
+              `output_errors=${clipText(attempt.output_errors ?? null)}`,
       );
     } catch (err) {
       parts.push(`${node.node_id}: attempt history unreadable (${String(err)})`);
@@ -725,11 +720,14 @@ function yamlNodeRetryBlock(yaml: string, nodeId: string): string {
  * outputs” disclosure (1g pass 2 #2) — open it when the build has it closed, so
  * nothing in this journey depends on which fields the design chose to collapse. */
 async function openRetryFields(page: Page): Promise<void> {
-  if (await page.getByTestId("insp-retry-maxAttempts").isVisible().catch(() => false)) return;
-  await page
-    .getByTestId("insp-advanced-disclosure")
-    .locator("summary")
-    .click({ timeout: 30_000 });
+  if (
+    await page
+      .getByTestId("insp-retry-maxAttempts")
+      .isVisible()
+      .catch(() => false)
+  )
+    return;
+  await page.getByTestId("insp-advanced-disclosure").locator("summary").click({ timeout: 30_000 });
   await expect(page.getByTestId("insp-retry-maxAttempts")).toBeVisible({ timeout: 30_000 });
 }
 
@@ -1076,10 +1074,9 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       await revisionDocument(page, state.revisionDigest),
       NEW_NODE_ID,
     );
-    expect(
-      publishedRetry,
-      `the published revision carries ${NEW_NODE_ID}'s retry block`,
-    ).toMatch(new RegExp(`maxAttempts:\\s*${RETRY_MAX_ATTEMPTS}`));
+    expect(publishedRetry, `the published revision carries ${NEW_NODE_ID}'s retry block`).toMatch(
+      new RegExp(`maxAttempts:\\s*${RETRY_MAX_ATTEMPTS}`),
+    );
     for (const kind of RETRY_RETRIABLE_ERRORS) {
       expect(publishedRetry, `retriableErrors must admit ${kind} (${publishedRetry})`).toContain(
         kind,
@@ -1109,6 +1106,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       await projectSelect.selectOption({ value: state.projectId });
     }
     await expect(page.getByTestId("new-run-form")).toBeVisible();
+    // Wait for the dialog's initial workflow revision read to settle so
+    // freeform→typed mode transition does not remount NewRunForm mid-selection.
+    await expect(page.getByText(/Loading (projects|assignments|pinned revision)/i)).toHaveCount(0, {
+      timeout: 20_000,
+    });
     const select = page.getByTestId("new-run-assignment");
     await expect(select).toBeAttached();
     const optionRows = await Promise.all(
@@ -1124,7 +1126,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       throw new Error(
         `the new-run form has no assignment for ${PIPELINE_SLUG} (options: ${optionRows.join(" | ")})`,
       );
-    await select.selectOption({ value: target.match(/^value=(.+) text=/)?.[1] ?? "" });
+    const targetValue = target.match(/^value=(.+) text=/)?.[1] ?? "";
+    await select.selectOption({ value: targetValue });
+    await expect(page.getByTestId("new-run-assignment")).toHaveValue(targetValue, {
+      timeout: 15_000,
+    });
 
     await page.getByTestId("new-run-input-goal").fill(`shell journey ${STAMP}`);
     const repo = page.getByTestId("new-run-input-repository");
@@ -1150,9 +1156,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       }
     }
 
-    await page.getByTestId("new-run-submit").click();
-    await page.waitForURL(/\/runs\/[0-9a-fA-F-]+/);
+    await expect(page.getByTestId("new-run-submit")).toBeEnabled({ timeout: 20_000 });
+    await page.getByTestId("new-run-submit").click({ timeout: 20_000 });
+    await page.waitForURL(/\/runs\/[0-9a-fA-F-]+/, { timeout: 30_000 });
     state.runId = new URL(page.url()).pathname.split("/").pop() as string;
+    console.log(`journey c: run ${state.runId} started`);
     await expect(page.getByTestId("workbench")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     // The run is pinned to the revision just published. The redesigned header
     // (finding 11) splits that pin into two facts of the labeled row:
@@ -1380,10 +1388,12 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await expect(panel).toBeVisible({ timeout: 10_000 });
 
     // Start a clean conversation via the History menu ("New thread").
-    await page.getByTestId("assistant-history").click();
+    const historyBtn = page.getByTestId("assistant-history");
+    await expect(historyBtn).toBeVisible({ timeout: 15_000 });
+    await historyBtn.click({ timeout: 15_000 });
     const fresh = page.getByTestId("assistant-menu-new-thread");
-    await expect(fresh).toBeVisible({ timeout: 10_000 });
-    await fresh.click();
+    await expect(fresh).toBeVisible({ timeout: 15_000 });
+    await fresh.click({ timeout: 15_000 });
     await checkShellScreen(page, "quick-chat", stopWatching ?? undefined);
 
     // The marker must not predate the ask (a crashed earlier journey run).
@@ -1466,7 +1476,8 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       // follow-up landed it (the journey must not fail because the step
       // arrived on a follow-up turn while the loop was counting turns).
       const landed =
-        (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length > 0;
+        (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length >
+        0;
       if (landed) {
         console.log(`journey f: the assistant landed ${ASSISTANT_STEP_NAME} — loop done`);
         break;
@@ -1637,7 +1648,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       await page.getByTestId("assistant-change-chip-toggle").click();
     await expect(chipRow).toBeVisible();
 
-    const withStep = await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval");
+    const withStep = await draftsContainingStep(
+      page.request,
+      ASSISTANT_STEP_NAME,
+      "human.approval",
+    );
     await evidence(
       page,
       `journey-f-changed-${STAMP}`,
@@ -1648,11 +1663,13 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     // back to the original captured before the ask (via the API).
     await page.getByTestId("assistant-change-undo-all").click();
     await expect
-      .poll(async () => (
-        (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length
-      ), {
-        timeout: 60_000,
-      })
+      .poll(
+        async () =>
+          (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length,
+        {
+          timeout: 60_000,
+        },
+      )
       .toBe(0);
     const restoredYaml = await draftYaml(page.request, freshDraftId);
     expect(

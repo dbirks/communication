@@ -98,21 +98,16 @@ function dockAttemptTabs(page: Page): Locator {
 }
 
 /**
- * Pin a library workflow to the project from its Workflows tab (design 1b,
- * project-workflows-tab). The tab is ONE panel of 2e rows now: the inline
- * per-pipeline assign form is retired, and `+ use a library workflow` opens the
- * picker whose one `Use` verb posts the same whole-project pin. Returns the new
- * assignment's id — the tab keys a row by `testidOf(assignment.id)` — and
- * asserts that row's own `r1` chip, which is the tab's whole revision story now
- * that the raw `pinned r1 · <digest> · id <uuid>` sentence is retired (no
- * digest and no uuid prints on this page at all).
+ * Pin a library workflow to the project from `/p/:projectId/factory`
+ * (`ProjectWorkflowsPanel`). Returns the new assignment's id and asserts its
+ * `r1` chip.
  */
 async function pinWorkflowOnProject(
   page: Page,
   projectPath: string,
   slug: string,
 ): Promise<string> {
-  await gotoApp(page, `${projectPath}/workflows`);
+  await gotoApp(page, `${projectPath}/factory`);
   await expect(page.getByTestId("project-pipelines")).toBeVisible();
   await page.getByTestId("project-workflow-library").click();
   await expect(page.getByTestId("project-library-dialog")).toBeVisible();
@@ -141,18 +136,50 @@ async function pinWorkflowOnProject(
 }
 
 /**
- * Open the New run form through the project header band's `Start run` (design
- * 1b, project-tabs-2). The RUNS panel's own `New run` button was a duplicate of
- * that verb and is retired; the band navigates to the Runs tab with `?new=1`,
- * which opens `NewRunForm` above the list — and the URL is what keeps the claim
- * honest, since reloading it still shows the form.
+ * Open the New run form through Project Home's `or run a workflow` chip (`StartRunDialog`).
  */
 async function openRunForm(page: Page, projectPath: string): Promise<void> {
-  await gotoApp(page, `${projectPath}/runs`);
-  await expect(page.getByTestId("project-runs")).toBeVisible();
-  await page.getByTestId("project-start-run").click();
-  await expect(page, "the one door is a URL, so a reload keeps the form").toHaveURL(/[?]new=1$/);
+  const projectId = projectPath.split("/").pop() ?? "";
+  await gotoApp(page, projectPath);
+  await expect(page.getByTestId("project-home")).toBeVisible();
+  await page.getByTestId("home-prompt-run").click();
+  await expect(page.getByTestId("run-form-dialog")).toBeVisible();
+  const projectSelect = page.getByTestId("home-start-run-project");
+  if (await projectSelect.isVisible().catch(() => false)) {
+    await projectSelect.selectOption({ value: projectId });
+  }
+  await expect(page.getByText(/Loading (projects|assignments|pinned revision)/i)).toHaveCount(0, {
+    timeout: 20_000,
+  });
   await expect(page.getByTestId("new-run-form")).toBeVisible();
+}
+
+/**
+ * Create a workflow + initial draft via Factory → New workflow → Import YAML,
+ * landing on `/factory/:pipelineId?draft=:draftId`.
+ */
+async function importWorkflowInFactory(
+  page: Page,
+  slug: string,
+  yamlDoc: string,
+): Promise<{ pipelinePath: string; draftId: string }> {
+  await gotoApp(page, "/factory");
+  await expect(page.getByTestId("factory-index")).toBeVisible();
+  await page.getByTestId("factory-new").click();
+  await expect(page.getByTestId("new-workflow-sheet")).toBeVisible();
+  await page.getByTestId("new-workflow-import").click();
+  await expect(page.getByTestId("import-yaml-dialog")).toBeVisible();
+  await page.getByTestId("import-yaml-doc").fill(yamlDoc);
+  await page.getByTestId("import-yaml-slug").fill(slug);
+  await page.getByTestId("import-yaml-name").fill(slug);
+  await page.getByTestId("import-yaml-submit").click();
+  await page.waitForURL(/\/factory\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/);
+  await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
+  const url = new URL(page.url());
+  return {
+    pipelinePath: url.pathname,
+    draftId: url.searchParams.get("draft") ?? "",
+  };
 }
 
 /**
@@ -548,8 +575,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   let aliceContext: BrowserContext;
   let admin: Page;
   let alice: Page;
-  let pipelinePath = ""; // /workflows/{pipelineId}
-  let projectPath = ""; // /projects/{M4 Exit id}
+  let pipelinePath = ""; // /factory/{pipelineId}
+  let draftId = "";
+  let projectPath = ""; // /p/{M4 Exit id}
   let runPath = ""; // /runs/{runId} (route contract C1)
   let runId = "";
 
@@ -594,98 +622,87 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
   });
 
-  test("step 1 — admin clones the Plan with approval sample", async () => {
-    await test.step("Workflows → New workflow → start from: Plan with approval", async () => {
-      await gotoApp(admin, "/workflows");
-      await expect(admin.getByTestId("library-page")).toBeVisible();
-      // Design 1c: the New workflow dialog is the index's only creation
-      // surface — a name, the id derived from it (changed here to the
-      // suite's own slug), and the starter as a card.
-      await admin.getByTestId("workflows-new-workflow").click();
-      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
-      await admin.getByTestId("library-new-name-input").fill(SLUG);
-      await admin.getByTestId("new-workflow-id-change").click();
-      await admin.getByTestId("library-new-slug-input").fill(SLUG);
-      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
-      await admin.getByTestId("library-new-submit").click();
-      // A template is not a revision: the click path lands on the draft it
-      // seeded's Workflow Studio, at /workflows/:id/drafts/:draftId.
-      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
-      pipelinePath = `/workflows/${new URL(admin.url()).pathname.split("/")[2]}`;
-      // The Studio's YAML view is the same authoring surface the old editor
-      // exposed as its textarea.
-      await admin.getByTestId("studio-view-yaml").click();
+  test("step 1 — admin creates the workflow via Factory New workflow → Import YAML", async () => {
+    await test.step("Factory → New workflow → Import YAML", async () => {
+      const created = await importWorkflowInFactory(
+        admin,
+        SLUG,
+        DETERMINISTIC_TWIN.replace("__SLUG__", SLUG),
+      );
+      pipelinePath = created.pipelinePath;
+      draftId = created.draftId;
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-yaml").click();
       const yaml = admin.getByTestId("studio-yaml");
       await expect(yaml).toHaveValue(new RegExp(SLUG));
-      // The sample as shipped — the node the journey must later replace.
-      await expect(yaml).toHaveValue(/kind: model\.chat/);
+      await expect(yaml).not.toHaveValue(/kind: model\.chat/);
+      await expect(yaml).toHaveValue(/kind: process\.exec/);
+      await expect(yaml).toHaveValue(/kind: human\.approval/);
+      await admin.getByTestId("editor-panel-close").click();
       await shot(admin, "m5-01-template-draft");
     });
   });
 
-  test("step 2 — customize the draft, validate it, publish r1", async () => {
-    await test.step("make it the process.exec twin (no model endpoint on this lab)", async () => {
-      await admin.getByTestId("studio-yaml").fill(DETERMINISTIC_TWIN.replace("__SLUG__", SLUG));
-      // The sample's model node is gone as a *node*: nothing here needs
-      // credentials (the header comment still names the kind it replaced).
-      await expect(admin.getByTestId("studio-yaml")).not.toHaveValue(/kind: model\.chat/);
-      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: process\.exec/);
-      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: human\.approval/);
-    });
+  test("step 2 — customize the draft, autosave, Make live as r1", async () => {
     await test.step("the step form changes one field: the survey node's timeout", async () => {
-      await admin.getByTestId("studio-view-canvas").click();
       // The canvas steps are addressed by node id: the survey node's timeout.
       await admin.getByTestId("canvas-step-survey").click();
+      const agentCard = admin.getByTestId("agent-step-card");
+      if (await agentCard.isVisible().catch(() => false)) {
+        await admin.getByTestId("agent-card-more-settings").click();
+      }
       await expect(admin.getByTestId("insp-node")).toBeVisible();
-      // Design 1g pass 2 keeps the curated task form to executable/args: the
-      // node's timeout lives inside the collapsed "Retries, timeout and
+      // The node's timeout lives inside the collapsed "Retries, timeout and
       // outputs" disclosure — open it before touching the field.
       await admin.getByTestId("insp-advanced-disclosure").locator("summary").click();
       const timeout = admin.getByTestId("insp-timeoutSeconds");
       await expect(timeout).toHaveValue("300");
       await timeout.fill("420");
       // Number fields commit on blur/Enter; the write lands on the document,
-      // which the YAML view then shows.
+      // which the YAML panel then shows.
       await timeout.press("Enter");
-      await admin.getByTestId("studio-view-yaml").click();
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-yaml").click();
       await expect(admin.getByTestId("studio-yaml")).toHaveValue(/timeoutSeconds: 420/);
-      await expect(admin.getByTestId("studio-dirty")).toHaveText("unsaved");
+      await admin.getByTestId("editor-panel-close").click();
     });
-    await test.step("Save → Validate → the server says valid", async () => {
-      await admin.getByTestId("studio-save").click();
-      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("studio-validate").click();
-      // Publish is gated on the stored verdict, so the verdict is the gate.
-      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
+    await test.step("Autosave settles on the server", async () => {
+      await expect
+        .poll(
+          async () => {
+            const res = await admin.request.get(`/api/v1/drafts/${draftId}`);
+            if (!res.ok()) return "";
+            return ((await res.json()) as { document_yaml?: string }).document_yaml ?? "";
+          },
+          { timeout: 30_000, message: "draft autosaved timeoutSeconds: 420" },
+        )
+        .toContain("timeoutSeconds: 420");
+      await expect(admin.getByTestId("studio-draft-status")).not.toContainText(/Saving/i, {
         timeout: 30_000,
       });
       await expect(admin.getByTestId("studio-publish")).toBeEnabled();
     });
-    await test.step("Publish → r1 is immutable and listed", async () => {
+    await test.step("Make live → r1 is immutable and listed in Versions", async () => {
       await admin.getByTestId("studio-publish").click();
       await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
-      // Design 1e: the revision rows left the workflow page's front face —
-      // they list on its History tab.
-      await gotoApp(admin, `${pipelinePath}/history`);
-      await expect(admin.getByTestId("revision-row-1")).toContainText("r1");
+      // Versions panel replaces the old workflow History tab.
+      await admin.getByTestId("editor-versions-btn").click();
+      await expect(admin.getByTestId("versions-row-v1")).toContainText("v1", { timeout: 30_000 });
+      await admin.getByTestId("versions-panel-close").click();
       await shot(admin, "m5-02-published-r1");
     });
   });
 
   test("step 3 — assign r1 to a project alice maintains", async () => {
-    await test.step("the library's Assign to a project panel", async () => {
+    await test.step("Studio More → Use in a repo…", async () => {
       await gotoApp(admin, pipelinePath);
-      // The panel mounts in the rail only once the pipeline's revisions read
-      // resolves (it pins the newest PUBLISHED revision), so right after this
-      // `page.goto` neither arm is in the DOM yet — and WHICH arm renders
-      // depends on the viewer's memberships (a viewer who maintains a project
-      // gets the form, not the dead end). Wait for whichever arm the panel
-      // actually offers instead of snapshotting the page at t0: the old
-      // immediate `isVisible()` lost that race, and its else-arm then waited
-      // on the dead end for a viewer who could never see it.
-      const assign = admin.getByTestId("assign-open");
+      await expect(admin.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-use").click();
+      await expect(admin.getByTestId("use-in-repo-dialog")).toBeVisible({ timeout: 15_000 });
+      const assign = admin.getByTestId("assign-project-select");
       const deadEnd = admin.getByTestId("assign-no-maintainer");
       const arm = await Promise.race([
         assign
@@ -699,24 +716,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       ]);
       if (arm !== "maintainer" && arm !== "dead-end") {
         throw new Error(
-          "no assign arm rendered on the pipeline page — neither assign-open nor assign-no-maintainer within 15 s",
+          "no assign arm rendered in UseInRepoDialog — neither assign-project-select nor assign-no-maintainer within 15 s",
         );
       }
       if (arm === "maintainer") {
-        // The happy path: the viewer maintains a project, so the library can
-        // pin the revision and hand straight over. ADR-0060 moved the pin
-        // into the `Use in a repo…` dialog: the pin now NAMES the repository
-        // it serves — pick `whole project (every repo in it)` to keep the
-        // whole-project semantics the old dialog carried implicitly.
-        await assign.click();
-        await expect(admin.getByTestId("use-in-repo-dialog")).toBeVisible();
-        // Design 2a (pass-2 review): the dialog is named for what it will do,
-        // and — since the 2026-10-30 copy review (2a item 7) — it names its
-        // SUBJECT: `Use <workflow> in a repo…`, so the reader never has to
-        // remember which page they clicked the verb on. The project bookkeeping
-        // is read-only AND quiet until it says something: the old list printed
-        // every project you maintain with `not used yet` beside each, which was
-        // the project select's own option list drawn twice.
         const assignTitle = admin.getByTestId("use-in-repo-title");
         await expect(assignTitle, "the dialog names the workflow and the action").toHaveText(
           `Use ${SLUG} in a repo…`,
@@ -747,31 +750,21 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         await expect(admin.getByTestId("assign-success-panel")).toContainText("Used in", {
           timeout: 30_000,
         });
-        // The success card hands over to the workflow's Used-in tab, where
-        // the fresh pin lists as its own row.
         const assignmentId = createdBody.id ?? "";
         expect(assignmentId, "the POST answered the assignment").toMatch(/^[0-9a-f-]{36}$/);
         await admin.getByTestId("assign-start-run-link").click();
-        await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/used-in$/);
+        await admin.waitForURL(/\/factory\/[0-9a-f-]{36}.*[?&]panel=used-in/);
         await expect(admin.getByTestId(`used-in-row-${assignmentId}`)).toBeVisible({
           timeout: 30_000,
         });
-        // The journey works on the project side: alice's project now pins r1
-        // and its runs list is the start point for step 4.
         projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
-        await gotoApp(alice, `${projectPath}/runs`);
+        await gotoApp(alice, `${projectPath}/factory`);
         await shot(admin, "m5-03-assigned");
       } else {
-        // The lab's arm: `admin` is the org admin with no project membership,
-        // so the panel says so honestly and the maintainer does the pinning —
-        // `01`: assignment.create is Maintainer+.
         await expect(deadEnd).toBeVisible();
         projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
-        // Design 1b (project-workflows-tab): the tab is ONE panel of 2e rows and
-        // the inline per-pipeline assign form is gone — the picker's one `Use`
-        // verb is the pin.
         await pinWorkflowOnProject(alice, projectPath, SLUG);
-        await gotoApp(alice, `${projectPath}/runs`);
+        await gotoApp(alice, `${projectPath}/factory`);
         await shot(alice, "m5-03-assigned");
       }
     });
@@ -811,18 +804,14 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // no longer spells `waiting_human` out).
       await expectRunStatus(alice, /need you/, RUN_TIMEOUT_MS);
     });
-    await test.step("the project overview shows it under NEEDS YOUR DECISION", async () => {
-      // Finding 03 retired the Inbox as a destination; its decisions surface
-      // is the project overview's Needs-You fan (same attention read).
-      await gotoApp(alice, projectPath);
-      await expect(alice.getByTestId("project-attention")).toBeVisible({ timeout: 60_000 });
-      // Picked by the gate row's own id (via the API), not by printed text: a
-      // card never shows "run <short>". Exactly one gate row for this run is
-      // exactly one decision callout here.
+    await test.step("Home shows it under NEEDS YOU", async () => {
+      // Redesign: Needs-you decision cards live on Home (`/`).
+      await gotoApp(alice, "/");
+      await expect(alice.getByTestId("needs-you")).toBeVisible({ timeout: 60_000 });
       const gateId = await pendingGateFor(alice, runId, 60_000);
-      const row = alice.getByTestId(`project-attention-decision-${testidOf(gateId)}`);
+      const row = alice.getByTestId(`needs-you-card-${gateId}`);
       await expect(row).toBeVisible({ timeout: 15_000 });
-      await expect(row).toContainText(/approve/i);
+      await expect(row).toContainText(GOAL);
       await shot(alice, "m5-05-overview-needs-your-decision");
     });
     await test.step("the gate card carries a plan a person can read", async () => {
@@ -906,43 +895,25 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       });
       await shot(alice, "m5-06-decided");
     });
-    await test.step("the run's own check fails it, and the project overview calls that stalled", async () => {
-      // `verify` exits 1 on purpose (the plan describes a test suite the
-      // fixture repository does not have) and declares `exit_code: 0` as the
-      // only envelope that node accepts, so the boundary turns that business
-      // verdict into an `invalid_output` execution failure. The failure is a
-      // fact of the definition rather than a flake waiting to be retried: a
-      // bare exit 1 lands in the 1..125 business band and COMPLETES the run.
+    await test.step("the run's own check fails it, and Home factory health reports attention", async () => {
       await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
-      // Finding 03: the stalled-run callout left the retired Inbox and lives
-      // in the project overview's Needs-You fan (same attention read).
-      await gotoApp(alice, projectPath);
-      const id = testidOf(runId);
-      await expect(alice.getByTestId(`project-attention-run-${id}`)).toBeVisible({
-        timeout: DECISION_TIMEOUT_MS,
-      });
-      await expect(alice.getByTestId(`project-attention-run-${id}`)).toContainText("failed");
+      await gotoApp(alice, "/");
+      const healthSentence = alice.getByTestId("factory-health-sentence");
+      await expect(healthSentence).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
+      await expect(healthSentence).not.toHaveText("All quiet.");
       await shot(alice, "m5-06-stalled-overview");
     });
-    await test.step("the retry is accepted: a run.retried frame and a second attempt", async () => {
-      const id = testidOf(runId);
-      await alice.getByTestId(`project-retry-${id}`).click();
-      // The retry is refused loudly if it fails — a silent no-op is not allowed
-      // to pass as a retry.
-      await expect(alice.getByTestId(`project-attention-run-error-${id}`)).toHaveCount(0, {
-        timeout: DECISION_TIMEOUT_MS,
-      });
+    await test.step("the retry is accepted from the run page: a run.retried frame and a second attempt", async () => {
       await gotoApp(alice, runPath);
+      await expect(alice.getByTestId("run-retry")).toBeVisible();
+      await expect(alice.getByTestId("run-retry")).toBeEnabled();
+      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/verify/);
+      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
+      await alice.getByTestId("run-retry").click();
       await alice.getByTestId("workbench-tab-timeline").click();
       await expect(alice.getByTestId("run-timeline")).toContainText("run.retried", {
         timeout: DECISION_TIMEOUT_MS,
       });
-      // The retried node grew a real second attempt — maxAttempts is 1, so no
-      // automatic retry could have produced it. On the workbench the node is
-      // picked on its own graph and the dock serves the attempt the crumb
-      // names; BOTH attempts are the dock's tabs, so the crumb's `attempt 2`
-      // is which one is served, and the tabs are the count, not a
-      // replacement. Step 7 reads what each one says.
       await alice.getByTestId("workbench-tab-graph").click();
       await canvasNode(alice, "verify").click();
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("verify", {
@@ -957,18 +928,8 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await expect(attemptPane(alice, 1)).toBeVisible();
       await shot(alice, "m5-06-retried");
     });
-    await test.step("the run page offers the same way back, and it is armed", async () => {
-      // The workbench header renders `RunActions` (components/workbench/
-      // RunHeader.tsx → pages/RunInspector.tsx), the same Retry control the
-      // old run page had: `/verify` is `failed`, so route 31 has a target and
-      // the button is live (no reason line). The dock's failure block below
-      // is the page's other arm of the same shared `retryVerdict`, naming the
-      // node a retry would re-run, with no refusal line. The control that
-      // performs it is the Inbox's stalled row, which the previous step
-      // already drove. The rejected-gate case is the opposite arm below:
-      // nothing failed, so the page says why Retry has no target instead of
-      // 409ing.
-      await gotoApp(alice, runPath);
+    await test.step("once attempt 2 settles failed, Retry is armed again in header and dock", async () => {
+      await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
       await expect(alice.getByTestId("run-retry")).toBeVisible();
       await expect(alice.getByTestId("run-retry")).toBeEnabled();
       await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/verify/);
@@ -1108,26 +1069,25 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     const gateId = () => testidOf(gateRunId);
 
     await test.step("publish a scratch copy whose gate deadline is the schema floor", async () => {
-      await gotoApp(admin, "/workflows");
-      await expect(admin.getByTestId("library-page")).toBeVisible();
-      // Design 1c: the same New workflow dialog path as step 1 — the scratch
-      // gate pipeline is another clone of the Plan with approval starter.
-      await admin.getByTestId("workflows-new-workflow").click();
-      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
-      await admin.getByTestId("library-new-name-input").fill(GATE_SLUG);
-      await admin.getByTestId("new-workflow-id-change").click();
-      await admin.getByTestId("library-new-slug-input").fill(GATE_SLUG);
-      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
-      await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
-      await admin.getByTestId("studio-view-yaml").click();
-      await admin.getByTestId("studio-yaml").fill(GATE_TWIN.replace("__GATE_SLUG__", GATE_SLUG));
-      await admin.getByTestId("studio-save").click();
-      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("studio-validate").click();
-      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
+      const created = await importWorkflowInFactory(
+        admin,
+        GATE_SLUG,
+        GATE_TWIN.replace("__GATE_SLUG__", GATE_SLUG),
+      );
+      await expect(admin.getByTestId("studio-draft-status")).not.toContainText(/Saving/i, {
         timeout: 30_000,
       });
+      await expect
+        .poll(
+          async () => {
+            const res = await admin.request.get(`/api/v1/drafts/${created.draftId}`);
+            return res.ok()
+              ? (((await res.json()) as { document_yaml?: string }).document_yaml ?? "")
+              : "";
+          },
+          { timeout: 30_000 },
+        )
+        .toContain("deadlineSeconds: 60");
       await admin.getByTestId("studio-publish").click();
       await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
@@ -1136,8 +1096,6 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
 
     await test.step("run it: the gate is the root node, so waiting_human needs no worker", async () => {
-      // Design 1b: the Workflows tab's one library picker is the pin, and the
-      // header band's `Start run` is the Runs tab's one door into the form.
       await pinWorkflowOnProject(alice, projectPath, GATE_SLUG);
       await openRunForm(alice, projectPath);
       await selectByOptionText(alice, "new-run-assignment", GATE_SLUG);
@@ -1147,24 +1105,16 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       gatePath = new URL(alice.url()).pathname;
       gateRunId = gatePath.split("/").pop() ?? "";
       expect(gateRunId).toMatch(/^[0-9a-f-]{36}$/);
-      // This wait starts the 60s clock, so it is the only budget the deadline
-      // itself needs. `need you` is the SHORT_WORD for the wire's
-      // `waiting_human` (one table with the Runs tab's chip).
       await expectRunStatus(alice, /need you/, RUN_TIMEOUT_MS);
       await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
       });
-      // The clock is now running, so the identity of the ASK is read here,
-      // before anything can close it: `approval_requests` admits ONE row per
-      // node execution (ADR-0023 § 9), so the row named now is the row 14e8ff5
-      // has to re-arm later — a second row would carry a different id.
-      await gotoApp(alice, projectPath);
+      await gotoApp(alice, "/");
       const gateId = await pendingGateFor(alice, gateRunId, DECISION_TIMEOUT_MS);
-      askedRow = `project-attention-decision-${testidOf(gateId)}`;
-      expect(askedRow).toMatch(/^project-attention-decision-[0-9a-z]{13}$/);
+      askedRow = `needs-you-card-${gateId}`;
       await expect(
-        alice.getByTestId("project-attention").locator(`[data-testid="${askedRow}"]`),
+        alice.getByTestId("needs-you").locator(`[data-testid="${askedRow}"]`),
       ).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
       await shot(alice, "m5-08-scratch-gate-open");
     });
@@ -1219,26 +1169,16 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
 
     await test.step("the retry is accepted — the dead end is gone", async () => {
-      // Finding 03: the stalled retry and the re-asked decision both live on
-      // the project overview's Needs-You fan now, not on the retired Inbox.
-      await gotoApp(alice, projectPath);
-      await expect(alice.getByTestId(`project-attention-run-${gateId()}`)).toBeVisible({
+      // Retry directly from the run workbench header (`run-retry`), then verify
+      // the SAME gate card (`askedRow`) re-appears in Needs you on Home.
+      await expect(alice.getByTestId("run-retry")).toBeEnabled();
+      await alice.getByTestId("run-retry").click();
+      await expect(alice.getByTestId("run-action-error")).toHaveCount(0, {
         timeout: DECISION_TIMEOUT_MS,
       });
-      await alice.getByTestId(`project-retry-${gateId()}`).click();
-      // The whole finding. This control used to answer the 500
-      // (`approval_requests_node_execution_id_key`) and paint itself
-      // `project-attention-run-error-*`; a 4xx refusal is allowed to do that, a
-      // 500 is not, and a silent no-op is neither.
-      await expect(alice.getByTestId(`project-attention-run-error-${gateId()}`)).toHaveCount(0, {
-        timeout: DECISION_TIMEOUT_MS,
-      });
-      // The run left STALLED and came back to the human as a decision — on the
-      // row read before the deadline passed, which is the one-per-node-
-      // execution model made visible: the gate was re-asked THROUGH its row.
-      // (Selected by the row's stable test id: askedRow is this run's own gate
-      // callout.)
-      const reAsk = alice.getByTestId("project-attention").locator(`[data-testid="${askedRow}"]`);
+      await expectRunStatus(alice, /need you/, DECISION_TIMEOUT_MS);
+      await gotoApp(alice, "/");
+      const reAsk = alice.getByTestId("needs-you").locator(`[data-testid="${askedRow}"]`);
       await expect(reAsk).toHaveCount(1, { timeout: DECISION_TIMEOUT_MS });
       await shot(alice, "m5-08-overview-re-asked");
     });
@@ -1332,26 +1272,25 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     let rejectRunId = "";
 
     await test.step("publish the scratch rejection twin: root gate + one guarded step", async () => {
-      await gotoApp(admin, "/workflows");
-      await expect(admin.getByTestId("library-page")).toBeVisible();
-      await admin.getByTestId("workflows-new-workflow").click();
-      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
-      await admin.getByTestId("library-new-name-input").fill(REJECT_SLUG);
-      await admin.getByTestId("new-workflow-id-change").click();
-      await admin.getByTestId("library-new-slug-input").fill(REJECT_SLUG);
-      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
-      await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
-      await admin.getByTestId("studio-view-yaml").click();
-      await admin
-        .getByTestId("studio-yaml")
-        .fill(REJECT_TWIN.replace("__REJECT_SLUG__", REJECT_SLUG));
-      await admin.getByTestId("studio-save").click();
-      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("studio-validate").click();
-      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
+      const created = await importWorkflowInFactory(
+        admin,
+        REJECT_SLUG,
+        REJECT_TWIN.replace("__REJECT_SLUG__", REJECT_SLUG),
+      );
+      await expect(admin.getByTestId("studio-draft-status")).not.toContainText(/Saving/i, {
         timeout: 30_000,
       });
+      await expect
+        .poll(
+          async () => {
+            const res = await admin.request.get(`/api/v1/drafts/${created.draftId}`);
+            return res.ok()
+              ? (((await res.json()) as { document_yaml?: string }).document_yaml ?? "")
+              : "";
+          },
+          { timeout: 30_000 },
+        )
+        .toContain("approve");
       await admin.getByTestId("studio-publish").click();
       await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,

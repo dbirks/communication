@@ -454,16 +454,9 @@ export async function pendingApprovalForRun(
   throw new Error(`no pending approval appeared for run ${runId}`);
 }
 
-/** The sidebar's Today flag count ("! n waiting"); 0 while the flag is absent.
- * Handoff 2c/3c folded the Inbox row into Today, so the waiting count the Inbox
- * row used to carry sits on `sidebar-link-home` (same `useSidebarFlags`
- * reduction, same `aria-label`). */
+/** Count of Needs-you gate cards visible on Home (`needs-you-card-*`). */
 export async function inboxFlagCount(page: Page): Promise<number> {
-  const badge = page.getByTestId("sidebar-link-home").getByLabel(/waiting$/);
-  if (!(await badge.isVisible().catch(() => false))) return 0;
-  const label = (await badge.getAttribute("aria-label")) ?? "";
-  const match = label.match(/^(\d+) waiting$/);
-  return match ? Number(match[1]) : 0;
+  return page.locator('[data-testid^="needs-you-card-"]').count();
 }
 
 test.describe("shell p789 — live flags, reusable steps, mic, trust, questions, approvals, ops, settings", () => {
@@ -480,7 +473,8 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const request = page.request;
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("sidebar")).toBeVisible();
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("home-all")).toBeVisible();
     // Let the first paints, the SSE open and the flag reads settle before
     // the idle window: /runs|/approvals traffic must be quiet for 3 s straight.
     let quietSeconds = 0;
@@ -566,7 +560,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const runId = await startGatedRun(request, csrf, project, pipeline.revisionId);
     await expect
       .poll(async () => inboxFlagCount(page), {
-        message: "the Inbox flag must rise within 10 s",
+        message: "the Needs you cards must rise within 10 s",
         timeout: 10_000,
       })
       .toBe(before + 1);
@@ -678,7 +672,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     )) as { id: string };
     console.log("P789-T3 editable draft", editable.id);
     console.log("P789-T3 goto draft");
-    await page.goto(BASE_URL + `/workflows/${pipeline.pipelineId}/drafts/${editable.id}`, {
+    await page.goto(BASE_URL + `/factory/${pipeline.pipelineId}?draft=${editable.id}`, {
       waitUntil: "domcontentloaded",
     });
     console.log("P789-T3 canvas visible");
@@ -686,6 +680,10 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const node = page.getByTestId(`canvas-step-${nodeId}`);
     await expect(node).toBeVisible();
     await node.click();
+    const stepCard = page.getByTestId("agent-step-card");
+    if (await stepCard.isVisible().catch(() => false)) {
+      await page.getByTestId("agent-card-more-settings").click();
+    }
     console.log("P789-T3 node clicked");
     const saveBlock = page.getByTestId("insp-save-step");
     await expect(saveBlock).toBeVisible();
@@ -712,15 +710,15 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       listed.templates?.some((row) => row.id === template.id),
       "the saved step is served by GET /api/v1/node-templates",
     ).toBe(true);
-    await page.goto(BASE_URL + "/workflows/steps", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("steps-page")).toBeVisible();
+    await page.goto(BASE_URL + "/manage/agents?tab=steps", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("steps-embedded")).toBeVisible();
     await expect(page.getByTestId("steps-loading")).toBeHidden({ timeout: 30_000 });
     await expect(page.getByTestId("steps-list")).toContainText(nodeId, { timeout: 15_000 });
     await checkShellScreen(page, "steps with the saved step", stopWatching);
     await evidence(
       page,
       "shell-p789-save-step",
-      `selecting the agent node in the ${slug} draft and arming 'also save as a reusable step' POSTed the node as template ${template.id.slice(0, 8)} — it is listed by GET /api/v1/node-templates and shows on /workflows/steps`,
+      `selecting the agent node in the ${slug} draft and arming 'also save as a reusable step' POSTed the node as template ${template.id.slice(0, 8)} — it is listed by GET /api/v1/node-templates and shows on /manage/agents?tab=steps`,
     );
   });
 
@@ -827,7 +825,8 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("sidebar")).toBeVisible();
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("home-all")).toBeVisible();
     // No assistant write may leave the browser before Send is pressed — except
     // CONTRACT §4's transcription POST, the one non-GET call the new contract
     // allows. Only that exact path is excluded; everything else is counted.
@@ -843,7 +842,15 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       }
     });
     await page.keyboard.press("Meta+j");
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    if (
+      !(await page
+        .getByTestId("quick-chat")
+        .isVisible()
+        .catch(() => false))
+    ) {
+      await page.keyboard.press("Control+j");
+    }
+    await expect(page.getByTestId("quick-chat")).toBeVisible();
     const composer = page.getByTestId("assistant-composer-input");
     await expect(composer).toBeVisible();
     // The composer reads the speech status when it mounts; the tap must wait for
@@ -860,7 +867,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const mic = page.getByTestId("mic-button");
     await expect(mic, "the fake SpeechRecognition must make the mic render").toBeVisible();
     await mic.click();
-    await expect(page.getByTestId("listening-bar")).toBeVisible();
+    await expect(page.getByTestId("listening-capsule")).toBeVisible();
     // The browser's own recognizer opened the mic — this is the fallback path.
     await expect
       .poll(
@@ -987,7 +994,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     )) as { id: string };
     // Settings → Assistant: the stored level is changed through the page the
     // pill itself uses (same hook, same PATCH).
-    await page.goto(BASE_URL + "/settings/assistant", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage/agents?tab=assistant", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("settings-assistant")).toBeVisible();
     await page.getByTestId("settings-assistant-trust-level-option-ask_all").click();
     await expect
@@ -1000,18 +1007,38 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
         { message: "the stored trust level becomes ask_all", timeout: 15_000 },
       )
       .toBe("ask_all");
-    await page.goto(BASE_URL + `/workflows/${pipeline.pipelineId}/drafts/${editable.id}`, {
+    await page.goto(BASE_URL + `/factory/${pipeline.pipelineId}?draft=${editable.id}`, {
       waitUntil: "domcontentloaded",
     });
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
-    // Finding 08's new contract on the Studio draft page: the draft's ask row
-    // claims the Ask chord while collapsed, so the first ⌘J expands that row
-    // (the draft's own propose surface) and — the claim dropped with it — the
-    // second ⌘J reaches the floating popover this journey needs.
+    // On Studio with no step selected, first ⌘J may expand the proposal footer
+    // before a second ⌘J opens Quick chat.
     await page.keyboard.press("Meta+j");
-    await expect(page.getByTestId("assistant-proposal-input")).toBeVisible();
-    await page.keyboard.press("Meta+j");
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    if (
+      !(await page
+        .getByTestId("quick-chat")
+        .isVisible()
+        .catch(() => false))
+    ) {
+      await page.keyboard.press("Control+j");
+    }
+    if (
+      !(await page
+        .getByTestId("quick-chat")
+        .isVisible()
+        .catch(() => false))
+    ) {
+      await page.keyboard.press("Meta+j");
+      if (
+        !(await page
+          .getByTestId("quick-chat")
+          .isVisible()
+          .catch(() => false))
+      ) {
+        await page.keyboard.press("Control+j");
+      }
+    }
+    await expect(page.getByTestId("quick-chat")).toBeVisible();
     // Under ask_all a DRAFT EDIT is a gated tool call (trust.go:
     // ClassDraftEdit), so the turn stops without executing and lands as a
     // confirm card. (A navigation is NOT the deterministic gate: ui.navigate
@@ -1060,9 +1087,17 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       if (gated) break;
       const failedTurn = (await page.getByTestId("assistant-error").count()) > 0;
       if (!failedTurn) break; // the deterministic wait was exhausted — fail loudly below
-      await page.keyboard.press("Escape");
+      await page.getByTestId("quick-chat-close").click();
       await page.keyboard.press("Meta+j");
-      await expect(page.getByTestId("assistant-popover")).toBeVisible();
+      if (
+        !(await page
+          .getByTestId("quick-chat")
+          .isVisible()
+          .catch(() => false))
+      ) {
+        await page.keyboard.press("Control+j");
+      }
+      await expect(page.getByTestId("quick-chat")).toBeVisible();
       await askForEdit();
     }
     expect(gated, "ask_all must gate the draft edit behind a confirm card").toBe(true);
@@ -1129,7 +1164,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     // mutation invalidates the changes query, so the chip must update IN
     // PLACE on the still-open popover — no reload, no remount. The
     // confirmed edit is the conversation's newest change row.
-    await expect(page.getByTestId("assistant-popover"), "the popover is still open").toBeVisible();
+    await expect(page.getByTestId("quick-chat"), "Quick chat is still open").toBeVisible();
     const chipToggle = page.getByTestId("assistant-change-chip-toggle");
     await expect(chipToggle, "the change chip lists the confirmed edit").toBeVisible({
       timeout: 30_000,
@@ -1158,12 +1193,21 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     // table), even under ask_all — the run records whether the model used
     // the ui.navigate tool or wrote a link, and whether the page moved.
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("sidebar")).toBeVisible();
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("home-all")).toBeVisible();
     await page.keyboard.press("Meta+j");
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    if (
+      !(await page
+        .getByTestId("quick-chat")
+        .isVisible()
+        .catch(() => false))
+    ) {
+      await page.keyboard.press("Control+j");
+    }
+    await expect(page.getByTestId("quick-chat")).toBeVisible();
     const navComposer = page.getByTestId("assistant-composer-input");
     const rowsBeforeNav = (await assistantRows(request)).length;
-    await navComposer.fill("take me to the workflows page");
+    await navComposer.fill("take me to the factory page");
     await page.getByTestId("assistant-send").click();
     // The turn appends its rows atomically — an answer, or a follow-up
     // question instead of one. Baseline on the total row count, so either
@@ -1178,10 +1222,8 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const navRow = [...navRows].reverse().find((row) => row.kind === "assistant");
     const navQuestion = [...navRows].reverse().find((row) => row.kind === "question");
     const usedNavigateTool = (navRow?.tool_calls ?? []).some((call) => call.name === "ui_navigate");
-    const wroteWorkflowsRef = /workflows/i.test(navRow?.answer_markdown ?? "");
-    // Finding 02/03: `/board` is retired (it redirects to Today); the palette
-    // destination is now `/workflows`.
-    const landedOnWorkflows = /\/workflows([/?#]|$)/.test(new URL(page.url()).pathname);
+    const wroteWorkflowsRef = /workflows|factory/i.test(navRow?.answer_markdown ?? "");
+    const landedOnWorkflows = /\/(workflows|factory)([/?#]|$)/.test(new URL(page.url()).pathname);
     await evidence(
       page,
       "shell-p789-trust-navigate",
@@ -1213,17 +1255,20 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const request = page.request;
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("sidebar")).toBeVisible();
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("home-all")).toBeVisible();
     await page.keyboard.press("Meta+j");
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    if (
+      !(await page
+        .getByTestId("quick-chat")
+        .isVisible()
+        .catch(() => false))
+    ) {
+      await page.keyboard.press("Control+j");
+    }
+    await expect(page.getByTestId("quick-chat")).toBeVisible();
     const cards = page.getByTestId("assistant-question");
-    // The popover adopts the caller's NEWEST conversation, so older
-    // (answered) question cards from earlier runs still render in the list:
-    // a DOM baseline (cards.count) can name a stale card — the previous run
-    // hung reading options off one. Baseline on the server transcript
-    // instead, and the model's new question is the LAST card (oldest-first
-    // render; this send's rows append). First settle the transcript: an
-    // in-flight turn from an earlier test may still be landing its rows.
+    // Wait for any in-flight transcript turn to settle before baseline.
     let lastRows = -1;
     for (let i = 0; i < 30; i += 1) {
       const n = (await assistantRows(request)).length;
@@ -1236,14 +1281,19 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     let failedAttempts = 0;
     let failedLine = "";
     for (let attempt = 1; attempt <= 2 && pickedLabel === null; attempt += 1) {
-      // A FRESH popover per attempt: a failed turn leaves its "× no
-      // completion … within 180s" line in the popover's local state (the lab
-      // runs COMMUNICATION_ASSISTANT_TIMEOUT=180s), and the
-      // composer + Send stay disabled while any turn is in flight.
-      await page.keyboard.press("Escape");
-      await expect(page.getByTestId("assistant-popover")).toBeHidden();
+      // A fresh Quick chat open per attempt clears local error state.
+      await page.getByTestId("quick-chat-close").click();
+      await expect(page.getByTestId("quick-chat")).toBeHidden();
       await page.keyboard.press("Meta+j");
-      await expect(page.getByTestId("assistant-popover")).toBeVisible();
+      if (
+        !(await page
+          .getByTestId("quick-chat")
+          .isVisible()
+          .catch(() => false))
+      ) {
+        await page.keyboard.press("Control+j");
+      }
+      await expect(page.getByTestId("quick-chat")).toBeVisible();
       const composer = page.getByTestId("assistant-composer-input");
       await expect(composer, "the composer is enabled once no turn is in flight").toBeEnabled({
         timeout: 60_000,
@@ -1591,13 +1641,14 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     );
   });
 
-  test("8. ops: health line, workers rows == GET /workers, matrix cells match GET /launchers", async ({
+  test("8. manage runners & ops: health line, workers rows == GET /workers, matrix cells match GET /launchers", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const request = page.request;
     const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/settings/operations", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage/runners", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("manage-runners")).toBeVisible();
     await expect(page.getByTestId("ops-health-line")).toBeVisible();
     const healthText = (await page.getByTestId("ops-health-line").innerText()).trim();
     expect(healthText, "the health line is real text, not a placeholder").not.toBe("");
@@ -1660,22 +1711,19 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     );
   });
 
-  test("9. settings → assistant shows the three levels, stored one checked; settings links /ops", async ({
+  test("9. manage → agents → assistant shows the three levels, stored one checked; manage nav links runners", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const request = page.request;
     const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/settings", { waitUntil: "domcontentloaded" });
-    await expect(page, "/settings lands on the Layout tab").toHaveURL(/\/settings\/layout$/);
-    await expect(page.getByTestId("settings-page")).toBeVisible();
-    const opsLink = page.getByTestId("settings-ops-link");
-    await expect(opsLink, "Settings carries the Operations entry").toBeVisible();
-    const opsHref = await opsLink.getAttribute("href");
-    expect(opsHref, "the Operations entry points at the /settings/operations tab").toBe(
-      "/settings/operations",
-    );
-    await page.goto(BASE_URL + "/settings/assistant", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("manage")).toBeVisible();
+    const runnersLink = page.getByTestId("manage-nav-runners");
+    await expect(runnersLink, "Manage carries the Runners navigation entry").toBeVisible();
+    const runnersHref = await runnersLink.getAttribute("href");
+    expect(runnersHref, "the Runners entry points at /manage/runners").toBe("/manage/runners");
+    await page.goto(BASE_URL + "/manage/agents?tab=assistant", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("settings-assistant")).toBeVisible();
     // Handoff §4 rewrote this copy: the label plus an honest blurb, both read
     // from TRUST_LEVELS (ui/src/components/assistant/types.ts), and no promise
@@ -1717,15 +1765,15 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       .getByTestId(`settings-assistant-trust-level-option-${level}`)
       .getByRole("radio");
     await expect(checked, `the stored level ${level} is the checked radio`).toBeChecked();
-    await checkShellScreen(page, "settings assistant", stopWatching);
+    await checkShellScreen(page, "manage agents assistant", stopWatching);
     await evidence(
       page,
       "shell-p789-settings",
-      `settings → assistant shows all three trust levels with the stored one (${level}) checked, matching GET /me/preferences, and the settings Operations tab entry links to /settings/operations`,
+      `manage → agents → assistant shows all three trust levels with the stored one (${level}) checked, matching GET /me/preferences, and the Manage Runners nav entry links to /manage/runners`,
     );
   });
 
-  test("10. settings tabs switch client-side: layout → assistant → operations, no new document request", async ({
+  test("10. manage sections & tabs switch client-side: agents → assistant → runners, no new document request", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -1735,32 +1783,32 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       const url = new URL(request.url());
       if (request.resourceType() === "document") documentRequests.push(url.pathname);
     });
-    await page.goto(BASE_URL + "/settings", { waitUntil: "domcontentloaded" });
-    await expect(page, "/settings lands on the Layout tab").toHaveURL(/\/settings\/layout$/);
-    await expect(page.getByTestId("settings-page")).toBeVisible();
+    await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(/\/manage\/agents$/);
+    await expect(page.getByTestId("manage-agents")).toBeVisible();
     const documentCountAfterLoad = documentRequests.length;
-    await expect(page.getByTestId("settings-layout")).toBeVisible();
 
-    // Tab → client-side router navigation: Layout → Assistant → Operations.
-    await page.getByTestId("settings-tab-assistant").click();
-    await expect(page).toHaveURL(/\/settings\/assistant$/);
+    // Tab → client-side router navigation: Agents (profiles) → Assistant → Runners.
+    await page.getByTestId("agents-tab-assistant").click();
+    await expect(page).toHaveURL(/\/manage\/agents\?tab=assistant$/);
     await expect(page.getByTestId("settings-assistant")).toBeVisible();
-    await expect(page.getByTestId("settings-layout")).toBeHidden();
 
-    await page.getByTestId("settings-ops-link").click();
-    await expect(page).toHaveURL(/\/settings\/operations$/);
+    await page.getByTestId("manage-nav-runners").click();
+    await expect(page).toHaveURL(/\/manage\/runners$/);
     await expect(page.getByTestId("ops-health-line")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("settings-assistant")).toBeHidden();
 
-    // The tab switches are router navigations, not document navigations: the
+    // The switches are router navigations, not document navigations: the
     // document request count must not move after the first load.
-    expect(documentRequests.length, "settings tab switches must not reload the document").toBe(
-      documentCountAfterLoad,
-    );
-    await checkShellScreen(page, "settings operations tab", stopWatching);
+    expect(
+      documentRequests.length,
+      "manage section/tab switches must not reload the document",
+    ).toBe(documentCountAfterLoad);
+    await checkShellScreen(page, "manage runners tab", stopWatching);
     await evidence(
       page,
       "shell-p789-settings-ops-tab",
-      "switching Settings Layout → Assistant → Operations through the tab bar made no new document request",
+      "switching Manage Agents → Assistant tab → Runners through tabs/sub-nav made no new document request",
     );
   });
 });

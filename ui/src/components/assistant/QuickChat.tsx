@@ -407,7 +407,7 @@ export default function QuickChat({
       role="complementary"
       aria-label="Quick chat"
       onKeyDown={onPanelKeyDown}
-      className="fixed top-[52px] right-0 bottom-0 left-0 z-30 flex w-full flex-col border-l border-line bg-surface shadow-[-12px_0_30px_rgba(30,29,26,0.06)] md:top-[60px] md:left-auto md:w-[400px]"
+      className="fixed top-[52px] right-0 bottom-0 left-0 z-[45] flex w-full flex-col border-l border-line bg-surface shadow-[-12px_0_30px_rgba(30,29,26,0.06)] md:top-[60px] md:left-auto md:w-[400px]"
     >
       {/* Header: 48px, padding 0 14, bottom border line-soft */}
       <div

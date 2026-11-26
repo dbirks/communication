@@ -31,7 +31,14 @@
 // 6 flips the shared judge switch (restored in a finally so the lab never
 // stays down for the suites behind this one).
 import { readFileSync } from "node:fs";
-import { test, expect, type APIRequestContext, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type BrowserContext,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { ADMIN_SUBJECT, gotoApp, shot, signIn } from "./helpers.js";
 
@@ -110,25 +117,28 @@ async function setJudge(request: APIRequestContext, state: "down" | "ok"): Promi
 }
 
 /**
- * Open the Ask popover on Today with the handoff's chord (⌘J — Control+J on
- * this runner, the same chord m5-assistant.spec.ts drives). A popover left
- * open by the previous leg is closed first, so the chord always opens.
+ * Open the Quick chat panel with the handoff's chord (⌘J / Ctrl+J).
+ * A panel left open by the previous leg is closed first so the chord always opens.
  */
 async function openAsk(page: Page): Promise<Locator> {
-  const panel = page.getByTestId("assistant-panel");
+  const panel = page.getByTestId("quick-chat");
   if (await panel.isVisible().catch(() => false)) {
-    await page.getByTestId("assistant-close").click();
+    await page.getByTestId("quick-chat-close").click();
     await expect(panel).toBeHidden();
   }
   await page.keyboard.press("Control+J");
-  await expect(page.getByTestId("assistant-popover")).toBeVisible();
+  if (!(await panel.isVisible().catch(() => false))) {
+    await page.keyboard.press("Meta+j");
+  }
   await expect(panel).toBeVisible();
   return panel;
 }
 
-/** Start a fresh thread from the panel header (the thread then holds only the setup checklist). */
+/** Start a fresh thread from the panel header's History menu (the thread then holds only the setup checklist). */
 async function startNewThread(page: Page): Promise<void> {
-  await page.getByTestId("assistant-new-conversation").click();
+  await page.getByTestId("assistant-history").click();
+  await expect(page.getByTestId("assistant-menu-new-thread")).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("assistant-menu-new-thread").click();
   await expect(page.getByTestId("assistant-setup")).toBeVisible({ timeout: 30_000 });
 }
 
@@ -144,13 +154,19 @@ async function ask(page: Page, question: string): Promise<void> {
   await input.press("Enter");
 }
 
-const assistantRow = (page: Page): Locator => page.locator("[data-testid='assistant-msg-assistant']");
+const assistantRow = (page: Page): Locator =>
+  page.locator("[data-testid='assistant-msg-assistant']");
 
 /** The whole transcript, for failure messages that must not be a bare timeout. */
 async function transcriptText(page: Page): Promise<string> {
-  return ((await page.getByTestId("assistant-body").innerText().catch(() => "(no transcript)"))
+  return (
+    await page
+      .getByTestId("assistant-body")
+      .innerText()
+      .catch(() => "(no transcript)")
+  )
     .replace(/\s+/g, " ")
-    .trim());
+    .trim();
 }
 
 /**
@@ -183,7 +199,10 @@ async function nextAnswerText(page: Page, previous: number): Promise<string> {
     }
     await page.waitForTimeout(500);
   }
-  return assistantRow(page).last().innerText().then((text) => text.replace(/\s+/g, " ").trim());
+  return assistantRow(page)
+    .last()
+    .innerText()
+    .then((text) => text.replace(/\s+/g, " ").trim());
 }
 
 /** Expand the answer's `used N tools` disclosure and return its rows' text. */
@@ -196,12 +215,15 @@ async function toolsTextOf(row: Locator): Promise<string> {
 }
 
 /** True when `locator` sits inside an element carrying `testid` as an ancestor. */
-async function insideTestid(page: Page, menuTestid: string, ancestorTestid: string): Promise<boolean> {
+async function insideTestid(
+  page: Page,
+  menuTestid: string,
+  ancestorTestid: string,
+): Promise<boolean> {
   return page.evaluate(
     ([menu, ancestor]) =>
-      document
-        .querySelector(`[data-testid="${menu}"]`)
-        ?.closest(`[data-testid="${ancestor}"]`) !== null,
+      document.querySelector(`[data-testid="${menu}"]`)?.closest(`[data-testid="${ancestor}"]`) !==
+      null,
     [menuTestid, ancestorTestid] as const,
   );
 }
@@ -228,7 +250,10 @@ async function m4ProjectId(context: BrowserContext): Promise<string> {
   expect(res.status(), "list the caller's projects (GET /api/v1/projects)").toBe(200);
   const { items } = (await res.json()) as { items: { id: string; slug: string }[] };
   const m4 = (items ?? []).find((row) => row.slug === M4_PROJECT_SLUG);
-  expect(m4, `the lab's ${M4_PROJECT_SLUG} project is seeded (found: ${JSON.stringify((items ?? []).map((row) => row.slug))})`).toBeTruthy();
+  expect(
+    m4,
+    `the lab's ${M4_PROJECT_SLUG} project is seeded (found: ${JSON.stringify((items ?? []).map((row) => row.slug))})`,
+  ).toBeTruthy();
   return m4!.id;
 }
 
@@ -246,7 +271,13 @@ async function waitForApprovalCard(page: Page, card: Locator): Promise<void> {
   let followUps = 0;
   let rateLimitRetries = 0;
   for (;;) {
-    if (await card.last().isVisible().catch(() => false)) return;
+    if (
+      await card
+        .last()
+        .isVisible()
+        .catch(() => false)
+    )
+      return;
     const retry = page.getByTestId("assistant-send-retry").last();
     if (await retry.isVisible().catch(() => false)) {
       if (rateLimitRetries >= 2) {
@@ -342,24 +373,22 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
     await shot(alice, "asst-01-setup");
   });
 
-  test("2. frame: popover geometry, sibling menus, side panel, full page", async () => {
+  test("2. frame: quick chat geometry, sibling menus, full page", async () => {
     await alice.setViewportSize({ width: 1280, height: 860 });
     await gotoApp(alice, "/");
     const panel = await openAsk(alice);
 
-    await test.step("the popover is the 400px clipped box", async () => {
+    await test.step("Quick chat is the 400px slide-in panel", async () => {
       const box = await panel.boundingBox();
-      expect(box, "the assistant panel has a box").toBeTruthy();
+      expect(box, "the quick chat panel has a box").toBeTruthy();
       expect(Math.abs(box!.width - 400)).toBeLessThanOrEqual(1);
-      const overflow = await panel.evaluate((node) => getComputedStyle(node).overflow);
-      expect(overflow).toBe("hidden");
     });
 
     await test.step("the trust menu leaves the panel and carries the § 4 copy", async () => {
       await alice.getByTestId("assistant-pill").click();
       const menu = alice.getByTestId("assistant-pill-menu");
       await expect(menu).toBeVisible();
-      expect(await insideTestid(alice, "assistant-pill-menu", "assistant-panel")).toBe(false);
+      expect(await insideTestid(alice, "assistant-pill-menu", "quick-chat")).toBe(false);
       for (const level of TRUST_COPY) {
         const option = alice.getByTestId(level.testid);
         await expect(option, `trust option ${level.testid}`).toBeVisible();
@@ -376,31 +405,15 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
       await alice.getByTestId("assistant-context-button").click();
       const menu = alice.getByTestId("assistant-context-menu");
       await expect(menu).toBeVisible();
-      expect(await insideTestid(alice, "assistant-context-menu", "assistant-panel")).toBe(false);
+      expect(await insideTestid(alice, "assistant-context-menu", "quick-chat")).toBe(false);
       await expect(menu).toContainText("Today");
       await shot(alice, "asst-02-context-menu");
       await alice.keyboard.press("Escape");
       await expect(menu).toBeHidden();
     });
 
-    await test.step("the dock is the 450px side panel and the page steps aside", async () => {
-      await alice.getByTestId("assistant-dock").click();
-      await expect(panel).toHaveAttribute("data-variant", "dock");
-      const box = await panel.boundingBox();
-      expect(box, "the docked panel has a box").toBeTruthy();
-      expect(Math.abs(box!.width - 450)).toBeLessThanOrEqual(2);
-      const main = alice.locator("main");
-      const mainBox = await main.boundingBox();
-      expect(mainBox, "the shell's main column has a box").toBeTruthy();
-      const viewportWidth = await alice.evaluate(() => window.innerWidth);
-      expect(mainBox!.x + mainBox!.width).toBeLessThanOrEqual(viewportWidth - 450 + 2);
-      await shot(alice, "asst-02-dock");
-    });
-
-    await test.step("full page: /assistant with the breakpoint columns", async () => {
-      await alice.getByTestId("assistant-dock").click(); // back to the popover first
-      await expect(panel).toHaveAttribute("data-variant", "popover");
-      await alice.getByTestId("assistant-expand").click();
+    await test.step("full page: Open as chat navigates to /assistant with breakpoint columns", async () => {
+      await alice.getByTestId("quick-chat-open-as-chat").click();
       await expect(alice).toHaveURL(/\/assistant/);
       const threads = alice.getByTestId("assistant-page-threads");
       const side = alice.getByTestId("assistant-page-side");
@@ -414,16 +427,17 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
       await expect(side).toBeHidden();
     });
 
-    await test.step("leaving full page returns to the popover at 400px", async () => {
+    await test.step("leaving full page returns to Quick chat at 400px", async () => {
       await alice.setViewportSize({ width: 1280, height: 860 });
       await alice.getByTestId("assistant-expand").click();
       await expect(alice).not.toHaveURL(/\/assistant/);
-      await expect(alice.getByTestId("assistant-popover")).toBeVisible();
-      const box = await panel.boundingBox();
-      expect(box, "the returned panel has a box").toBeTruthy();
+      const quickChat = alice.getByTestId("quick-chat");
+      await expect(quickChat).toBeVisible();
+      const box = await quickChat.boundingBox();
+      expect(box, "the returned Quick chat panel has a box").toBeTruthy();
       expect(Math.abs(box!.width - 400)).toBeLessThanOrEqual(1);
       // Handoff § 1: the mock's characters never ship as text.
-      const panelText = await panel.innerText();
+      const panelText = await quickChat.innerText();
       for (const glyph of RETIRED_GLYPHS) {
         expect(panelText, `the panel's text carries no ${glyph}`).not.toContain(glyph);
       }
@@ -439,9 +453,12 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
     await test.step("admin (an org admin, second identity) creates the org secret", async () => {
       // A SECOND BROWSER CONTEXT with an explicit EMPTY storageState: the
       // admin door is unreachable from a context born carrying alice's session.
-      const adminContext = await alice.context().browser()!.newContext({
-        storageState: { cookies: [], origins: [] },
-      });
+      const adminContext = await alice
+        .context()
+        .browser()!
+        .newContext({
+          storageState: { cookies: [], origins: [] },
+        });
       try {
         const admin = await adminContext.newPage();
         await signIn(admin, ADMIN_SUBJECT, { email: `${ADMIN_SUBJECT}@example.test` });
@@ -482,7 +499,7 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
         "credential.list",
       );
       await shot(alice, "asst-03-credentials-answer");
-      await alice.getByTestId("assistant-close").click();
+      await alice.getByTestId("quick-chat-close").click();
     });
   });
 
@@ -561,8 +578,9 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
               `${BASE_URL}/api/v1/assistant/conversations/${conversationIds[0]}/changes`,
             );
             if (!changes.ok()) return false;
-            changeKinds = (((await changes.json()) as { changes?: { kind: string }[] })
-              .changes ?? []).map((row) => row.kind);
+            changeKinds = (
+              ((await changes.json()) as { changes?: { kind: string }[] }).changes ?? []
+            ).map((row) => row.kind);
             return changeKinds.includes("project_create");
           },
           { timeout: 60_000 },
@@ -574,11 +592,18 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
   test("5. page context: the answer says what it assumed, and the switch stops sending it", async () => {
     await gotoApp(alice, "/");
     const runLink = alice.locator('a[href*="/runs/"]').first();
-    await expect(runLink, "Today carries a run of the seeded project").toBeVisible({
-      timeout: 30_000,
-    });
-    const runHref = (await runLink.getAttribute("href"))!;
-    await gotoApp(alice, runHref);
+    let runHref = (await runLink.isVisible({ timeout: 5_000 }).catch(() => false))
+      ? await runLink.getAttribute("href")
+      : null;
+    if (!runHref) {
+      const runsRes = await aliceContext.request.get(`${BASE_URL}/api/v1/runs?limit=5`);
+      expect(runsRes.status(), "list recent runs for page-context leg").toBe(200);
+      const body = (await runsRes.json()) as { runs?: { id: string }[] };
+      const firstRun = body.runs?.[0]?.id;
+      expect(firstRun, "the lab holds at least one run for page-context leg").toBeTruthy();
+      runHref = `/runs/${firstRun}`;
+    }
+    await gotoApp(alice, runHref!);
     await openAsk(alice);
     await startNewThread(alice);
 
@@ -617,10 +642,13 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
       // Put the switch back for every leg and every person after this one.
       await alice.getByTestId("assistant-context-button").click();
       await alice.getByTestId("assistant-context-send").check();
-      await expect(alice.getByTestId("assistant-context-send"), "context rides again").toBeChecked();
+      await expect(
+        alice.getByTestId("assistant-context-send"),
+        "context rides again",
+      ).toBeChecked();
       await alice.keyboard.press("Escape");
     });
-    await alice.getByTestId("assistant-close").click();
+    await alice.getByTestId("quick-chat-close").click();
   });
 
   test("6. trust levels and the judge: no_ask never consults, ask_risky does, down asks the person", async ({
@@ -711,7 +739,7 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
         await setJudge(request, "ok");
       }
     });
-    await alice.getByTestId("assistant-close").click();
+    await alice.getByTestId("quick-chat-close").click();
   });
 
   test("7. dictation: the mic appends to the box and the sent bubble is marked spoken", async ({
@@ -734,8 +762,8 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
       const input = page.getByTestId("assistant-composer-input");
       await input.fill("hey,");
       await page.getByTestId("mic-button").click();
-      await expect(page.getByTestId("listening-bar")).toBeVisible();
-      await expect(page.getByTestId("composer-box")).toHaveClass(/border-dashed/);
+      await expect(page.getByTestId("listening-capsule")).toBeVisible();
+      await expect(page.getByTestId("composer-box")).toHaveClass(/border-accent/);
       await shot(page, "asst-07-listening");
       await page.waitForTimeout(2_000);
       await page.getByTestId("mic-button").click();
@@ -757,13 +785,16 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
     }
   });
 
-  test("8. /settings/assistant shows the speech triple and the judge", async () => {
+  test("8. /settings/assistant redirects to /manage/agents?tab=assistant and shows speech + judge", async () => {
     await gotoApp(alice, "/settings/assistant");
+    await expect(alice).toHaveURL(/\/manage\/agents\?tab=assistant$/);
     const speech = alice.getByTestId("settings-assistant-speech");
     await expect(speech).toBeVisible();
     await expect(speech).toContainText("qwen3-asr-stub");
     await expect(speech).toContainText("set · never shown");
-    await expect(alice.getByTestId("settings-assistant-decision-model")).toContainText("judge-stub");
+    await expect(alice.getByTestId("settings-assistant-decision-model")).toContainText(
+      "judge-stub",
+    );
     await shot(alice, "asst-08-settings");
   });
 });

@@ -630,9 +630,13 @@ export function NewRunForm({
   // One modal, not two (1k review): when the revision carries `input_specs`
   // the typed RunFormDialog owns the chrome — the caller stands its own
   // modal shell down when this reports `typed`.
+  // Wait for the active revision to resolve before flipping freeform↔typed,
+  // so switching between two workflows does not flash `"freeform"` while
+  // the new revision is pending and remount StartRunDialog's form subtree.
   useEffect(() => {
+    if (!revision.data) return;
     onFormModeChange?.(typedMode ? "typed" : "freeform");
-  }, [typedMode, onFormModeChange]);
+  }, [revision.data, typedMode, onFormModeChange]);
 
   /** The value a repository-declaring input must carry (1k: opened from a
    * repo, the form carries that repo — the field is prefilled and read-only,

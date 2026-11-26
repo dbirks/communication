@@ -436,7 +436,7 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
       uses?: unknown[];
       truncated?: boolean;
     };
-    await page.goto(`${BASE_URL}/profiles/${profile.id}`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE_URL}/manage/agents/${profile.id}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId(`profile-detail-${profile.id}`)).toBeVisible({ timeout: 30_000 });
     const summary = page.getByTestId("profile-usage-summary");
     await expect(summary).toContainText(
@@ -462,7 +462,9 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
       `GET /api/v1/node-templates/${templateId}/usage -> ${stepUsageRes.status()}`,
     ).toBe(200);
     const stepUsage = (await stepUsageRes.json()) as { workflow_count: number; uses?: unknown[] };
-    await page.goto(`${BASE_URL}/workflows/steps/${templateId}`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE_URL}/manage/agents?tab=steps&item=${templateId}`, {
+      waitUntil: "domcontentloaded",
+    });
     await expect(page.getByTestId("step-usage")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("step-usage")).toContainText(
       `USED IN ${stepUsage.workflow_count} WORKFLOW${stepUsage.workflow_count === 1 ? "" : "S"}`,
@@ -513,17 +515,13 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const artifactsBody = (await artifactsRes.json()) as { artifacts?: { id: string }[] };
     const apiCount = artifactsBody.artifacts?.length ?? 0;
 
-    await page.goto(`${BASE_URL}/threads/${conversation.id}`, { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
-    // The rail is not an always-open column: ARTIFACTS sits behind the "Thread
-    // details" disclosure under the transcript (the same door
-    // shell-p6-threads.spec.ts opens), so the arm opens it before reading the
-    // section inside — asserting the rail without opening the door tests the
-    // summary's text, not the rail.
-    const context = page.getByTestId("thread-context-block");
-    await expect(context, "the thread's context block stands under the transcript").toBeVisible();
-    await context.locator("summary").click();
-    await expect(context).toHaveAttribute("open", "");
+    await page.goto(`${BASE_URL}/chats/${conversation.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("chat-header")).toBeVisible({ timeout: 30_000 });
+    // Redesign: artifacts live inside the chat header's `⋯` menu (`Artifacts`).
+    await page.getByTestId("chat-menu").click();
+    const artifactsEntry = page.getByTestId("chat-menu-artifacts");
+    await expect(artifactsEntry).toBeVisible({ timeout: 15_000 });
+    await artifactsEntry.click();
     await expect(page.getByTestId("artifacts-rail")).toBeVisible({ timeout: 30_000 });
     const rows = page.getByTestId("thread-artifact-row");
     await expect(rows).toHaveCount(Math.min(apiCount, 5));
