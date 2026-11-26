@@ -12,6 +12,7 @@ import {
   definitionIdOfKey,
   graphRingStyle,
   instancesOfNode,
+  iterationFromLabel,
   overlays,
   parseWorkbenchUrl,
   scopeInstances,
@@ -269,6 +270,134 @@ describe("overlays", () => {
       label: "attempt 2 of 3 · failed",
       executionId: "ne-review-1",
     });
+  });
+
+  // The total in "attempt k of m" is the widest number the run ever showed,
+  // never the ceiling the document was COMPILED with: `attempt_limit` records
+  // `retry.maxAttempts`, and a run can outgrow it — the manual retry route
+  // appends an attempt past a refused budget (lab evidence: the node authored
+  // `attempt_limit='1'` takes attempt 2 through `POST /runs/{id}/retry`,
+  // `docs/m4-exit-status.md` C5h, read 2026-11-26), and the event fold raises
+  // `attempt_count` off the journal's `next_attempt_number` without ever
+  // touching the limit (`runEvents.ts`). A box reading "attempt 2 of 1" denies
+  // the attempt it is standing on.
+  it("never lets the attempt count outgrow its own total", () => {
+    const pushed = [
+      row({
+        id: "ne-push",
+        node_id: "push",
+        node_instance_key: "/push",
+        kind: "process.exec",
+        status: "running",
+        attempt_count: 2,
+        attempt_limit: 1,
+      }),
+    ];
+    expect(overlays(pushed, {}).push).toMatchObject({
+      state: "running",
+      label: "attempt 2 of 2 · running",
+    });
+    // A declared ceiling still above the count stands: the box is not free to
+    // invent a smaller one.
+    const budgeted = [row({ ...pushed[0], attempt_limit: 4 })];
+    expect(overlays(budgeted, {}).push).toMatchObject({ label: "attempt 2 of 4 · running" });
+  });
+
+  // The loop's OWN row — `/prove`, the one row of the scope with no `[n]` on its
+  // own segment — is what became of the LOOP, and it has the last word. Three
+  // clean rounds whose `passWhen` never held is a loop that FAILED (observed
+  // live: a real two-round `check` loop that read `✓ done` beside a failed run,
+  // because the roll-up read the rounds and the rounds were innocent), and a
+  // loop a person stopped is not a loop that succeeded either.
+  describe("rolls a scope up from what became of the loop", () => {
+    const cleanRounds = (loopStatus: NodeExecutionSummary["status"]): NodeExecutionSummary[] => [
+      row({
+        id: "ne-prove",
+        node_id: "prove",
+        node_instance_key: "/prove",
+        kind: "until",
+        status: loopStatus,
+        iterations: 2,
+        finished_at: "2026-01-01T13:00:00Z",
+      }),
+      row({
+        id: "ne-check-1",
+        node_id: "check",
+        node_instance_key: "/prove[1]/check",
+        kind: "process.exec",
+        status: "succeeded",
+        finished_at: "2026-01-01T10:00:00Z",
+      }),
+      row({
+        id: "ne-check-2",
+        node_id: "check",
+        node_instance_key: "/prove[2]/check",
+        kind: "process.exec",
+        status: "succeeded",
+        finished_at: "2026-01-01T11:00:00Z",
+      }),
+    ];
+
+    it("says a loop whose condition never held failed, whatever its rounds look like", () => {
+      expect(overlays(cleanRounds("failed"), {}).prove).toEqual({
+        state: "failed",
+        label: "iteration 2 of 2",
+        executionId: "ne-check-2",
+      });
+    });
+
+    it("says a loop that was stopped stopped, not done", () => {
+      // `cancelled` is the interrupted set's story (ds/states): it stopped, the
+      // goal was not met — never a ✓, and never spelled as a failure.
+      expect(overlays(cleanRounds("cancelled"), {}).prove).toMatchObject({
+        state: "interrupted",
+      });
+    });
+
+    it("says a loop whose last iteration failed failed", () => {
+      const lost = cleanRounds("failed").map((r) =>
+        r.id === "ne-check-2" ? { ...r, status: "failed" as const } : r,
+      );
+      expect(overlays(lost, {}).prove).toMatchObject({ state: "failed" });
+    });
+
+    it("keeps a loop that met its goal done", () => {
+      expect(overlays(cleanRounds("succeeded"), {}).prove).toMatchObject({
+        state: "done",
+        label: "iteration 2 of 2",
+      });
+    });
+
+    it("lets a loop still working say what its live round says", () => {
+      // A gate parked inside a running round needs a person: the loop row says
+      // `running`, and the work inside it is what the reader has to see.
+      const waiting = [
+        ...cleanRounds("running").map((r) =>
+          r.id === "ne-prove" ? { ...r, finished_at: null } : r,
+        ),
+        row({
+          id: "ne-gate",
+          node_id: "sign_off",
+          node_instance_key: "/prove[2]/sign_off",
+          kind: "human.approval",
+          status: "waiting",
+          waiting_reason: "approval",
+        }),
+      ];
+      expect(overlays(waiting, {}).prove).toMatchObject({ state: "waiting" });
+    });
+  });
+
+  it("counts the round a scope label carries, and nothing else", () => {
+    // The goal frame re-says this number in round words beside the bound the
+    // step declares (`GoalFrame`), so the counter has one owner.
+    expect(iterationFromLabel("iteration 2 of 3")).toBe(2);
+    expect(iterationFromLabel("iteration 2 of 2")).toBe(2);
+    expect(iterationFromLabel("iteration 1 of 1")).toBe(1);
+    expect(iterationFromLabel("not started")).toBeNull();
+    expect(iterationFromLabel("25 items")).toBeNull();
+    expect(iterationFromLabel("item 3 of 25")).toBeNull();
+    expect(iterationFromLabel("attempt 2 of 3 · running")).toBeNull();
   });
 
   it("shows a body node that has not run in the selected iteration as not started", () => {

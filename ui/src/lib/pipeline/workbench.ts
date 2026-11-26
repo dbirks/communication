@@ -149,11 +149,38 @@ function wordFor(row: NodeExecutionSummary): string {
   return SHORT_WORD[stateOfRow(row)];
 }
 
-/** "attempt k of m · …" when the row is past its first attempt, else the word. */
+/**
+ * "attempt k of m · …" when the row is past its first attempt, else the word.
+ *
+ * The total is `max(attempt, declared limit)`, never the declared limit alone.
+ * `attempt_limit` is what the COMPILED document said (`retry.maxAttempts`,
+ * clamped to the assignment ceiling — `api/openapi.yaml`, NodeExecution), and a
+ * run can legitimately out-run that number: the manual retry route appends an
+ * attempt past a refused budget (lab evidence: the node authored
+ * `attempt_limit=1` takes attempt 2 through `POST /runs/{id}/retry`,
+ * `docs/m4-exit-status.md` C5h), and the event fold raises `attempt_count`
+ * straight off the journal's `next_attempt_number` without touching the limit
+ * (`runEvents.ts`). A box that read "attempt 2 of 1" stated an impossibility
+ * about a run that really did try twice.
+ */
 function labelOf(row: NodeExecutionSummary): string {
-  return row.attempt_count > 1
-    ? `attempt ${row.attempt_count} of ${row.attempt_limit} · ${wordFor(row)}`
-    : wordFor(row);
+  if (row.attempt_count <= 1) return wordFor(row);
+  const total = Math.max(row.attempt_count, row.attempt_limit, 1);
+  return `attempt ${row.attempt_count} of ${total} · ${wordFor(row)}`;
+}
+
+/**
+ * The round a scope label counts — `iteration 2 of 3` → `2`; any other label →
+ * null. The scope box's label is the one place the run's round number is
+ * written, so anyone who has to re-say it (the canvas goal frame, which prints
+ * the count in the goal's own words) reads it back through here rather than
+ * inventing a second counter.
+ */
+export function iterationFromLabel(label: string): number | null {
+  const match = /^iteration (\d+) of (\d+)$/.exec(label);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isInteger(index) && index >= 1 ? index : null;
 }
 
 function stateOfRow(row: NodeExecutionSummary): StateName {
@@ -353,13 +380,27 @@ function scopeOverlay(
   const iterationChildren = children.filter(
     (row) => indexIn(row.node_instance_key, defKey) === index,
   );
+  // The loop's OWN row (`/build_until_verified`, the one row of this scope with
+  // no `[n]` on its own segment) is the last word on the loop. The rounds are
+  // innocent: a Repeat-until whose `passWhen` never held ends `failed` after
+  // three clean iterations, and a loop the person stopped ends `cancelled`, so
+  // a box that rolled those up to `✓ done` told the reader to trust a goal
+  // nobody met. Only a CLOSED loop row overrules the rounds — a loop that is
+  // running, waiting on a person or queued still says what its current
+  // iteration says.
+  const own = contextRows.find((row) => indexIn(row.node_instance_key, defKey) === null);
+  const ownState = own ? stateOfRow(own) : null;
+  const loopState =
+    ownState === "failed" || ownState === "interrupted"
+      ? ownState
+      : rollupOf(
+          place
+            ? [stateOfRow(place), ...iterationChildren.map(stateOfRow)]
+            : iterationChildren.map(stateOfRow),
+          context ? stateOfRow(context) : null,
+        );
   return {
-    state: rollupOf(
-      place
-        ? [stateOfRow(place), ...iterationChildren.map(stateOfRow)]
-        : iterationChildren.map(stateOfRow),
-      context ? stateOfRow(context) : null,
-    ),
+    state: loopState,
     label: `iteration ${index} of ${Math.max(maxIterations, index)}`,
     executionId: place?.id ?? context?.id ?? null,
   };

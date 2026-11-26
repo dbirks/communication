@@ -62,12 +62,12 @@ import {
 import { projectRun } from "../lib/pipeline/runEvents";
 import { withProjectDefaultAgent } from "../lib/defaultAgent";
 import { semanticDiff } from "../lib/pipeline/semanticDiff";
-import { overlays } from "../lib/pipeline/workbench";
+import { iterationFromLabel, overlays } from "../lib/pipeline/workbench";
 import { duplicateNode } from "../lib/pipeline/duplicateNode";
 import { shortId } from "../lib/format";
 import { routes } from "../lib/routes";
 import { useScope } from "../lib/scope";
-import { NODE_EXECUTION_STATE, RUN_STATE, STATES, stateOf } from "../components/ds/states";
+import { RUN_STATE, SHORT_WORD, STATES, stateOf, type StateName } from "../components/ds/states";
 import { SoftButton } from "../components/ds/SoftButton";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
@@ -111,7 +111,13 @@ import {
   wrapSideBySide,
   type GoalSpec,
 } from "../components/studio/wrap/wrapModel";
-import type { VerdictRound } from "../components/studio/wrap/VerdictStack";
+import { runStatusLabel } from "../components/studio/wrap/GoalFrame";
+import {
+  verdictForState,
+  verdictWords,
+  type VerdictKind,
+  type VerdictRound,
+} from "../components/studio/wrap/VerdictStack";
 
 function useIsNarrow(query = "(max-width: 767px)"): boolean {
   const [narrow, setNarrow] = useState<boolean>(() =>
@@ -620,6 +626,41 @@ export function StudioPage() {
       isViewingRun ? projectRun({ run: baseRun, nodes: baseRunNodes }, runEvents.events) : null,
     [isViewingRun, baseRun, baseRunNodes, runEvents.events],
   );
+  // Every `until` scope the viewed document declares — the wrapped ones and the
+  // hand-written ones alike. `readGoal` recognizes a judge / command / contains
+  // condition and names the goal KIND, which is the thing that picks the verdict
+  // words ("goal met" / "passed" / "found"); a condition it does not recognize is
+  // still a loop that ran rounds, and gets the generic words from the same
+  // iteration data.
+  const loopScopes = useMemo(() => {
+    if (!isViewingRun || !documentObj || typeof documentObj !== "object") return [];
+    const doc = documentObj as DefinitionDocument;
+    type LoopScope = {
+      id: string;
+      kind: VerdictKind;
+      maxRounds: number | null;
+      verdictStepId: string | null;
+    };
+    const found: LoopScope[] = [];
+    const walk = (nodes: DefinitionNode[]) => {
+      for (const n of nodes) {
+        if (n.kind === "until") {
+          const goal = readGoal(n);
+          const declared = (n.config as { maxIterations?: unknown } | undefined)?.maxIterations;
+          found.push({
+            id: n.id,
+            kind: goal?.kind ?? "generic",
+            maxRounds: goal?.maxRounds ?? (typeof declared === "number" ? declared : null),
+            verdictStepId: verdictStepId(n),
+          });
+        }
+        if (isScopeKind(n.kind)) walk(scopeBody(n));
+      }
+    };
+    if (Array.isArray(doc.spec?.nodes)) walk(doc.spec.nodes);
+    return found;
+  }, [isViewingRun, documentObj]);
+
   // The canvas overlay for a run: one entry per DEFINITION node, not one per
   // execution row. `overlays` only knows the nodes the run produced rows for, so
   // a branch the run never reached (a skipped `until` body, everything after a
@@ -636,51 +677,47 @@ export function StudioPage() {
       if (filled[node.id] === undefined)
         filled[node.id] = { state: "queued", label: "not started", executionId: null };
     }
-    // A loop frame whose rounds all ran cleanly rolls up `done` even when the
-    // loop itself ended failed (its `passWhen` never held) or stopped: the
-    // roll-up reads the rounds, and the rounds are innocent. The frame's own row
-    // has the last word, so the box says `×` / `⊘` with the round counter, not
-    // a `✓` nobody should trust next to a failed run.
-    for (const node of model.nodes) {
-      if (!node.isScope) continue;
-      const overlay = filled[node.id];
-      if (!overlay || overlay.state !== "done") continue;
-      const own = scopeOwnRow(runProjection.nodes, node.id);
-      if (!own) continue;
-      const ownState = stateOf(NODE_EXECUTION_STATE[own.status] ?? "queued");
-      if (ownState === "failed" || ownState === "interrupted")
-        filled[node.id] = { ...overlay, state: ownState };
+    // A goal frame speaks in its OWN goal's words, and counts its rounds once.
+    // The workbench's scope label ("iteration 2 of 3") totals the rounds the run
+    // has PRODUCED; the frame beside it declares the bound the step was written
+    // with ("up to 3 rounds") — two numbers that answer two different questions,
+    // printed two pixels apart. So the frame's line carries the goal's word for
+    // this state and the round count against the DECLARED bound, and GoalFrame
+    // puts the count on its bound line (`runStatusLabel`). A loop the run never
+    // entered has no round to name, and keeps "not started".
+    for (const loop of loopScopes) {
+      if (loop.kind === "generic") continue;
+      const overlay = filled[loop.id];
+      if (!overlay) continue;
+      const round = iterationFromLabel(overlay.label);
+      if (round === null) continue;
+      const verdict = verdictForState(overlay.state);
+      const word =
+        verdict !== null
+          ? verdictWords(loop.kind)[verdict]
+          : (SHORT_WORD[overlay.state as StateName] ?? overlay.label);
+      filled[loop.id] = {
+        ...overlay,
+        label: runStatusLabel(word, round, loop.maxRounds ?? round),
+      };
     }
     return filled;
-  }, [runProjection, model]);
+  }, [runProjection, model, loopScopes]);
 
-  // Identify GoalFrame scopes & verdict-step executions to fetch outputs for VerdictStack
-  const goalScopes = useMemo(() => {
-    if (!isViewingRun || !documentObj || typeof documentObj !== "object") return [];
-    const doc = documentObj as DefinitionDocument;
-    const found: { id: string; verdictStepId: string | null }[] = [];
-    const walk = (nodes: DefinitionNode[]) => {
-      for (const n of nodes) {
-        if (n.kind === "until" && readGoal(n) !== null) {
-          found.push({ id: n.id, verdictStepId: verdictStepId(n) });
-        }
-        if (isScopeKind(n.kind)) walk(scopeBody(n));
-      }
-    };
-    if (Array.isArray(doc.spec?.nodes)) walk(doc.spec.nodes);
-    return found;
-  }, [isViewingRun, documentObj]);
-
+  // The verdict of each round, for every loop scope — including the hand-written
+  // ones. The rounds are the loop's iteration rows; the round's verdict step (a
+  // judge, a check command, the step whose output must contain the needle) says
+  // what became of the round when the loop has one.
   const verdictStepExecutions = useMemo(() => {
-    if (!isViewingRun || !runProjection || goalScopes.length === 0) return [];
+    if (!isViewingRun || !runProjection || loopScopes.length === 0) return [];
     const wantedIds = new Set(
-      goalScopes.map((g) => g.verdictStepId).filter((id): id is string => Boolean(id)),
+      loopScopes.map((g) => g.verdictStepId).filter((id): id is string => Boolean(id)),
     );
     return runProjection.nodes.filter(
       (exec) =>
         wantedIds.has(exec.node_id) && (exec.status === "succeeded" || exec.status === "failed"),
     );
-  }, [isViewingRun, runProjection, goalScopes]);
+  }, [isViewingRun, runProjection, loopScopes]);
 
   const verdictDetailQueries = useQueries({
     queries: verdictStepExecutions.map((exec) => ({
@@ -691,7 +728,7 @@ export function StudioPage() {
   });
 
   const verdictsByScope = useMemo(() => {
-    if (!isViewingRun || !runProjection || goalScopes.length === 0) return undefined;
+    if (!isViewingRun || !runProjection || loopScopes.length === 0) return undefined;
     const outputsByExecId = new Map<string, Record<string, unknown> | null>();
     verdictStepExecutions.forEach((exec, idx) => {
       const detail = verdictDetailQueries[idx]?.data;
@@ -705,7 +742,7 @@ export function StudioPage() {
       );
     });
     const out: Record<string, VerdictRound[]> = {};
-    for (const scopeItem of goalScopes) {
+    for (const scopeItem of loopScopes) {
       const scopeRows = runProjection.nodes.filter(
         (r) => scopeIterationIndex(r.node_instance_key, scopeItem.id) !== null,
       );
@@ -771,7 +808,7 @@ export function StudioPage() {
         } else if (!reason && exec?.failed_cause) {
           reason = exec.failed_cause;
         }
-        rounds.push({ n, verdict, ...(reason ? { reason } : {}) });
+        rounds.push({ n, verdict, kind: scopeItem.kind, ...(reason ? { reason } : {}) });
       }
       if (rounds.length > 0) out[scopeItem.id] = rounds;
     }
@@ -779,7 +816,7 @@ export function StudioPage() {
   }, [
     isViewingRun,
     runProjection,
-    goalScopes,
+    loopScopes,
     verdictStepExecutions,
     verdictDetailQueries,
     statusOverlay,

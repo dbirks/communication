@@ -8,6 +8,40 @@ import { IconRepeat } from "@tabler/icons-react";
 import { MarchingAnts, type MarchingAntsRect } from "./MarchingAnts";
 import { goalSentence, type GoalSpec } from "./wrapModel";
 
+/**
+ * The frame says its round bound ONCE. While editing that is the bound alone
+ * ("up to 3 rounds · then stop"); during a run it is the round the loop is on
+ * against the declared bound ("round 2 of up to 3"), and the state word rides
+ * beside it. The Run Workbench's own label for a scope counts the same thing in
+ * the workbench's words (`iteration 2 of 3`, `workbench.ts`) — a frame that
+ * printed that beside its "up to 3 rounds" line would show two counters that
+ * disagree (the workbench's total is the rounds it has SEEN, the frame's is the
+ * bound the step declares).
+ *
+ * So the caller writes the count into the status line with `runStatusLabel`
+ * ("judging · round 2 of up to 3") and the frame lifts it back onto the bound
+ * line with `splitRunLabel`. Both halves live here so the frame and its callers
+ * cannot drift apart.
+ */
+export function runStatusLabel(word: string, round: number, maxRounds: number): string {
+  return `${word} · round ${round} of up to ${Math.max(round, maxRounds)}`;
+}
+
+const RUN_BOUND_PHRASE = /·\s*round (\d+) of up to (\d+)\s*$/;
+
+/** `runStatusLabel`'s inverse: the trailing round count, and what is left of the
+ * status line without it. A status with no count ("· not started", "⊘ stopped",
+ * and every label a run-less canvas hands the frame) comes back whole. */
+export function splitRunLabel(text: string): { status: string; bound: string | null } {
+  const match = RUN_BOUND_PHRASE.exec(text);
+  if (!match) return { status: text, bound: null };
+  const status = text.slice(0, match.index).trimEnd();
+  return {
+    status,
+    bound: `round ${match[1]} of up to ${match[2]}`,
+  };
+}
+
 export interface GoalFrameProps {
   rect: MarchingAntsRect;
   goal: GoalSpec;
@@ -16,7 +50,8 @@ export interface GoalFrameProps {
   /** The frame's OWN run state, glyph + word composed by the caller ("✓ done",
    * "⊘ stopped", "· not started"). A goal frame is a step like any other: while
    * or after its loop runs the frame has to SAY its state — the animated outline
-   * is motion, never a word (identity rule 06). Absent while editing. */
+   * is motion, never a word (identity rule 06). Absent while editing. A count
+   * written by `runStatusLabel` moves onto the bound line (`splitRunLabel`). */
   status?: { text: string; className: string } | null;
   onHeaderClick?: () => void;
   children?: ReactNode;
@@ -36,6 +71,8 @@ export function GoalFrame({
   const isMono = goal.kind === "command" || goal.kind === "contains";
   const roundWord = goal.maxRounds === 1 ? "round" : "rounds";
   const tail = giveUpText ?? "then stop";
+  const run = status ? splitRunLabel(status.text) : null;
+  const boundLine = run?.bound ?? `up to ${goal.maxRounds} ${roundWord} · ${tail}`;
 
   const headerContent = (
     <>
@@ -105,16 +142,14 @@ export function GoalFrame({
         data-testid="goal-frame-footer"
         className="pointer-events-none relative z-1 flex flex-col gap-[4px] px-[14px] pt-[8px] pb-[10px] font-mono text-[10.5px] leading-[14px] text-accent-text"
       >
-        <span>
-          up to {goal.maxRounds} {roundWord} · {tail}
-        </span>
-        {status ? (
+        <span data-testid="goal-frame-bound">{boundLine}</span>
+        {status && run ? (
           <span
             data-testid="goal-frame-status"
-            title={status.text}
+            title={run.status}
             className={`self-end whitespace-nowrap font-semibold ${status.className}`}
           >
-            {status.text}
+            {run.status}
           </span>
         ) : null}
       </div>
