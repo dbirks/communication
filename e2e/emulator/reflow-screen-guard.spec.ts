@@ -40,8 +40,8 @@ test.describe("the IA screen-guard (T1/T3)", () => {
   test("(g1) the retired words in the app's own chrome file", async ({ page }) => {
     for (const [label, body] of [
       ["a nav row", `<nav><a href="/conversations">Conversations</a></nav>`],
-      ["a rail tooltip", `<span role="tooltip">Chat</span>`],
-      ["a heading", `<h1>Chats</h1>`],
+      ["a rail tooltip", `<span role="tooltip">Conversation</span>`],
+      ["a heading", `<h1>Conversations</h1>`],
       ["a button", `<button>Start a conversation</button>`],
     ] as const) {
       await page.setContent(DOC(body));
@@ -62,10 +62,7 @@ test.describe("the IA screen-guard (T1/T3)", () => {
   });
 
   test("(g3) what a MODEL or a PERSON wrote never files", async ({ page }) => {
-    const sentences = [
-      `<p>The conversation moved on.</p>`,
-      `<p>Ask the chat model to retry.</p>`,
-    ];
+    const sentences = [`<p>The conversation moved on.</p>`, `<p>Ask the chat model to retry.</p>`];
     for (const sentence of sentences) {
       for (const region of [
         `data-testid="transcript"`,
@@ -80,14 +77,19 @@ test.describe("the IA screen-guard (T1/T3)", () => {
       ]) {
         await page.setContent(DOC(`<div ${region}>${sentence}</div>`));
         const hit = await guard(page);
-        expect(
-          hit.words,
-          `${region} holds model output; ${sentence} must not file`,
-        ).toEqual([]);
+        expect(hit.words, `${region} holds model output; ${sentence} must not file`).toEqual([]);
       }
     }
     // Per-row regions: a seeded or generated piece owns its title and summary.
-    for (const testid of ["catchup-row-abc", "catchup-card-1", "catchup-item-stop-x", "home-callout-1"]) {
+    for (const testid of [
+      "chat-row-abc",
+      "since-row-1",
+      "needs-you-card-1",
+      "catchup-row-abc",
+      "catchup-card-1",
+      "catchup-item-stop-x",
+      "home-callout-1",
+    ]) {
       await page.setContent(DOC(`<div data-testid="${testid}"><span>${sentences[0]}</span></div>`));
       expect((await guard(page)).words, `${testid} is model output`).toEqual([]);
     }
@@ -104,8 +106,8 @@ test.describe("the IA screen-guard (T1/T3)", () => {
       `<span>human.approval</span>`,
       // A field NAME the API really has, printed as chrome text.
       `<p>conversation_id is null</p>`,
-      // What the rename actually says: thread, never the retired noun.
-      `<a href="/threads">Threads</a><button>New thread</button><h1>Catch up</h1>`,
+      // What the redesign actually says: chat/chats/factory, never the retired noun.
+      `<a href="/chats">Chats</a><button>New chat</button><h1>Home</h1>`,
     ]) {
       await page.setContent(DOC(body));
       const hit = await guard(page);
@@ -132,12 +134,12 @@ test.describe("the IA screen-guard (T1/T3)", () => {
     expect(hit.words).not.toContain("conversation");
     expect(hit.words).not.toContain("chats");
 
-    await page.setContent(DOC(`<p>This conversation is a thread now.</p>`));
+    await page.setContent(DOC(`<p>This conversation is a chat now.</p>`));
     expect((await guard(page)).words, "the singular form files too").toEqual(["conversation"]);
 
     await page.setContent(
       DOC(
-        `<a href="/p/1/threads">Threads</a><a href="/catch-up">Catch up</a>` +
+        `<a href="/p/1/chats">Chats</a><a href="/factory">Factory</a>` +
           `<span>Push to main</span><span>branch ready</span>`,
       ),
     );
@@ -147,29 +149,31 @@ test.describe("the IA screen-guard (T1/T3)", () => {
     expect(clean.snippets, "a clean page has nothing to show around a word").toEqual([]);
   });
 
-  test("(g-asst) the assistant's own terms stay out of the scan, and only those", async ({ page }) => {
-    // Assistant handoff: the setup checklist's chat-model label, the tool
-    // registry name in a tool line, and a /threads row's last-line preview (the
-    // agent's own sentence) are not IA copy — but the same word anywhere else is.
+  test("(g-asst) the assistant's own terms stay out of the scan, and only those", async ({
+    page,
+  }) => {
+    // Assistant handoff: written-output regions (`chat-title`, `chat-row-*`,
+    // `thread-last-line-*`, `chat.transcript`) keep user/model copy out of IA scan,
+    // while retired nouns outside those places still file.
     await page.setContent(
       DOC(
         `<span data-testid="assistant-setup-label" data-row-id="chat-model">Chat model</span>` +
           `<span>used chat.transcript, profile.list</span>` +
+          `<span data-testid="chat-title">conversation 01a1c56f</span>` +
           `<span data-testid="thread-last-line-01abc">verified in my sandbox (server, conversation 01a1c56f)</span>`,
       ),
     );
-    expect((await guard(page)).words, "the three assistant terms file nothing").toEqual([]);
+    expect((await guard(page)).words, "written-output and product terms file nothing").toEqual([]);
     await page.setContent(
       DOC(
-        `<span data-testid="assistant-setup-label" data-row-id="speech-model">Chat model</span>` +
-          `<p>Description: draft a plan with a chat model.</p>` +
-          `<span data-testid="thread-title">conversation 01a1c56f</span>`,
+        `<p>Description: open the conversation list.</p>` +
+          `<span data-testid="other-chrome">conversations are gone</span>`,
       ),
     );
     expect(
       (await guard(page)).words.sort(),
       "the same words outside those exact places still file",
-    ).toEqual(["chat", "conversation"]);
+    ).toEqual(["conversation", "conversations"]);
   });
 
   test("(g6) a filed word carries its context, so the defect says WHERE it printed", async ({
@@ -181,31 +185,33 @@ test.describe("the IA screen-guard (T1/T3)", () => {
     // collapsed), and the defect detail prints those windows.
     await page.setContent(
       DOC(
-        `<aside><span>Emu rcn chat 4255 — a seeded thread title</span></aside>` +
-          `<p>Description: draft a plan for a goal with a chat model, hold it.</p>`,
+        `<aside><span>Emu rcn conversation 4255 — a seeded thread title</span></aside>` +
+          `<p>Description: draft a plan for a goal with a conversation model, hold it.</p>`,
       ),
     );
     const hit = await guard(page);
-    expect(hit.words).toEqual(["chat"]);
+    expect(hit.words).toEqual(["conversation"]);
     // Both rendered windows show the word and the words printed beside it.
     expect(hit.snippets.length, "one window per hit, capped at 3").toBeLessThanOrEqual(3);
     expect(hit.snippets.length, "each of the two hits keeps its own window").toBeGreaterThanOrEqual(
       2,
     );
     for (const snippet of hit.snippets) {
-      expect(snippet.toLowerCase(), `“${snippet}” is the chrome around a hit`).toContain("chat");
+      expect(snippet.toLowerCase(), `“${snippet}” is the chrome around a hit`).toContain(
+        "conversation",
+      );
     }
     expect(
-      hit.snippets.some((s) => s.includes("Emu rcn chat")),
+      hit.snippets.some((s) => s.includes("Emu rcn conversation")),
       `a window names the seeded title: ${JSON.stringify(hit.snippets)}`,
     ).toBe(true);
     expect(
-      hit.snippets.some((s) => s.includes("with a chat model")),
+      hit.snippets.some((s) => s.includes("conversation model")),
       `a window names the shipped description: ${JSON.stringify(hit.snippets)}`,
     ).toBe(true);
     const detail = screenGuardDetail(hit);
     expect(detail, "the detail prints the matched windows").toContain("matched in:");
-    expect(detail).toContain("Emu rcn chat");
+    expect(detail).toContain("Emu rcn conversation");
     expect(
       detail.length,
       "one defect detail stays inside the fixture's MAX_DETAIL",
@@ -225,7 +231,10 @@ test.describe("the IA screen-guard (T1/T3)", () => {
       ["decision word", `<p>“Ship it” is not a decision word — choose the decision:</p>`],
       ["winner", `<p>someone decided this gate first — what you see now is the winner's</p>`],
       ["bare 404 in prose", `<p>The control plane answered 404 — this page shows nothing.</p>`],
-      ["bare 409 in prose", `<p>Your decision hit a 409 conflict; the gate is already decided.</p>`],
+      [
+        "bare 409 in prose",
+        `<p>Your decision hit a 409 conflict; the gate is already decided.</p>`,
+      ],
       ["bare 500 mid-sentence", `<p>The server gave a 500 and stopped.</p>`],
       ["bare 503 at the end", `<p>The assistant is not reachable right now: 503</p>`],
     ] as const) {
@@ -250,82 +259,86 @@ test.describe("the IA screen-guard (T1/T3)", () => {
     ).toBeLessThanOrEqual(500);
   });
 
-  test("(g8) rule (c) shares rule (a)'s exclusions — and numbers inside data never file",
-    async ({ page }) => {
-      const sentence = `<p>The control plane answered 404 — no scaffold, the server build is old.</p>`;
-      // Same structural cut as the chat scan: code font and the written regions
-      // are not the app's chrome (a template YAML comment, a model-written
-      // thread title, a seeded piece's narrative).
-      for (const region of [
-        `<div>${sentence}</div>`, // control: OUTSIDE every exclusion, it files
-      ]) {
-        await page.setContent(DOC(region));
-        expect((await guard(page)).implementation).not.toHaveLength(0);
-      }
-      for (const region of [
-        `<code>${sentence}</code>`,
-        `<pre>${sentence}</pre>`,
-        `<textarea>${sentence}</textarea>`,
-      ]) {
-        await page.setContent(DOC(region));
-        expect(
-          (await guard(page)).implementation,
-          `${region.slice(0, 24)}… is code or a written region, not chrome copy`,
-        ).toEqual([]);
-      }
-      for (const testid of ["transcript-item", "artifact-preview-prose", "catchup-row-7", "tour-current"]) {
-        await page.setContent(DOC(`<div data-testid="${testid}">${sentence}</div>`));
-        expect(
-          (await guard(page)).implementation,
-          `${testid} holds model/user text`,
-        ).toEqual([]);
-      }
-      // Numbers inside DATA are not prose: the word-bounds refuse ids, digests
-      // and units, and the letter/space flank refuses machine shapes — while
-      // the SAME digits as a word of the sentence do file (checked in g7).
-      for (const body of [
-        `<p>run 01a1b404c7d2 is not visible to you</p>`,
-        `<p>digest 404abcd deadbeef</p>`,
-        `<p>the timeout was 500ms, not a status</p>`,
-        `<p>worker on port 4040 answered fine</p>`,
-        `<p>value 1404 and 25033 round the column</p>`,
-        `<p>{"status":500,"type":"about:blank"} stayed collapsed raw text</p>`,
-        `<p>build v1.404.2 shipped quietly</p>`,
-        // Word-bounded phrases too: a stem inside a longer word is not the word.
-        `<p>the scheduler scaffolded the tree in 12ms</p>`,
-        `<p>winners never cry</p>`,
-      ]) {
-        await page.setContent(DOC(body));
-        const hit = await guard(page);
-        expect(hit.implementation, `${body} is data or a longer word, not prose`).toEqual([]);
-      }
-    });
+  test("(g8) rule (c) shares rule (a)'s exclusions — and numbers inside data never file", async ({
+    page,
+  }) => {
+    const sentence = `<p>The control plane answered 404 — no scaffold, the server build is old.</p>`;
+    // Same structural cut as the chat scan: code font and the written regions
+    // are not the app's chrome (a template YAML comment, a model-written
+    // thread title, a seeded piece's narrative).
+    for (const region of [
+      `<div>${sentence}</div>`, // control: OUTSIDE every exclusion, it files
+    ]) {
+      await page.setContent(DOC(region));
+      expect((await guard(page)).implementation).not.toHaveLength(0);
+    }
+    for (const region of [
+      `<code>${sentence}</code>`,
+      `<pre>${sentence}</pre>`,
+      `<textarea>${sentence}</textarea>`,
+    ]) {
+      await page.setContent(DOC(region));
+      expect(
+        (await guard(page)).implementation,
+        `${region.slice(0, 24)}… is code or a written region, not chrome copy`,
+      ).toEqual([]);
+    }
+    for (const testid of [
+      "transcript-item",
+      "artifact-preview-prose",
+      "catchup-row-7",
+      "tour-current",
+    ]) {
+      await page.setContent(DOC(`<div data-testid="${testid}">${sentence}</div>`));
+      expect((await guard(page)).implementation, `${testid} holds model/user text`).toEqual([]);
+    }
+    // Numbers inside DATA are not prose: the word-bounds refuse ids, digests
+    // and units, and the letter/space flank refuses machine shapes — while
+    // the SAME digits as a word of the sentence do file (checked in g7).
+    for (const body of [
+      `<p>run 01a1b404c7d2 is not visible to you</p>`,
+      `<p>digest 404abcd deadbeef</p>`,
+      `<p>the timeout was 500ms, not a status</p>`,
+      `<p>worker on port 4040 answered fine</p>`,
+      `<p>value 1404 and 25033 round the column</p>`,
+      `<p>{"status":500,"type":"about:blank"} stayed collapsed raw text</p>`,
+      `<p>build v1.404.2 shipped quietly</p>`,
+      // Word-bounded phrases too: a stem inside a longer word is not the word.
+      `<p>the scheduler scaffolded the tree in 12ms</p>`,
+      `<p>winners never cry</p>`,
+    ]) {
+      await page.setContent(DOC(body));
+      const hit = await guard(page);
+      expect(hit.implementation, `${body} is data or a longer word, not prose`).toEqual([]);
+    }
+  });
 
-  test("(g9) a clean page files nothing under either rule, and the two rules file alone",
-    async ({ page }) => {
-      // The REWRITTEN chrome (what shipped): the reader's words, no numbers.
-      await page.setContent(
-        DOC(
-          `<p>This run doesn't exist or you don't have access to it.</p>` +
-            `<p>Priya approved this 20 seconds ago. Your decision wasn't recorded.</p>`,
-        ),
-      );
-      const clean = await guard(page);
-      expect(clean.words).toEqual([]);
-      expect(clean.implementation).toEqual([]);
-      expect(clean.implementationSnippets).toEqual([]);
-      // A retired-words hit alone still files only rule (a)…
-      await page.setContent(DOC(`<nav><a href="/chat">Chat</a></nav>`));
-      const iaOnly = await guard(page);
-      expect(iaOnly.words).toEqual(["chat"]);
-      expect(iaOnly.implementation).toEqual([]);
-      // …and an implementation word alone files only rule (c), each with its
-      // own context windows (dedupe reads them separately in fixtures.ts).
-      await page.setContent(DOC(`<p>This server build predates the cross-project reads.</p>`));
-      const implOnly = await guard(page);
-      expect(implOnly.words).toEqual([]);
-      expect(implOnly.implementation).toEqual(["server build"]);
-      expect(implOnly.implementationSnippets.length).toBeGreaterThan(0);
-      expect(implOnly.implementationSnippets[0].toLowerCase()).toContain("server build");
-    });
+  test("(g9) a clean page files nothing under either rule, and the two rules file alone", async ({
+    page,
+  }) => {
+    // The REWRITTEN chrome (what shipped): the reader's words, no numbers.
+    await page.setContent(
+      DOC(
+        `<p>This run doesn't exist or you don't have access to it.</p>` +
+          `<p>Priya approved this 20 seconds ago. Your decision wasn't recorded.</p>`,
+      ),
+    );
+    const clean = await guard(page);
+    expect(clean.words).toEqual([]);
+    expect(clean.implementation).toEqual([]);
+    expect(clean.implementationSnippets).toEqual([]);
+    // A retired-words hit alone still files only rule (a)…
+    await page.setContent(DOC(`<nav><a href="/conversations">Conversations</a></nav>`));
+    const iaOnly = await guard(page);
+    expect(iaOnly.words).toEqual(["conversations"]);
+    expect(iaOnly.implementation).toEqual([]);
+    // …and an implementation word alone files only rule (c), each with its
+    // own context windows (dedupe reads them separately in fixtures.ts).
+    await page.setContent(DOC(`<p>This server build predates the cross-project reads.</p>`));
+    const implOnly = await guard(page);
+    expect(implOnly.words).toEqual([]);
+    expect(implOnly.implementation).toEqual(["server build"]);
+    expect(implOnly.implementationSnippets.length).toBeGreaterThan(0);
+    expect(implOnly.implementationSnippets[0].toLowerCase()).toContain("server build");
+  });
 });

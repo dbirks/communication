@@ -285,14 +285,15 @@ export default function RunWorkbench({ projectId: projectIdProp }: { projectId?:
     return null;
   }, [stream.events, actorLabel]);
 
-  // The header's repo segment: a project with exactly one repository names it
-  // unambiguously; with several, the run's data does not say which one it ran
-  // in, so the segment is omitted rather than guessed.
+  // The header's repo segment: when the run itself carries `repository_name`
+  // (e.g. a repo-pinned run) use it; otherwise a project with exactly one
+  // repository names it unambiguously, and with several it is omitted.
   const repositories = useRepositories(projectId);
   const repoName = useMemo(() => {
+    if (runQuery.data?.repository_name) return runQuery.data.repository_name;
     const items = repositories.data?.items ?? [];
     return items.length === 1 ? items[0].name : null;
-  }, [repositories.data]);
+  }, [runQuery.data?.repository_name, repositories.data]);
 
   /* ------------------------------------------ the pinned revision, read-once */
   const revisionRecord = useRevision(baseRun?.pipeline_revision_id ?? "");

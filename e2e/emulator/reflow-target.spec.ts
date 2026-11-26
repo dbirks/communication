@@ -692,9 +692,17 @@ test.describe("the repo feed's column-to-line swap is not lost content", () => {
   test("(r1) workflow column at 1280, meta line under the title at 390: no defect", async ({
     page,
   }) => {
-    const desktop = await repoFeedInventory(page, 1280, repoFeedDoc([["aa11", "feature-development"]]));
+    const desktop = await repoFeedInventory(
+      page,
+      1280,
+      repoFeedDoc([["aa11", "feature-development"]]),
+    );
     expect(keysOf(desktop)).toContain("testid:repo-run-workflow-aa11");
-    const phone = await repoFeedInventory(page, 390, repoFeedDoc([["aa11", "feature-development"]]));
+    const phone = await repoFeedInventory(
+      page,
+      390,
+      repoFeedDoc([["aa11", "feature-development"]]),
+    );
     const phoneKeys = keysOf(phone);
     expect(phoneKeys).not.toContain("testid:repo-run-workflow-aa11");
     expect(phoneKeys).toContain("testid:repo-run-meta-aa11");
@@ -869,8 +877,9 @@ test.describe("parity only compares captures of the same page state", () => {
     expect(phoneFinished.stateFingerprint).toContain("stop-turn#off");
     expect(phoneFinished.stateFingerprint).toContain("conversation-breadcrumb-repo#on");
     const verdict = judgeParityPair(desktopRunning, phoneFinished);
-    expect(verdict.comparable, "a turn that ended between widths is a state move, not a loss")
-      .toBe(false);
+    expect(verdict.comparable, "a turn that ended between widths is a state move, not a loss").toBe(
+      false,
+    );
     // The fixture's REAL capture read (fixtures.ts): items + fingerprint in
     // ONE page.evaluate, the collectors passed as source strings (Playwright
     // refuses to serialize a function nested in the argument — exactly how
@@ -879,8 +888,8 @@ test.describe("parity only compares captures of the same page state", () => {
     // without a lab.
     const pair = await page.evaluate(
       (srcs) => ({
-        items: (new Function(`return (${srcs.items})`)())(),
-        stateFingerprint: (new Function(`return (${srcs.fingerprint})`)())(),
+        items: new Function(`return (${srcs.items})`)()(),
+        stateFingerprint: new Function(`return (${srcs.fingerprint})`)()(),
       }),
       { items: collectReflowItems.toString(), fingerprint: collectStateFingerprint.toString() },
     );

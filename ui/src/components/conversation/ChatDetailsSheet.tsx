@@ -51,7 +51,11 @@ export function ChatDetailsSheet({ open, onClose, children }: ChatDetailsSheetPr
   useLayoutEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCloseRef.current();
+      // Inner popovers (such as ds/Menu) listen on document and preventDefault()
+      // on Escape so one keypress closes only the inner menu, not this sheet.
+      if (event.defaultPrevented || event.key !== "Escape") return;
+      event.preventDefault();
+      onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

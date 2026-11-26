@@ -145,6 +145,23 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
     reach: "assistant-context-button",
     subtree: true,
   },
+  "chat-list": {
+    reason:
+      "phone master-detail: /chats/:id shows the open chat thread; the list is one tap behind the back link",
+    reach: "chat-back",
+    subtree: true,
+  },
+  "chat-new-pane": {
+    reason:
+      "phone master-detail: /chats keeps the chat list at 390; New chat pane opens via New button (/chats/new)",
+    reach: "chat-new",
+    subtree: true,
+  },
+  "chat-people": {
+    reason:
+      "at <1024px ChatHeader hides the secondary participants label; Chat actions menu -> Details opens the participants & agent panel",
+    reach: "chat-menu",
+  },
   "thread-list-pane": {
     reason:
       "phone master-detail: /threads/:id shows the open thread; the list is one tap behind the '← Threads' back link",
@@ -380,7 +397,7 @@ export function collectStateFingerprint(): string {
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"], [data-testid="project-rail"], [data-testid="top-bar"], [data-testid="scope-sheet"], [data-testid="quick-chat"]',
     ) !== null;
   // The status chips whose WORD flips a control set (ui/src/pages/ProjectRuns.tsx
   // `RunStateChip` as `run-header-status` in RunHeader.tsx/RunInspector.tsx;
@@ -388,6 +405,7 @@ export function collectStateFingerprint(): string {
   // gate card's step line in ApprovalCard.tsx).
   const TEXT_STATE: RegExp[] = [
     /^run-header-status$/,
+    /^turn-status$/,
     /^controller-badge$/,
     /^attempt-controller$/,
     /^approval-node$/,
@@ -477,7 +495,7 @@ export function collectReflowItems(): ReflowItem[] {
   // Belt-and-braces shell exclusion (the landmarks from Shell.tsx/Sidebar.tsx).
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"], [data-testid="project-rail"], [data-testid="top-bar"], [data-testid="scope-sheet"], [data-testid="quick-chat"]',
     ) !== null;
   const items: ReflowItem[] = [];
   const seen = new Set<string>();
@@ -558,7 +576,7 @@ export function findClippedText(): ClipHit[] {
   };
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"], [data-testid="project-rail"], [data-testid="top-bar"], [data-testid="scope-sheet"], [data-testid="quick-chat"]',
     ) !== null;
   // Visually-hidden text (the `.sr-only` convention: a 1×1 overflow-hidden,
   // clip-path'd box) is screen-reader copy, not visible text the reflow can
@@ -664,7 +682,7 @@ export function findOverlaps(): OverlapHit[] {
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"], [data-testid="project-rail"], [data-testid="top-bar"], [data-testid="scope-sheet"], [data-testid="quick-chat"]',
     ) !== null;
   const isSvg = (el: Element): boolean =>
     el.tagName.toLowerCase() === "svg" || el.closest("svg") !== null;
@@ -674,7 +692,7 @@ export function findOverlaps(): OverlapHit[] {
   // measured against each other. Two candidates are comparable only when they
   // sit in the same overlay (or both outside every overlay).
   const OVERLAY =
-    '[role="dialog"], [role="alertdialog"], [role="menu"], [role="menuitem"], [role="listbox"], [role="tooltip"], [role="grid"], dialog[open]';
+    '[role="dialog"], [role="alertdialog"], [role="menu"], [role="menuitem"], [role="listbox"], [role="tooltip"], [role="grid"], dialog[open], [data-testid^="editor-panel-"], [data-testid="versions-panel"], [data-testid="wrap-panel"], [data-testid="editor-inspector-panel"], [data-testid="studio-validate-drawer"]';
   const overlayRoot = (el: Element): Element | null => {
     let root: Element | null = null;
     for (let node: Element | null = el.parentElement; node !== null; node = node.parentElement) {
@@ -929,7 +947,7 @@ export function findSmallTargets(): TargetHit[] {
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"], [data-testid="project-rail"], [data-testid="top-bar"], [data-testid="scope-sheet"], [data-testid="quick-chat"]',
     ) !== null;
   /**
    * The modal open RIGHT NOW, if one is: an `aria-modal` dialog/alertdialog or

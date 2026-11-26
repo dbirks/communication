@@ -109,17 +109,35 @@ test.describe("repo-triggers (admin pre-publishes the gated workflow)", () => {
   test("publish 'Emu sched <pass>' from the plan-with-approval template", async ({ page, emu }) => {
     // A duplicated slug would 409 inline (declared); the name is pass-stamped.
     emu.expectFailure(/\/api\/v1\/pipelines$/, 409);
-    await page.goto("/workflows");
-    await expect(page.getByTestId("workflows-new-workflow")).toBeVisible({ timeout: 30_000 });
-    await page.getByTestId("workflows-new-workflow").click();
-    await expect(page.getByTestId("new-workflow-dialog")).toBeVisible();
-    await page.getByTestId("library-new-name-input").fill(SCHED_NAME);
-    await page.getByTestId("new-workflow-template-plan-with-approval").click();
-    await page.getByTestId("library-new-submit").click();
-    await page.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const sampleYaml = fs.readFileSync(
+      path.resolve(process.cwd(), "../docs/samples/home/plan-with-approval.yaml"),
+      "utf8",
+    );
+    const slug = `emu-sched-${EMU_PASS_ID}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+    const seededYaml = sampleYaml.replace(/^  name: .*$/m, `  name: ${slug}`);
+
+    await page.goto("/factory");
+    await expect(page.getByTestId("factory-new")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("factory-new").click();
+    await expect(page.getByTestId("new-workflow-sheet")).toBeVisible();
+    await page.getByTestId("new-workflow-description").fill(SCHED_NAME);
+    await page.getByTestId("new-workflow-sketch").click();
+    await page.waitForURL(/\/factory\/[0-9a-f-]{36}\?draft=/, {
       timeout: 30_000,
     });
     await expect(page.getByTestId("studio-page")).toBeVisible({ timeout: 30_000 });
+
+    // Paste the plan-with-approval YAML via the YAML drawer so the real plan/gate
+    // nodes and inputs exist on the canvas.
+    await page.getByTestId("editor-more-btn").click();
+    await page.getByTestId("editor-menu-yaml").click();
+    await expect(page.getByTestId("studio-yaml")).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("studio-yaml").fill(seededYaml);
+    await page.getByTestId("studio-yaml-validate").click();
+    await page.getByTestId("editor-panel-close").click();
+
     // The plan step must name a model THIS worker allowlists
     // (COMMUNICATION_MODEL_CHAT_MODELS) — a model.chat outside the allowlist
     // fails with binding_error before the gate. Pick the allowed
@@ -143,12 +161,9 @@ test.describe("repo-triggers (admin pre-publishes the gated workflow)", () => {
       await model.fill(ALLOWED_MODEL, { timeout: 15_000 });
       await model.press("Tab");
     }
-    await page.getByTestId("studio-save").click({ timeout: 20_000 });
-    await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-    await page.getByTestId("studio-validate").click({ timeout: 20_000 });
-    await expect(page.getByTestId("studio-validate-verdict")).toContainText(/(^|[^a-z])valid/i, {
-      timeout: 30_000,
-    });
+    // Wait for Studio's 800ms debounced autosave to persist the edited YAML,
+    // then Make live (validates + publishes).
+    await page.waitForTimeout(1200);
     await page.getByTestId("studio-publish").click({ timeout: 20_000 });
     await expect(page.getByTestId("studio-published")).toBeVisible({ timeout: 60_000 });
   });
@@ -281,24 +296,22 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
     let firedRunId = "";
 
     await test.step("pin 'Emu sched' to the app repo", async () => {
-      // The admin publish test left the studio URL; recover the pipeline id
-      // from the index row link instead (cross-test globals do not survive
-      // the file boundary in Playwright).
-      await page.goto("/workflows");
-      await expect(page.getByTestId("workflows-search")).toBeVisible({ timeout: 30_000 });
-      await page.getByTestId("workflows-search").fill(SCHED_NAME);
-      const row = page.getByRole("link", {
-        name: new RegExp(SCHED_NAME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      });
+      await page.goto("/factory");
+      await expect(page.getByTestId("factory-index")).toBeVisible({ timeout: 30_000 });
+      const row = page
+        .locator('[data-testid^="workflow-card-link-"]')
+        .filter({ hasText: SCHED_NAME })
+        .first();
       await expect(
         row,
-        `the freshly published '${SCHED_NAME}' shows on the workflows index`,
+        `the freshly published '${SCHED_NAME}' shows on the Factory index`,
       ).toBeVisible({ timeout: 30_000 });
       await row.click();
-      await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
-      pipelineId = new URL(page.url()).pathname.split("/")[2] ?? "";
-      expect(pipelineId, "the workflow page carries the pipeline id").toMatch(/^[0-9a-f-]{36}$/);
-      await page.getByTestId("assign-open").click();
+      await expect(page.getByTestId("studio-page")).toBeVisible({ timeout: 30_000 });
+      pipelineId = new URL(page.url()).pathname.split("/").pop() ?? "";
+      expect(pipelineId, "the editor URL carries the pipeline id").toMatch(/^[0-9a-f-]{36}$/);
+      await page.getByTestId("editor-more-btn").click();
+      await page.getByTestId("editor-menu-use").click();
       const dialog = page.getByTestId("use-in-repo-dialog");
       await expect(dialog).toBeVisible();
       // Design 2a (pass-2 review): the dialog has exactly ONE way to choose —
@@ -354,7 +367,9 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
         page.getByTestId("assign-success-panel").waitFor({ state: "visible", timeout: 30_000 }),
         dialog.waitFor({ state: "hidden", timeout: 30_000 }),
       ]).catch(() => undefined);
-      await page.keyboard.press("Escape");
+      if (await dialog.isVisible().catch(() => false)) {
+        await dialog.getByRole("button", { name: "Close" }).click();
+      }
       await expect(dialog, "the dialog closes after the pin").toBeHidden({ timeout: 15_000 });
       await expect
         .poll(
@@ -380,10 +395,11 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       // the note, not a second write). The assignments cache the dialog reads
       // must be the served ones, so this is a fresh navigation, not the stale
       // page the pin left behind.
-      await page.goto(`/workflows/${pipelineId}`);
-      await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
-      await page.getByTestId("assign-open").click({ timeout: 20_000 });
-      await expect(dialog, "design 2a: the dialog re-opens on the workflow page").toBeVisible({
+      await page.goto(`/factory/${pipelineId}`);
+      await expect(page.getByTestId("studio-page")).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId("editor-more-btn").click();
+      await page.getByTestId("editor-menu-use").click({ timeout: 20_000 });
+      await expect(dialog, "design 2a: the dialog re-opens from the editor").toBeVisible({
         timeout: 20_000,
       });
       const m4PinRow = dialog.getByTestId(`assign-project-state-${projectId}`);
@@ -399,7 +415,7 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
         dialog.getByText(/not used yet/i),
         "design 2a: a project that does not pin this workflow is still not listed",
       ).toHaveCount(0);
-      await page.keyboard.press("Escape");
+      await dialog.getByRole("button", { name: "Close" }).click();
       await expect(dialog, "the dialog closes on esc with no second write").toBeHidden({
         timeout: 15_000,
       });

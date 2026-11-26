@@ -99,7 +99,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { expect, test, apiMutate } from "./fixtures.js";
 import {
   attachGitHubReadCredential,
@@ -229,7 +229,7 @@ async function visibleLastTranscriptRow(page: Page): Promise<number | null> {
         opacityProperty: true,
       });
     };
-    const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+    const main = document.querySelector<HTMLElement>("[data-testid='chat-thread']");
     if (main === null) return null;
     const rows = Array.from(
       main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"),
@@ -242,8 +242,7 @@ async function visibleLastTranscriptRow(page: Page): Promise<number | null> {
  * not on screen (another surface's composer is not this chat's pin). */
 async function visibleComposerTop(page: Page): Promise<number | null> {
   return page.evaluate(() => {
-    const composer =
-      document.querySelector<HTMLElement>("[data-testid='thread-composer-pin']") ?? null;
+    const composer = document.querySelector<HTMLElement>("[data-testid='chat-composer']") ?? null;
     if (composer === null) return null;
     const rect = composer.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return null;
@@ -283,7 +282,7 @@ async function expectChatPinLive(page: Page, width: number): Promise<void> {
     // capture showing the newest row well above the composer).
     const probe = await page.evaluate(() => {
       const mains = Array.from(
-        document.querySelectorAll<HTMLElement>("[data-testid='conversation-main']"),
+        document.querySelectorAll<HTMLElement>("[data-testid='chat-thread']"),
       );
       const main = mains[0] ?? null;
       const rows = main
@@ -292,7 +291,7 @@ async function expectChatPinLive(page: Page, width: number): Promise<void> {
           )
         : [];
       const last = rows.length > 0 ? rows[rows.length - 1] : null;
-      const composers = document.querySelectorAll("[data-testid='thread-composer-pin']").length;
+      const composers = document.querySelectorAll("[data-testid='chat-composer']").length;
       return {
         mains: mains.length,
         rows: rows.length,
@@ -307,7 +306,7 @@ async function expectChatPinLive(page: Page, width: number): Promise<void> {
     // Every scroll container from the newest row up, and the document: which
     // one scrolls, where it sits and how tall its content is.
     const scrollers = await page.evaluate(() => {
-      const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+      const main = document.querySelector<HTMLElement>("[data-testid='chat-thread']");
       const rows = main
         ? Array.from(main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"))
         : [];
@@ -359,7 +358,7 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
     // The same scoping the geometry read uses: the VISIBLE row of the
     // VISIBLE chat column, so the pin is re-established on the row the
     // reader sees at this width.
-    const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+    const main = document.querySelector<HTMLElement>("[data-testid='chat-thread']");
     if (main === null) return;
     // checkVisibility() is the browser's own answer: unlike a walk over
     // display/visibility it also excludes what a closed <details> keeps
@@ -391,10 +390,10 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
       node = node.parentElement;
     }
     if (scroller === null) return;
-    const content = Array.from(main.children).find((el) => el.contains(lastRow));
-    if (content === null) return;
+    const scrollerContent = scroller.firstElementChild;
+    if (!scrollerContent) return;
     const contentBottom =
-      content.getBoundingClientRect().bottom -
+      scrollerContent.getBoundingClientRect().bottom -
       scroller.getBoundingClientRect().top +
       scroller.scrollTop;
     scroller.scrollTop = Math.max(0, Math.round(contentBottom - scroller.clientHeight));
@@ -639,110 +638,6 @@ spec:
  * answer both. */
 function issuesReadOf(projectId: string): RegExp {
   return new RegExp(`/api/v1/projects/${projectId}/repos/[^/]+/issues([?]|$)`);
-}
-
-/** The two cross-project reads the sidebar's flags project (contract C3) —
- * the SAME paths `ui/src/lib/sidebarFlags.ts` fetches. */
-const SIDEBAR_FLAG_RUNS_URL = `${EMU_BASE_URL}/api/v1/runs?status=queued,running,waiting_human,failed&limit=200`;
-const SIDEBAR_FLAG_APPROVALS_URL = `${EMU_BASE_URL}/api/v1/approvals?status=pending`;
-
-/** The glyph the app prints for each state (the badge is glyph + count, never
- * colour alone — `Sidebar.tsx`'s `FLAG_STYLE`). */
-const SIDEBAR_FLAG_GLYPH: Record<"failed" | "waiting" | "running", string> = {
-  failed: "×",
-  waiting: "!",
-  running: "●",
-};
-
-/**
- * The worst-state flag per project that the rail's Projects popover rows must
- * print, derived independently of the app from the two cross-project reads the
- * flags ride: root runs bucketed by status (a `waiting_human` run whose gate
- * is NOT open is stalled → failed), pending gates counted per project as
- * waiting, and the worst kind present wins with its own count
- * (failed > waiting > running). A project with nothing in the window maps to
- * no entry (= no badge). Reading the API here rather than importing the app's
- * own projection is the point: the popover's badges are asserted against the
- * server's state, not against the same code that draws them.
- */
-async function expectedSidebarFlags(
-  request: APIRequestContext,
-): Promise<Map<string, { kind: "failed" | "waiting" | "running"; count: number }>> {
-  const [runsRes, approvalsRes] = await Promise.all([
-    request.get(SIDEBAR_FLAG_RUNS_URL),
-    request.get(SIDEBAR_FLAG_APPROVALS_URL),
-  ]);
-  expect(runsRes.status(), "GET /api/v1/runs answers for the flags").toBe(200);
-  expect(approvalsRes.status(), "GET /api/v1/approvals answers for the flags").toBe(200);
-  const runs = (
-    (await runsRes.json()) as {
-      runs?: { id: string; project_id: string; status: string; depth: number }[];
-    }
-  ).runs ?? [];
-  const approvals = (
-    (await approvalsRes.json()) as {
-      approvals?: { run_id: string; project_id: string; state: string }[];
-    }
-  ).approvals ?? [];
-  const openGates = new Set<string>();
-  const gatesByProject = new Map<string, number>();
-  for (const approval of approvals) {
-    if (approval.state !== "pending") continue;
-    openGates.add(approval.run_id);
-    gatesByProject.set(approval.project_id, (gatesByProject.get(approval.project_id) ?? 0) + 1);
-  }
-  const counts = new Map<string, { failed: number; waiting: number; running: number }>();
-  const bucket = (projectId: string) => {
-    let entry = counts.get(projectId);
-    if (!entry) {
-      entry = { failed: 0, waiting: 0, running: 0 };
-      counts.set(projectId, entry);
-    }
-    return entry;
-  };
-  for (const run of runs) {
-    if (run.depth !== 0) continue; // children belong to their parent's tree
-    const entry = bucket(run.project_id);
-    if (run.status === "failed") entry.failed += 1;
-    else if (run.status === "waiting_human") {
-      // A gate that IS open is the decision behind it, counted as waiting
-      // below; one that is not and never moved on is stalled → failed.
-      if (!openGates.has(run.id)) entry.failed += 1;
-    } else entry.running += 1; // the read fetches only queued/running besides
-  }
-  for (const [projectId, gates] of gatesByProject) bucket(projectId).waiting = gates;
-  const flags = new Map<string, { kind: "failed" | "waiting" | "running"; count: number }>();
-  for (const [projectId, entry] of counts) {
-    if (entry.failed > 0) flags.set(projectId, { kind: "failed", count: entry.failed });
-    else if (entry.waiting > 0) flags.set(projectId, { kind: "waiting", count: entry.waiting });
-    else if (entry.running > 0) flags.set(projectId, { kind: "running", count: entry.running });
-  }
-  return flags;
-}
-
-/** Every project row's badge as drawn (glyph + count, the count also spelled
- * in the `aria-label`), or its absence, matching the server-derived flag. */
-async function popoverBadgesMatchServer(page: Page, popover: Locator): Promise<boolean> {
-  const flags = await expectedSidebarFlags(page.request);
-  const rows = popover.locator('[data-testid^="rail-project-"]');
-  const n = await rows.count();
-  for (let i = 0; i < n; i++) {
-    const row = rows.nth(i);
-    const testid = await row.getAttribute("data-testid");
-    const projectId = (testid ?? "").replace("rail-project-", "");
-    const flag = flags.get(projectId);
-    const badge = row.locator("span[aria-label]");
-    const badges = await badge.count();
-    if (!flag) {
-      if (badges !== 0) return false;
-      continue;
-    }
-    if (badges !== 1) return false;
-    if ((await badge.getAttribute("aria-label")) !== `${flag.count} ${flag.kind}`) return false;
-    const text = (await badge.textContent()) ?? "";
-    if (text.trim() !== `${SIDEBAR_FLAG_GLYPH[flag.kind]} ${flag.count}`) return false;
-  }
-  return true;
 }
 
 /**
@@ -1447,6 +1342,11 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("repo-page"), "the repo page renders").toBeVisible({
         timeout: 30_000,
       });
+      const listBtn = page.getByTestId("repo-view-list");
+      if ((await listBtn.getAttribute("aria-pressed")) !== "true") {
+        await listBtn.click();
+        await expect(listBtn).toHaveAttribute("aria-pressed", "true");
+      }
       const panel = page.getByTestId("repo-assistant-notes");
       await expect(panel, "design 3a: ASSISTANT NOTICED").toBeVisible({ timeout: 30_000 });
       await expect(
@@ -1493,10 +1393,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         receipt.status(),
         `the dismissal answers 2xx for its owner (got ${receipt.status()}: ${receiptBody.slice(0, 200)})`,
       ).toBeGreaterThanOrEqual(200);
-      expect(
-        receipt.status(),
-        "a dismissal that did not land is not a dismissal",
-      ).toBeLessThan(300);
+      expect(receipt.status(), "a dismissal that did not land is not a dismissal").toBeLessThan(
+        300,
+      );
       // The row leaves on the click, not on the next read (notes.ts dismisses
       // the cache entry optimistically and re-reads after the 204).
       await expect(
@@ -1559,258 +1458,56 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
   });
 
-  test("shell — one sidebar, the rail, the flyout, the project header's actions, persisted collapse", async ({
+  test("shell — 64px project rail, 60px top bar pill, mobile scope sheet, and Manage Project detail", async ({
     page,
     emu,
   }) => {
-    // A GH-page leg fans out to the real tracker's issues read; the
-    // lab's own 502s on it are scratch noise, declared (see issuesReadOf).
     emu.expectFailure(issuesReadOf(ids.projectId));
-    await test.step("expanded (2c): New thread, Today, Threads, PROJECTS, Workflows/Agents rows", async () => {
+
+    await test.step("desktop shell: 64px rail, top bar section pill, Search or ask, scoped links", async () => {
       await page.goto(`/p/${ids.projectId}`);
-      await expect(
-        page.getByTestId("sidebar"),
-        "design 2c: the one left column renders",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByTestId("new-chat"), "design 2c: New thread").toBeVisible();
-      await expect(
-        page.getByTestId("sidebar-link-home"),
-        "design 2c: the row is Today (was Home)",
-      ).toContainText(/today/i);
-      await expect(page.getByTestId("sidebar-link-threads"), "design 2c: Threads").toContainText(
-        /threads/i,
+      await expect(page.getByTestId("project-rail")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("top-bar")).toBeVisible();
+      await expect(page.getByTestId("pill-home")).toHaveAttribute("aria-current", "page");
+      await expect(page.getByTestId("pill-chats")).toHaveAttribute(
+        "href",
+        `/p/${ids.projectId}/chats`,
       );
-      await expect(
-        page.getByTestId(`sidebar-project-toggle-${ids.projectId}`),
-        "design 2c: the PROJECTS tree carries the project",
-      ).toBeVisible();
-      await expect(
-        page.getByTestId("sidebar-link-workflows"),
-        "design 2c/finding 02: the split library keeps a top-level Workflows row",
-      ).toBeVisible();
-      await emu.screen("rcn-3c", "expanded");
+      await expect(page.getByTestId("pill-factory")).toHaveAttribute(
+        "href",
+        `/p/${ids.projectId}/factory`,
+      );
+      await expect(page.getByTestId(`rail-tile-${ids.projectId}`)).toBeVisible();
+      await expect(page.getByTestId("rail-manage")).toBeVisible();
+      await emu.screen("shell", "desktop");
     });
 
-    await test.step("the project header's configure actions (finding 09: the sidebar ⋯ is gone)", async () => {
-      // Finding 09 retired the hover-only ⋯ project menu: `+ Repository`,
-      // `Settings` and the members page are the project's own actions now, in
-      // the header and behind the settings page's tab strip. The sidebar row is
-      // a tree toggle again — it carries no menu at all.
-      await page.goto(`/p/${ids.projectId}`);
-      await expect(
-        page.getByTestId("project-name"),
-        "finding 09: the project page answers",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("sidebar-project-menu"),
-        "finding 09: the sidebar's ⋯ project menu is gone, not merely hidden",
-      ).toHaveCount(0);
-      await expect(
-        page.getByTestId(`sidebar-project-menu-${ids.projectId}`),
-        `finding 09: no ⋯ trigger on the ${ids.projectId.slice(0, 8)} row either`,
-      ).toHaveCount(0);
-      const addRepository = page.getByTestId("project-add-repository");
-      await expect(
-        addRepository,
-        "finding 09: '+ Repository' is a project-header action (this project's viewer maintains it)",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(addRepository, "finding 09: the verb says '+ Repository'").toHaveText(
-        /\+\s*Repository/,
-      );
-      const settingsLink = page.getByTestId("project-settings-link");
-      await expect(
-        settingsLink,
-        "finding 09: 'Settings' is the header's way to the project's configuration",
-      ).toBeVisible();
-      await expect(settingsLink).toHaveAttribute(
-        "href",
-        new RegExp(`^/p/${ids.projectId}/settings$`),
-      );
-      await emu.screen("rcn-3c", "header-actions");
+    await test.step("mobile shell (<768px): scope-open opens ScopeSheet over project switch & Manage", async () => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByTestId("scope-open").click();
+      await expect(page.getByTestId("scope-sheet")).toBeVisible();
+      await expect(page.getByTestId("scope-sheet")).toContainText(/Manage/i);
+      await emu.screen("shell", "phone-sheet");
+      await page.keyboard.press("Escape");
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
 
-      // `+ Repository` opens the dialog IN PLACE, on this page — the menu's old
-      // route through the settings page is gone. The dialog is then CANCELLED:
-      // the configured git URL is the file repo's own, so submitting would
-      // collide, and this journey has no business adding repositories.
-      await addRepository.click();
+    await test.step("Manage → Projects → detail owns Configure & Add repository dialog", async () => {
+      await page.goto(`/manage/projects/${ids.projectId}`);
+      await expect(page.getByTestId("manage-project-detail")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("detail-add-repository")).toBeVisible();
+      await emu.screen("manage", "project-detail");
+
+      await page.getByTestId("detail-add-repository").click();
       const dialog = page.getByTestId("add-repository-dialog");
-      await expect(
-        dialog,
-        "finding 09: '+ Repository' opens the add-repository dialog in place",
-      ).toBeVisible({ timeout: 10_000 });
-      expect(
-        new URL(page.url()).pathname,
-        "the dialog is a dialog, not a navigation away from the project page",
-      ).toBe(`/p/${ids.projectId}`);
-      await expect(
-        dialog.getByTestId("repo-name"),
-        "the dialog names the repository it adds",
-      ).toBeVisible();
-      await expect(
-        dialog.getByTestId("repo-git-url"),
-        "the dialog asks for the git URL",
-      ).toBeVisible();
-      await expect(
-        dialog.getByTestId("repo-default-branch"),
-        "the dialog asks for the default branch",
-      ).toBeVisible();
+      await expect(dialog).toBeVisible({ timeout: 10_000 });
+      await expect(dialog.getByTestId("repo-name")).toBeVisible();
+      await expect(dialog.getByTestId("repo-git-url")).toBeVisible();
+      await expect(dialog.getByTestId("repo-default-branch")).toBeVisible();
       await dialog.getByTestId("repo-name").fill(`emu-scratch-${EMU_PASS_ID}`);
       await dialog.getByTestId("repo-git-url").fill("file:///srv/m4/fixtures/app.git");
-      await emu.screen("rcn-3c", "add-repository");
       await dialog.getByTestId("repo-add-cancel").click();
-      await expect(dialog, "Cancel closes the dialog").toBeHidden({ timeout: 10_000 });
-      const repos = await page.request.get(
-        `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`,
-      );
-      expect(repos.status(), "the cancelled dialog read the repositories").toBe(200);
-      const rows = (await repos.json()) as { items?: { name: string }[] };
-      expect(
-        (rows.items ?? []).map((row) => row.name),
-        "cancelling wrote no repository",
-      ).not.toContain(`emu-scratch-${EMU_PASS_ID}`);
-
-      // The settings page carries the section's tabs — the menu's `Settings`
-      // and `Members` rows are a tab strip over two routes.
-      await settingsLink.click();
-      await expect(page).toHaveURL(new RegExp(`/p/${ids.projectId}/settings$`), {
-        timeout: 30_000,
-      });
-      const tabs = page.getByTestId("project-settings-tabs");
-      await expect(
-        tabs,
-        "finding 09: the settings page owns the Settings | Members tab strip",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        tabs.getByTestId("project-settings-tab-settings"),
-        "the Settings tab is the page you are on",
-      ).toHaveAttribute("aria-current", "page");
-      const membersTab = tabs.getByTestId("project-settings-tab-members");
-      await expect(membersTab, "the Members tab is its own route").toHaveAttribute(
-        "href",
-        new RegExp(`^/p/${ids.projectId}/members$`),
-      );
-      await emu.screen("rcn-3c", "settings-tabs");
-      await membersTab.click();
-      await expect(page).toHaveURL(new RegExp(`/p/${ids.projectId}/members$`), {
-        timeout: 30_000,
-      });
-      await expect(
-        page.getByTestId("project-members-page"),
-        "the Members tab lands on the project's members page",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("project-settings-tab-members"),
-        "the strip stays on the members page with Members current (one section, two pages)",
-      ).toHaveAttribute("aria-current", "page");
-    });
-
-    await test.step("collapse to the rail (3c/4a)", async () => {
-      await page.getByTestId("sidebar-collapse").click();
-      await expect(
-        page.getByTestId("sidebar-expand"),
-        "design 3c: the collapsed rail carries its expand control",
-      ).toBeVisible({ timeout: 10_000 });
-      await expect(page.getByTestId("new-chat-rail"), "design 3c: the rail's +").toBeVisible();
-      await expect(
-        page.getByTestId("rail-item-workflows"),
-        "design 3c/finding 02/4a: the rail tile is labelled Workflows",
-      ).toBeVisible();
-      await expect(
-        page.getByTestId("rail-item-agents"),
-        "design 4a: the split library keeps its Agents tile too",
-      ).toBeVisible();
-      await expect(
-        page.locator('[data-testid^="rail-project-"]'),
-        "design 4a: no initials tiles any more — projects live in the Projects popover, not on the rail itself",
-      ).toHaveCount(0);
-      await emu.screen("rcn-3c", "rail");
-    });
-
-    await test.step("the Projects tile opens the popover — one row per project, its state badge, the active project's repos", async () => {
-      // Redesign 4a retired the hovered initials-tile flyout: the one tile
-      // with children (Projects) opens a click-surface popover on a CLICK.
-      await page.getByTestId("rail-item-projects").click();
-      const popover = page.getByTestId("rail-projects-popover");
-      await expect(
-        popover,
-        "design 4a: a click on the Projects tile opens the project popover",
-      ).toBeVisible({ timeout: 10_000 });
-      const projects = (
-        (
-          await (
-            await page.request.get(`${EMU_BASE_URL}/api/v1/projects`)
-          ).json()
-        ) as { items?: { id: string; name: string }[] }
-      ).items ?? [];
-      expect(projects.length, "the lab serves the sidebar at least one project").toBeGreaterThan(
-        0,
-      );
-      await expect(
-        popover.locator('[data-testid^="rail-project-"]'),
-        `design 4a: one popover row per project (${projects.length})`,
-      ).toHaveCount(projects.length);
-      for (const project of projects) {
-        await expect(
-          popover.getByTestId(`rail-project-${project.id}`),
-          `design 4a: ${project.name} has its row in the popover`,
-        ).toBeVisible();
-      }
-      // The state badges are the same counts the expanded rows carry — each
-      // row's badge (or its absence) read off the two cross-project reads the
-      // flags project. Polled because a run of this pass may still be moving
-      // while the app's own event-driven refetch catches up.
-      await expect
-        .poll(() => popoverBadgesMatchServer(page, popover), {
-          timeout: 60_000,
-          message:
-            "design 4a: every popover row carries its project's worst-state badge (glyph + count), matching GET /api/v1/runs + GET /api/v1/approvals",
-        })
-        .toBe(true);
-      // The active project's repositories ride the popover (what the old
-      // flyout listed): this journey stands on its own project page.
-      await expect(
-        popover,
-        `design 4a: the popover lists the active project's repositories (${FILE_REPO})`,
-      ).toContainText(FILE_REPO, { timeout: 15_000 });
-      // Goal item 2: the popover is a ds Popover — the same shared arrow, in
-      // the same box, claimed the same way.
-      await expect(
-        popover.getByTestId("menu-arrow"),
-        "design: every anchored surface has a pointer arrow",
-      ).toBeVisible();
-      // Review round 2: design 3c's RIGHT panel is this exact state — the
-      // popover OPEN with its pointer arrow crossing the gap — captured at
-      // both widths (the phone documents the rail away; see the `rcn-3c
-      // flyout` landmarks).
-      await emu.screen("rcn-3c", "flyout");
-
-      // The two-width capture remounts the rail, so reopen to prove the
-      // popover's keyboard contract the same ds Popover spells everywhere:
-      // Esc closes and returns the keyboard to the tile that opened it.
-      await page.getByTestId("rail-item-projects").click();
-      await expect(popover, "the popover reopens after the capture").toBeVisible({
-        timeout: 10_000,
-      });
-      await page.keyboard.press("Escape");
-      await expect(popover, "design 4a: Escape closes the Projects popover").toBeHidden({
-        timeout: 10_000,
-      });
-      await expect(
-        page.getByTestId("rail-item-projects"),
-        "design 4a: Escape returns focus to the Projects tile",
-      ).toBeFocused();
-    });
-
-    await test.step("reload — the collapsed state persists, then restore expanded", async () => {
-      await page.reload();
-      await expect(
-        page.getByTestId("sidebar-expand"),
-        "design 3c: the collapsed rail is a saved layout pref — it survives the reload",
-      ).toBeVisible({ timeout: 30_000 });
-      // Leave the column EXPANDED for every other journey (and every later
-      // pass) — the preference lives on this user's account across passes.
-      await page.getByTestId("sidebar-expand").click();
-      await expect(page.getByTestId("sidebar-collapse")).toBeVisible({ timeout: 10_000 });
+      await expect(dialog).toBeHidden({ timeout: 10_000 });
     });
   });
 
@@ -1909,68 +1606,49 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         profileMenu.getByTestId("menu-arrow"),
         "design: every anchored surface has a pointer arrow",
       ).toBeVisible();
-      await profileMenu.getByTestId(chatBoxProfileTestid(lab[0].id)).click();
+      await profileMenu
+        .locator(`[data-testid="${chatBoxProfileTestid(lab[0].id)}"]`)
+        .filter({ hasText: lab[0].name })
+        .first()
+        .click();
       await expect(
         page.getByTestId("repo-chat-profile"),
         `the chat starts on the lab launcher's ${lab[0].name}`,
       ).toContainText(lab[0].name, { timeout: 10_000 });
       await page.getByTestId("repo-chat-input").fill(CHAT_PROMPT);
       await page.getByTestId("repo-chat-start").click();
-      await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+      await page.waitForURL(/\/(?:chats|p\/[^/]+\/chats)\/[0-9a-f-]{36}$/, { timeout: 30_000 });
       ids.chatId = new URL(page.url()).pathname.split("/").pop() ?? "";
-      expect(ids.chatId, "Start navigated to the created thread").toMatch(/^[0-9a-f-]{36}$/);
+      expect(ids.chatId, "Start navigated to the created chat").toMatch(/^[0-9a-f-]{36}$/);
       await expect(
-        page.getByTestId("conversation-title"),
-        "the thread is named by the prompt's own first line, never a paraphrase",
+        page.getByTestId("chat-title"),
+        "the chat is named by the prompt's own first line, never a paraphrase",
       ).toHaveText(CHAT_PROMPT.split("\n")[0]);
-      await expect(
-        page.getByTestId("side-panel-works-in"),
-        "design 2e: the chat works in this repo",
-      ).toContainText(FILE_REPO, { timeout: 15_000 });
+      await expect(page.getByTestId("chat-repo-chip")).toContainText(FILE_REPO, {
+        timeout: 15_000,
+      });
     });
 
-    await test.step("chat details — the sheet the 390 header opens (rcn-2e)", async () => {
-      // rcn-chat-rail-390: at 390 the rail has no visible column, so the
-      // header's Details toggle opens the SAME panel as a right-side sheet.
-      // screen() shoots both widths from this one state: at 1280 the sheet
-      // is not mounted (its toggle is lg:hidden) and the capture is the page
-      // with the panel's visible column; at 390 the sheet stands open.
+    await test.step("chat details — the sheet opened via header ⋯ menu (rcn-2e)", async () => {
       await page.setViewportSize({ width: 390, height: 844 });
-      const toggle = page.getByTestId("chat-details-toggle");
-      await expect(
-        toggle,
-        "rcn-chat-rail-390: below lg the chat header offers Details",
-      ).toBeVisible();
-      await toggle.click();
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
       const sheet = page.getByTestId("chat-details-sheet");
-      await expect(sheet, "Details opens the side panel as a right-side sheet").toBeVisible();
+      await expect(sheet, "Details opens the side panel as a sheet").toBeVisible();
       await expect(
         sheet.getByTestId("conversation-side-panel"),
-        "the sheet carries the same panel content the 1280 aside column does",
+        "the sheet carries ConversationSidePanel content",
       ).toBeVisible();
-      // The pin's width-local check at the capture's live state (rcn-review11).
+      await expect(sheet.getByTestId("side-panel-works-in")).toContainText(FILE_REPO, {
+        timeout: 15_000,
+      });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "chat-details");
       await expectChatPinBothWidths(page);
-      // Close it for the journey's remaining steps — at the PHONE frame.
-      // screen() restored the 1280 width, where the sheet is unmounted
-      // (its toggle is `lg:hidden`), so an Esc there would hide nothing and
-      // the hidden check would pass on the desktop width alone while the
-      // sheet's open state leaked into the next 390 capture. Back to 390
-      // first, where the sheet really mounts — then the desktop frame.
-      // Readiness is the sheet itself: `open` is viewport-gated, so the
-      // matchMedia change + React remount land asynchronously after the
-      // resize, and the sheet registers its Escape listener synchronously
-      // in its mount commit — a visible sheet is by construction an
-      // Esc-listening one. (Pass 2's flake: Esc fired before the remount
-      // and the sheet came back open.)
       await page.setViewportSize({ width: 390, height: 844 });
-      await expect(
-        sheet,
-        "the sheet is remounted and visible AT 390 before Esc",
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(sheet, "the sheet is visible before Esc").toBeVisible({ timeout: 10_000 });
       await page.keyboard.press("Escape");
-      await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
+      await expect(sheet, "Esc closes the Details sheet").toBeHidden({ timeout: 10_000 });
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
@@ -2085,6 +1763,21 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
 
     await test.step("Lanes on `server`: the ISSUES lane lists a real issue", async () => {
+      let capturedIssues: { status: number; body: string } | null = null;
+      const issuesPathSuffix = `/repos/${ids.ghRepoId}/issues`;
+      const onIssuesResponse = (res: import("@playwright/test").Response) => {
+        if (res.request().method() === "GET" && res.url().includes(issuesPathSuffix)) {
+          void res
+            .text()
+            .then((body) => {
+              if (res.status() === 200 || capturedIssues === null) {
+                capturedIssues = { status: res.status(), body };
+              }
+            })
+            .catch(() => {});
+        }
+      };
+      page.on("response", onIssuesResponse);
       await page.goto(`/p/${ids.projectId}/${GH_REPO}`);
       await expect(page.getByTestId("repo-page"), "design 3a: the repo page renders").toBeVisible({
         timeout: 30_000,
@@ -2180,13 +1873,20 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await savedPatch;
       issueNumber = Number(cardTestid.replace("repo-lane-issue-", ""));
       // The card is a row the tracker read answers — the lane did not make it up.
-      const issues = await page.request.get(
-        `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos/${ids.ghRepoId}/issues?state=open`,
-      );
-      const issuesBody = await issues.text();
+      page.off("response", onIssuesResponse);
+      let issuesStatus: number;
+      let issuesBody: string;
+      if (capturedIssues !== null && (capturedIssues as { status: number }).status === 200) {
+        issuesStatus = (capturedIssues as { status: number; body: string }).status;
+        issuesBody = (capturedIssues as { status: number; body: string }).body;
+      } else {
+        const issues = await page.request.get(issuesUrl);
+        issuesStatus = issues.status();
+        issuesBody = await issues.text();
+      }
       expect(
-        issues.status(),
-        `the tracker read the lane stands on answered (got ${issues.status()}: ${issuesBody.slice(0, 240)})`,
+        issuesStatus,
+        `the tracker read the lane stands on answered (got ${issuesStatus}: ${issuesBody.slice(0, 240)})`,
       ).toBe(200);
       const listed = JSON.parse(issuesBody) as {
         repository?: string;
@@ -2385,17 +2085,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     const chip = page.getByTestId("composer-agent-chip");
     await test.step("open the chat the List view started", async () => {
       expect(ids.chatId, "the repo-list journey left a chat").toMatch(/^[0-9a-f-]{36}$/);
-      await page.goto(`/threads/${ids.chatId}`);
-      await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
+      await page.goto(`/chats/${ids.chatId}`);
+      await expect(page.getByTestId("chat-title")).toBeVisible({ timeout: 30_000 });
       await expect(chip, "design 2e: the composer carries the next-turn agent chip").toBeVisible({
         timeout: 30_000,
       });
-      // The pin's width-local check at the capture's live state (rcn-review11).
       await expectChatPinLive(page, 1280);
-      // The 390 shot keeps the Details sheet CLOSED, so the reviewer judges
-      // the CHAT itself at 390: the panel's design landmarks accept the
-      // header's Details toggle as the one tap that reaches the panel, and
-      // the dedicated `rcn-2e chat-details*` screens show the open sheet.
       await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "chat");
@@ -2403,40 +2098,43 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
 
     await test.step("the first prompt's turn settles (the turn legs are real)", async () => {
-      // The chat was started from the repo page's chat box, so turn 1 is
-      // already queued to the agent. Wait for it to settle: a turn RECORD
-      // appears in the side panel (an agent row with its range), and the
-      // chip becomes pressable again (it is disabled WHILE a turn is open —
-      // ADR-0068). The assertions are on the turn record and the panel —
-      // never on the agent's reply text; a turn the lab cannot complete
-      // prints its honest `Turn failed:` line and settles between turns.
-      await expect(
-        page.locator('[data-testid^="side-panel-agent-row-"]').first(),
-        "the side panel lists the agent that ran the turn (this needs the lab's worker and a real model)",
-      ).toBeVisible({ timeout: 10 * 60_000 });
-      await expect(
-        page.locator('[data-testid^="side-panel-agent-range-"]').first(),
-        "the row carries its turn range (`turn 1` / `turns 1–2`)",
-      ).toContainText(/turn/i, { timeout: 30_000 });
+      // Wait for composer agent chip to become enabled when turn settles,
+      // then inspect Details sheet to confirm turn range in side panel.
       await expect(chip, "between turns the chip is pressable again").toBeEnabled({
         timeout: 10 * 60_000,
       });
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      const sheet = page.getByTestId("chat-details-sheet");
+      await expect(sheet).toBeVisible({ timeout: 15_000 });
+      await expect(
+        sheet.locator('[data-testid^="side-panel-agent-row-"]').first(),
+        "the Details sheet lists the agent that ran the turn",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        sheet.locator('[data-testid^="side-panel-agent-range-"]').first(),
+        "the row carries its turn range (`turn 1` / `turns 1–2`)",
+      ).toContainText(/turn/i, { timeout: 30_000 });
+      await page.keyboard.press("Escape");
+      await expect(sheet).toBeHidden({ timeout: 10_000 });
     });
 
     await test.step("return control, then take it back", async () => {
+      await page.getByTestId("chat-menu").click();
       const give = page.getByTestId("return-control");
       await expect(give, "the starter is the controller and can hand control back").toBeVisible({
         timeout: 30_000,
       });
       await give.click({ timeout: 20_000 });
-      const take = page.getByTestId("take-control");
-      await expect(take, "design 2e: without control, Take control is the way back").toBeVisible({
-        timeout: 30_000,
-      });
       await expect(
         page.getByTestId("composer-input"),
         "a non-controller cannot prompt: the composer is disabled",
       ).toBeDisabled({ timeout: 30_000 });
+      await page.getByTestId("chat-menu").click();
+      const take = page.getByTestId("take-control");
+      await expect(take, "design 2e: without control, Take control is in the ⋯ menu").toBeVisible({
+        timeout: 30_000,
+      });
       await take.click({ timeout: 20_000 });
       await expect(
         page.getByTestId("controller-badge"),
@@ -2473,17 +2171,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "the lab seeds more than one agent profile, so the picker has somewhere to switch to",
       ).toBeTruthy();
       await chip.click();
-      const menu = page.getByTestId("composer-agent-menu");
+      const menu = page.getByTestId("agent-picker-popover");
       await expect(menu, "design 1h: the chip opens the picker").toBeVisible({ timeout: 10_000 });
-      await expect(
-        menu.getByText(/NEXT TURN RUNS ON/i),
-        "design 1h: the menu captions itself",
-      ).toBeVisible();
+      await expect(menu.getByText(/RUNS ON/i), "design 1h: the menu captions itself").toBeVisible();
       await expect(
         menu.getByTestId("menu-arrow"),
         "design: every anchored surface has a pointer arrow",
       ).toBeVisible();
-      await menu.getByTestId(`composer-agent-profile-${next!.id}`).click();
+      await menu.getByTestId(`agent-option-${next!.id}`).click();
       await expect(chip, `the chip moves to ${next!.name}`).toContainText(next!.name, {
         timeout: 30_000,
       });
@@ -2505,13 +2200,6 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(composer, "the prompt is accepted into the journal").toHaveValue("", {
         timeout: 30_000,
       });
-      // The AGENTS IN THIS CHAT list is per maximal run of turns: two turns
-      // on two profiles must produce two rows, each with its range.
-      const rows = page.locator('[data-testid^="side-panel-agent-row-"]');
-      await expect(
-        rows.nth(1),
-        "the side panel shows BOTH agents with their turn ranges",
-      ).toBeVisible({ timeout: 10 * 60_000 });
       await expect(chip, "the second turn settled").toBeEnabled({ timeout: 10 * 60_000 });
       // The pin's width-local check at the capture's live state (rcn-review11):
       // this is the exact screen whose newest row the review found under the
@@ -2526,40 +2214,26 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
 
     await test.step("chat details — the sheet with the switched agents (rcn-2e)", async () => {
-      // rcn-chat-rail-390: the same capture on the switched state — the
-      // sheet's AGENTS IN THIS CHAT rows carry the two turns' ranges.
       await page.setViewportSize({ width: 390, height: 844 });
-      const toggle = page.getByTestId("chat-details-toggle");
-      await expect(
-        toggle,
-        "rcn-chat-rail-390: below lg the chat header offers Details",
-      ).toBeVisible();
-      await toggle.click();
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
       const sheet = page.getByTestId("chat-details-sheet");
-      await expect(sheet, "Details opens the side panel as a right-side sheet").toBeVisible();
+      await expect(sheet, "Details opens the side panel as a sheet").toBeVisible();
+      // The AGENTS IN THIS CHAT list is per maximal run of turns: two turns
+      // on two profiles must produce two rows, each with its range.
+      const rows = sheet.locator('[data-testid^="side-panel-agent-row-"]');
+      await expect(rows.first(), "the sheet lists the agents the turns ran on").toBeVisible({
+        timeout: 30_000,
+      });
       await expect(
-        sheet.locator('[data-testid^="side-panel-agent-row-"]').first(),
-        "the sheet lists the agents the turns ran on",
+        rows.nth(1),
+        "the side panel shows BOTH agents with their turn ranges",
       ).toBeVisible({ timeout: 30_000 });
-      // The pin's width-local check at the capture's live state (rcn-review11).
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "chat-details-switched");
       await expectChatPinBothWidths(page);
-      // Same reset as the first chat-details step: screen() restored the
-      // desktop frame, where the sheet is unmounted and a hidden check is
-      // trivially true — so the Esc fires AT 390, where the sheet really
-      // mounts, and the picker step below acts in the desktop frame.
-      // Readiness is the sheet itself: `open` is viewport-gated, so the
-      // matchMedia change + React remount land asynchronously after the
-      // resize, and the sheet registers its Escape listener synchronously
-      // in its mount commit — a visible sheet is by construction an
-      // Esc-listening one. (Pass 2's flake: Esc fired before the remount
-      // and the sheet came back open.)
       await page.setViewportSize({ width: 390, height: 844 });
-      await expect(
-        sheet,
-        "the sheet is remounted and visible AT 390 before Esc",
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(sheet, "the sheet is visible before Esc").toBeVisible({ timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
       await page.setViewportSize({ width: 1280, height: 900 });
@@ -2567,7 +2241,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
 
     await test.step("the picker, captured with the menu open (rcn-1h)", async () => {
       await chip.click();
-      const menu = page.getByTestId("composer-agent-menu");
+      const menu = page.getByTestId("agent-picker-popover");
       await expect(menu, "design 1h: the picker opens over the composer").toBeVisible({
         timeout: 10_000,
       });
@@ -2588,41 +2262,28 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
   });
 
   test("chat — WORKS IN moves the chat's scope and back", async ({ page, emu }) => {
-    // Its own test, deliberately: as the chat journey's final step the
-    // combined 22-minute leg exhausted the test budget before
-    // `works-in-moved` was ever captured (run 41735462805) — the report
-    // could not tell whether the budget ran out or a click waited forever.
-    // Every action here is bounded, and after each capture the switcher
-    // proves itself back at 1280 before the next click.
     await test.step("re-enter the chat on its own", async () => {
       expect(ids.chatId, "the chat journey left its thread").toMatch(/^[0-9a-f-]{36}$/);
-      await page.goto(`/threads/${ids.chatId}`);
+      await page.goto(`/chats/${ids.chatId}`);
       await page.setViewportSize({ width: 1280, height: 900 });
       await expect(
-        page.getByTestId("conversation-title"),
+        page.getByTestId("chat-title"),
         "the chat renders before the switcher is touched",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("thread-side-panel-aside"),
-        "the side panel's aside renders at 1280 before the switcher is touched",
       ).toBeVisible({ timeout: 30_000 });
     });
 
     await test.step("WORKS IN — the scope switcher moves the chat to the whole project and back", async () => {
-      // The ADR-0067 amendment's WORKS IN switcher (3ae47e6): the panel's repo
-      // name carries a ▾ button that opens a ds Menu of the project's
-      // repositories plus "Whole project", the DECLARED binding ticked, one
-      // pick = one `PATCH /api/v1/conversations/{id}`. The journal's
-      // `conversation.scope_changed` row is the transcript's own evidence —
-      // the move prints its system line ("<person> moved this thread to …"),
-      // and the new scope answers from the next turn. This step moves and
-      // moves BACK, leaving the chat bound to the repo it was born in.
-      const worksIn = page.getByTestId("side-panel-works-in");
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      const sheet = page.getByTestId("chat-details-sheet");
+      await expect(sheet).toBeVisible({ timeout: 15_000 });
+
+      const worksIn = sheet.getByTestId("side-panel-works-in");
       await expect(
         worksIn,
         "design 2e: the panel's WORKS IN names the repo the chat works in",
       ).toContainText(FILE_REPO);
-      const switcher = page.getByTestId("side-panel-works-in-switch");
+      const switcher = sheet.getByTestId("side-panel-works-in-switch");
       await expect(
         switcher,
         "the repo name carries the scope switcher (the host names this chat)",
@@ -2662,53 +2323,16 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         scopeMenu.getByTestId("side-panel-scope-item-whole"),
         "Whole project is not ticked while the chat is bound",
       ).not.toContainText("✓");
-      // The capture goes with the menu CLOSED, on purpose: screen() shoots
-      // both widths from this state — at 1280 the menu is on the aside, and
-      // at 390 the panel (the transcript's old inline stack, the
-      // rcn-chat-rail-390 reflow, is gone — rcn-review14) sits behind the
-      // header's Details toggle, which no menu state rides on. An open menu
-      // (present at 1280, absent at 390) would file a false "390 lost" reflow
-      // defect; the menu's structure is the assertions above, and the
-      // landmark list for these two screens is what both widths show.
       await page.keyboard.press("Escape");
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
-      // The pin's width-local check at the capture's live state (rcn-review11).
       await expectChatPinLive(page, 1280);
-      // The 390 shot keeps the Details sheet CLOSED (see the chat capture):
-      // the panel's landmarks accept the toggle as the one tap.
       await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "works-in-menu");
       await expectChatPinBothWidths(page);
 
-      // After each capture the switcher proves itself back at 1280 before
-      // the next click: screen() resizes through 390 on its way back to
-      // 1280, and a capture that left the panel re-mounted is exactly where
-      // a click can hang with no bound of its own.
-      // The 390 leg of the round-trip unmounts the aside on the matchMedia
-      // change; back at 1280 the page remounts it, which lands a beat AFTER
-      // setViewportSize. A click in that beat misses the switcher, which
-      // then unmounts with the panel — so wait for the swap itself before
-      // acting (faac464, run 41754108482: the reopened menu's items were
-      // never found).
-      await expect(
-        page.getByTestId("chat-details-sheet"),
-        "the Details sheet is unmounted at 1280 (its toggle is lg:hidden)",
-      ).toHaveCount(0, { timeout: 15_000 });
-      await expect(
-        page.getByTestId("thread-side-panel-aside").getByTestId("side-panel-works-in-switch"),
-        "the switcher is back in the 1280 aside",
-      ).toBeVisible({ timeout: 15_000 });
-      await expect(switcher, "the switcher is back at 1280 after the capture").toBeVisible({
-        timeout: 15_000,
-      });
-      await expect(switcher, "the switcher is back at 1280 after the capture").toBeEnabled({
-        timeout: 15_000,
-      });
-
-      // Pick "Whole project": the panel's state answers (the tick moves —
-      // the switcher reads the DECLARED binding the PATCH wrote back), and
-      // the transcript prints the journal's scope-changed system line.
+      // Move to Whole project inside the Details sheet
+      await expect(sheet).toBeVisible({ timeout: 15_000 });
       await switcher.click({ timeout: 15_000 });
       await expect(scopeMenu, "the switcher reopens for the pick").toBeVisible({
         timeout: 10_000,
@@ -2723,9 +2347,6 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(scopeMenu, "the switcher reopens to show the panel's state").toBeVisible({
         timeout: 10_000,
       });
-      // The tick reads the DECLARED binding the PATCH wrote back to the
-      // conversation cache (useChangeConversationScope's setQueryData) — allow
-      // that write-back to settle, the same async the transcript line waited on.
       await expect(
         scopeMenu.getByTestId("side-panel-scope-item-whole"),
         "the panel's state text answers the move — Whole project is ticked",
@@ -2736,39 +2357,20 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).not.toContainText("✓", { timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
-      // The pin's width-local check at the capture's live state (rcn-review11):
-      // the scope move printed a system line — a NEW transcript row — and
-      // this is the screen whose last row the review found cut at 1280.
+      await expect(sheet).toBeVisible({ timeout: 10_000 });
+      await page.keyboard.press("Escape");
+      await expect(sheet).toBeHidden({ timeout: 10_000 });
+
       await expectChatPinLive(page, 1280);
-      // The 390 shot keeps the Details sheet CLOSED (see the chat capture):
-      // the panel's landmarks accept the toggle as the one tap.
       await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "works-in-moved");
       await expectChatPinBothWidths(page);
 
-      // Same re-probe after the second capture (see above): the switcher
-      // must be back at 1280 and pressable before the move-back click.
-      // The 390 leg unmounted the aside; back at 1280 it remounts a beat
-      // AFTER setViewportSize, so wait for the swap before acting.
-      await expect(
-        page.getByTestId("chat-details-sheet"),
-        "the Details sheet is unmounted at 1280 (its toggle is lg:hidden)",
-      ).toHaveCount(0, { timeout: 15_000 });
-      await expect(
-        page.getByTestId("thread-side-panel-aside").getByTestId("side-panel-works-in-switch"),
-        "the switcher is back in the 1280 aside",
-      ).toBeVisible({ timeout: 15_000 });
-      await expect(switcher, "the switcher is back at 1280 after the capture").toBeVisible({
-        timeout: 15_000,
-      });
-      await expect(switcher, "the switcher is back at 1280 after the capture").toBeEnabled({
-        timeout: 15_000,
-      });
-
-      // Back to the repo the chat was born in (ADR-0067) — the second move
-      // proves the system line renders in both directions, and the pass's
-      // rows stay honest for whichever journey reads this chat later.
+      // Back to the repo the chat was born in (ADR-0067) via Details sheet
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      await expect(sheet).toBeVisible({ timeout: 15_000 });
       await switcher.click({ timeout: 15_000 });
       await expect(scopeMenu, "the switcher reopens for the move back").toBeVisible({
         timeout: 10_000,
@@ -2777,6 +2379,8 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         timeout: 15_000,
       });
       await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
+      await page.keyboard.press("Escape");
+      await expect(sheet).toBeHidden({ timeout: 10_000 });
       await expect(
         page.getByText(new RegExp(`moved this thread to ${FILE_REPO}`, "i")),
         "the move back prints its own scope-changed system line",
@@ -2806,39 +2410,32 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       test.setTimeout(28 * 60_000);
       await test.step("the side panel's note and its Make a workflow… action", async () => {
         expect(ids.chatId, "the chat journey left its thread").toMatch(/^[0-9a-f-]{36}$/);
-        await page.goto(`/threads/${ids.chatId}`);
-        const note = page.getByTestId("assistant-note-workflow");
+        await page.goto(`/chats/${ids.chatId}`);
+        await page.getByTestId("chat-menu").click();
+        await page.getByTestId("chat-menu-details").click();
+        const sheet = page.getByTestId("chat-details-sheet");
+        await expect(sheet).toBeVisible({ timeout: 15_000 });
+        const note = sheet.getByTestId("assistant-note-workflow");
         await expect(
           note,
           "design 2e: the panel's ASSISTANT slot carries the workflow suggestion note",
         ).toBeVisible({ timeout: 30_000 });
         await expect(note).toContainText(/make a workflow/i);
-        // The admin holds the library role, so the entry is the enabled one
-        // (alice, its maintainer, sees it disabled with the reason — the
-        // UI's own tests assert that half, rcn-review11-2f).
         await expect(
-          page.getByTestId("assistant-note-workflow-action-make_workflow"),
+          sheet.getByTestId("assistant-note-workflow-action-make_workflow"),
           "the admin holds the library role, so the 2f entry is pressable",
         ).toBeEnabled();
       });
 
-      await test.step("the assistant panel opens with the thread as context (2f)", async () => {
-        // The ask must name THIS thread: the shipped canned line (2a1b7a7,
-        // finding 01 — the thread rename) is
-        // `Turn the thread “<title>” into a workflow` — only a title-less
-        // thread falls back to `Turn this thread into a workflow` (ui/src/
-        // components/assistant/AssistantPopover.tsx, openAssistantWorkflowDraft)
-        // — so the thread's own title, read from the API, is what proves the
-        // note opened the panel on this conversation rather than on some
-        // generic subject. The model's answer is never asserted.
+      await test.step("Quick chat opens with the chat as context (2f)", async () => {
         const conv = await page.request.get(`${EMU_BASE_URL}/api/v1/conversations/${ids.chatId}`);
         expect(conv.status(), "the conversation read answers").toBe(200);
         const threadTitle = (((await conv.json()) as { title?: string }).title ?? "").trim();
         expect(threadTitle, "this journey's thread carries a title the ask can name").not.toBe("");
         await page.getByTestId("assistant-note-workflow-action-make_workflow").click();
         await expect(
-          page.getByTestId("assistant-popover"),
-          "design 2f: Make a workflow… opens the assistant panel",
+          page.getByTestId("quick-chat"),
+          "design R6: Make a workflow… opens Quick chat",
         ).toBeVisible({ timeout: 30_000 });
         await expect(
           page
@@ -2874,7 +2471,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         // without a drafting state. The assertion itself is unchanged.
         emu.expectFailure(/\/api\/v1\/assistant\/conversations\/[0-9a-f-]+\/messages$/, 503);
         const turnFailures: string[] = [];
-        const onResponse = (res: import("playwright").Response) => {
+        const onResponse = (res: import("@playwright/test").Response) => {
           if (
             res.request().method() === "POST" &&
             res.url().includes(`/api/v1/assistant/conversations/${ids.chatId}/messages`) &&
@@ -3004,7 +2601,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       });
       // The workflow row lives on the List view, and the view is a saved
       // per-repository preference another journey may have left on Lanes.
-      if (!(await page.getByTestId("repo-workflows").isVisible().catch(() => false))) {
+      if (
+        !(await page
+          .getByTestId("repo-workflows")
+          .isVisible()
+          .catch(() => false))
+      ) {
         await page.getByTestId("repo-view-list").click();
         await expect(
           page.getByTestId("repo-workflows"),
@@ -3203,7 +2805,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         await project.json(),
         "the Project wire shape carries ADR-0072's agent_mail_enabled (a pre-ADR lab fails HERE, naming itself)",
       ).toHaveProperty("agent_mail_enabled");
-      await page.goto(`/p/${ids.projectId}/settings`);
+      await page.goto(`/manage/projects/${ids.projectId}`);
       await expect(
         page.getByTestId("agent-mail-panel"),
         "design 3d: the project settings carry the agent-mail switch",
@@ -3249,11 +2851,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     await test.step("start the chat in `web` and take control", async () => {
       await ensureMailChat(page);
       expect(ids.mailChatId, "the mail chat exists").toMatch(/^[0-9a-f-]{36}$/);
-      await page.goto(`/threads/${ids.mailChatId}`);
-      await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
+      await page.goto(`/chats/${ids.mailChatId}`);
+      await expect(page.getByTestId("chat-title")).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId("chat-menu").click();
       const take = page.getByTestId("take-control");
-      if (await take.isVisible()) {
+      if (await take.isVisible().catch(() => false)) {
         await take.click({ timeout: 20_000 });
+      } else {
+        await page.keyboard.press("Escape");
       }
       await expect(
         page.getByTestId("controller-badge"),
@@ -3303,8 +2908,8 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       const send = page.getByTestId("composer-send");
       await expect(
         send,
-        "the verb flips to Ask while the composer holds a mail mention",
-      ).toHaveText("Ask");
+        "the Send control is enabled while the composer holds a mail mention",
+      ).toBeEnabled();
       await send.click();
       await expect(composer, "the ask lands (202) and the composer clears").toHaveValue("", {
         timeout: 30_000,
@@ -3332,14 +2937,23 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // instead of pinning one component's test id. The full question, not
       // just this pass's token: a reordered or truncated ask fails HERE.
       await expect(
-        page.getByTestId("conversation-main"),
+        page.getByTestId("chat-thread"),
         "the question rode through verbatim (it carries this pass's token)",
       ).toContainText(MAIL_QUESTION, { timeout: 30_000 });
+      // Open Details sheet to check LINKED CHATS
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      const mailSheet = page.getByTestId("chat-details-sheet");
+      await expect(mailSheet).toBeVisible({ timeout: 15_000 });
       await expect(
-        page.getByTestId("side-panel-link-chat-0"),
+        mailSheet.getByTestId("side-panel-link-chat-0"),
         "design 3d: LINKED CHATS lists the linked chat for `server`",
       ).toContainText(GH_REPO, { timeout: 30_000 });
-      await expect(page.getByTestId("side-panel-link-state-0")).toContainText(/asked|answered/i);
+      await expect(mailSheet.getByTestId("side-panel-link-state-0")).toContainText(
+        /asked|answered/i,
+      );
+      await page.keyboard.press("Escape");
+      await expect(mailSheet).toBeHidden({ timeout: 10_000 });
     });
 
     await test.step("the answer arrives", async () => {
@@ -3363,46 +2977,36 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("mail-card-answer").first()).toContainText(
         new RegExp(`\u2190\\s*${GH_REPO}`),
       );
-      await expect(page.getByTestId("side-panel-link-state-0")).toContainText(/answered/i, {
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      const detailsSheet = page.getByTestId("chat-details-sheet");
+      await expect(detailsSheet).toBeVisible({ timeout: 15_000 });
+      await expect(detailsSheet.getByTestId("side-panel-link-state-0")).toContainText(/answered/i, {
         timeout: 30_000,
       });
-      // round-19 defect on 3d: the AGENTS IN THIS CHAT list carried only the
-      // profile that RAN turns — the asked agent is a participant too, and
-      // the design (3d: "Codex · gpt-5 api, asked once") gives it its own
-      // row, derived from the very link LINKED CHATS reads. Assert the row
-      // at the desktop rail: the asked repo and the ask count, and no
-      // invented model name anywhere on it.
-      const askedRow = page.getByTestId("side-panel-asked-row-0");
+      const askedRow = detailsSheet.getByTestId("side-panel-asked-row-0");
       await expect(
         askedRow,
         "design 3d: AGENTS IN THIS CHAT lists the asked agent as its own row",
       ).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByTestId("side-panel-asked-repo-0")).toHaveText(GH_REPO);
+      await expect(detailsSheet.getByTestId("side-panel-asked-repo-0")).toHaveText(GH_REPO);
       await expect(askedRow).toContainText(/asked once/i);
-      // The pin's width-local check at the capture's live state (rcn-review11):
-      // the mail card plus its answer line are NEW transcript rows.
+      await page.keyboard.press("Escape");
+      await expect(detailsSheet).toBeHidden({ timeout: 10_000 });
+
       await expectChatPinLive(page, 1280);
-      // The 390 shot keeps the Details sheet CLOSED (see the chat capture):
-      // the panel's landmarks accept the toggle as the one tap.
       await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
-      // …and at 390 the panel's one home is the Details sheet — the asked
-      // agent's row must ride it (round-19, same defect, phone width).
-      await page.getByTestId("chat-details-toggle").click();
-      const detailsSheet = page.getByTestId("chat-details-sheet");
-      await expect(
-        detailsSheet,
-        "rcn-chat-rail-390: the Details sheet opens at 390",
-      ).toBeVisible({ timeout: 15_000 });
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      await expect(detailsSheet, "rcn-chat-rail-390: the Details sheet opens at 390").toBeVisible({
+        timeout: 15_000,
+      });
       await expect(
         detailsSheet.getByTestId("side-panel-asked-row-0"),
         "design 3d at 390: the asked agent's row rides the Details sheet",
       ).toContainText(GH_REPO);
-      await expect(detailsSheet.getByTestId("side-panel-asked-row-0")).toContainText(
-        /asked once/i,
-      );
-      // Close it for the capture — the sheet mounted and visible HERE is by
-      // construction an Esc-listening one (b26f218's flake lesson).
+      await expect(detailsSheet.getByTestId("side-panel-asked-row-0")).toContainText(/asked once/i);
       await expect(detailsSheet).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(detailsSheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
@@ -3455,13 +3059,18 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       // stands on THIS pass's published workflow.
       await ensureWorkflow(page);
       expect(ids.pipelineId, "the admin seed published the workflow").toMatch(/^[0-9a-f-]{36}$/);
-      await page.goto(`/workflows/${ids.pipelineId}?tab=inputs`);
+      await page.goto(`/factory/${ids.pipelineId}?panel=inputs`);
+      await expect(
+        page.getByTestId("editor-panel-inputs"),
+        "design 1j: the Inputs drawer renders",
+      ).toBeVisible({
+        timeout: 30_000,
+      });
       await expect(page.getByTestId("inputs-tab"), "design 1j: the Inputs tab renders").toBeVisible(
         {
           timeout: 30_000,
         },
       );
-      await expect(page.getByTestId("workflow-tab-inputs")).toHaveAttribute("aria-current", "page");
       await expect(
         page.getByTestId("input-add"),
         "design 1j: '+ add input' is the authoring verb",
@@ -3498,7 +3107,10 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
           },
         )
         .toBe(true);
-      await page.getByTestId("input-required-issue").click();
+      const reqIssue = page.getByTestId("input-required-issue");
+      await expect(page.getByTestId("input-save-issue")).toBeEnabled({ timeout: 30_000 });
+      await reqIssue.check();
+      await expect(reqIssue).toBeChecked();
       await page.getByTestId("input-save-issue").click();
       await expect(
         page.getByTestId("input-editor-issue"),
@@ -3543,7 +3155,10 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
           },
         )
         .toBe(true);
-      await page.getByTestId("input-required-ticket").click();
+      const reqTicket = page.getByTestId("input-required-ticket");
+      await expect(page.getByTestId("input-save-ticket")).toBeEnabled({ timeout: 30_000 });
+      await reqTicket.check();
+      await expect(reqTicket).toBeChecked();
       await page.getByTestId("input-save-ticket").click();
       await expect(
         page.getByTestId("input-editor-ticket"),
@@ -3630,9 +3245,9 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
 
     await test.step("the draft is the open one, the YAML preview says so", async () => {
       await expect(
-        page.getByTestId("workflow-draft-state"),
-        "design 1j: the header marks the open draft (nothing of it published)",
-      ).toContainText(/unpublished/i, { timeout: 30_000 });
+        page.getByTestId("studio-draft-status"),
+        "design 1j: the header marks the open draft",
+      ).toContainText(/your draft/i, { timeout: 30_000 });
       await expect(
         page.getByTestId("inputs-yaml-preview"),
         "design 1j: the YAML preview carries the inputs block",

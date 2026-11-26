@@ -141,4 +141,17 @@ describe("ChatDetailsSheet", () => {
     fireEvent.keyDown(close, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores Esc when an inner menu already handled and prevented default", () => {
+    const onClose = vi.fn();
+    render(
+      <ChatDetailsSheet open onClose={onClose}>
+        {panelChildren()}
+      </ChatDetailsSheet>,
+    );
+    const ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    ev.preventDefault();
+    document.body.dispatchEvent(ev);
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

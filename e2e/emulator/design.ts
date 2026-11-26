@@ -1,3019 +1,927 @@
 // design.ts — the per-screen DESIGN LANDMARKS the emulator asserts at both
 // widths (fixtures.ts `screen()`).
 //
-// The reflow checks (reflow.ts) prove a screen REFLOWS; they prove nothing
-// about whether a screen is the screen its design render drew. This file is
-// the structural claim for every captured badge: for `docs/design/handoff-*/
-// png/<badge>.png`, which headings, tabs, buttons, sections and fields must be
-// on the page at 1280 and at 390.
+// Landmarks enforce the redesigned UI structure (docs/design/redesign/CONTRACT.md,
+// docs/design/redesign/README.md, and docs/design/redesign/Prototype.dc.html) plus
+// kept detail surfaces (run workbench 2b–2e, approval detail, repository rcn-1d,
+// catch-up tour 8a–8b).
 //
-// Landmarks are STRUCTURE, never data. The lab's rows carry real names, counts
-// and ids that differ from the mock's invented ones, so a landmark may insist
-// that A workflow row has an `Edit` button, but never that the row is called
-// `plan-with-approval`; it may insist the Used in panel says `pinned r<n>`,
-// never which revision. Specs therefore address elements by testid, by
-// role+name regex, or by a text regex over the copy the design itself owns
-// (labels, empty-state sentences) — never by a value the server serves.
-//
-// A landmark is satisfied when ANY of its `any` specs matches an element that
-// is rendered (non-zero box, not `display:none`/`visibility:hidden`) inside
-// `<main>` or an open dialog; being scrolled out of view is fine, because the
-// screen's own full-page screenshot shows it. `only` narrows a landmark to one
-// width when the 1280 design shows it and the documented 390 reflow replaces
-// it — but prefer one landmark whose `any` carries BOTH forms (the 1280 list
-// pane and its 390 `← Threads` back link), which is the reflow rule stated as
-// a landmark: the content is there, or the one tap that reaches it is.
-//
-// A badge with a design render and no entry here is itself a defect
-// (`no landmarks defined`), so coverage of a new screen cannot lapse silently.
-// Screens with no design render at all (`run-gate`, `artifact`) are exempt.
+// A Landmark may include an optional `measure` expectation to verify key
+// prototype layout dimensions (rail 64, top-bar 60, pill item 32, search 250,
+// prompt box radius 14, editor nodes 168x56, wrap panel 340, versions 304,
+// quick chat 400, manage nav 230, chat list 300, new workflow sheet 720).
 import type { Locator, Page } from "@playwright/test";
 
-/** How a landmark may address an element. */
 export type LandmarkSpec =
-  /** `[data-testid=…]`; `current` additionally requires `aria-current="page"`,
-   * which is how this app marks the active tab (tabs are routes, not widgets).
-   * A trailing `*` matches any testid that STARTS with the rest — the ids the
-   * server names (`workflow-row-<slug>`, `rail-project-<id>`), whose tail is
-   * data. `except` drops named exact ids from that prefix, for the case where
-   * one sibling of the family is NOT the thing the design claims (a prefix
-   * that matches it too would let the landmark pass on that element alone). */
   | { testid: string; current?: boolean; except?: string[] }
-  /** An accessible role, optionally with a name regex (or an exact string) and
-   * a heading level. */
+  | { selector: string }
   | { role: string; name?: RegExp | string; level?: number }
-  /** Text the DESIGN owns (a label, an empty-state sentence) — never data. */
   | { text: RegExp };
 
-/** One structural claim about one screen. */
+export interface LandmarkMeasure {
+  width?: number;
+  height?: number;
+  minHeight?: number;
+  radius?: number;
+  tol?: number;
+  /** `"offset"` reads layout offsetWidth/offsetHeight (zoom-invariant for canvas nodes). */
+  box?: "rect" | "offset";
+}
+
 export interface Landmark {
-  /** Stable short key (used to dedupe a miss recorded at both widths). */
   id: string;
-  /** What a person reading the report learns is missing. */
   desc: string;
-  /** Satisfied when ANY of these matches a rendered element. */
   any: LandmarkSpec[];
-  /** Narrow to one width when the documented 390 reflow replaces this part. */
   only?: 1280 | 390;
-  /**
-   * Where to search. Default: `<main>` plus open dialogs. `"page"` widens to
-   * the whole document — the claim an app-SHELL screen needs (the 2c/3c
-   * sidebar column, the assistant popover) since the shell lives OUTSIDE
-   * `<main>` and only its flyouts are dialogs. Used by nothing else, so the
-   * per-page landmark lists keep their strict main-scoped reading.
-   */
   host?: "page";
+  measure?: LandmarkMeasure;
 }
 
 /* ------------------------------------------------------------------ shared */
 
-/** A server error the screen must own: the app's one honest failure surface is
- * an `Alert`/ProblemBanner with `role=alert` quoting the problem document. */
 const ERROR_PANEL: Landmark = {
   id: "error-panel",
   desc: "the error panel quoting the server's problem",
   any: [{ role: "alert" }],
 };
 
-/** The Workflows index header (1b): H1 + the two authoring verbs. */
-const INDEX_HEADING: Landmark = {
-  id: "index-heading",
-  desc: "the 'Workflows' page heading",
-  any: [{ role: "heading", level: 1, name: /^Workflows$/ }],
-};
-const INDEX_NEW: Landmark = {
-  id: "index-new-workflow",
-  desc: "the 'New workflow' primary action",
-  any: [{ testid: "workflows-new-workflow" }],
-};
-const INDEX_IMPORT: Landmark = {
-  id: "index-import-yaml",
-  desc: "the 'Import YAML' action",
-  any: [{ testid: "workflows-import-yaml" }],
-};
-const INDEX_START_BLANK: Landmark = {
-  id: "index-starter-blank",
-  desc: "the START BLANK card ('Empty canvas')",
-  any: [
-    { testid: "workflow-starter-blank" },
-    { testid: "workflow-starters" },
-    { text: /^Empty canvas$/ },
-  ],
-};
-const INDEX_STARTER_TEMPLATE: Landmark = {
-  id: "index-starter-template",
-  desc: "at least one template starter card above the list",
-  any: [
-    { testid: "workflow-starter-plan-with-approval" },
-    { testid: "workflow-starter-security-review" },
-    { testid: "workflow-starter-issue-to-pr" },
-  ],
-};
-const INDEX_SEARCH: Landmark = {
-  id: "index-search",
-  desc: "the 'Search workflows' field",
-  any: [{ testid: "workflows-search" }, { role: "textbox", name: /search workflows/i }],
-};
-const INDEX_CHIP_ALL: Landmark = {
-  id: "index-chip-all",
-  desc: "the 'all' filter chip",
-  any: [{ testid: "workflows-filter-all" }, { role: "button", name: /^all$/ }],
-};
-const INDEX_CHIP_DRAFT: Landmark = {
-  id: "index-chip-draft",
-  desc: "the 'has open draft' filter chip",
-  any: [{ testid: "workflows-filter-draft" }, { role: "button", name: /has open draft/i }],
-};
-// The design's third chip — `used in <project>` — is deliberately NOT a
-// landmark: it renders only for a viewer whose projects actually pin a library
-// workflow (a membership fact, not a screen fact), so asserting it would prove
-// who signed in rather than what the screen draws.
-const INDEX_LIST: Landmark = {
-  id: "index-list",
-  desc: "the workflow list (folder groups or the flat list)",
-  any: [{ testid: "workflows-list" }],
-};
-const INDEX_ROW_EDIT: Landmark = {
-  id: "index-row-edit",
-  desc: "a workflow row's 'Edit' action",
-  any: [{ role: "button", name: /^Edit$/ }],
-};
-const INDEX_ROW_MENU: Landmark = {
-  id: "index-row-menu",
-  desc: "a workflow row's '…' row-menu button",
-  any: [{ role: "button", name: /^⋯$/ }, { text: /^⋯$/ }],
-};
-/** Finding 10 (43b8d28) retired design 1b's folder PANELS: the index is ONE
- * flat list and a folder narrows it through the toolbar's `All folders`
- * select (`workflows-folder-filter`, which writes `?folder=`). The select
- * only appears once the library actually carries a folder — which is exactly
- * the `1b folders` screen: the journey step files one workflow and asserts
- * the pick leaves exactly that row in the list. */
-const INDEX_FOLDER_FILTER: Landmark = {
-  id: "index-folder-filter",
-  desc: "the folder filter select (finding 10: folders narrow the flat list; design 1b's folder panels are gone)",
-  any: [{ testid: "workflows-folder-filter" }, { role: "option" }],
-};
-/** A workflow row while the folder filter is picked. The landmark matcher asks
- * only whether something renders (fixtures.ts `missingLandmarks` has no notion
- * of containment), so this proves a row is on the filtered list; the journey
- * step proves the filtered list holds exactly the workflow filed into that
- * folder. */
-const INDEX_FOLDER_ROW: Landmark = {
-  id: "index-folder-row",
-  desc: "a workflow row on the folder-filtered flat list (finding 10 replaces 1b's folder panels)",
-  any: [{ testid: "workflow-row-*" }],
-};
-const INDEX_NO_MATCH: Landmark = {
-  id: "index-no-match",
-  desc: "the honest no-match line for a filter that finds nothing",
-  any: [{ testid: "workflows-empty" }, { text: /no workflow matches/i }],
+/* ----------------------------------------------------------- App Shell (R1) */
+
+export const SHELL_LANDMARKS: Landmark[] = [
+  {
+    id: "shell-rail",
+    desc: "the 64px desktop project rail with All projects, Manage, Add project, Account",
+    host: "page",
+    only: 1280,
+    any: [{ testid: "project-rail" }],
+    measure: { width: 64 },
+  },
+  {
+    id: "shell-rail-controls",
+    desc: "All projects, Add project, Manage, and Account tiles in the desktop rail",
+    host: "page",
+    only: 1280,
+    any: [{ testid: "rail-tile-all" }],
+  },
+  {
+    id: "shell-rail-manage",
+    desc: "the Manage icon button in the bottom of the desktop rail",
+    host: "page",
+    only: 1280,
+    any: [{ testid: "rail-manage" }],
+  },
+  {
+    id: "shell-top-bar",
+    desc: "the 60px desktop top bar",
+    host: "page",
+    only: 1280,
+    any: [{ testid: "top-bar" }],
+    measure: { height: 60 },
+  },
+  {
+    id: "shell-top-bar-phone",
+    desc: "the 52px phone top bar",
+    host: "page",
+    only: 390,
+    any: [{ testid: "top-bar" }],
+    measure: { height: 52 },
+  },
+  {
+    id: "shell-phone-scope-btn",
+    desc: "the mobile project/manage sheet trigger below 768px",
+    host: "page",
+    only: 390,
+    any: [{ testid: "scope-open" }],
+  },
+  {
+    id: "shell-section-pill",
+    desc: "the section pill (Home · Chats · Factory)",
+    host: "page",
+    any: [{ testid: "pill-home" }],
+    only: 1280,
+    measure: { height: 32 },
+  },
+  {
+    id: "shell-section-pill-chats",
+    desc: "the Chats item in the section pill",
+    host: "page",
+    any: [{ testid: "pill-chats" }],
+  },
+  {
+    id: "shell-section-pill-factory",
+    desc: "the Factory item in the section pill",
+    host: "page",
+    any: [{ testid: "pill-factory" }],
+  },
+  {
+    id: "shell-search",
+    desc: "the top-bar Search or ask field (250×32 on desktop)",
+    host: "page",
+    only: 1280,
+    any: [{ testid: "search-or-ask" }],
+    measure: { width: 250, height: 32 },
+  },
+  {
+    id: "shell-mic",
+    desc: "the Quick chat mic button in the top bar",
+    host: "page",
+    any: [{ testid: "top-bar-mic" }],
+  },
+];
+
+/* --------------------------------------------------------------- Home (R2) */
+
+const HOME_PROMPT_BOX: Landmark = {
+  id: "home-prompt",
+  desc: "the main prompt box with 14px radius",
+  any: [{ testid: "home-prompt" }],
+  measure: { radius: 14 },
 };
 
-/** The New workflow dialog (1c). */
-const NW_TITLE: Landmark = {
-  id: "new-dialog-title",
-  desc: "the 'New workflow' dialog title",
-  any: [{ role: "heading", name: /^New workflow$/ }],
-};
-const NW_NAME: Landmark = {
-  id: "new-dialog-name",
-  desc: "the NAME field",
-  any: [{ testid: "library-new-name-input" }, { text: /^NAME$/ }],
-};
-const NW_ID_LINE: Landmark = {
-  id: "new-dialog-id-line",
-  desc: "the generated `id:` line under the name",
-  any: [{ testid: "new-workflow-id-line" }, { text: /^id:/ }],
-};
-const NW_ID_CHANGE: Landmark = {
-  id: "new-dialog-id-change",
-  desc: "the 'change' control on the id line",
-  any: [{ testid: "new-workflow-id-change" }, { role: "button", name: /^change$/i }],
-};
-const NW_START_FROM: Landmark = {
-  id: "new-dialog-start-from",
-  desc: "the START FROM options",
-  any: [{ testid: "library-new-template-select" }, { text: /^START FROM$/ }],
-};
-const NW_BLANK: Landmark = {
-  id: "new-dialog-blank",
-  desc: "the 'Blank' start-from option",
-  any: [{ testid: "new-workflow-template-blank" }, { text: /^Blank$/ }],
-};
-const NW_FOLDER: Landmark = {
-  id: "new-dialog-folder",
-  desc: "the FOLDER select",
-  any: [{ testid: "new-workflow-folder" }, { text: /^FOLDER$/ }],
-};
-const NW_CANCEL: Landmark = {
-  id: "new-dialog-cancel",
-  desc: "the dialog's 'Cancel' action",
-  any: [{ testid: "new-workflow-cancel" }, { role: "button", name: /^Cancel$/ }],
-};
-const NW_SUBMIT: Landmark = {
-  id: "new-dialog-submit",
-  desc: "the 'Create and open canvas' action",
-  any: [{ testid: "library-new-submit" }, { role: "button", name: /create and open canvas/i }],
-};
+const HOME_ALL_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  { id: "home-all-root", desc: "the Home (All projects) workspace", any: [{ testid: "home-all" }] },
+  {
+    id: "home-greeting",
+    desc: "the time-of-day greeting heading",
+    any: [{ testid: "home-greeting" }],
+  },
+  HOME_PROMPT_BOX,
+  {
+    id: "home-prompt-project",
+    desc: "the project selector chip on the Home prompt box",
+    any: [{ testid: "home-prompt-project" }],
+  },
+  {
+    id: "home-prompt-agent",
+    desc: "the agent selector chip on the Home prompt box",
+    any: [{ testid: "home-prompt-agent" }],
+  },
+  {
+    id: "home-since-you-left",
+    desc: "the Since you left narrative feed or empty sentence",
+    any: [{ testid: "since-you-left" }, { testid: "since-you-left-empty" }],
+  },
+  {
+    id: "home-needs-you",
+    desc: "the Needs you rail",
+    any: [{ testid: "needs-you" }],
+  },
+  {
+    id: "home-running",
+    desc: "the Running rail",
+    any: [{ testid: "running-list" }],
+  },
+  {
+    id: "home-factory-health",
+    desc: "the Factory health summary",
+    any: [{ testid: "factory-health" }],
+  },
+];
 
-/** The workflow page header and tabs (1e, 2a, 2d). */
-const WF_BREADCRUMB: Landmark = {
-  id: "workflow-breadcrumb",
-  desc: "the 'Workflows' breadcrumb above the title",
-  any: [{ testid: "workflow-breadcrumb" }],
-};
-const WF_TITLE: Landmark = {
-  id: "workflow-title",
-  desc: "the workflow's own title (an H1 — its name is data, its being a title is not)",
-  any: [{ role: "heading", level: 1 }],
-};
-const WF_REVISION_CHIP: Landmark = {
-  id: "workflow-revision-chip",
-  desc: "the revision/published chip beside the title",
-  any: [{ testid: "workflow-revision-chip" }],
-};
-const WF_TABS: Landmark = {
-  id: "workflow-tabs",
-  desc: "the tab row (Overview / YAML / Used in / History)",
-  any: [{ testid: "workflow-tabs" }],
-};
-const WF_TAB_OVERVIEW: Landmark = {
-  id: "workflow-tab-overview",
-  desc: "the Overview tab",
-  any: [{ testid: "workflow-tab-overview" }],
-};
-const WF_TAB_YAML: Landmark = {
-  id: "workflow-tab-yaml",
-  desc: "the YAML tab",
-  any: [{ testid: "workflow-tab-yaml" }],
-};
-const WF_TAB_YAML_ACTIVE: Landmark = {
-  id: "workflow-tab-yaml-active",
-  desc: "the YAML tab shown as the page you are on",
-  any: [{ testid: "workflow-tab-yaml", current: true }],
-};
-const WF_TAB_USED_IN: Landmark = {
-  id: "workflow-tab-used-in",
-  desc: "the Used in tab",
-  any: [{ testid: "workflow-tab-used-in" }],
-};
-const WF_TAB_USED_IN_ACTIVE: Landmark = {
-  id: "workflow-tab-used-in-active",
-  desc: "the Used in tab shown as the page you are on",
-  any: [{ testid: "workflow-tab-used-in", current: true }],
-};
-const WF_TAB_HISTORY: Landmark = {
-  id: "workflow-tab-history",
-  desc: "the History tab",
-  any: [{ testid: "workflow-tab-history" }],
-};
-const WF_USE_IN_REPO: Landmark = {
-  id: "workflow-use-in-repo",
-  desc: "the 'Use in a repo…' action",
-  any: [{ testid: "assign-open" }, { role: "button", name: /use in a repo/i }],
-};
-// The design's second header verb, `Edit workflow`, is NOT a landmark: it is an
-// authoring control, so the app hides it from a reader without the library role
-// (the same permission fact that makes the index's `used in <project>` chip
-// conditional), and the 1e/2a/2d screens are captured as a project member who
-// reads the library rather than writing it.
+const PROJECT_HOME_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  {
+    id: "project-home-root",
+    desc: "the scoped project home page",
+    any: [{ testid: "project-home" }],
+  },
+  HOME_PROMPT_BOX,
+  {
+    id: "project-starters",
+    desc: "the starter prompt pills row",
+    any: [{ testid: "starter-pills" }],
+  },
+  {
+    id: "project-happening-now",
+    desc: "the Happening now strip",
+    any: [{ testid: "happening-now" }],
+  },
+  {
+    id: "project-since-you-left",
+    desc: "the project's Since you left list",
+    any: [{ testid: "since-you-left" }, { testid: "since-you-left-empty" }],
+  },
+  {
+    id: "project-repos",
+    desc: "the Repositories list in the project rail",
+    any: [{ testid: "repo-list" }],
+  },
+  {
+    id: "project-workflows-here",
+    desc: "the Workflows here list in the project rail",
+    any: [{ testid: "workflows-here" }],
+  },
+];
 
-/** The 1e overview: the read-only graph and its three rail sections. */
-const WF_GRAPH: Landmark = {
-  id: "workflow-graph",
-  desc: "the read-only step graph",
-  any: [{ testid: "overview-canvas" }, { testid: "workflow-graph" }],
-};
-const WF_RAIL_USED_IN: Landmark = {
-  id: "workflow-rail-used-in",
-  desc: "the rail's USED IN section",
-  any: [{ testid: "overview-used-in" }, { text: /^USED IN$/ }],
-};
-const WF_RAIL_INPUTS: Landmark = {
-  id: "workflow-rail-inputs",
-  desc: "the rail's INPUTS section",
-  any: [{ testid: "overview-inputs" }, { text: /^INPUTS$/ }],
-};
-const WF_RAIL_RUNS: Landmark = {
-  id: "workflow-rail-runs",
-  desc: "the rail's LAST RUNS section",
-  any: [{ testid: "overview-runs" }, { text: /^LAST RUNS$/ }],
-};
-/** The failure states of the workflow page (1e not-found / server-error). */
-const WF_FAILED_HEADING: Landmark = {
-  id: "workflow-failed-heading",
-  desc: "the page heading that stands over a failed workflow read",
-  any: [{ role: "heading", level: 1, name: /^Workflow$/ }],
-};
-const WF_FAILED_BANNER: Landmark = {
-  id: "workflow-failed-banner",
-  desc: "the error panel quoting the server",
-  any: [{ testid: "pipeline-page-failure" }, { role: "alert" }],
-};
-const WF_BACK: Landmark = {
-  id: "workflow-back",
-  desc: "the way back to the workflow list",
-  any: [{ testid: "workflow-back-to-list" }, { role: "link", name: /back to workflows/i }],
-};
-const WF_RETRY: Landmark = {
-  id: "workflow-retry",
-  desc: "the Retry the design offers on a server error",
-  any: [{ testid: "workflow-load-retry" }, { role: "button", name: /^Retry$/i }],
-};
+/* -------------------------------------------------------------- Chats (R3) */
 
-/** The Studio (1g) — header, palette, canvas, inspector, assistant, status bar. */
-const STUDIO_BREADCRUMB: Landmark = {
-  id: "studio-breadcrumb",
-  desc: "the 'Workflows / …' breadcrumb",
-  any: [{ testid: "studio-breadcrumb" }],
-};
-const STUDIO_TITLE: Landmark = {
-  id: "studio-title",
-  desc: "the draft's title (the H1 — the name is data, its being a title is not)",
-  any: [{ testid: "studio-title" }, { role: "heading", level: 1 }],
-};
-const STUDIO_DRAFT_CHIP: Landmark = {
-  id: "studio-draft-chip",
-  desc: "the draft chip (v · saved/unsaved) beside the title",
-  any: [{ testid: "studio-draft-version" }],
-};
-const STUDIO_VIEW_TOGGLE: Landmark = {
-  id: "studio-view-toggle",
-  desc: "the Canvas | YAML view control",
-  any: [{ testid: "studio-view-canvas" }],
-};
-const STUDIO_UNDO: Landmark = {
-  id: "studio-undo",
-  desc: "the undo control",
-  any: [{ testid: "studio-undo" }, { role: "button", name: /^undo$/i }],
-};
-const STUDIO_REDO: Landmark = {
-  id: "studio-redo",
-  desc: "the redo control",
-  any: [{ testid: "studio-redo" }, { role: "button", name: /^redo$/i }],
-};
-const STUDIO_VALIDATE: Landmark = {
-  id: "studio-validate",
-  desc: "the Validate action",
-  any: [{ testid: "studio-validate" }, { role: "button", name: /^validate/i }],
-};
-const STUDIO_SAVE: Landmark = {
-  id: "studio-save",
-  desc: "the Save action",
-  any: [{ testid: "studio-save" }, { role: "button", name: /^save$/i }],
-};
-const STUDIO_PUBLISH: Landmark = {
-  id: "studio-publish",
-  desc: "the Publish action (shown even while the draft cannot publish)",
-  any: [{ testid: "studio-publish" }, { role: "button", name: /^publish$/i }],
-};
-const STUDIO_PALETTE_ADD: Landmark = {
-  id: "studio-palette-add",
-  desc: "the palette's ADD A STEP label",
-  any: [{ testid: "palette-heading-add" }, { text: /^ADD A STEP$/i }],
-};
-const STUDIO_PALETTE_SEARCH: Landmark = {
-  id: "studio-palette-search",
-  desc: "the palette's search field",
-  any: [{ testid: "palette-search" }, { role: "textbox", name: /search steps/i }],
-};
-const STUDIO_KIND_AGENT: Landmark = {
-  id: "studio-kind-agent",
-  desc: "the Agent row in the palette",
-  any: [{ testid: "palette-item-agent.acp" }, { role: "button", name: /agent\.acp/i }],
-};
-const STUDIO_KIND_MODEL: Landmark = {
-  id: "studio-kind-model",
-  desc: "the Model row in the palette",
-  any: [{ testid: "palette-item-model.chat" }, { role: "button", name: /model\.chat/i }],
-};
-const STUDIO_KIND_COMMAND: Landmark = {
-  id: "studio-kind-command",
-  desc: "the Command row in the palette",
-  any: [{ testid: "palette-item-process.exec" }, { role: "button", name: /process\.exec/i }],
-};
-const STUDIO_KIND_APPROVAL: Landmark = {
-  id: "studio-kind-approval",
-  desc: "the Approval row in the palette",
-  any: [{ testid: "palette-item-human.approval" }, { role: "button", name: /human\.approval/i }],
-};
-const STUDIO_WRAP_HEADING: Landmark = {
-  id: "studio-wrap-heading",
-  desc: "the palette's WRAP STEPS group",
-  any: [{ testid: "palette-heading-group-wrap-steps" }, { text: /^WRAP STEPS$/i }],
-};
-const STUDIO_WRAP_UNTIL: Landmark = {
-  id: "studio-wrap-until",
-  desc: "the 'Repeat until' wrapper row",
-  any: [{ testid: "palette-item-until" }, { role: "button", name: /repeat until/i }],
-};
-const STUDIO_WRAP_FOREACH: Landmark = {
-  id: "studio-wrap-foreach",
-  desc: "the 'For each' wrapper row",
-  any: [{ testid: "palette-item-for_each" }, { role: "button", name: /for each/i }],
-};
-const STUDIO_CANVAS: Landmark = {
-  id: "studio-canvas",
-  desc: "the step canvas",
-  any: [{ testid: "studio-canvas" }, { testid: "canvas-chrome" }],
-};
-const STUDIO_INSPECTOR: Landmark = {
-  id: "studio-inspector",
-  desc: "the inspector column (the document panel, or the selected step's card)",
-  any: [{ testid: "insp-pipeline" }, { testid: "insp-node" }],
-};
-const STUDIO_ASSISTANT: Landmark = {
-  id: "studio-assistant",
-  desc: "the 'Ask to change this draft…' box",
-  any: [
-    { testid: "assistant-proposal-footer" },
-    { testid: "assistant-proposal-box" },
-    { role: "button", name: /ask to change this draft/i },
-  ],
-};
-const STUDIO_STATUS_BAR: Landmark = {
-  id: "studio-status-bar",
-  desc: "the status bar under the canvas",
-  any: [{ testid: "studio-status-bar" }, { testid: "studio-status-bar-summary" }],
-};
-/** The selected step's inspector fields (1g's inspector-edit beat). */
-const STUDIO_NODE_CARD: Landmark = {
-  id: "studio-inspector-node",
-  desc: "the selected step's inspector card",
-  any: [{ testid: "insp-node" }, { testid: "insp-header" }],
-};
-const STUDIO_NODE_WHERE: Landmark = {
-  id: "studio-inspector-where",
-  desc: "the inspector's `kind · after <step>` line",
-  any: [{ testid: "insp-after" }],
-};
-const STUDIO_NODE_PROMPT: Landmark = {
-  id: "studio-inspector-prompt",
-  desc: "the selected step's prompt field",
-  any: [{ testid: "insp-config-task" }, { testid: "insp-config-prompt" }, { testid: "insp-node" }],
-};
-const STUDIO_NODE_ADVANCED: Landmark = {
-  id: "studio-inspector-advanced",
-  desc: "the inspector's advanced-fields disclosure",
-  any: [{ testid: "insp-advanced-disclosure" }, { role: "button", name: /retries, timeout/i }],
-};
-const STUDIO_DRAFT_ERROR: Landmark = {
-  id: "studio-draft-error",
-  desc: "the panel that says the draft could not be read",
-  any: [{ testid: "studio-draft-error" }, { role: "alert" }],
-};
-/** The failed draft read (issue #23): the Studio stays a Studio —
- * `studio-error-page` keeps the `Workflows / …` breadcrumb and an H1 named only
- * from what the reads answered (the pipeline's title, else `Workflow draft`) and
- * puts the ProblemBanner with its Retry underneath. The landmark therefore asks
- * for the H1, or either half of that header; `studio-page` — the frame the loaded
- * Studio draws — stays as the alternate so the claim is one heading standing over
- * the page, whichever frame is carrying it. */
-const STUDIO_ERROR_HEADING: Landmark = {
-  id: "studio-error-heading",
-  desc: "the page heading that stands over a failed draft read",
-  any: [{ role: "heading", level: 1 }, { testid: "studio-page" }, { testid: "studio-breadcrumb" }],
-};
-
-/** Used in (2a). */
-const USED_IN_PANEL: Landmark = {
-  id: "used-in-panel",
-  // A count only speaks when a read ANSWERED it (pass-7 review, 2a
-  // server-error): a failed or still-pending read says the bare `USED IN`
-  // beside the shared `Couldn't load …` block — the `?` the pass-2 review left
-  // there was still a value sitting in a number's seat — and one repository is
-  // one `REPO`.
-  desc: "the USED IN panel (a count only when a read answered it; `USED IN` alone when one broke)",
-  any: [{ testid: "used-in" }, { role: "heading", name: /^USED IN(\s+\d+\s+REPOS?)?$/i }],
-};
-const USED_IN_EMPTY: Landmark = {
-  id: "used-in-empty",
-  desc: "the honest 'not used in any repo yet' line",
-  any: [{ testid: "used-in-empty" }, { text: /not used in any repo yet/i }],
-};
-const USED_IN_LIST: Landmark = {
-  id: "used-in-list",
-  desc: "the list of repos that use this workflow",
-  any: [{ testid: "used-in-list" }],
-};
-const USED_IN_PIN: Landmark = {
-  id: "used-in-pin",
-  desc: "a row's pinned-revision line (`pinned r<n>` — the number is data)",
-  any: [{ text: /^pinned r/i }],
-};
-const USED_IN_OPEN: Landmark = {
-  id: "used-in-open",
-  desc: "a row's 'Open ›' link to the repo page",
-  any: [{ role: "link", name: /^Open ›$/ }, { text: /^Open ›$/ }],
-};
-const USED_IN_FOOTNOTE: Landmark = {
-  id: "used-in-footnote",
-  desc: "the footnote saying where triggers are edited",
-  any: [{ testid: "used-in-footnote" }, { text: /goes to the repo page/i }],
-};
-const USED_IN_ERROR: Landmark = {
-  id: "used-in-error",
-  desc: "the load-failure block saying the uses could not all be read",
-  any: [{ testid: "used-in-error" }, { role: "alert" }, { text: /could not all be read/i }],
-};
-/** The Use in a repo… dialog (2a's dialog beat). */
-const USE_DIALOG: Landmark = {
-  id: "use-dialog",
-  desc: "the 'Use in a repo…' dialog",
-  any: [{ testid: "use-in-repo-dialog" }, { role: "dialog" }],
-};
-const USE_DIALOG_TITLE: Landmark = {
-  id: "use-dialog-title",
-  // The 1c rule (the title says what the verb will do) AND the 2a item-7 fix of
-  // 2026-10-30 (the title names its SUBJECT): `Use <workflow> in a repo…`
-  // until a repo is chosen, then `Use <workflow> in <repo>` / `Use <workflow>
-  // in every repo of <project>` — the same heading, whichever stage it is at.
-  desc: "the dialog's title (the workflow's name in the question, then the repo it names)",
-  any: [{ testid: "use-in-repo-title" }, { role: "heading", name: /^use\b/i }],
-};
-const USE_FORM: Landmark = {
-  id: "use-dialog-form",
-  desc: "the pin form",
-  any: [{ testid: "assign-form" }],
-};
-const USE_PIN_LINE: Landmark = {
-  id: "use-dialog-pin-line",
-  desc: "the line saying which revision the pin chooses",
-  any: [{ testid: "assign-pin-line" }],
-};
-const USE_PROJECT: Landmark = {
-  id: "use-dialog-project",
-  desc: "the project select — the dialog's ONE way to choose a project",
-  any: [{ testid: "assign-project-select" }, { role: "combobox", name: /project/i }],
-};
-/** The dialog's one repo choice (design 2a, pass-2 review): the per-row
- * `Use here` button was retired, so the repository select the project select
- * reveals is the only way to name a repo. */
-const USE_REPO: Landmark = {
-  id: "use-dialog-repo",
-  desc: "the repository select the chosen project reveals (one repo, or the whole project)",
-  any: [{ testid: "assign-repo-select" }, { role: "combobox", name: /repositor/i }],
-};
-const USE_CEILING: Landmark = {
-  id: "use-dialog-ceiling",
-  desc: "the max-concurrent-runs field",
-  any: [{ testid: "assign-ceiling" }, { role: "spinbutton" }],
-};
-const USE_CONFIRM: Landmark = {
-  id: "use-dialog-confirm",
-  desc: "the confirm action",
-  any: [{ testid: "assign-confirm" }, { role: "button", name: /^(confirm|using…)$/i }],
-};
-const USE_CANCEL: Landmark = {
-  id: "use-dialog-cancel",
-  desc: "the cancel action",
-  any: [{ testid: "assign-cancel" }, { role: "button", name: /^cancel$/i }],
-};
-
-/** The trigger dialog (2c). */
-const TRIG_DIALOG: Landmark = {
-  id: "trigger-dialog",
-  desc: "the trigger dialog",
-  any: [{ testid: "trigger-dialog" }, { role: "dialog" }],
-};
-const TRIG_TITLE: Landmark = {
-  id: "trigger-title",
-  desc: "the 'Add a trigger' title",
-  any: [{ role: "heading", name: /^Add a trigger$/i }, { testid: "trigger-dialog" }],
-};
-const TRIG_MODE: Landmark = {
-  id: "trigger-mode",
-  desc: "the START IT WHEN control",
-  any: [{ testid: "trigger-dialog-mode" }, { text: /^START IT WHEN$/i }],
-};
-const TRIG_MODE_ISSUE: Landmark = {
-  id: "trigger-mode-issue",
-  desc: "the 'A GitHub issue…' segment",
-  any: [{ testid: "trigger-dialog-mode-issue" }, { role: "button", name: /github issue/i }],
-};
-const TRIG_MODE_SCHEDULE: Landmark = {
-  id: "trigger-mode-schedule",
-  desc: "the 'On a schedule' segment",
-  any: [{ testid: "trigger-dialog-mode-schedule" }, { role: "button", name: /on a schedule/i }],
-};
-const TRIG_EVENT: Landmark = {
-  id: "trigger-event",
-  desc: "the issue 'IS' select",
-  any: [{ testid: "trigger-dialog-event" }, { text: /^IS$/i }],
-};
-const TRIG_LABELS: Landmark = {
-  id: "trigger-labels",
-  desc: "the issue labels field",
-  any: [{ testid: "trigger-dialog-labels" }, { text: /with any of these labels/i }],
-};
-const TRIG_CRON: Landmark = {
-  id: "trigger-cron",
-  desc: "the cron field",
-  any: [{ testid: "trigger-dialog-cron" }],
-};
-const TRIG_CRON_WORDS: Landmark = {
-  id: "trigger-cron-words",
-  desc: "the cron field's English reading",
-  any: [{ testid: "trigger-dialog-cron-words" }],
-};
-const TRIG_RUN_GETS: Landmark = {
-  id: "trigger-run-gets",
-  desc: "the 'THE RUN GETS' box",
-  any: [{ testid: "trigger-dialog-run-gets" }, { text: /^THE RUN GETS$/i }],
-};
-const TRIG_GOAL: Landmark = {
-  id: "trigger-run-goal",
-  desc: "the run's `goal` input in THE RUN GETS",
-  any: [{ testid: "new-run-input-goal" }],
-};
-const TRIG_CANCEL: Landmark = {
-  id: "trigger-cancel",
-  desc: "the dialog's Cancel action",
-  any: [{ testid: "trigger-dialog-cancel" }, { role: "button", name: /^cancel$/i }],
-};
-const TRIG_ENABLED: Landmark = {
-  id: "trigger-enabled",
-  // design 3a: the edit dialog carries the trigger's pause — the Active/
-  // Paused switch that succeeds the retired inline switch, saved through the
-  // same PATCH the Save verb spends.
-  desc: "the edit dialog's Active/Paused switch",
-  any: [{ testid: "trigger-dialog-enabled" }, { role: "switch" }],
-};
-const TRIG_SUBMIT: Landmark = {
-  id: "trigger-submit",
-  desc: "the dialog's 'Add trigger' action",
-  // One verb for both arms: the schedule dialog's primary button reads
-  // `Add trigger` too (was `Add schedule`), and the pending word is `Saving…`.
-  any: [
-    { testid: "trigger-dialog-submit" },
-    { role: "button", name: /^(add trigger|save trigger|saving…)$/i },
-  ],
-};
-/** The YAML tab (2d). */
-const YAML_FRAME: Landmark = {
-  id: "yaml-frame",
-  desc: "the YAML tab's own frame",
-  any: [{ testid: "workflow-yaml-tab" }],
-};
-const YAML_REVISION: Landmark = {
-  id: "yaml-revision-select",
-  desc: "the revision select",
-  any: [{ testid: "yaml-revision-select" }, { role: "combobox", name: /revision/i }],
-};
-const YAML_TEXT: Landmark = {
-  id: "yaml-text",
-  desc: "the YAML itself",
-  any: [{ testid: "yaml-view" }, { testid: "yaml-empty" }],
-};
-const YAML_COPY: Landmark = {
-  id: "yaml-copy",
-  desc: "the Copy control",
-  any: [{ testid: "yaml-view-copy" }, { role: "button", name: /^(copy|copied)$/i }],
-};
-const YAML_DOWNLOAD: Landmark = {
-  id: "yaml-download",
-  // The 390px design check: the button's LABEL is the plain word `Download`
-  // (2d item 3, 2026-10-30 copy review: `Copy` and `Download` are one case and
-  // one size) and the file's name is its title/accessible description — the old
-  // `<slug>-r<n>.yaml` label was cut to `…-r1.ya…` on the bar.
-  desc: "the 'Download' control (the file's name is its title, not its label)",
-  any: [{ testid: "yaml-view-download" }, { role: "button", name: /^download\b/i }],
-};
-const YAML_LINES: Landmark = {
-  id: "yaml-line-numbers",
-  desc: "the line-numbered gutter",
-  any: [{ testid: "yaml-view-line-1" }, { testid: "yaml-view" }],
-};
-const YAML_ERROR: Landmark = {
-  id: "yaml-error",
-  desc: "the panel quoting the server for a revision that cannot be read",
-  any: [{ role: "alert" }],
-};
-
-/** The repository page (2e from Workflows Review, repo-1e from Projects
- * Review — the same route, so the parts both designs draw are shared). */
-const REPO_PAGE: Landmark = {
-  id: "repo-page",
-  desc: "the repository page frame",
-  any: [{ testid: "repo-page" }],
-};
-const REPO_HEADING: Landmark = {
-  id: "repo-heading",
-  desc: "the repository's own title (the H1 — its name is data)",
-  any: [{ testid: "repo-name" }, { role: "heading", level: 1 }],
-};
-const REPO_CHAT_BOX: Landmark = {
-  id: "repo-chat-box",
-  // design 3a (handoff-repo-chat-nav): the header's `New thread here` +
-  // `Start run` pair retires — the page's one line to start work is the
-  // chat box: an input whose label names the repository, the profile chip
-  // and `Start` (repo-chat-start, ADR-0067). A run is started from the
-  // WORKFLOWS row's `Run` (REPO_ROW_RUN).
-  desc: "the 'Thread in <repo>…' box with its Start verb (design 3a)",
-  any: [
-    { testid: "repo-chat-box" },
-    { testid: "repo-chat-start" },
-    { role: "textbox", name: /^thread in /i },
-  ],
-};
-const REPO_WORKFLOWS_PANEL: Landmark = {
-  id: "repo-workflows-panel",
-  // repo-chain-r4 drew it as `WORKFLOWS ON THIS REPO · n`; design 3a
-  // (handoff-repo-chat-nav) shortens the side panel's bar to `WORKFLOWS · n`.
-  // The testid is the stable hook; the heading regex carries both names (the
-  // count is data).
-  desc: "the WORKFLOWS panel of the repo page",
-  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^WORKFLOWS/i }],
-};
-const REPO_LIBRARY_LINK: Landmark = {
-  id: "repo-use-library-workflow",
-  desc: "the panel's 'use a library workflow' control",
-  any: [{ testid: "repo-workflow-library" }],
-};
-const REPO_ROW_MENU: Landmark = {
-  id: "repo-row-menu",
-  // design 3a (handoff-repo-chat-nav): the inline STARTS WHEN box and its
-  // `+ Add trigger` leave the repo page. Each workflow row carries a `⋯`
-  // menu instead — `Add trigger…` plus one `Edit <trigger>` item per trigger
-  // — and that menu is the row's only door to the trigger dialog (2c).
-  desc: "the workflow row's ⋯ triggers menu (3a's door to add/edit/pause)",
-  any: [
-    { testid: "repo-workflow-menu-*" },
-    { role: "button", name: /\+ add trigger$/i },
-    { text: /^\+ (Add trigger|use workflow)/i },
-  ],
-};
-// 2e.png drew a workflow row with `+ Add trigger` and `Run`, and the row's
-// `Edit` was never a landmark of its own. From 3a the row's verbs are `Run`
-// (REPO_ROW_RUN) and the `⋯` menu (REPO_ROW_MENU); the per-trigger `Edit`
-// lives inside that menu as a `menuitem`, so the old REPO_TRIGGER_EDIT (the
-// STARTS WHEN rows' `Edit` BUTTON) has no repo-page carrier any more.
-const REPO_ROW_RUN: Landmark = {
-  id: "repo-row-run",
-  desc: "a workflow row's 'Run' action",
-  any: [{ testid: "repo-workflow-run-*" }, { role: "button", name: /^Run$/i }],
-};
-const REPO_WORKFLOWS_EMPTY: Landmark = {
-  id: "repo-workflows-empty",
-  desc: "the honest 'this repo uses no workflow yet' line",
-  any: [{ testid: "repo-workflows-empty" }],
-};
-const REPO_TRIGGER_LINE: Landmark = {
-  id: "repo-trigger-line",
-  // 3a: the row's ONE trigger line lists every trigger of the assignment
-  // (`GitHub · issue labeled … · Schedule · every minute`, or `By hand`) —
-  // what the STARTS WHEN box drew as rows, the line now says in mono.
-  desc: "the workflow row's trigger line listing its triggers",
-  any: [{ testid: "repo-workflow-triggers-*" }],
-};
-const REPO_TRIGGER_PAUSED: Landmark = {
-  id: "repo-trigger-paused",
-  // A paused trigger keeps its words and ends in ` · paused` — the same word
-  // the dialog's switch shows, since the dialog is where a trigger is paused
-  // now (3a; the inline switch retired with the STARTS WHEN boxes).
-  desc: "the paused state named on the row's trigger line",
-  any: [{ text: /·\s*paused/i }],
-};
-const REPO_ISSUES_PANEL: Landmark = {
-  id: "repo-issues-panel",
-  desc: "the OPEN ISSUES panel",
-  any: [{ testid: "repo-issues" }, { role: "heading", name: /^OPEN ISSUES/i }],
-};
-const REPO_ACTIVITY: Landmark = {
-  id: "repo-activity",
-  // design 3a (handoff-repo-chat-nav): WORK IN THIS REPO retires — the
-  // successor is the ACTIVITY list: runs and chats mixed in ONE panel
-  // under the filter chips, newest first.
-  desc: "the activity list (runs and chats mixed) that replaced WORK IN THIS REPO",
-  any: [{ testid: "repo-activity" }, { role: "group", name: /filter activity/i }],
-};
-const REPO_RUNS_PANEL: Landmark = {
-  id: "repo-recent-runs-panel",
-  // design 3a: the runs panel is the activity feed's own box now (`repo-runs`
-  // is the panel under the filter chips); the heading word `RECENT RUNS` went
-  // with the old right column, so the testid carries the landmark.
-  desc: "the runs panel (3a: the activity feed's box)",
-  any: [{ testid: "repo-runs" }, { role: "heading", name: /^RECENT RUNS/i }],
-};
-/** The repository page's failed reads. `repo-1e not-found` says so inside the
- * `repo-page` frame, and since issue #24 so does the failed repositories read:
- * `repo-error-page` keeps the project breadcrumb and the page's H1
- * (`Repository` — the repository's name is exactly what the failed read cannot
- * answer) above the ProblemBanner and its Retry. Since finding 07 both failure
- * branches render through `ds/Page` (the emulator files a bare section outside
- * the page frame as a band-inset gap), so the H1 rides the shared `page-band`;
- * any of the H1, the not-found frame, or the loaded page's `repo-header` is a
- * heading standing over the banner, which is the claim. */
-const REPO_FAILED_HEADING: Landmark = {
-  id: "repo-failed-heading",
-  desc: "the page heading that stands over a failed repository read",
-  any: [{ role: "heading", level: 1 }, { testid: "repo-page" }, { testid: "repo-header" }],
-};
-const REPO_NOT_FOUND: Landmark = {
-  id: "repo-not-found",
-  desc: "the honest 'repository not found' line",
-  any: [{ testid: "repo-not-found" }, { text: /repository not found/i }],
-};
-
-/** The run view the schedule-fired run lands on (2e's decided-gate beat). */
-const RUN_PAGE: Landmark = {
-  id: "run-page",
-  desc: "the run workbench frame",
-  any: [{ testid: "workbench" }],
-};
-const RUN_TITLE: Landmark = {
-  id: "run-title",
-  desc: "the run's header title",
-  any: [{ testid: "run-title" }, { testid: "run-header-title" }, { role: "heading", level: 1 }],
-};
-// The step chain is not a landmark of its own: the workbench draws the steps
-// THROUGH the graph (or its tree/timeline views), and the strip
-// (`workbench-step-strip`) belongs to the full-screen transcript mode, which no
-// journey captures. `RUN_GRAPH` is the design's "what step is it on" surface.
-const RUN_GRAPH: Landmark = {
-  id: "run-graph",
-  desc: "the run's graph/tree view",
-  any: [
-    { testid: "definition-graph" },
-    { testid: "workbench-graph-view" },
-    { testid: "workbench-tree-view" },
-    { testid: "run-tree" },
-  ],
-};
-const RUN_GATE: Landmark = {
-  id: "run-gate",
-  desc: "the approval gate card (decided, or waiting for the decision)",
-  any: [{ testid: "approval-decided" }, { testid: "approval-node" }, { testid: "workbench-dock" }],
-};
-
-/** The project overview (project-1b) and its tab routes. */
-const PROJECT_HEADING: Landmark = {
-  id: "project-heading",
-  desc: "the project's own title (the H1 — its name is data)",
-  any: [{ testid: "project-name" }, { role: "heading", level: 1 }],
-};
-const PROJECT_NEW_THREAD: Landmark = {
-  id: "project-new-thread",
-  desc: "the 'New thread' action",
-  any: [{ testid: "project-new-conversation" }, { role: "button", name: /^new thread$/i }],
-};
-const PROJECT_START_RUN: Landmark = {
-  id: "project-start-run",
-  desc: "the 'Start run' action",
-  any: [{ testid: "project-start-run" }, { role: "button", name: /^start run$/i }],
-};
-const PROJECT_TABS: Landmark = {
-  id: "project-tabs",
-  desc: "the header tab row",
-  any: [{ testid: "project-tabs" }],
-};
-const PROJECT_TAB_OVERVIEW_ACTIVE: Landmark = {
-  id: "project-tab-overview-active",
-  desc: "the Overview tab shown as the page you are on",
-  any: [{ testid: "project-tab-overview", current: true }],
-};
-const PROJECT_TAB_RUNS: Landmark = {
-  id: "project-tab-runs",
-  desc: "the Runs tab",
-  any: [{ testid: "project-tab-runs" }],
-};
-const PROJECT_TAB_THREADS: Landmark = {
-  id: "project-tab-threads",
-  desc: "the Threads tab",
-  any: [{ testid: "project-tab-threads" }],
-};
-const PROJECT_TAB_WORKFLOWS: Landmark = {
-  id: "project-tab-workflows",
-  desc: "the Workflows tab",
-  any: [{ testid: "project-tab-workflows" }],
-};
-const PROJECT_TAB_ARTIFACTS: Landmark = {
-  id: "project-tab-artifacts",
-  desc: "the Artifacts tab",
-  any: [{ testid: "project-tab-artifacts" }],
-};
-const PROJECT_TAB_SETTINGS: Landmark = {
-  id: "project-tab-settings",
-  desc: "the Settings tab",
-  any: [{ testid: "project-tab-settings" }],
-};
-/**
- * Finding 09 moved the project's configuration OUT of the sidebar: the
- * hover-only ⋯ project menu (`sidebar-project-menu`, `project-menu-settings`,
- * `project-menu-members`, `project-menu-add-repository`,
- * `project-menu-workflows`) is gone, and its verbs live on the project header
- * — `+ Repository` (a maintainer's, opening the add-repository dialog in place)
- * and `Settings`, whose page carries the Settings | Members tab strip (Members
- * stays its own route `/p/:id/members`). The header is page content, so these
- * need no `host: "page"` the way the sidebar landmarks do.
- */
-const PROJECT_ADD_REPO: Landmark = {
-  id: "project-add-repository",
-  desc: "the header's '+ Repository' action (a maintainer's) — finding 09's move off the sidebar ⋯",
-  any: [{ testid: "project-add-repository" }, { role: "button", name: /^\+ repository$/i }],
-};
-const PROJECT_SETTINGS_LINK: Landmark = {
-  id: "project-settings-link",
-  desc: "the header's Settings link — the configuration's way in at every role",
-  any: [{ testid: "project-settings-link" }, { role: "link", name: /^settings$/i }],
-};
-const ADD_REPO_DIALOG: Landmark = {
-  id: "add-repository-dialog",
-  desc: "the dialog '+ Repository' opens in place, on the project page itself",
-  any: [{ testid: "add-repository-dialog" }, { role: "dialog", name: /add a repositor/i }],
-};
-const PROJECT_SETTINGS_TABS: Landmark = {
-  id: "project-settings-tabs",
-  desc: "the settings section's Settings | Members tab strip (what the ⋯ menu's rows became)",
-  any: [{ testid: "project-settings-tabs" }, { role: "navigation", name: /^settings sections$/i }],
-};
-const PROJECT_SETTINGS_TAB_SETTINGS: Landmark = {
-  id: "project-settings-tab-settings",
-  desc: "the Settings tab shown as the page you are on",
-  any: [{ testid: "project-settings-tab-settings", current: true }],
-};
-const PROJECT_SETTINGS_TAB_MEMBERS: Landmark = {
-  id: "project-settings-tab-members",
-  desc: "the Members tab — the people page the ⋯ menu used to open",
-  any: [{ testid: "project-settings-tab-members" }, { role: "link", name: /^members$/i }],
-};
-const PROJECT_PANEL_RUNNING: Landmark = {
-  id: "project-panel-running-now",
-  desc: "the RUNNING NOW panel",
-  any: [{ role: "heading", name: /^RUNNING NOW/i }, { testid: "running-now-list" }],
-};
-const PROJECT_PANEL_THREADS: Landmark = {
-  id: "project-panel-recent-threads",
-  desc: "the RECENT THREADS panel",
-  any: [{ role: "heading", name: /^RECENT THREADS$/i }, { testid: "project-threads" }],
-};
-const PROJECT_PANEL_REPOS: Landmark = {
-  id: "project-panel-repositories",
-  desc: "the REPOSITORIES panel",
-  any: [{ role: "heading", name: /^REPOSITORIES/i }, { testid: "repo-list" }],
-};
-const PROJECT_PANEL_WORKFLOWS: Landmark = {
-  id: "project-panel-workflows",
-  desc: "the WORKFLOWS panel",
-  any: [{ role: "heading", name: /^WORKFLOWS/i }, { testid: "project-workflows" }],
-};
-const PROJECT_RUNNING_EMPTY: Landmark = {
-  id: "project-running-empty",
-  desc: "the honest empty line where RUNNING NOW would be",
-  any: [
-    { testid: "running-now-empty" },
-    { testid: "recent-runs-empty" },
-    { text: /never started a workflow/i },
-  ],
-};
-const PROJECT_WORKFLOWS_EMPTY: Landmark = {
-  id: "project-workflows-empty",
-  desc: "the honest empty line where the project's workflows would be",
-  any: [{ testid: "project-workflows-empty" }, { testid: "project-workflows" }],
-};
-const PROJECT_REPOS_EMPTY: Landmark = {
-  id: "project-repos-empty",
-  desc: "the honest empty line where the repositories would be",
-  any: [{ testid: "repo-list-empty" }, { testid: "repo-list" }],
-};
-const PROJECT_UNAVAILABLE_HEADING: Landmark = {
-  id: "project-unavailable-heading",
-  desc: "the 'Project' heading of a page that cannot show a project",
-  any: [{ role: "heading", level: 1, name: /^Project$/ }],
-};
-const PROJECT_NOT_FOUND: Landmark = {
-  id: "project-not-found",
-  desc: "the honest 'project not found' line",
-  any: [{ testid: "project-not-found" }, { text: /project.*(not found|could not)/i }],
-};
-/** Pass-1 review, item 5: a refusal page's H1 NAMES what was missing
- * (`Project not found`), it is not the generic section word; the way back is a
- * button beside the sentence, not only the mono breadcrumb above it. */
-const PROJECT_NOT_FOUND_HEADING: Landmark = {
-  id: "project-not-found-heading",
-  desc: "the H1 that names the project the page could not open",
-  any: [{ role: "heading", level: 1, name: /^Project not found$/ }],
-};
-const PROJECT_NOT_FOUND_BACK: Landmark = {
-  id: "project-not-found-back",
-  desc: "the explicit `← Projects` button beside the refusal",
-  any: [
-    { testid: "project-page-back-to-projects-action" },
-    { role: "link", name: /←\s*Projects$/ },
-  ],
-};
-const REPO_NOT_FOUND_HEADING: Landmark = {
-  id: "repo-not-found-heading",
-  desc: "the H1 that names the repository the page could not open",
-  any: [{ role: "heading", level: 1, name: /^Repository not found$/ }],
-};
-const REPO_NOT_FOUND_BACK: Landmark = {
-  id: "repo-not-found-back",
-  desc: "the explicit button back to the project beside the refusal",
-  any: [{ testid: "repo-back-to-project" }, { role: "link", name: /^←\s/ }],
-};
-const PROJECT_ERROR_SHELL: Landmark = {
-  id: "project-error-shell",
-  desc: "the error shell that holds a failed project read",
-  any: [{ testid: "project-page-error" }],
-};
-const PROJECT_ERROR_PANEL: Landmark = {
-  id: "project-error-panel",
-  desc: "the panel quoting the server's problem",
-  any: [{ role: "alert" }],
-};
-const PROJECT_RUNS_PAGE: Landmark = {
-  id: "project-runs-page",
-  desc: "the project's Runs page",
-  any: [{ testid: "project-runs" }, { testid: "runs-list" }, { testid: "runs-empty" }],
-};
-const PROJECT_RUNS_BODY: Landmark = {
-  id: "project-runs-body",
-  desc: "the runs list, or the honest line saying there are none",
-  any: [{ testid: "runs-list" }, { testid: "runs-empty" }],
-};
-const PROJECT_THREADS_PAGE: Landmark = {
-  id: "project-threads-page",
-  desc: "the project's Threads page",
-  any: [{ testid: "project-conversations" }],
-};
-/** Design 1g (project-tabs-2 review): the Threads tab IS the shared 1g list pane
- * filtered to the project — the project's own card list and its title-slugged
- * row ids were retired with it, so the tab must draw the pane the `/threads`
- * route draws, or the two screens diverged again. */
-const PROJECT_THREADS_PANE: Landmark = {
-  id: "project-threads-pane",
-  desc: "the shared 1g list pane (search, chips and rows) the tab mounts",
-  any: [
-    { testid: "threads-search" },
-    { testid: "threads-filters" },
-    { testid: "threads-list" },
-    { testid: "thread-row-*" },
-    { testid: "threads-list-empty" },
-    { testid: "threads-nomatch" },
-  ],
-};
-const PROJECT_WORKFLOWS_PAGE: Landmark = {
-  id: "project-workflows-page",
-  // Design 1b (project-workflows-tab): the pass review of `project-1b-workflows`
-  // retired the tab's LIBRARY list, its inline assign shelf and its pinned-
-  // revision dump; what the tab owns is the one WORKFLOWS IN THIS PROJECT panel.
-  desc: "the project's Workflows page",
-  any: [{ testid: "project-pipelines" }, { testid: "project-workflows" }],
-};
-/** The tab's ONE panel. Whether it holds rows or the honest absence is data
- * (what the project pins), so the landmark names the panel itself — its title
- * counts with a read answered and without one — and the two nothings it can
- * answer with. The rows' STARTS WHEN boxes are asserted by the journey
- * (emulator/projects.spec.ts) where the served pins are known: a landmark may
- * insist a row HAS a box, never that the project has a row. */
-const PROJECT_WORKFLOWS_BODY: Landmark = {
-  id: "project-workflows-body",
-  desc: "the ONE WORKFLOWS IN THIS PROJECT panel (its rows, or the honest line saying none)",
-  any: [
-    { role: "heading", name: /^WORKFLOWS IN THIS PROJECT/i },
-    { testid: "project-workflows" },
-    { testid: "project-workflows-empty" },
-  ],
-};
-/** 2e's trigger treatment, now across every repository of the project: a row
- * opens on a STARTS WHEN box, and a workflow with nothing scheduled says
- * `Never triggered` there rather than hiding the absence. */
-const PROJECT_WORKFLOWS_STARTS_WHEN: Landmark = {
-  id: "project-workflows-starts-when",
-  desc: "a workflow row's STARTS WHEN box (2e's trigger treatment, shared by the tab)",
-  any: [
-    { testid: "project-workflow-starts-*" },
-    { testid: "project-workflow-none-*" },
-    { text: /^STARTS WHEN$/i },
-    { text: /Never triggered/i },
-    // A project that uses NO workflow has no row and so no box: the tab's
-    // honest absence is the same design fact at the other end of the read
-    // (never a LIBRARY list standing in for it — that is what was retired).
-    { testid: "project-workflows-empty" },
-  ],
-};
-/** The tab's one way to bring a workflow in, since the inline assign shelf left. */
-const PROJECT_WORKFLOWS_LIBRARY: Landmark = {
-  id: "project-workflows-library",
-  desc: "the panel's '+ use a library workflow' control",
-  any: [{ testid: "project-workflow-library" }, { text: /\+ use (a library )?workflow/i }],
-};
-
-/** Threads (threads-1g). */
-const THREADS_HEADING: Landmark = {
-  id: "threads-heading",
-  // Finding 07 review pass: on `/threads` the ONE `Threads` H1 is the shared
-  // `page-band`'s (the list pane's duplicate heading is gone), so the role
-  // match is the band's title; the testid arms remain the frames with no band
-  // above the column — the open thread's list pane, and at 390 its
-  // '← Threads' back link.
-  desc: "the 'Threads' heading (the page band's H1 on /threads; at 390, the '← Threads' back link)",
-  any: [
-    { role: "heading", level: 1, name: /^Threads$/ },
-    { testid: "threads-page" },
-    { testid: "thread-list-pane" },
-    { testid: "threads-back" },
-  ],
-};
-const THREADS_NEW: Landmark = {
-  id: "threads-new",
-  desc: "the 'New thread' action",
-  any: [{ testid: "threads-new-open" }, { role: "button", name: /^new thread$/i }],
-};
-const THREADS_SEARCH: Landmark = {
-  id: "threads-search",
-  desc: "the thread search field",
-  any: [{ testid: "threads-search" }, { role: "textbox", name: /search threads/i }],
-};
-const THREADS_CHIPS: Landmark = {
-  id: "threads-chips",
-  desc: "the filter chips (all projects / mine / from runs)",
-  any: [
-    { testid: "threads-filter-all" },
-    { testid: "threads-filter-mine" },
-    { testid: "threads-filter-runs" },
-    { role: "button", name: /^all projects$/ },
-  ],
-};
-/** The list itself — at 390 the documented reflow replaces it with the open
- * thread plus its `← Threads` back link, so both forms satisfy the landmark
- * (the content is there, or the one tap that reaches it is). */
-const THREADS_LIST: Landmark = {
-  id: "threads-list-or-back",
-  desc: "the thread list, or (at 390) the open thread's '← Threads' back link",
-  any: [
-    { testid: "threads-list" },
-    { testid: "thread-list-pane" },
-    { testid: "threads-back" },
-    { role: "link", name: /← threads/i },
-  ],
-};
-const THREAD_TITLE: Landmark = {
-  id: "thread-title",
-  desc: "the open thread's title",
-  any: [{ testid: "conversation-title" }, { role: "heading", level: 1 }],
-};
-const THREAD_CONTROL: Landmark = {
-  id: "thread-control",
-  desc: "the controller badge, or the 'Take control' way to get it",
-  any: [
-    { testid: "controller-badge" },
-    { testid: "take-control" },
-    { role: "button", name: /^take control$/i },
-  ],
-};
-const THREAD_TRANSCRIPT: Landmark = {
-  id: "thread-transcript",
-  desc: "the transcript",
-  any: [{ testid: "transcript" }, { testid: "transcript-empty" }],
-};
-const THREAD_COMPOSER: Landmark = {
-  id: "thread-composer",
-  desc: "the composer's reply field",
-  any: [{ testid: "composer-input" }, { role: "textbox", name: /reply to the agent/i }],
-};
-const THREAD_SEND: Landmark = {
-  id: "thread-send",
-  desc: "the composer's Send action",
-  any: [{ testid: "composer-send" }, { role: "button", name: /^send$/i }],
-};
-/** Design thread view (10 / 1g): WORKSPACE, ARTIFACTS and NEXT are no longer a
- * always-open rail beside the transcript — they sit behind one disclosure, so
- * the claim is the door itself (pass-2 review: its summary names the rail's
- * interactive parts, and the design's chevron marks it as a door). */
-const THREAD_CONTEXT_DISCLOSURE: Landmark = {
-  id: "thread-context-disclosure",
-  desc: "the 'Thread details — handoff, artifacts and draft PR' disclosure holding the rail",
-  any: [
-    { testid: "thread-context-disclosure" },
-    { testid: "thread-context-block" },
-    { role: "button", name: /thread details/i },
-  ],
-};
-const THREADS_LIST_ERROR: Landmark = {
-  id: "threads-list-error",
-  desc: "the line saying the thread list could not be read",
-  any: [{ testid: "threads-list-error" }, { role: "alert" }],
-};
-
-/* ------------------------------------ handoff-repo-chat-nav (rcn-* badges) */
-
-// The repo/chat/nav handoff (docs/design/handoff-repo-chat-nav/) redraws the
-// shell (2c/3c), the repo page (3a/3b), the chat (2e + 1h), the thread →
-// workflow assistant (2f) and the workflow inputs (1j/1k). Its badges are
-// namespaced `rcn-` (env.ts `EMU_DESIGN_DIRS`), so the same numbers the older
-// boards spent keep their own renders. Everything below is structure the app
-// really owns — testids and design copy only; the mock's Northwind/storefront
-// sample data is MOCK_DATA's territory (mockdata.ts), never a landmark.
-
-/** The one left column, at either width; at 390 the documented reflow is the
- * phone top strip whose menu button is the one tap that reaches the drawer
- * (Shell.tsx — the phone frame starts below 768px, finding 07; from 768px the
- * column owns the left edge, and between 768 and 1024px it is FORCED to the
- * 52px rail whatever the saved preference says). Host: the shell lives
- * outside `<main`, so these landmarks read the whole page. */
-const RCN_COLUMN: Landmark = {
-  id: "rcn-sidebar-column",
-  desc: "the one left sidebar column (at 390, the phone strip's menu button that opens it)",
-  host: "page",
-  any: [{ testid: "sidebar" }, { testid: "sidebar-open" }],
-};
-const RCN_NEW_CHAT: Landmark = {
-  id: "rcn-new-chat",
-  desc: "the 'New thread' button (at 390, the one tap that reaches it)",
-  host: "page",
-  any: [{ testid: "new-chat" }, { testid: "new-chat-rail" }, { testid: "sidebar-open" }],
-};
-const RCN_TODAY: Landmark = {
-  id: "rcn-today",
-  desc: "the 'Today' row (was Home)",
-  host: "page",
-  any: [
-    { testid: "sidebar-link-home" },
-    { testid: "rail-item-today" },
-    { role: "link", name: /^today$/i },
-    { testid: "sidebar-open" },
-  ],
-};
-const RCN_MY_CHATS: Landmark = {
-  id: "rcn-my-chats",
-  desc: "the 'Threads' row",
-  host: "page",
-  any: [
-    { testid: "sidebar-link-threads" },
-    { role: "link", name: /threads/i },
-    { testid: "sidebar-open" },
-  ],
-};
-const RCN_PROJECTS_SECTION: Landmark = {
-  id: "rcn-projects-section",
-  desc: "the PROJECTS section with its project tree",
-  host: "page",
-  any: [
-    { text: /^PROJECTS$/ },
-    { testid: "sidebar-project-toggle-*" },
-    { testid: "sidebar-open" },
-  ],
-};
-/**
- * Finding 02 split the LIBRARY block: Workflows and Agents are top-level rows
- * (no section label, no Steps row — Steps is a tab of the Workflows page at
- * `/workflows/steps`), and the rail tile carries the Workflows name.
- */
-const RCN_WORKFLOWS_AGENTS_ROWS: Landmark = {
-  id: "rcn-library-section",
-  desc: "the Workflows and Agents sidebar rows (finding 02: no LIBRARY label, no Steps row)",
-  host: "page",
-  any: [
-    { testid: "sidebar-link-workflows" },
-    { testid: "rail-item-workflows" },
-    { testid: "sidebar-open" },
-  ],
-};
-const RCN_EXPANDED_CONTROLS: Landmark = {
-  id: "rcn-collapse-control",
-  desc: "the collapse control on the expanded column's brand row",
-  host: "page",
-  any: [{ testid: "sidebar-collapse" }, { testid: "sidebar-open" }],
-};
-/** The 3c rail: its own controls, with the 390 one tap as the alternate. */
-const RCN_RAIL_EXPAND: Landmark = {
-  id: "rcn-rail-expand",
-  desc: "the rail's expand control",
-  host: "page",
-  any: [{ testid: "sidebar-expand" }, { testid: "sidebar-open" }],
-};
-/** Redesign 4a: the rail carries no initials tiles any more — every tile is
- * an icon (`rail-item-today/catch-up/threads/projects/workflows/agents/
- * search`) and the words live in the hover label, the `aria-label` and the
- * Projects popover. */
-const RCN_RAIL_TILES: Landmark = {
-  id: "rcn-rail-project-tiles",
-  desc: "the rail's icon nav tiles (4a: no initials tiles any more)",
-  host: "page",
-  any: [{ testid: "rail-item-*" }, { testid: "sidebar-open" }],
-};
-/** Review round 2's two 3c states were the ⋯ menu open on a project row and a
- * rail tile's flyout open. Finding 09 deleted the first: the sidebar's project
- * row is a tree toggle again and carries no hover-only menu, so its
- * `sidebar-project-menu` / `project-menu-*` testids and the arrow claim that
- * rode that surface are retired here (the rail's projects surface keeps its
- * own — `RCN_RAIL_FLYOUT` / `RCN_RAIL_FLYOUT_ARROW`). Redesign 4a redraw the
- * second: nothing opens on hover any more — a CLICK on the Projects tile
- * (`rail-item-projects`) opens the one project popover (`rail-projects-
- * popover`), whose rows (`rail-project-<id>`, a `*` prefix the design rules
- * already spell) carry the projects, their state badges and the active
- * project's repositories. The configuration verbs the ⋯ menu held are now page
- * content (`PROJECT_ADD_REPO`, `PROJECT_SETTINGS_LINK`,
- * `PROJECT_SETTINGS_TABS`), and the project-header screens below claim them. */
-const RCN_RAIL_FLYOUT: Landmark = {
-  id: "rcn-rail-flyout",
-  desc: "the Projects tile's click-opened popover with the project rows and the active project's repositories (at 390, the phone strip's menu button)",
-  host: "page",
-  any: [{ testid: "rail-projects-popover" }, { testid: "sidebar-open" }],
-};
-/* Every anchored surface carries the shared pointer arrow (handoff 3c:
- * "all popovers/menus get a pointer arrow"), so each open-surface capture
- * claims it at its own width too. `menu-arrow` is the ds primitive's one
- * arrow testid (Menu AND Popover mount the same component); `host: "page"`
- * because the column these open from lives OUTSIDE `<main>`, and
- * `sidebar-open` is the 390 alternate — below 768px (Shell's
- * `PHONE_MAX_WIDTH_PX`, finding 07) the documented reflow
- * unmounts the column (and the menu or flyout open inside it) for the phone
- * strip, exactly as for the two landmarks above. The arrow is therefore a
- * hard claim at 1280 and the one tap is its claim at 390. */
-const RCN_RAIL_FLYOUT_ARROW: Landmark = {
-  id: "rcn-rail-flyout-arrow",
-  desc: "the rail flyout's pointer arrow (the handoff's rule: every anchored surface gets one; at 390, the phone strip's one tap)",
-  host: "page",
-  any: [{ testid: "menu-arrow" }, { testid: "sidebar-open" }],
-};
-
-/* The repo page's List view (rcn-3a). */
-const RCN_REPO_PAGE: Landmark = {
-  id: "rcn-repo-page",
-  desc: "the repository page",
-  any: [{ testid: "repo-page" }],
-};
-const RCN_REPO_BREADCRUMB: Landmark = {
-  id: "rcn-repo-breadcrumb",
-  desc: "the 'Project / repo' breadcrumb",
-  any: [{ testid: "repo-breadcrumb" }],
-};
-const RCN_REPO_TITLE: Landmark = {
-  id: "rcn-repo-title",
-  desc: "the repository's own H1 (its name is data; its being a title is not)",
-  any: [{ testid: "repo-name" }, { role: "heading", level: 1 }],
-};
-const RCN_VIEW_TOGGLE: Landmark = {
-  id: "rcn-list-lanes-toggle",
-  desc: "the segmented List | Lanes control",
-  any: [
-    { testid: "repo-view-toggle" },
-    { testid: "repo-view-list" },
-    { testid: "repo-view-lanes" },
-  ],
-};
-const RCN_CHAT_BOX: Landmark = {
-  id: "rcn-repo-chat-box",
-  desc: "the repo page's one-line chat box",
-  any: [{ testid: "repo-chat-box" }],
-};
-const RCN_CHAT_INPUT: Landmark = {
-  id: "rcn-repo-chat-input",
-  desc: "the chat box's input ('Thread in <repo>…')",
-  any: [{ testid: "repo-chat-input" }, { role: "textbox", name: /thread in /i }],
-};
-const RCN_CHAT_PROFILE: Landmark = {
-  id: "rcn-repo-chat-profile",
-  desc: "the chat box's agent-profile picker chip",
-  any: [{ testid: "repo-chat-profile" }],
-};
-const RCN_CHAT_START: Landmark = {
-  id: "rcn-repo-chat-start",
-  desc: "the chat box's primary Start verb",
-  any: [{ testid: "repo-chat-start" }, { role: "button", name: /^start$/i }],
-};
-const RCN_FILTER_CHIPS: Landmark = {
-  id: "rcn-activity-filter-chips",
-  desc: "the All · Runs · Chats · Mine filter chips",
-  any: [
-    { testid: "repo-activity-filters" },
-    { testid: "repo-filter-all" },
-    { testid: "repo-filter-runs" },
-    { testid: "repo-filter-chats" },
-    { testid: "repo-filter-mine" },
-  ],
-};
-const RCN_ACTIVITY: Landmark = {
-  id: "rcn-activity-list",
-  desc: "the one activity panel that holds runs and chats together",
-  any: [{ testid: "repo-runs" }, { testid: "repo-activity" }],
-};
-const RCN_ACTIVITY_EMPTY: Landmark = {
-  id: "rcn-activity-empty",
-  desc: "the honest empty activity line ('say something in the thread box above')",
-  any: [
-    { testid: "repo-activity-empty" },
-    { testid: "repo-runs-empty" },
-    { text: /say something in the thread box/i },
-  ],
-};
-const RCN_WORKFLOWS_PANEL: Landmark = {
-  id: "rcn-workflows-panel",
-  desc: "the WORKFLOWS side panel",
-  any: [
-    { testid: "repo-workflows" },
-    { testid: "repo-workflows-empty" },
-    { role: "heading", name: /^WORKFLOWS/i },
-  ],
-};
-const RCN_WORKFLOW_ROW: Landmark = {
-  id: "rcn-workflow-row",
-  desc: "a workflow row in the WORKFLOWS panel",
-  any: [{ testid: "repo-workflow-row-*" }, { testid: "repo-workflow-name-*" }],
-};
-const RCN_WORKFLOW_TRIGGERS: Landmark = {
-  id: "rcn-workflow-trigger-line",
-  desc: "the row's trigger line (GitHub / Schedule / By hand)",
-  any: [
-    { testid: "repo-workflow-triggers-*" },
-    { testid: "repo-lane-workflow-trigger-*" },
-    { text: /^by hand$/i },
-  ],
-};
-const RCN_WORKFLOW_RESULT: Landmark = {
-  id: "rcn-workflow-result-line",
-  desc: "the row's latest-result line",
-  any: [{ testid: "repo-workflow-result-*" }, { testid: "repo-workflow-triggers-*" }],
-};
-const RCN_WORKFLOW_RUN: Landmark = {
-  id: "rcn-workflow-run-button",
-  desc: "the row's compact Run button",
-  any: [{ testid: "repo-workflow-run-*" }, { role: "button", name: /^run$/i }],
-};
-const RCN_ISSUES_PANEL: Landmark = {
-  id: "rcn-open-issues-panel",
-  desc: "the OPEN ISSUES side panel",
-  any: [
-    { testid: "repo-issues" },
-    { testid: "repo-issues-not-github" },
-    { role: "heading", name: /open issues/i },
-  ],
-};
-
-/* ASSISTANT NOTICED (design 3a, ADR-0071). The panel is the reader's contract:
-   it stands with no notes and with notes, so the section landmark is satisfied
-   by either of its two states. What a NOTE requires is the other three: the row
-   the server wrote for this one person, the one allowlisted action it carries,
-   and the dismiss that is hers alone. The ids carry the note's own id, which is
-   data — hence the prefix form, never an exact id. */
-const RCN_REPO_NOTES_PANEL: Landmark = {
-  id: "rcn-assistant-notes",
-  desc: "the ASSISTANT NOTICED panel (with notes, or in its honest empty state)",
-  any: [
-    { testid: "repo-assistant-notes" },
-    { testid: "repo-assistant-notes-empty" },
-    { role: "heading", name: /assistant noticed/i },
-  ],
-};
-const RCN_REPO_NOTE_ROW: Landmark = {
-  id: "rcn-assistant-note",
-  desc: "one note the assistant wrote, drawn as text with its dismiss",
-  any: [{ testid: "repo-assistant-note-*" }],
-};
-const RCN_REPO_NOTE_ACTION: Landmark = {
-  // The button's words are the design's (ui/src/api/notes.ts noteActionLabel),
-  // never the note's, so they are a landmark this file may claim; the testid's
-  // tail is the note's own id, which the prefix form cannot cut in half.
-  id: "rcn-assistant-note-action",
-  desc: "the one allowlisted action the note offers",
-  any: [
-    { role: "button", name: /^(ask in a new thread|hand it off|make a workflow…|open the run)$/i },
-  ],
-};
-const RCN_REPO_NOTE_DISMISS: Landmark = {
-  id: "rcn-assistant-note-dismiss",
-  desc: "the note's dismiss, which hides it for this reader alone",
-  any: [{ role: "button", name: /^dismiss$/i }],
-};
-
-/* The repo page's Lanes view (rcn-3b). */
-const RCN_LANES: Landmark = {
-  id: "rcn-lanes",
-  desc: "the Lanes view",
-  any: [{ testid: "repo-lanes" }],
-};
-const RCN_LANE_WORKFLOWS: Landmark = {
-  id: "rcn-lane-workflows",
-  desc: "the WORKFLOWS chip row",
-  any: [{ testid: "repo-lane-workflows" }, { testid: "repo-lane-workflow-*" }],
-};
-const RCN_LANE_ISSUES: Landmark = {
-  id: "rcn-lane-issues",
-  desc: "the ISSUES lane (the draggable source, or its honest absence)",
-  any: [{ testid: "repo-lane-issues" }, { testid: "repo-lane-issues-not-github" }],
-};
-const RCN_LANE_NEEDS_YOU: Landmark = {
-  id: "rcn-lane-needs-you",
-  desc: "the NEEDS YOU lane",
-  any: [{ testid: "repo-lane-needs-you" }, { testid: "repo-lane-needs-you-empty" }],
-};
-const RCN_LANE_RUNNING: Landmark = {
-  id: "rcn-lane-running",
-  desc: "the RUNNING lane (the drop target)",
-  any: [{ testid: "repo-lane-running" }, { testid: "repo-lane-running-empty" }],
-};
-const RCN_LANE_FINISHED: Landmark = {
-  id: "rcn-lane-finished",
-  desc: "the FINISHED · 7 DAYS lane",
-  any: [{ testid: "repo-lane-finished" }, { testid: "repo-lane-finished-empty" }],
-};
-/* The 3b DRAG (an issue dropped on RUNNING) and the run it starts. These are
- * structure, never data: the issue's number and title are the tracker's, so
- * the caption claim is the sentence with any number in it. */
-const RCN_LANE_ISSUE_CARD: Landmark = {
-  id: "rcn-lane-issue-card",
-  desc: "a draggable issue card in the ISSUES lane (the drag's source)",
-  any: [{ testid: "repo-lane-issue-*" }],
-};
-const RCN_LANE_DROP_CARD: Landmark = {
-  id: "rcn-lane-drop-card",
-  desc: "the caught issue card the start menu is anchored on",
-  any: [{ testid: "repo-lane-drop-card" }],
-};
-const RCN_START_MENU: Landmark = {
-  id: "rcn-start-issue-menu",
-  desc: "the START #<n> WITH menu the drop opens",
-  any: [{ testid: "repo-start-issue-menu" }, { role: "menu" }],
-};
-const RCN_START_MENU_CAPTION: Landmark = {
-  id: "rcn-start-issue-caption",
-  desc: "the menu's START #<n> WITH caption (the number is the issue's, the sentence is the design's)",
-  any: [{ text: /start #\d+ with/i }],
-};
-const RCN_START_MENU_WORKFLOW: Landmark = {
-  id: "rcn-start-issue-workflow",
-  desc: "the menu's workflow row (only pins whose revision declares the issue input)",
-  any: [{ testid: "repo-start-issue-workflow-*" }],
-};
-const RCN_MENU_ARROW: Landmark = {
-  id: "rcn-menu-arrow",
-  desc: "the menu's pointer arrow (the handoff's rule: every anchored surface gets one)",
-  any: [{ testid: "menu-arrow" }],
-};
-const RCN_LANE_RUN_CARD: Landmark = {
-  id: "rcn-lane-run-card",
-  desc: "a run card in the RUNNING lane (the drag's result — the run, not the issue)",
-  any: [{ testid: "repo-lane-run-*" }],
-};
-
-/* The chat (rcn-2e) and its agent picker (rcn-1h). */
-const RCN_CONV_BREADCRUMB: Landmark = {
-  id: "rcn-conversation-breadcrumb",
-  desc: "the thread's breadcrumb",
-  any: [{ testid: "conversation-breadcrumb" }],
-};
-const RCN_CONV_TITLE: Landmark = {
-  id: "rcn-conversation-title",
-  desc: "the thread's title (an H1 — its name is data, its being a title is not)",
-  any: [{ testid: "conversation-title" }, { role: "heading", level: 1 }],
-};
-const RCN_TRANSCRIPT: Landmark = {
-  id: "rcn-transcript",
-  desc: "the transcript",
-  any: [{ testid: "transcript" }, { testid: "transcript-empty" }],
-};
-const RCN_COMPOSER: Landmark = {
-  id: "rcn-composer",
-  desc: "the composer's reply field",
-  any: [{ testid: "composer-input" }],
-};
-const RCN_SEND: Landmark = {
-  id: "rcn-composer-send",
-  desc: "the composer's Send action",
-  any: [{ testid: "composer-send" }, { role: "button", name: /^send$/i }],
-};
-const RCN_AGENT_CHIP: Landmark = {
-  id: "rcn-composer-agent-chip",
-  desc: "the composer's agent chip ('NEXT TURN RUNS ON')",
-  any: [{ testid: "composer-agent-chip" }],
-};
-const RCN_AGENT_MENU: Landmark = {
-  id: "rcn-next-turn-menu",
-  desc: "the open 'NEXT TURN RUNS ON' profile menu",
-  any: [{ testid: "composer-agent-menu" }, { role: "menu" }],
-};
-const RCN_AGENT_MENU_CAPTION: Landmark = {
-  id: "rcn-next-turn-caption",
-  desc: "the menu's NEXT TURN RUNS ON caption",
-  any: [{ text: /next turn runs on/i }],
-};
-const RCN_AGENT_MENU_PROFILES: Landmark = {
-  id: "rcn-menu-profiles",
-  desc: "the menu's agent-profile rows (the current one carries ✓)",
-  any: [
-    { testid: "composer-agent-profile-*" },
-    { testid: "composer-agent-menu" },
-    { text: /✓/ },
-  ],
-};
-const RCN_SWITCH_DIVIDER: Landmark = {
-  id: "rcn-agent-switch-divider",
-  desc: "the centred 'switched to … · transcript and branch carried over' divider",
-  any: [{ testid: "agent-switch-divider" }, { text: /switched to .*carried over/i }],
-};
-const RCN_SIDE_PANEL: Landmark = {
-  id: "rcn-conversation-side-panel",
-  desc: "the chat's side panel holding the thread's context (at 390 the header's Details sheet carries it — its toggle is the one tap)",
-  any: [
-    { testid: "conversation-side-panel" },
-    { testid: "thread-side-panel-aside" },
-    { testid: "chat-details-toggle" },
-  ],
-};
-// The panel-CONTENT landmarks below carry `{ testid: "chat-details-toggle" }`
-// as the 390 alternative the file's header states: at 390 (below `lg`) the
-// panel is not on the page — the header's Details sheet carries it — so when
-// a capture shoots the chat with the sheet CLOSED (the transcript is what the
-// reviewer must judge at 390), "the content is there, or the one tap that
-// reaches it" is satisfied by the toggle. It renders only on the chat
-// header, only below `lg`, so it can never satisfy these at 1280.
-const RCN_WORKS_IN: Landmark = {
-  id: "rcn-works-in",
-  desc: "the panel's WORKS IN section naming the repo (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
-  any: [
-    { testid: "side-panel-works-in" },
-    { text: /works in/i },
-    { testid: "chat-details-toggle" },
-  ],
-};
-const RCN_PANEL_AGENTS: Landmark = {
-  id: "rcn-agents-in-this-chat",
-  desc: "the panel's AGENTS IN THIS THREAD section (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
-  any: [
-    { testid: "side-panel-agents" },
-    { text: /agents in this thread/i },
-    { testid: "chat-details-toggle" },
-  ],
-};
-const RCN_AGENT_TURN_RANGE: Landmark = {
-  id: "rcn-agent-turn-range",
-  desc: "an agent row with its turn range ('turns 1–2') — or, at 390 with the Details sheet closed, the header's toggle that opens the panel",
-  any: [
-    { testid: "side-panel-agent-row-*" },
-    { testid: "side-panel-agent-range-*" },
-    { text: /\bturns? ?[0-9]/i },
-    { testid: "chat-details-toggle" },
-  ],
-};
-const RCN_ASSISTANT_NOTE: Landmark = {
-  id: "rcn-assistant-note",
-  desc: "the panel's ASSISTANT note offering 'Make a workflow…' (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
-  any: [
-    { testid: "assistant-note-workflow" },
-    { role: "button", name: /make a workflow/i },
-    { text: /make a workflow/i },
-    { testid: "chat-details-toggle" },
-  ],
-};
-
-/* Thread → workflow, in the assistant panel (rcn-2f). */
-const RCN_ASSISTANT_PANEL: Landmark = {
-  id: "rcn-assistant-panel",
-  desc: "the assistant panel, opened with the chat as context",
-  host: "page",
-  any: [{ testid: "assistant-popover" }, { testid: "assistant-panel" }],
-};
-const RCN_ASSISTANT_COMPOSER: Landmark = {
-  id: "rcn-assistant-composer",
-  desc: "the assistant panel's composer",
-  host: "page",
-  any: [{ testid: "assistant-composer-input" }, { testid: "assistant-send" }],
-};
-const RCN_ASSISTANT_ASK: Landmark = {
-  id: "rcn-assistant-workflow-ask",
-  desc: "the canned workflow ask the note sent (the app's own line, titled or not)",
-  host: "page",
-  // Shipped copy (ui AssistantPopover `openAssistantWorkflowDraft`, e211688):
-  // a TITLED thread seeds `Turn the thread “title” into a workflow`; only a
-  // title-less one keeps `Turn this thread into a workflow`. The design owns
-  // the sentence, never the title inside it, so both forms satisfy the claim;
-  // which CHAT the line names is the journey's own assertion.
-  any: [{ text: /turn (the thread [^\n]*|this thread) into a workflow/i }],
-};
-
-/* Agent mail (rcn-3d, ADR-0072). The design's "gpt-5" model segment and its
- * tool-activity tail are deliberately NOT landmarks — ADR-0072 § 7 journals
- * neither, and the card renders rows, not guesses. */
-const RCN_MAIL_CARDS: Landmark = {
-  id: "rcn-mail-cards",
-  desc: "the inline mail card ('→ asked the agent in <repo>')",
-  any: [
-    { testid: "mail-card" },
-    { testid: "transcript-mail-cards" },
-    { text: /asked the agent in/i },
-  ],
-};
-const RCN_MAIL_ANSWER: Landmark = {
-  id: "rcn-mail-answer",
-  desc: "the mail card's answer block ('← <repo> · <agent>')",
-  any: [{ testid: "mail-card-answer" }, { testid: "mail-card-pending" }],
-};
-// (Both carry the same 390 toggle alternative as the other panel-content
-// landmarks above: the mail-card capture shoots 390 with the sheet closed.)
-const RCN_LINKED_CHATS: Landmark = {
-  id: "rcn-linked-chats",
-  desc: "the panel's LINKED THREADS section with its mail row (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
-  any: [
-    { testid: "side-panel-links" },
-    { testid: "side-panel-link-row-0" },
-    { text: /linked threads/i },
-    { testid: "chat-details-toggle" },
-  ],
-};
-const RCN_LINKED_CHAT_STATE: Landmark = {
-  id: "rcn-linked-chat-state",
-  desc: "the linked chat row's state line (glyph + word: 'asked · read-only' / 'answered') — or, at 390 with the Details sheet closed, the header's toggle that opens the panel",
-  any: [
-    { testid: "side-panel-link-state-0" },
-    { text: /(asked|answered) \u00b7 read-only/i },
-    { testid: "chat-details-toggle" },
-  ],
-};
-
-/* Workflow inputs (rcn-1j) and the run-by-hand form (rcn-1k). */
-const RCN_INPUTS_TAB: Landmark = {
-  id: "rcn-inputs-tab",
-  desc: "the Inputs tab's own panel grid",
-  any: [{ testid: "inputs-tab" }],
-};
-const RCN_TAB_INPUTS_ACTIVE: Landmark = {
-  id: "rcn-tab-inputs-active",
-  desc: "the Inputs tab shown as the page you are on",
-  any: [{ testid: "workflow-tab-inputs", current: true }],
-};
-const RCN_INPUTS_PANEL: Landmark = {
-  id: "rcn-inputs-panel",
-  desc: "the INPUTS · n panel",
-  any: [
-    { role: "heading", name: /^INPUTS\b/i },
-    { testid: "inputs-header-row" },
-    { testid: "inputs-empty" },
-  ],
-};
-const RCN_INPUTS_HEADER: Landmark = {
-  id: "rcn-inputs-header",
-  desc: "the NAME · TYPE · REQUIRED · DEFAULT header row",
-  any: [{ testid: "inputs-header-row" }],
-};
-const RCN_INPUT_ADD: Landmark = {
-  id: "rcn-input-add",
-  desc: "the '+ add input' verb",
-  any: [{ testid: "input-add" }, { text: /\+ add input/i }],
-};
-const RCN_INPUT_ROWS: Landmark = {
-  id: "rcn-input-rows",
-  desc: "at least one declared input row",
-  any: [{ testid: "input-item-*" }, { testid: "input-row-*" }],
-};
-const RCN_WHO_FILLS: Landmark = {
-  id: "rcn-who-fills",
-  desc: "the WHO FILLS THE INPUTS panel",
-  any: [{ testid: "who-fills" }, { role: "heading", name: /who fills the inputs/i }],
-};
-const RCN_WHO_FILLS_HAND: Landmark = {
-  id: "rcn-who-fills-hand",
-  desc: "the 'Run by hand' row",
-  any: [{ testid: "who-fills-hand" }, { text: /run by hand/i }],
-};
-const RCN_WHO_FILLS_TRIGGER: Landmark = {
-  id: "rcn-who-fills-trigger",
-  desc: "a trigger row saying which input it fills",
-  any: [
-    { testid: "who-fills-issue-*" },
-    { testid: "who-fills-schedule-*" },
-    { text: /← the (opened|labeled) issue/ },
-    { text: /fills no inputs/i },
-  ],
-};
-const RCN_INPUTS_YAML: Landmark = {
-  id: "rcn-inputs-yaml-preview",
-  desc: "the panel's YAML preview of the inputs block",
-  any: [{ testid: "inputs-yaml-preview" }],
-};
-const RCN_INPUT_EDITOR: Landmark = {
-  id: "rcn-input-editor-open",
-  desc: "the issue row expanded into its accent-wash editor (design 1j)",
-  any: [{ testid: "input-editor-issue" }, { role: "button", name: /^save input$/i }],
-};
-const RCN_INPUT_EDITOR_FIELDS: Landmark = {
-  id: "rcn-input-editor-fields",
-  desc: "the editor's Label, Type, Help text and Required fields",
-  any: [
-    { testid: "input-label-issue" },
-    { testid: "input-type-issue" },
-    { testid: "input-help-issue" },
-    { testid: "input-required-issue" },
-  ],
-};
-const RCN_INPUT_EDITOR_USED: Landmark = {
-  id: "rcn-input-editor-reference",
-  desc: "the editor's 'used as … in …' reference line (or its 'not used yet' reading)",
-  any: [{ testid: "input-used-issue" }, { text: /used( as| by any step yet)/i }],
-};
-const RCN_DRAFT_CHIP: Landmark = {
-  id: "rcn-draft-chip",
-  desc: "the header's 'draft r<n> · unpublished' chip",
-  any: [{ testid: "workflow-draft-state" }, { text: /draft r\d+ · unpublished/i }],
-};
-const RCN_RUN_DIALOG: Landmark = {
-  id: "rcn-run-form-dialog",
-  desc: "the run-by-hand dialog",
-  any: [{ testid: "run-form-dialog" }, { role: "dialog" }],
-};
-const RCN_RUN_TITLE: Landmark = {
-  id: "rcn-run-form-title",
-  desc: "the 'Run <workflow>' title",
-  any: [{ testid: "run-form-title" }, { role: "heading", name: /^run /i }],
-};
-const RCN_RUN_SUBTITLE: Landmark = {
-  id: "rcn-run-form-subtitle",
-  desc: "the mono '<repo> · pinned r<n>' subtitle",
-  any: [{ testid: "run-form-subtitle" }, { text: /pinned r/i }],
-};
-const RCN_RUN_FIELDS: Landmark = {
-  id: "rcn-run-form-fields",
-  desc: "at least one field built from the workflow's declared inputs",
-  any: [{ testid: "new-run-field-*" }, { testid: "new-run-input-*" }],
-};
-const RCN_RUN_START: Landmark = {
-  id: "rcn-run-form-start",
-  desc: "the 'Start run' primary verb",
-  any: [{ testid: "new-run-submit" }, { role: "button", name: /start run/i }],
-};
-const RCN_RUN_CANCEL: Landmark = {
-  id: "rcn-run-form-cancel",
-  desc: "the form's Cancel verb",
-  any: [{ testid: "new-run-cancel" }, { role: "button", name: /^cancel$/i }],
-};
-const RCN_RUN_HELPER: Landmark = {
-  id: "rcn-run-form-helper",
-  desc: "the footer's helper line",
-  any: [{ testid: "run-form-helper" }],
-};
-// Design 1k's central element: “Running it by hand — the form is built from the
-// inputs. Issue is a picker, not a number field.” The control and the open list
-// are claimed separately: the form on a revision that declares no issue input
-// (`rcn-1k run-form-fields`) carries the first shape of the control claim and
-// never the list.
-const RCN_RUN_ISSUE_PICKER: Landmark = {
-  id: "rcn-run-form-issue-picker",
-  desc: "the ISSUE picker — a searchable combobox over the repository's issues, not a number field",
-  any: [
-    { testid: "new-run-input-issue-picker" },
-    { testid: "new-run-input-issue-options" },
-    { role: "listbox" },
-  ],
-};
-const RCN_RUN_ISSUE_LIST: Landmark = {
-  id: "rcn-run-form-issue-list",
-  desc: "the picker open with the tracker's issue rows (#<n> + title) on screen",
-  any: [
-    { testid: "new-run-input-issue-option-*" },
-    { testid: "new-run-input-issue-options" },
-    { role: "option" },
-  ],
-};
-
-/* ------------------------------------- Catch up (redesign 8a/8b/7b), the rail (3a/4a) and Today's Ask
- * The redesign's Catch up screens have NO png renders yet (they are the board
- * numbers 8a/8b/7b and the rail 3a/4a of the sidebar handoff), so the coverage
- * rule that forces a landmark list per RENDER does not fire here — but the
- * structure the boards own is claimed anyway, and `emu.screen` asserts it at
- * both widths like every other screen.
- */
-/** 8a — the reader's pile: heading, the two chip rows, the recap with its
- * primary verb, the tour cards (the first one focused), and the rest list. */
-const CU_HEADING: Landmark = {
-  id: "cu-heading",
-  desc: "the 'Catch up' page heading",
-  any: [{ testid: "catchup-page" }, { role: "heading", level: 1, name: /^Catch up$/ }],
-};
-const CU_PROJECT_CHIPS: Landmark = {
-  id: "cu-project-chips",
-  desc: "the project filter chips (one per project you belong to)",
-  any: [{ testid: "catchup-project-chip-*" }],
-};
-const CU_WINDOW_CHIPS: Landmark = {
-  id: "cu-window-chips",
-  desc: "the window chips (unseen by default, then 6h / 24h / 2d / 7d)",
-  any: [{ testid: "catchup-window-*" }, { role: "group", name: /time window/i }],
-};
-const CU_RECAP: Landmark = {
-  id: "cu-recap",
-  desc: "the ASSISTANT RECAP block",
-  any: [{ testid: "catchup-recap" }, { text: /assistant recap/i }],
-};
-const CU_START_TOUR: Landmark = {
-  id: "cu-start-tour",
-  desc: "the recap's 'Start the tour' primary action",
-  any: [{ testid: "catchup-start-tour" }, { role: "link", name: /start the tour/i }],
-};
-const CU_CARD_ONE: Landmark = {
-  id: "cu-card-one",
-  desc: "the first tour card (the focused one)",
-  any: [{ testid: "catchup-card-1" }],
-};
-/** The 'See more' card exists only while the tour has more stops than its
- * page; the row it gives way to is the rest list, so one landmark carries
- * both states — the 390 rule read as a landmark (the content, or the tap). */
-const CU_SEE_MORE_OR_REST: Landmark = {
-  id: "cu-see-more-or-rest",
-  desc: "the 'See more' card where the tour pages, or 'the rest' below it",
-  any: [{ testid: "catchup-see-more" }, { testid: "catchup-rest" }],
-};
-const CU_REST: Landmark = {
-  id: "cu-rest",
-  desc: "'the rest' — every piece of work still owed",
-  any: [{ testid: "catchup-rest" }, { text: /the rest ·/i }],
-};
-/** 8b — one piece of work: the shared tour's stop list on the left, the
- * current stop in the middle, the version history on the right. At 390 the
- * left list becomes the 'This work's tour' select — one landmark, both forms. */
-const CU_ITEM: Landmark = {
-  id: "cu-item",
-  desc: "the piece-of-work page",
-  any: [{ testid: "catchup-item" }],
-};
-const CU_STOP_LIST: Landmark = {
-  id: "cu-stop-list",
-  desc: "the work's tour stop list (at 390, the 'This work's tour' select)",
-  any: [
-    { testid: "catchup-item-stop-*", except: ["catchup-item-stop-select"] },
-    { testid: "catchup-item-stop-select" },
-    { text: /this work's tour/i },
-  ],
-};
-const CU_CURRENT_STOP: Landmark = {
-  id: "cu-current-stop",
-  desc: "the current stop",
-  any: [{ testid: "catchup-item-current" }],
-};
-const CU_HISTORY: Landmark = {
-  id: "cu-history",
-  desc: "the TOUR HISTORY panel — how the story was rewritten",
-  any: [{ testid: "catchup-item-history" }, { text: /tour history/i }],
-};
-const CU_DECISION: Landmark = {
-  id: "cu-decision",
-  desc: "the decision a stop asks (prompt + options; a question, never a gate)",
-  any: [{ testid: "catchup-decision" }],
-};
-/** 7b — the tour player, the one page OUTSIDE the shell: no sidebar at all,
- * the header carries progress, the stop list is the phone strip below 768. */
-const TOUR_PLAYER: Landmark = {
-  id: "tour-player",
-  desc: "the full-screen tour player",
-  host: "page",
-  any: [{ testid: "tour-player" }],
-};
-const TOUR_PROGRESS: Landmark = {
-  id: "tour-progress",
-  desc: "the tour's progress in the player header (at 390 the same progress is the unlabelled strip above the stop)",
-  host: "page",
+const CHATS_LIST_COL: Landmark = {
+  id: "chats-list",
+  desc: "the 300px chat list column (or back link on phone thread)",
   only: 1280,
-  any: [{ testid: "tour-progress" }],
-};
-const TOUR_STOP_LIST: Landmark = {
-  id: "tour-stop-list",
-  desc: "the tour's stop list (at 390, the horizontal stop strip)",
-  host: "page",
-  any: [{ testid: "tour-stop-*" }, { testid: "tour-stop-strip-*" }],
-};
-const TOUR_CURRENT: Landmark = {
-  id: "tour-current",
-  desc: "the stop on screen",
-  any: [{ testid: "tour-current" }],
-};
-/** 3a/4a — the rail: the 52px column, its tiles and its expand control. The
- * shell lives OUTSIDE <main>, so these read the whole page; at 390 the
- * documented reflow replaces the column with the phone strip's menu button. */
-const RAIL_COLUMN: Landmark = {
-  id: "rail-column",
-  desc: "the 52px rail column (at 390, the phone strip's menu button that reaches it)",
-  host: "page",
-  any: [{ testid: "sidebar-rail" }, { testid: "sidebar-open" }],
-};
-const RAIL_TILES: Landmark = {
-  id: "rail-tiles",
-  desc: "the rail's icon tiles (Today, Catch up, Threads, Projects, Workflows, Agents)",
-  host: "page",
-  any: [{ testid: "rail-item-*" }, { testid: "sidebar-open" }],
-};
-const RAIL_EXPAND: Landmark = {
-  id: "rail-expand",
-  desc: "the rail's expand control (at 390, the phone strip's menu button)",
-  host: "page",
-  any: [{ testid: "sidebar-expand" }, { testid: "sidebar-open" }],
-};
-const RAIL_BRAND: Landmark = {
-  id: "rail-brand",
-  desc: "the mark at the rail's head (at 390, the phone strip carries it)",
-  host: "page",
-  any: [{ testid: "brand-home" }, { testid: "phone-top-strip" }],
-};
-/** Today with the floating Ask (finding 08/10): the page, its greeting, and
- * the Ask button fixed over the content in its own corner at BOTH widths. */
-const TODAY_PAGE: Landmark = {
-  id: "today-page",
-  desc: "the Today page",
-  any: [{ testid: "home-page" }],
-};
-const TODAY_GREETING: Landmark = {
-  id: "today-greeting",
-  desc: "Today's greeting as the page H1 (the name is data; the greeting is not)",
-  any: [{ testid: "home-greeting" }, { role: "heading", level: 1, name: /^good /i }],
-};
-const TODAY_ASK_FAB: Landmark = {
-  id: "today-ask-fab",
-  desc: "the floating 'Ask ⌘J' button",
-  host: "page",
-  any: [{ testid: "ask-fab" }],
+  any: [{ testid: "chat-list" }],
+  measure: { width: 300 },
 };
 
-/* ------------------------------------ the Assistant handoff (as-popover / as-dock / as-page / as-settings)
- * The Ask surface is the SHELL's, not the page's: `Shell.tsx` mounts the
- * popover engine, so the 400px box and the 450px side panel stand OUTSIDE
- * `<main>` (only their `/assistant` route portals its frame into the content
- * column). Those two badges therefore read the whole document (`host: "page"`)
- * like the app-shell screens; `as-page` and `as-settings` keep the strict
- * main-plus-dialog reading.
- *
- * Structure, never data: which trust level the pill shows, the model ids the
- * setup checklist reads and the thread titles in the left column are all
- * served values, so they are never asked for. What IS claimed is the parts the
- * design drew — 1f's checklist, the composer box with its context button, pill,
- * mic and Send; §1's two sibling menus; 1e's two breakpoint columns; 1p's trust
- * table and 1n's Speech section.
- *
- * The renders for these badges live in `docs/design/assistant-handoff/png/`,
- * and the report pairs a screen with `EMU_DESIGN_DIRS`' file for its badge:
- * with an `as-` prefix entry added there the expected paths are
- * `…/assistant-handoff/png/popover.png`, `dock.png`, `page.png` and
- * `settings.png` (the prefix is cut, the file is never renamed); with a
- * prefix-less entry they are `as-popover.png`, `as-dock.png`, `as-page.png`,
- * `as-settings.png`. Until the directory joins that map the badge simply has
- * no render — the coverage rule calls that exempt, never failed — but the
- * landmark lists below run (and file) on every capture regardless.
- */
-/** The frame and the thread it holds. */
-const AS_FRAME: Landmark = {
-  id: "as-frame",
-  desc: "the Ask surface's panel (popover or side panel)",
-  host: "page",
-  any: [{ testid: "assistant-popover" }, { testid: "assistant-panel" }],
-};
-const AS_SETUP: Landmark = {
-  id: "as-setup",
-  desc: "the first-run setup checklist an empty thread answers with (1f)",
-  host: "page",
-  any: [{ testid: "assistant-setup" }, { text: /checked this server/i }],
-};
-/** The composer box (handoff §1: ONE box — the field over the control row). */
-const AS_COMPOSER: Landmark = {
-  id: "as-composer",
-  desc: "the composer box",
-  host: "page",
-  any: [{ testid: "assistant-composer" }, { testid: "assistant-composer-input" }],
-};
-/** The composer's control row, left to right: context · trust · mic · Send. */
-const AS_CONTEXT_BUTTON: Landmark = {
-  id: "as-context-button",
-  desc: "the page-context button (§3)",
-  host: "page",
-  any: [{ testid: "assistant-context-button" }],
-};
-const AS_PILL: Landmark = {
-  id: "as-trust-pill",
-  desc: "the trust pill (§4)",
-  host: "page",
-  any: [{ testid: "assistant-pill" }],
-};
-const AS_MIC: Landmark = {
-  id: "as-mic",
-  desc: "the mic button (A6: present whether or not the box holds text)",
-  host: "page",
-  any: [{ testid: "mic-button" }],
-};
-const AS_SEND: Landmark = {
-  id: "as-send",
-  desc: "the Send verb",
-  host: "page",
-  any: [{ testid: "assistant-send" }],
-};
-/* The two composer menus (handoff §1: SIBLINGS of the panel, so its
- * `overflow: hidden` never clips them) and what each one draws. */
-const AS_TRUST_MENU: Landmark = {
-  id: "as-trust-menu",
-  desc: "the trust menu open above the pill (1o)",
-  host: "page",
-  any: [{ testid: "assistant-pill-menu" }, { role: "dialog", name: /trust level/i }],
-};
-const AS_TRUST_LEVELS: Landmark = {
-  id: "as-trust-levels",
-  desc: "the levels the menu offers, as radio rows (1o)",
-  host: "page",
-  any: [{ testid: "assistant-pill-option-*" }, { role: "menuitemradio" }],
-};
-const AS_CONTEXT_MENU: Landmark = {
-  id: "as-context-menu",
-  desc: "the page-context menu open above the context button (1i)",
-  host: "page",
-  any: [{ testid: "assistant-context-menu" }, { role: "dialog", name: /page context/i }],
-};
-const AS_CONTEXT_SWITCH: Landmark = {
-  id: "as-context-switch",
-  desc: "the menu's 'Send with my messages' switch (§3)",
-  host: "page",
-  any: [{ testid: "assistant-context-send" }, { text: /send with my messages/i }],
-};
-/** The header's two size verbs: popover ⇄ side panel ⇄ full page (§1). */
-const AS_SIZE_CONTROLS: Landmark = {
-  id: "as-size-controls",
-  desc: "the header's side-panel and full-page verbs (§1's three sizes)",
-  host: "page",
-  any: [{ testid: "assistant-dock" }, { testid: "assistant-expand" }],
-};
-/** 1e — `/assistant`. `assistant-page-threads` and `assistant-page-side` are
- * the design's columns, and the page drops them below 1000px / 1240px; the
- * phone path to the thread list is the header's own thread verbs, which
- * AS_NEW_THREAD accepts as the second form. The context column has no phone
- * twin — its two facts are the composer's context button and trust pill — so
- * it is claimed at the width its render draws and nowhere else. */
-const AS_PAGE_FRAME: Landmark = {
-  id: "as-page-frame",
-  desc: "the assistant's full page (1e)",
-  any: [{ testid: "assistant-page" }, { testid: "assistant-page-column" }],
-};
-const AS_PAGE_THREADS: Landmark = {
-  id: "as-page-threads",
-  desc: "the left thread column, with its THREADS rows",
-  only: 1280,
-  any: [{ testid: "assistant-page-threads" }],
-};
-const AS_PAGE_SIDE: Landmark = {
-  id: "as-page-side",
-  desc: "the right LOOKING AT / CHANGES / TRUST column (1e, hidden below 1240px)",
-  only: 1280,
-  any: [{ testid: "assistant-page-side" }],
-};
-const AS_NEW_THREAD: Landmark = {
-  id: "as-new-thread",
-  desc: "the 'New thread' verb (the thread column's at 1280, the panel header's below 1000px)",
-  host: "page",
-  any: [{ testid: "assistant-page-new-thread" }, { testid: "assistant-new-conversation" }],
-};
-/** 1p + 1n — Settings → Assistant. */
-const AS_SETTINGS_PAGE: Landmark = {
-  id: "as-settings-page",
-  desc: "the Settings → Assistant body",
-  any: [{ testid: "settings-assistant" }, { testid: "settings-page" }],
-};
-const AS_TRUST_TABLE: Landmark = {
-  id: "as-trust-table",
-  desc: "the trust table — 'which actions ask at your level' (1p)",
-  any: [
-    { testid: "settings-assistant-trust-table" },
-    { role: "heading", name: /which actions ask at your level/i },
-  ],
-};
-const AS_TRUST_TABLE_ROWS: Landmark = {
-  id: "as-trust-table-rows",
-  desc: "the table's rows — one per action the tool table classes (1p)",
-  any: [{ testid: "settings-assistant-trust-table-row-*" }, { role: "row" }],
-};
-const AS_TRUST_RADIOS: Landmark = {
-  id: "as-trust-radios",
-  desc: "the trust level radios the pill's menu and this page share (§4)",
-  any: [{ testid: "settings-assistant-trust-level-option-*" }, { role: "radio" }],
-};
-const AS_SPEECH: Landmark = {
-  id: "as-speech",
-  desc: "the Speech section (1n)",
-  any: [{ testid: "settings-assistant-speech" }, { role: "heading", name: /^speech$/i }],
-};
-const AS_SPEECH_SWITCHES: Landmark = {
-  id: "as-speech-switches",
-  desc: "the two dictation switches (send after I stop / browser fallback) (1n)",
-  any: [
-    { testid: "settings-assistant-speech-auto-send" },
-    { testid: "settings-assistant-speech-browser-fallback" },
-  ],
-};
+const CHATS_INDEX_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  { id: "chats-root", desc: "the Chats split view", any: [{ testid: "chats" }] },
+  CHATS_LIST_COL,
+  { id: "chat-search", desc: "the chat search box", any: [{ testid: "chat-search" }] },
+  { id: "chat-new-btn", desc: "the New chat action button", any: [{ testid: "chat-new" }] },
+];
 
-/* ------------------------------------------------------------- the screens */
+const CHATS_NEW_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  { id: "chats-root", desc: "the Chats split view", any: [{ testid: "chats" }] },
+  CHATS_LIST_COL,
+  {
+    id: "chat-new-pane",
+    desc: "the centered New chat prompt pane",
+    any: [{ testid: "chat-new-pane" }],
+  },
+  {
+    id: "new-chat-prompt",
+    desc: "the New chat prompt box (radius 14)",
+    any: [{ testid: "new-chat-prompt" }],
+    measure: { radius: 14 },
+  },
+  {
+    id: "new-chat-input",
+    desc: "the New chat prompt input",
+    any: [{ testid: "new-chat-prompt-input" }],
+  },
+];
 
-/**
- * One entry per captured screen, keyed `"<badge> <screen name>"` — the same
- * words `emu.screen(badge, name)` records. A screen name whose tail is a
- * per-pass id (`2e schedule-run-9c1e04f2`) is found by shape: a run of 6+ hex
- * characters collapses to `*`, so it lives under `2e schedule-run-*`.
- */
+const CHATS_THREAD_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  CHATS_LIST_COL,
+  { id: "chat-thread", desc: "the active chat thread column", any: [{ testid: "chat-thread" }] },
+  { id: "chat-header", desc: "the 54px thread header", any: [{ testid: "chat-header" }] },
+  { id: "chat-title", desc: "the chat title", any: [{ testid: "chat-title" }] },
+  {
+    id: "chat-back",
+    desc: "the phone back button to the chat list",
+    only: 390,
+    any: [{ testid: "chat-back" }],
+  },
+  { id: "chat-menu", desc: "the header ⋯ menu button", any: [{ testid: "chat-menu" }] },
+  { id: "chat-composer", desc: "the reply composer", any: [{ testid: "chat-composer" }] },
+];
+
+/* ------------------------------------------------------------ Factory (R4/R5) */
+
+const FACTORY_INDEX_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  {
+    id: "factory-index",
+    desc: "the Factory workflow index",
+    any: [{ testid: "factory-index" }],
+  },
+  {
+    id: "factory-heading",
+    desc: "the Factory heading",
+    any: [{ role: "heading", name: /^Factory$/ }],
+  },
+  {
+    id: "factory-summary",
+    desc: "the live factory summary line",
+    any: [{ testid: "factory-summary" }],
+  },
+  {
+    id: "factory-new-btn",
+    desc: "the New workflow button",
+    any: [{ testid: "factory-new" }],
+  },
+  {
+    id: "factory-new-card",
+    desc: "the dashed New workflow card or workflow cards",
+    any: [
+      { testid: "factory-new-card" },
+      { testid: "workflow-card-*" },
+      { testid: "factory-empty" },
+    ],
+  },
+];
+
+const FACTORY_SHEET_LANDMARKS: Landmark[] = [
+  ...FACTORY_INDEX_LANDMARKS,
+  {
+    id: "new-workflow-sheet",
+    desc: "the New workflow creation sheet (720px on desktop)",
+    any: [{ testid: "new-workflow-sheet" }],
+    only: 1280,
+    measure: { width: 720 },
+  },
+  {
+    id: "new-workflow-sheet-phone",
+    desc: "the New workflow creation bottom sheet",
+    only: 390,
+    any: [{ testid: "new-workflow-sheet" }],
+  },
+  {
+    id: "new-workflow-description",
+    desc: "the Describe it prompt field",
+    any: [{ testid: "new-workflow-description" }],
+  },
+  {
+    id: "new-workflow-sketch",
+    desc: "the Sketch it action",
+    any: [{ testid: "new-workflow-sketch" }],
+  },
+  {
+    id: "new-workflow-blank",
+    desc: "the Blank canvas row",
+    any: [{ testid: "new-workflow-blank" }],
+  },
+  {
+    id: "new-workflow-import",
+    desc: "the Import YAML row",
+    any: [{ testid: "new-workflow-import" }],
+  },
+];
+
+/* ------------------------------------------------------ Workflow Editor (R5) */
+
+const EDITOR_CANVAS_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  { id: "studio-page", desc: "the workflow editor workspace", any: [{ testid: "studio-page" }] },
+  {
+    id: "studio-canvas",
+    desc: "the interactive dotted LR flow canvas",
+    any: [{ testid: "studio-canvas" }],
+  },
+  {
+    id: "tool-island",
+    desc: "the floating left tool island",
+    any: [{ testid: "tool-island" }],
+  },
+  {
+    id: "editor-top-actions",
+    desc: "the top-right editor actions bar",
+    any: [{ testid: "editor-top-actions" }],
+  },
+  {
+    id: "editor-versions-btn",
+    desc: "the Versions history button",
+    any: [{ testid: "editor-versions-btn" }],
+  },
+  {
+    id: "editor-try-it-btn",
+    desc: "the Try it action button",
+    any: [{ testid: "editor-try-it-btn" }],
+  },
+  {
+    id: "studio-publish",
+    desc: "the Make live primary button",
+    any: [{ testid: "studio-publish" }],
+  },
+  {
+    id: "editor-more-btn",
+    desc: "the editor ⋯ overflow menu trigger",
+    any: [{ testid: "editor-more-btn" }],
+  },
+  {
+    id: "studio-nodes",
+    desc: "at least one workflow step card at 168×56",
+    any: [
+      {
+        selector:
+          '[data-testid^="canvas-step-"]:not([data-testid^="canvas-step-tile-"]):not([data-testid^="canvas-step-fact-"]):not([data-testid^="canvas-step-row-"]) > [role="button"]',
+      },
+    ],
+    measure: { width: 168, minHeight: 56, box: "offset" },
+  },
+];
+
+const EDITOR_VERSIONS_LANDMARKS: Landmark[] = [
+  ...EDITOR_CANVAS_LANDMARKS,
+  {
+    id: "versions-panel",
+    desc: "the 304px Versions slide panel",
+    only: 1280,
+    any: [{ testid: "versions-panel" }],
+    measure: { width: 304 },
+  },
+  {
+    id: "versions-panel-phone",
+    desc: "the Versions sheet on phone",
+    only: 390,
+    any: [{ testid: "versions-panel" }],
+  },
+];
+
+const EDITOR_WRAP_LANDMARKS: Landmark[] = [
+  ...EDITOR_CANVAS_LANDMARKS,
+  {
+    id: "wrap-panel",
+    desc: "the 340px Wrap selected steps floating panel",
+    only: 1280,
+    any: [{ testid: "wrap-panel" }],
+    measure: { width: 340 },
+  },
+  {
+    id: "wrap-panel-phone",
+    desc: "the Wrap selected steps sheet on phone",
+    only: 390,
+    any: [{ testid: "wrap-panel" }],
+  },
+];
+
+const EDITOR_GOAL_LANDMARKS: Landmark[] = [
+  ...EDITOR_CANVAS_LANDMARKS,
+  {
+    id: "goal-frame",
+    desc: "the blue repeat-until GoalFrame around wrapped steps",
+    any: [{ testid: "goal-frame" }],
+  },
+];
+
+/* ------------------------------------------------- Quick chat & Assistant (R6) */
+
+const QUICK_CHAT_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  {
+    id: "quick-chat",
+    desc: "the 400px docked Quick chat panel",
+    host: "page",
+    only: 1280,
+    any: [{ testid: "quick-chat" }],
+    measure: { width: 400 },
+  },
+  {
+    id: "quick-chat-phone",
+    desc: "the full-width Quick chat panel on phone",
+    host: "page",
+    only: 390,
+    any: [{ testid: "quick-chat" }],
+  },
+  {
+    id: "quick-chat-header",
+    desc: "the Quick chat panel header",
+    host: "page",
+    any: [{ testid: "assistant-panel-header" }],
+  },
+  {
+    id: "quick-chat-open-as-chat",
+    desc: "the Open as chat link to /assistant",
+    host: "page",
+    any: [{ testid: "quick-chat-open-as-chat" }],
+  },
+  {
+    id: "quick-chat-composer",
+    desc: "the assistant composer input",
+    host: "page",
+    any: [{ testid: "assistant-composer-input" }],
+  },
+  {
+    id: "quick-chat-pill",
+    desc: "the trust pill",
+    host: "page",
+    any: [{ testid: "assistant-pill" }],
+  },
+  {
+    id: "quick-chat-context",
+    desc: "the page-context indicator",
+    host: "page",
+    any: [{ testid: "assistant-context-button" }],
+  },
+];
+
+/* ----------------------------------------------------------- Manage (R7) */
+
+const MANAGE_SHELL_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  { id: "manage-root", desc: "the Manage container", any: [{ testid: "manage" }] },
+  {
+    id: "manage-nav-desktop",
+    desc: "the 230px Manage left sub-nav",
+    only: 1280,
+    any: [{ testid: "manage-nav" }],
+    measure: { width: 230 },
+  },
+  {
+    id: "manage-nav-phone",
+    desc: "the horizontal Manage sub-nav pill strip on phone",
+    only: 390,
+    any: [{ testid: "manage-nav" }],
+  },
+  {
+    id: "manage-nav-projects",
+    desc: "Projects nav item",
+    any: [{ testid: "manage-nav-projects" }],
+  },
+  { id: "manage-nav-runners", desc: "Runners nav item", any: [{ testid: "manage-nav-runners" }] },
+  {
+    id: "manage-nav-agents",
+    desc: "Agents & models nav item",
+    any: [{ testid: "manage-nav-agents" }],
+  },
+  {
+    id: "manage-content",
+    desc: "the Manage main content pane",
+    any: [{ testid: "manage-content" }],
+  },
+];
+
+/* -------------------------------------------------------- Kept Detail Screens */
+
+const WORKBENCH_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  {
+    id: "run-header",
+    desc: "the live run header",
+    any: [{ testid: "run-header-status" }, { testid: "workbench-header" }],
+  },
+  {
+    id: "run-workbench-canvas",
+    desc: "the run graph canvas or timeline",
+    any: [
+      { testid: "workbench-canvas" },
+      { testid: "studio-canvas" },
+      { testid: "run-nodes-list" },
+    ],
+  },
+];
+
+const REPO_PAGE_LANDMARKS: Landmark[] = [
+  ...SHELL_LANDMARKS,
+  { id: "repo-page", desc: "the Repository detail page", any: [{ testid: "repo-page" }] },
+];
+
+/* ------------------------------------------------------------- Map by screen */
+
 export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
-  /* ------------------------------------------------------ 1b · /workflows */
-  "1b index": [
-    INDEX_HEADING,
-    INDEX_IMPORT,
-    INDEX_NEW,
-    INDEX_START_BLANK,
-    INDEX_STARTER_TEMPLATE,
-    INDEX_SEARCH,
-    INDEX_CHIP_ALL,
-    INDEX_CHIP_DRAFT,
-    INDEX_LIST,
-    INDEX_ROW_EDIT,
-    INDEX_ROW_MENU,
-  ],
-  "1b no-match": [INDEX_HEADING, INDEX_NEW, INDEX_SEARCH, INDEX_NO_MATCH],
-  // The same index with a workflow filed into a folder: every landmark the
-  // plain index claims, plus finding 10's folder treatment — the `All
-  // folders` filter select and the row on the filtered flat list.
-  "1b folders": [
-    INDEX_HEADING,
-    INDEX_IMPORT,
-    INDEX_NEW,
-    INDEX_START_BLANK,
-    INDEX_STARTER_TEMPLATE,
-    INDEX_SEARCH,
-    INDEX_CHIP_ALL,
-    INDEX_CHIP_DRAFT,
-    INDEX_LIST,
-    INDEX_FOLDER_FILTER,
-    INDEX_FOLDER_ROW,
-    INDEX_ROW_EDIT,
-    INDEX_ROW_MENU,
-  ],
-  "1b server-error": [INDEX_HEADING, INDEX_NEW, ERROR_PANEL],
-
-  /* -------------------------------------------- 1c · the New workflow dialog */
-  "1c new-workflow": [
-    INDEX_HEADING,
-    NW_TITLE,
-    NW_NAME,
-    NW_ID_LINE,
-    NW_ID_CHANGE,
-    NW_START_FROM,
-    NW_BLANK,
-    NW_FOLDER,
-    NW_CANCEL,
-    NW_SUBMIT,
-  ],
-  "1c server-error": [
-    INDEX_HEADING,
-    ERROR_PANEL,
-    NW_TITLE,
-    NW_NAME,
-    NW_START_FROM,
-    NW_FOLDER,
-    NW_CANCEL,
-    NW_SUBMIT,
-  ],
-
-  /* ------------------------------------------- 1e · the workflow page (1e/2a/2d share its header) */
-  "1e workflow": [
-    WF_BREADCRUMB,
-    WF_TITLE,
-    WF_REVISION_CHIP,
-    WF_TABS,
-    WF_TAB_OVERVIEW,
-    WF_TAB_YAML,
-    WF_TAB_USED_IN,
-    WF_TAB_HISTORY,
-    WF_USE_IN_REPO,
-    WF_GRAPH,
-    WF_RAIL_USED_IN,
-    WF_RAIL_INPUTS,
-    WF_RAIL_RUNS,
-  ],
-  "1e not-found": [WF_FAILED_HEADING, WF_FAILED_BANNER, WF_BACK],
-  "1e server-error": [WF_FAILED_HEADING, WF_FAILED_BANNER, WF_RETRY, WF_BACK],
-
-  /* ------------------------------------------------------- 1g · the Studio */
-  "1g studio": [
-    STUDIO_BREADCRUMB,
-    STUDIO_TITLE,
-    STUDIO_DRAFT_CHIP,
-    STUDIO_VIEW_TOGGLE,
-    STUDIO_UNDO,
-    STUDIO_REDO,
-    STUDIO_VALIDATE,
-    STUDIO_SAVE,
-    STUDIO_PUBLISH,
-    STUDIO_PALETTE_ADD,
-    STUDIO_PALETTE_SEARCH,
-    STUDIO_KIND_AGENT,
-    STUDIO_KIND_MODEL,
-    STUDIO_KIND_COMMAND,
-    STUDIO_KIND_APPROVAL,
-    STUDIO_WRAP_HEADING,
-    STUDIO_WRAP_UNTIL,
-    STUDIO_WRAP_FOREACH,
-    STUDIO_CANVAS,
-    STUDIO_INSPECTOR,
-    STUDIO_ASSISTANT,
-    STUDIO_STATUS_BAR,
-  ],
-  "1g inspector-edit": [
-    STUDIO_BREADCRUMB,
-    STUDIO_TITLE,
-    STUDIO_DRAFT_CHIP,
-    STUDIO_VIEW_TOGGLE,
-    STUDIO_UNDO,
-    STUDIO_REDO,
-    STUDIO_VALIDATE,
-    STUDIO_SAVE,
-    STUDIO_PUBLISH,
-    STUDIO_PALETTE_ADD,
-    STUDIO_PALETTE_SEARCH,
-    STUDIO_KIND_AGENT,
-    STUDIO_KIND_MODEL,
-    STUDIO_KIND_COMMAND,
-    STUDIO_KIND_APPROVAL,
-    STUDIO_WRAP_HEADING,
-    STUDIO_WRAP_UNTIL,
-    STUDIO_WRAP_FOREACH,
-    STUDIO_CANVAS,
-    STUDIO_NODE_CARD,
-    STUDIO_NODE_WHERE,
-    STUDIO_NODE_PROMPT,
-    STUDIO_NODE_ADVANCED,
-    STUDIO_ASSISTANT,
-    STUDIO_STATUS_BAR,
-  ],
-  // A draft that cannot be read is still the Studio page (#23): the breadcrumb
-  // and the H1 stand over the banner that quotes the server, with a Retry under
-  // it — the same rule the 1e workflow page's failed read has always followed.
-  "1g server-error": [STUDIO_ERROR_HEADING, STUDIO_DRAFT_ERROR],
-
-  /* ------------------------------------------------- 2a · Used in + its dialog */
-  "2a used-in-empty": [
-    WF_BREADCRUMB,
-    WF_TITLE,
-    WF_TAB_USED_IN_ACTIVE,
-    USED_IN_PANEL,
-    USED_IN_EMPTY,
-    // The footnote explains the rows' `Open ›` link, so it is no longer drawn
-    // over an empty list (2026-10-30 copy review, 2a item 7) — a screen with no
-    // rows may not require it. `2a used-in-assigned` still does.
-  ],
-  "2a used-in-assigned": [
-    WF_BREADCRUMB,
-    WF_TITLE,
-    WF_TAB_USED_IN_ACTIVE,
-    USED_IN_PANEL,
-    USED_IN_LIST,
-    USED_IN_PIN,
-    USED_IN_OPEN,
-    USED_IN_FOOTNOTE,
-  ],
-  // Captured with a project already chosen, because that is the state the
-  // design draws and the state the one-select dialog acts on: the project
-  // select plus the repository select it reveals (no per-row `Use here`).
-  "2a use-dialog": [
-    WF_TAB_USED_IN,
-    USE_DIALOG,
-    USE_DIALOG_TITLE,
-    USE_FORM,
-    USE_PIN_LINE,
-    USE_PROJECT,
-    USE_REPO,
-    USE_CEILING,
-    USE_CONFIRM,
-    USE_CANCEL,
-  ],
-  "2a server-error": [WF_BREADCRUMB, WF_TITLE, WF_TAB_USED_IN_ACTIVE, USED_IN_PANEL, USED_IN_ERROR],
-
-  /* ------------------------------------- 2c · the trigger dialog + its saves */
-  "2c dialog-schedule": [
-    REPO_PAGE,
-    TRIG_DIALOG,
-    TRIG_TITLE,
-    TRIG_MODE,
-    TRIG_MODE_SCHEDULE,
-    TRIG_CRON,
-    TRIG_CRON_WORDS,
-    TRIG_GOAL,
-    TRIG_CANCEL,
-    TRIG_SUBMIT,
-  ],
-  "2c dialog-issue": [
-    REPO_PAGE,
-    TRIG_DIALOG,
-    TRIG_TITLE,
-    TRIG_MODE,
-    TRIG_MODE_ISSUE,
-    TRIG_EVENT,
-    TRIG_LABELS,
-    TRIG_RUN_GETS,
-    TRIG_CANCEL,
-    TRIG_SUBMIT,
-  ],
-  "2c schedule-trigger-saved": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_CHAT_BOX,
-    REPO_WORKFLOWS_PANEL,
-    REPO_TRIGGER_LINE,
-  ],
-  "2c issue-trigger-saved": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_CHAT_BOX,
-    REPO_WORKFLOWS_PANEL,
-    REPO_TRIGGER_LINE,
-  ],
-  // The 3a pause path open on the edit dialog: the same 2c dialog, reached
-  // from the row's ⋯ menu, now carrying the trigger's Active/Paused switch.
-  "2c trigger-edit-pause": [
-    REPO_PAGE,
-    TRIG_DIALOG,
-    TRIG_MODE,
-    TRIG_ENABLED,
-    TRIG_CANCEL,
-    TRIG_SUBMIT,
-  ],
-  "2c server-error": [REPO_PAGE, TRIG_DIALOG, TRIG_MODE, ERROR_PANEL],
-
-  /* ------------------------------------------------------- 2d · the YAML tab */
-  "2d yaml": [
-    WF_TABS,
-    WF_TAB_YAML_ACTIVE,
-    YAML_FRAME,
-    YAML_REVISION,
-    YAML_COPY,
-    YAML_DOWNLOAD,
-    YAML_TEXT,
-    YAML_LINES,
-  ],
-  "2d server-error": [WF_TABS, WF_TAB_YAML_ACTIVE, YAML_FRAME, YAML_ERROR],
-
-  /* ------------------------------------------------- 2e · the repo page */
-  // design 3a: a workflow row's landmarked verbs are the `⋯` triggers menu
-  // (REPO_ROW_MENU — `Add trigger…` and one `Edit <trigger>` per trigger
-  // live INSIDE it, as menuitems, asserted by the journey itself) and `Run`
-  // (REPO_ROW_RUN). The STARTS WHEN box, its rows and their switch/Edit left
-  // the page with it: what a trigger IS and whether it PAUSES are now the
-  // row's mono trigger line's words (REPO_TRIGGER_LINE / REPO_TRIGGER_PAUSED).
-  "2e repo": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_CHAT_BOX,
-    REPO_WORKFLOWS_PANEL,
-    REPO_LIBRARY_LINK,
-    REPO_ROW_MENU,
-    REPO_ROW_RUN,
-  ],
-  "2e repo-empty": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_CHAT_BOX,
-    REPO_WORKFLOWS_PANEL,
-    REPO_LIBRARY_LINK,
-    REPO_WORKFLOWS_EMPTY,
-  ],
-  "2e triggers-paused": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_WORKFLOWS_PANEL,
-    REPO_TRIGGER_LINE,
-    REPO_TRIGGER_PAUSED,
-  ],
-  // `2e schedule-run-<run id>`: the repo page showing the run the schedule
-  // started (the run's own row is data; the panels that hold it are design).
-  "2e schedule-run-*": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_CHAT_BOX,
-    REPO_WORKFLOWS_PANEL,
-    REPO_RUNS_PANEL,
-  ],
-  // `2e schedule-run-approved` is captured on the RUN the schedule fired, so
-  // its landmarks are the design's run views: header, steps/graph, the gate.
-  "2e schedule-run-approved": [RUN_PAGE, RUN_TITLE, RUN_GRAPH, RUN_GATE],
-  "2e server-error": [REPO_PAGE, REPO_HEADING, REPO_WORKFLOWS_PANEL, ERROR_PANEL],
-
-  /* ------------------------------------------- project-1b · the project page */
-  "project-1b overview": [
-    PROJECT_HEADING,
-    PROJECT_NEW_THREAD,
-    PROJECT_START_RUN,
-    PROJECT_TABS,
-    PROJECT_TAB_OVERVIEW_ACTIVE,
-    PROJECT_TAB_RUNS,
-    PROJECT_TAB_THREADS,
-    PROJECT_TAB_WORKFLOWS,
-    PROJECT_TAB_ARTIFACTS,
-    PROJECT_TAB_SETTINGS,
-    // Finding 09: the configuration's two doors are header actions now. Only
-    // the one every role gets is claimed here — `+ Repository` needs a
-    // maintainer, which this screen's viewer is not proved to be (the claimed
-    // verb for that state is on `rcn-3c header-actions`, whose journey creates
-    // the project it plays on).
-    PROJECT_SETTINGS_LINK,
-    PROJECT_PANEL_RUNNING,
-    PROJECT_PANEL_THREADS,
-    PROJECT_PANEL_REPOS,
-    PROJECT_PANEL_WORKFLOWS,
-  ],
-  // The RUNS panel carries no `New run` of its own any more (project-tabs-2
-  // review named the duplicate of the band's verb): the header band's
-  // `Start run` is the page's one door into the form, so it is a landmark of
-  // this screen — the door has to be on the page whose list it opens.
-  "project-1b runs": [PROJECT_RUNS_PAGE, PROJECT_RUNS_BODY, PROJECT_START_RUN],
-  "project-1b threads": [PROJECT_THREADS_PAGE, PROJECT_THREADS_PANE],
-  "project-1b workflows": [
-    PROJECT_WORKFLOWS_PAGE,
-    PROJECT_WORKFLOWS_BODY,
-    PROJECT_WORKFLOWS_LIBRARY,
-    PROJECT_WORKFLOWS_STARTS_WHEN,
-  ],
-  "project-1b empty": [
-    PROJECT_HEADING,
-    PROJECT_NEW_THREAD,
-    PROJECT_START_RUN,
-    PROJECT_TABS,
-    PROJECT_TAB_OVERVIEW_ACTIVE,
-    PROJECT_PANEL_RUNNING,
-    PROJECT_PANEL_THREADS,
-    PROJECT_PANEL_REPOS,
-    PROJECT_PANEL_WORKFLOWS,
-    PROJECT_RUNNING_EMPTY,
-    PROJECT_REPOS_EMPTY,
-    PROJECT_WORKFLOWS_EMPTY,
-  ],
-  "project-1b not-found": [PROJECT_NOT_FOUND_HEADING, PROJECT_NOT_FOUND, PROJECT_NOT_FOUND_BACK],
-  "project-1b server-error": [
-    PROJECT_UNAVAILABLE_HEADING,
-    PROJECT_ERROR_SHELL,
-    PROJECT_ERROR_PANEL,
-  ],
-
-  /* ---------------------------------------------- repo-1e · the repo page */
-  "repo-1e repo": [
-    REPO_PAGE,
-    REPO_HEADING,
-    REPO_CHAT_BOX,
-    REPO_WORKFLOWS_PANEL,
-    REPO_ISSUES_PANEL,
-    REPO_ACTIVITY,
-    REPO_RUNS_PANEL,
-  ],
-  "repo-1e not-found": [
-    REPO_PAGE,
-    REPO_FAILED_HEADING,
-    REPO_NOT_FOUND_HEADING,
-    REPO_NOT_FOUND,
-    REPO_NOT_FOUND_BACK,
-  ],
-  // The design has no server-error render; the app's own rule (README) is that
-  // a failed read keeps its heading and quotes the server, and the repos read now
-  // follows it (#24): `repo-error-page` keeps the project breadcrumb and the
-  // page's H1 (`Repository`) over the ProblemBanner, with a Retry beneath. The
-  // banner no longer renders alone, so `repo-page`/`repo-header` remain in the
-  // heading landmark's `any` only as the frames the neighbouring screens draw
-  // (`repo-1e not-found` and the loaded page) — the failure screen is proven by
-  // its own H1.
-  "repo-1e server-error": [REPO_FAILED_HEADING, ERROR_PANEL],
-
-  /* ------------------------------------------------ threads-1g · /threads */
-  "threads-1g list": [THREADS_HEADING, THREADS_NEW, THREADS_SEARCH, THREADS_CHIPS, THREADS_LIST],
-  "threads-1g thread": [
-    THREADS_HEADING,
-    THREADS_LIST,
-    THREAD_TITLE,
-    THREAD_CONTROL,
-    THREAD_TRANSCRIPT,
-    THREAD_COMPOSER,
-    THREAD_SEND,
-    THREAD_CONTEXT_DISCLOSURE,
-  ],
-  // A person who is not the controller sees the badge replaced by `Take
-  // control` and the composer locked; the design's `Stop` is a live-turn
-  // control, so it is not a landmark on any of these screens.
-  "threads-1g not-controller": [
-    THREADS_HEADING,
-    THREADS_LIST,
-    THREAD_TITLE,
-    THREAD_CONTROL,
-    THREAD_TRANSCRIPT,
-    THREAD_COMPOSER,
-    THREAD_CONTEXT_DISCLOSURE,
-  ],
-  "threads-1g took-control": [
-    THREADS_HEADING,
-    THREADS_LIST,
-    THREAD_TITLE,
-    THREAD_CONTROL,
-    THREAD_TRANSCRIPT,
-    THREAD_COMPOSER,
-    THREAD_SEND,
-    THREAD_CONTEXT_DISCLOSURE,
-  ],
-  "threads-1g server-error": [THREADS_HEADING, THREADS_NEW, THREADS_LIST_ERROR],
-
-  /* ---------------------------- handoff-repo-chat-nav (rcn-* badges) */
-
-  // The shell (2c/3c). These screens ARE the app shell, so their landmarks
-  // read the whole page (Landmark.host) — the sidebar lives outside <main>.
-  // At 390 the documented reflow replaces the column (and the rail) with the
-  // phone top strip: every landmark carries that one tap as its alternate.
-  "rcn-3c expanded": [
-    RCN_COLUMN,
-    RCN_NEW_CHAT,
-    RCN_TODAY,
-    RCN_MY_CHATS,
-    RCN_PROJECTS_SECTION,
-    RCN_WORKFLOWS_AGENTS_ROWS,
-    RCN_EXPANDED_CONTROLS,
-  ],
-  "rcn-3c rail": [
-    RCN_COLUMN,
-    RCN_NEW_CHAT,
-    RCN_TODAY,
-    RCN_RAIL_TILES,
-    RCN_WORKFLOWS_AGENTS_ROWS,
-    RCN_RAIL_EXPAND,
-  ],
-  // Review round 2 drew two 3c states with arrows: the project row's ⋯ menu
-  // and a tile's open projects surface (4a: the click-opened Projects
-  // popover). Finding 09 deleted the ⋯ menu, so this badge's
-  // three captures are now the header's own configure surface: the two actions
-  // the menu used to hold, the dialog `+ Repository` opens in place, and the
-  // settings page's Settings | Members tab strip (Members is the old menu's
-  // `Members` row, still `/p/:id/members`). Same badge, new screen names, so the
-  // report still pairs each with the 3c render.
-  "rcn-3c header-actions": [
-    RCN_COLUMN,
-    RCN_PROJECTS_SECTION,
-    PROJECT_ADD_REPO,
-    PROJECT_SETTINGS_LINK,
-  ],
-  "rcn-3c add-repository": [RCN_COLUMN, ADD_REPO_DIALOG, PROJECT_ADD_REPO],
-  "rcn-3c settings-tabs": [
-    RCN_COLUMN,
-    PROJECT_SETTINGS_TABS,
-    PROJECT_SETTINGS_TAB_SETTINGS,
-    PROJECT_SETTINGS_TAB_MEMBERS,
-  ],
-  "rcn-3c flyout": [
-    RCN_COLUMN,
-    RCN_RAIL_TILES,
-    RCN_RAIL_FLYOUT,
-    RCN_RAIL_EXPAND,
-    RCN_RAIL_FLYOUT_ARROW,
-  ],
-
-  // The repo page's List view (3a): chat box on top, the one mixed activity
-  // feed with its filter chips, and the WORKFLOWS / OPEN ISSUES side panels.
-  "rcn-3a repo": [
-    RCN_REPO_PAGE,
-    RCN_REPO_BREADCRUMB,
-    RCN_REPO_TITLE,
-    RCN_VIEW_TOGGLE,
-    RCN_CHAT_BOX,
-    RCN_CHAT_INPUT,
-    RCN_CHAT_PROFILE,
-    RCN_CHAT_START,
-    RCN_FILTER_CHIPS,
-    RCN_ACTIVITY,
-    RCN_WORKFLOWS_PANEL,
-    RCN_WORKFLOW_ROW,
-    RCN_WORKFLOW_TRIGGERS,
-    RCN_WORKFLOW_RESULT,
-    RCN_WORKFLOW_RUN,
-    RCN_ISSUES_PANEL,
-    RCN_REPO_NOTES_PANEL,
-  ],
-  // The same page once the assistant HAS written something for this reader:
-  // the note row with its one action and its dismiss (ADR-0071). The row is
-  // model output, so nothing here claims its words — the landmarks claim the
-  // structure a note is drawn in, and the journey proves a real note reached
-  // it through the read the page itself makes.
-  "rcn-3a repo-notes": [
-    RCN_REPO_PAGE,
-    RCN_REPO_BREADCRUMB,
-    RCN_REPO_TITLE,
-    RCN_VIEW_TOGGLE,
-    RCN_CHAT_BOX,
-    RCN_CHAT_INPUT,
-    RCN_CHAT_START,
-    RCN_FILTER_CHIPS,
-    RCN_ACTIVITY,
-    RCN_WORKFLOWS_PANEL,
-    RCN_ISSUES_PANEL,
-    RCN_REPO_NOTES_PANEL,
-    RCN_REPO_NOTE_ROW,
-    RCN_REPO_NOTE_ACTION,
-    RCN_REPO_NOTE_DISMISS,
-  ],
-  // The same page with nothing said yet: the honest empty feed stands in for
-  // the rows (the empty-error rule — a repo the pass created shows absences,
-  // never invented rows).
-  "rcn-3a repo-feed-empty": [
-    RCN_REPO_PAGE,
-    RCN_REPO_BREADCRUMB,
-    RCN_REPO_TITLE,
-    RCN_VIEW_TOGGLE,
-    RCN_CHAT_BOX,
-    RCN_CHAT_INPUT,
-    RCN_CHAT_START,
-    RCN_FILTER_CHIPS,
-    RCN_ACTIVITY_EMPTY,
-    RCN_WORKFLOWS_PANEL,
-    RCN_ISSUES_PANEL,
-    // The panel itself, in whichever state it is in: this screen is captured
-    // before the generator has had time to answer, and a landmark that claimed
-    // the empty LINE would be a race with the model. RCN_REPO_NOTES_PANEL is
-    // satisfied by the notes or by the honest empty state, so it claims the
-    // section — which is what the design owns here — and nothing about timing.
-    RCN_REPO_NOTES_PANEL,
-  ],
-  // The same page with the runs read failed (server-error.spec.ts's rule):
-  // the page keeps its heading and owns the failure — a ProblemBanner with a
-  // Retry, never a blank feed or the empty line standing in for the break.
-  "rcn-3a server-error": [
-    RCN_REPO_TITLE,
-    RCN_CHAT_BOX,
-    ERROR_PANEL,
+  // Home
+  "home all": HOME_ALL_LANDMARKS,
+  "home not-available": HOME_ALL_LANDMARKS.map((lm) =>
+    lm.id === "home-needs-you"
+      ? {
+          id: "home-not-available",
+          desc: "honest unavailability note",
+          any: [{ testid: "home-not-available" }],
+        }
+      : lm,
+  ),
+  "home error": [...SHELL_LANDMARKS, ERROR_PANEL],
+  "project home": PROJECT_HOME_LANDMARKS,
+  "project error": [...SHELL_LANDMARKS, ERROR_PANEL],
+  "project not-found": [
+    ...SHELL_LANDMARKS,
     {
-      id: "rcn-runs-retry",
-      desc: "the activity feed's Retry on its failed runs read",
-      any: [
-        { testid: "repo-runs-retry" },
-        { testid: "repo-activity-chats-retry" },
-        { role: "button", name: /retry/i },
-      ],
+      id: "project-not-found",
+      desc: "honest project not-found state",
+      any: [{ testid: "project-not-found" }],
     },
   ],
 
-  // The repo page's Lanes view (3b): the WORKFLOWS chip row and the four
-  // lanes; the phone stacks them in one column (same testids, no swap).
-  "rcn-3b lanes": [
-    RCN_REPO_PAGE,
-    RCN_REPO_BREADCRUMB,
-    RCN_REPO_TITLE,
-    RCN_VIEW_TOGGLE,
-    RCN_LANES,
-    RCN_LANE_WORKFLOWS,
-    RCN_LANE_ISSUES,
-    RCN_LANE_NEEDS_YOU,
-    RCN_LANE_RUNNING,
-    RCN_LANE_FINISHED,
+  // Chats
+  "chats list": CHATS_INDEX_LANDMARKS,
+  "chats new": CHATS_NEW_LANDMARKS,
+  "chats thread": CHATS_THREAD_LANDMARKS,
+  "chats suggestion": [
+    ...CHATS_THREAD_LANDMARKS,
+    {
+      id: "workflow-suggestion",
+      desc: "the inline Run workflow instead pill",
+      any: [{ testid: "workflow-suggestion" }],
+    },
   ],
-  // The drag, played on the repo that really has issues: the caught card and
-  // the START #<n> WITH menu open over it (its arrow, its caption, its one
-  // workflow row). The in-flight preview is deliberately NOT a landmark: the
-  // capture catches the state AFTER the drop, where the preview is gone.
-  "rcn-3b lanes-drag": [
-    RCN_REPO_PAGE,
-    RCN_REPO_BREADCRUMB,
-    RCN_REPO_TITLE,
-    RCN_VIEW_TOGGLE,
-    RCN_LANES,
-    RCN_LANE_WORKFLOWS,
-    RCN_LANE_ISSUES,
-    RCN_LANE_ISSUE_CARD,
-    RCN_LANE_RUNNING,
-    RCN_LANE_DROP_CARD,
-    RCN_START_MENU,
-    RCN_START_MENU_CAPTION,
-    RCN_START_MENU_WORKFLOW,
-    RCN_MENU_ARROW,
+  "chats run-card": [
+    ...CHATS_THREAD_LANDMARKS,
+    { id: "run-card", desc: "the inline embedded run card", any: [{ testid: "run-card-*" }] },
   ],
-  // The same board once the drop has started its run: the run wears a RUNNING
-  // card. No name here insists on which run — the pass's own is the data.
-  "rcn-3b lanes-running": [
-    RCN_REPO_PAGE,
-    RCN_REPO_BREADCRUMB,
-    RCN_REPO_TITLE,
-    RCN_VIEW_TOGGLE,
-    RCN_LANES,
-    RCN_LANE_WORKFLOWS,
-    RCN_LANE_ISSUES,
-    RCN_LANE_NEEDS_YOU,
-    RCN_LANE_RUNNING,
-    RCN_LANE_RUN_CARD,
-    RCN_LANE_FINISHED,
+  "chats error": [...SHELL_LANDMARKS, ERROR_PANEL],
+
+  // Factory
+  "factory index": FACTORY_INDEX_LANDMARKS,
+  "factory empty": [...FACTORY_INDEX_LANDMARKS],
+  "factory sheet": FACTORY_SHEET_LANDMARKS,
+  "factory error": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "factory-error",
+      desc: "Factory error banner",
+      any: [{ testid: "factory-load-error" }, { role: "alert" }],
+    },
   ],
 
-  // The chat (2e) and the composer's agent picker (1h, the same screen with
-  // the 'NEXT TURN RUNS ON' menu open). AGENTS IN THIS CHAT is asserted on
-  // the switched beat only — it needs real turns to have turn ranges; a
-  // landmark may never demand data the pass could not have served.
-  "rcn-2e chat": [
-    RCN_CONV_BREADCRUMB,
-    RCN_CONV_TITLE,
-    RCN_TRANSCRIPT,
-    RCN_COMPOSER,
-    RCN_SEND,
-    RCN_AGENT_CHIP,
-    THREAD_CONTROL,
-    RCN_SIDE_PANEL,
-    RCN_WORKS_IN,
-    RCN_ASSISTANT_NOTE,
+  // Editor
+  "editor canvas": EDITOR_CANVAS_LANDMARKS,
+  "editor versions": EDITOR_VERSIONS_LANDMARKS,
+  "editor wrap": EDITOR_WRAP_LANDMARKS,
+  "editor goal": EDITOR_GOAL_LANDMARKS,
+  "editor yaml": [
+    ...EDITOR_CANVAS_LANDMARKS,
+    { id: "editor-panel-yaml", desc: "the YAML drawer", any: [{ testid: "editor-panel-yaml" }] },
   ],
-  "rcn-2e switched": [
-    RCN_CONV_BREADCRUMB,
-    RCN_CONV_TITLE,
-    RCN_COMPOSER,
-    RCN_AGENT_CHIP,
-    RCN_SWITCH_DIVIDER,
-    RCN_SIDE_PANEL,
-    RCN_PANEL_AGENTS,
-    RCN_AGENT_TURN_RANGE,
+  "editor used-in": [
+    ...EDITOR_CANVAS_LANDMARKS,
+    {
+      id: "editor-panel-used-in",
+      desc: "the Used in drawer",
+      any: [{ testid: "editor-panel-used-in" }],
+    },
   ],
-  // The same panel at 390, opened as a sheet from the header's Details
-  // toggle (at 1280 it is the page with the panel's visible column). Only
-  // what both widths show is asserted: the sheet covers the title at 390.
-  "rcn-2e chat-details": [RCN_SIDE_PANEL, RCN_WORKS_IN],
-  "rcn-2e chat-details-switched": [RCN_SIDE_PANEL, RCN_WORKS_IN, RCN_PANEL_AGENTS],
-  // The WORKS IN scope switcher (ADR-0067 amendment): the panel with its WORKS
-  // IN section, captured with the menu CLOSED. At 390 the panel sits behind
-  // the header's Details toggle (the transcript's old inline stack copy is
-  // gone — rcn-review14), so the journey shoots the chat with the sheet
-  // CLOSED — the panel's landmarks accept the toggle as the one tap that
-  // reaches it — and reflow.ts proves every side-panel-* id item-by-item at
-  // BOTH widths. An open menu (present at 1280, absent at 390) would file a
-  // false "390 lost" reflow defect, so the menu itself is closed for the
-  // capture; its own structure (the ds Menu, its pointer arrow, the repo
-  // rows, the tick) is asserted in the journey at the 1280 frame under the
-  // every-anchored-surface-has-an-arrow message. It cannot be a landmark on
-  // THIS screen: the capture has the menu closed, so a bare `menu-arrow`
-  // claim would file a defect on a screen that draws no menu at all.
-  "rcn-2e works-in-menu": [RCN_SIDE_PANEL, RCN_WORKS_IN],
-  "rcn-2e works-in-moved": [RCN_SIDE_PANEL, RCN_WORKS_IN],
-  // The composer's picker open is a captured anchored surface too, so it
-  // carries the same arrow claim (the ds Menu mounts its arrow INSIDE the
-  // box, inside `<main>` — no `host` widening here, and the menu survives
-  // both widths, so the arrow is asserted at 1280 AND 390).
+  "editor inputs": [
+    ...EDITOR_CANVAS_LANDMARKS,
+    {
+      id: "editor-panel-inputs",
+      desc: "the Inputs drawer",
+      any: [{ testid: "editor-panel-inputs" }],
+    },
+  ],
+  "editor proposal": [
+    ...EDITOR_CANVAS_LANDMARKS,
+    {
+      id: "assistant-proposal-box",
+      desc: "the Ask to edit proposal bar",
+      any: [{ testid: "assistant-proposal-box" }],
+    },
+  ],
+  "editor error": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "studio-error-page",
+      desc: "Studio error page",
+      any: [{ testid: "studio-error-page" }, { role: "alert" }],
+    },
+  ],
+
+  // Quick chat & Search & Assistant page
+  "quick-chat open": QUICK_CHAT_LANDMARKS,
+  "quick-chat palette": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "palette-dialog",
+      desc: "the Search or ask command palette",
+      host: "page",
+      any: [{ role: "dialog", name: "Search or ask" }],
+    },
+    {
+      id: "palette-input",
+      desc: "the palette search input",
+      host: "page",
+      any: [{ testid: "palette-input" }],
+    },
+    {
+      id: "palette-ask",
+      desc: "the Ask Quick chat fallback row",
+      host: "page",
+      any: [{ testid: "palette-ask" }],
+    },
+  ],
+  "assistant page": [
+    ...SHELL_LANDMARKS,
+    { id: "assistant-page", desc: "the full /assistant page", any: [{ testid: "assistant-page" }] },
+    {
+      id: "assistant-page-threads",
+      desc: "the assistant threads list",
+      only: 1280,
+      any: [{ testid: "assistant-page-threads" }],
+    },
+    {
+      id: "assistant-page-side",
+      desc: "the assistant context/trust column",
+      only: 1280,
+      any: [{ testid: "assistant-page-side" }],
+    },
+    {
+      id: "assistant-composer-input",
+      desc: "the assistant composer input",
+      any: [{ testid: "assistant-composer-input" }],
+    },
+  ],
+
+  // Manage
+  "manage projects": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-projects",
+      desc: "the Manage → Projects section",
+      any: [{ testid: "manage-projects" }],
+    },
+  ],
+  "manage project-detail": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-project-detail",
+      desc: "the single project detail section",
+      any: [{ testid: "manage-project-detail" }],
+    },
+  ],
+  "manage repositories": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-repositories",
+      desc: "the Manage → Repositories section",
+      any: [{ testid: "manage-repositories" }],
+    },
+  ],
+  "manage people": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-people",
+      desc: "the Manage → People section",
+      any: [{ testid: "manage-people" }],
+    },
+  ],
+  "manage runners": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-runners",
+      desc: "the Manage → Runners section",
+      any: [{ testid: "manage-runners" }],
+    },
+    {
+      id: "manage-runners-table",
+      desc: "the Runners status table",
+      any: [{ testid: "manage-runners-table" }],
+    },
+  ],
+  "manage agents": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-agents",
+      desc: "the Manage → Agents & models section",
+      any: [{ testid: "manage-agents" }],
+    },
+    {
+      id: "agent-accounts",
+      desc: "the Connected agent accounts strip",
+      any: [{ testid: "agent-accounts" }],
+    },
+    {
+      id: "agents-tabs",
+      desc: "the Profiles · Models · Skills · Steps · Assistant tabs",
+      any: [{ testid: "agents-tabs" }],
+    },
+    { id: "profiles-table", desc: "the agent profiles table", any: [{ testid: "profiles-table" }] },
+  ],
+  "manage agents-assistant": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-agents",
+      desc: "the Manage → Agents & models section",
+      any: [{ testid: "manage-agents" }],
+    },
+    { id: "agents-tabs", desc: "the Agents tabs", any: [{ testid: "agents-tabs" }] },
+    {
+      id: "settings-assistant",
+      desc: "the Assistant settings tab body",
+      any: [{ testid: "settings-assistant" }, { testid: "settings-assistant-trust-table" }],
+    },
+  ],
+  "manage secrets": [
+    ...MANAGE_SHELL_LANDMARKS,
+    {
+      id: "manage-secrets",
+      desc: "the Manage → Secrets section",
+      any: [{ testid: "manage-secrets" }],
+    },
+  ],
+  "manage error": [...MANAGE_SHELL_LANDMARKS, ERROR_PANEL],
+
+  // Kept run, approval, repo, and catch-up screens
+  "2b workbench": WORKBENCH_LANDMARKS,
+  "2c run-gate": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "gate-decide",
+      desc: "the inline gate decision bar",
+      any: [{ testid: "decision-bar" }, { role: "button", name: /^Approve$/ }],
+    },
+  ],
+  "2d artifacts": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "artifacts-pane",
+      desc: "the Artifacts tab list and Download button",
+      any: [{ role: "button", name: /Download/i }, { testid: "artifact-preview-prose" }],
+    },
+  ],
+  "2e schedule-run-*": REPO_PAGE_LANDMARKS,
+  "approval detail": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "approval-decide-bar",
+      desc: "the approval detail DecisionBar",
+      any: [{ testid: "decision-bar" }],
+    },
+  ],
+  "repo detail": REPO_PAGE_LANDMARKS,
+  "repo error": [...SHELL_LANDMARKS, ERROR_PANEL],
+  "8a catchup-item": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "catchup-item-current",
+      desc: "the catch-up piece current frame",
+      any: [{ testid: "catchup-item-current" }],
+    },
+  ],
+  "8b catchup-tour": [
+    {
+      id: "tour-player",
+      desc: "the full-screen guided catch-up tour",
+      host: "page",
+      any: [{ testid: "tour-player" }],
+    },
+    {
+      id: "tour-current",
+      desc: "the guided catch-up tour frame",
+      host: "page",
+      any: [{ testid: "tour-current" }],
+    },
+  ],
+  "shell desktop": SHELL_LANDMARKS,
+  "shell phone-sheet": [
+    ...SHELL_LANDMARKS,
+    {
+      id: "scope-sheet",
+      desc: "the mobile project & manage sheet (emu.screen visits 1280 before 390, which closes Shell's phone-only sheet; repo-chat-nav checks scope-sheet visibility explicitly at 390 before calling emu.screen)",
+      host: "page",
+      only: 390,
+      any: [{ testid: "scope-sheet" }, { testid: "scope-open" }],
+    },
+  ],
+  "2c trigger-edit-pause": [
+    ...SHELL_LANDMARKS,
+    { id: "trigger-dialog", desc: "the open trigger edit dialog", any: [{ role: "dialog" }] },
+  ],
+  "2c dialog-schedule": [
+    ...SHELL_LANDMARKS,
+    { id: "trigger-dialog", desc: "the open schedule trigger dialog", any: [{ role: "dialog" }] },
+  ],
+  "2c dialog-issue": [
+    ...SHELL_LANDMARKS,
+    { id: "trigger-dialog", desc: "the open issue trigger dialog", any: [{ role: "dialog" }] },
+  ],
+  "2c schedule-trigger-saved": REPO_PAGE_LANDMARKS,
+  "2c issue-trigger-saved": REPO_PAGE_LANDMARKS,
+  "2e repo": REPO_PAGE_LANDMARKS,
+  "2e triggers-paused": REPO_PAGE_LANDMARKS,
+  "2e schedule-run-approved": WORKBENCH_LANDMARKS,
+  "rcn-3a repo-notes": REPO_PAGE_LANDMARKS,
+  "rcn-3a repo-feed-empty": REPO_PAGE_LANDMARKS,
+  "rcn-3a repo": REPO_PAGE_LANDMARKS,
+  "rcn-3a server-error": [...SHELL_LANDMARKS, ERROR_PANEL],
+  "rcn-3b lanes": REPO_PAGE_LANDMARKS,
+  "rcn-3b lanes-drag": REPO_PAGE_LANDMARKS,
+  "rcn-3b lanes-running": REPO_PAGE_LANDMARKS,
+  "rcn-1k run-form": REPO_PAGE_LANDMARKS,
+  "rcn-1k run-form-fields": REPO_PAGE_LANDMARKS,
+  "rcn-2e chat": CHATS_THREAD_LANDMARKS,
+  "rcn-2e switched": CHATS_THREAD_LANDMARKS,
+  "rcn-2e works-in-moved": CHATS_THREAD_LANDMARKS,
+  "rcn-3d mail-card": CHATS_THREAD_LANDMARKS,
+  "rcn-2e chat-details": [
+    ...CHATS_THREAD_LANDMARKS,
+    {
+      id: "chat-details-sheet",
+      desc: "the chat details sheet",
+      any: [{ testid: "chat-details-sheet" }],
+    },
+  ],
+  "rcn-2e chat-details-switched": [
+    ...CHATS_THREAD_LANDMARKS,
+    {
+      id: "chat-details-sheet",
+      desc: "the chat details sheet",
+      any: [{ testid: "chat-details-sheet" }],
+    },
+  ],
+  "rcn-2e works-in-menu": [
+    ...CHATS_THREAD_LANDMARKS,
+    {
+      id: "chat-details-sheet",
+      desc: "the chat details sheet",
+      any: [{ testid: "chat-details-sheet" }],
+    },
+  ],
   "rcn-1h next-turn-menu": [
-    RCN_CONV_TITLE,
-    RCN_AGENT_CHIP,
-    RCN_AGENT_MENU,
-    RCN_AGENT_MENU_CAPTION,
-    RCN_AGENT_MENU_PROFILES,
-    RCN_MENU_ARROW,
+    ...CHATS_THREAD_LANDMARKS,
+    {
+      id: "composer-agent-menu",
+      desc: "the next-turn agent picker menu",
+      host: "page",
+      any: [{ testid: "composer-agent-menu" }, { testid: "agent-picker-popover" }],
+    },
   ],
-
-  // Thread → workflow (2f): the note's `Make a workflow…` opens the assistant
-  // panel with the chat as context — the ask is the app's own canned line;
-  // what the model answers with is never a landmark.
-  "rcn-2f workflow-draft": [
-    RCN_CONV_TITLE,
-    RCN_ASSISTANT_PANEL,
-    RCN_ASSISTANT_COMPOSER,
-    RCN_ASSISTANT_ASK,
-  ],
-
-  // Agent mail (3d): the answered beat — the card with its answer block, and
-  // the side panel's LINKED CHATS row with its state. At 390 the panel sits
-  // behind the header's Details toggle (the one place at narrow width; the
-  // LINKED CHATS landmarks accept the toggle as that one tap; REFLOW_ALLOWLIST
-  // names the aside→sheet swap).
-  "rcn-3d mail-card": [
-    RCN_CONV_TITLE,
-    RCN_COMPOSER,
-    RCN_MAIL_CARDS,
-    RCN_MAIL_ANSWER,
-    RCN_SIDE_PANEL,
-    RCN_LINKED_CHATS,
-    RCN_LINKED_CHAT_STATE,
-  ],
-
-  // Workflow inputs authoring (1j) on the workflow page, and the run-by-hand
-  // form (1k) the repo row's Run opens.
+  "rcn-2f workflow-draft": QUICK_CHAT_LANDMARKS,
   "rcn-1j inputs": [
-    WF_BREADCRUMB,
-    WF_TITLE,
-    WF_TABS,
-    RCN_TAB_INPUTS_ACTIVE,
-    RCN_DRAFT_CHIP,
-    RCN_INPUTS_TAB,
-    RCN_INPUTS_PANEL,
-    RCN_INPUTS_HEADER,
-    RCN_INPUT_ADD,
-    RCN_INPUT_ROWS,
-    RCN_INPUT_EDITOR,
-    RCN_INPUT_EDITOR_FIELDS,
-    RCN_INPUT_EDITOR_USED,
-    RCN_WHO_FILLS,
-    RCN_WHO_FILLS_HAND,
-    RCN_WHO_FILLS_TRIGGER,
-    RCN_INPUTS_YAML,
-  ],
-  "rcn-1k run-form": [
-    RCN_RUN_DIALOG,
-    RCN_RUN_TITLE,
-    RCN_RUN_SUBTITLE,
-    // The pin this screen is captured on declares the `github_issue` input, so
-    // 1k's picker is the screen's central element — a form without it is a
-    // different form (round-20's defect).
-    RCN_RUN_ISSUE_PICKER,
-    RCN_RUN_ISSUE_LIST,
-    RCN_RUN_FIELDS,
-    RCN_RUN_HELPER,
-    RCN_RUN_CANCEL,
-    RCN_RUN_START,
-  ],
-  // The same modal on the pass's project-wide pin, whose pinned revision
-  // declares goal/repository/revision and NO issue input: the form is still
-  // built from the declared inputs, minus the picker the design draws for the
-  // issue type.
-  "rcn-1k run-form-fields": [
-    RCN_RUN_DIALOG,
-    RCN_RUN_TITLE,
-    RCN_RUN_SUBTITLE,
-    RCN_RUN_FIELDS,
-    RCN_RUN_HELPER,
-    RCN_RUN_CANCEL,
-    RCN_RUN_START,
-  ],
-  // `run-gate` and `artifact` have no design render (see the header), so the
-  // run page's read-only graph needs no landmark entry of its own; the claim
-  // that the run page is not an editor lives in the specs: no `edge-add-*` /
-  // `add-after-*` affordance renders on /runs/:id (StudioCanvas renders the
-  // `+` affordances only on an editable canvas).
-
-  /* ---------------------------- the redesign: Catch up (8a/8b/7b), the rail (3a/4a), Today's Ask */
-  "cu-8a catch-up": [
-    CU_HEADING,
-    CU_PROJECT_CHIPS,
-    CU_WINDOW_CHIPS,
-    CU_RECAP,
-    CU_START_TOUR,
-    CU_CARD_ONE,
-    CU_SEE_MORE_OR_REST,
-    CU_REST,
-  ],
-  "cu-8b piece": [CU_ITEM, CU_STOP_LIST, CU_CURRENT_STOP, CU_HISTORY],
-  "cu-8b decision": [CU_ITEM, CU_STOP_LIST, CU_CURRENT_STOP, CU_DECISION],
-  "cu-7b tour": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT],
-  // The same player on the piece whose beat ASKS: the decision block is what
-  // this capture exists to prove renders here too (journeys/catchup.spec.ts).
-  "cu-7b decision": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT, CU_DECISION],
-  // The same player on the bug story's beat chain, captured for the T16
-  // colour proof (the tinted beat labels, the ink log block, the diff —
-  // e2e/emulator/catchup.spec.ts): the structure is the player's own.
-  "cu-7b diff": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT],
-  "rail-3a rail": [RAIL_COLUMN, RAIL_TILES, RAIL_EXPAND, RAIL_BRAND],
-  "today-ask today": [TODAY_PAGE, TODAY_GREETING, TODAY_ASK_FAB],
-
-  /* ---------------------------- the Assistant handoff: Ask at its three sizes, plus its settings */
-  // The popover as the design drew it (1f): the 400px clipped box, an empty
-  // thread answering with the setup checklist, the composer under it. No
-  // answer is claimed — the journey sends nothing, so what renders here is the
-  // frame and the server's own status read.
-  "as-popover setup": [
-    AS_FRAME,
-    AS_SETUP,
-    AS_COMPOSER,
-    AS_CONTEXT_BUTTON,
-    AS_PILL,
-    AS_MIC,
-    AS_SEND,
-  ],
-  // The trust menu open (1o): the box plus its radio rows — the level it names
-  // is a preference, never a landmark.
-  "as-popover trust": [AS_FRAME, AS_TRUST_MENU, AS_TRUST_LEVELS, AS_COMPOSER],
-  // The page-context menu open (§3/1i): the box, the switch, the composer.
-  "as-popover context": [AS_FRAME, AS_CONTEXT_MENU, AS_CONTEXT_SWITCH, AS_COMPOSER],
-  // The 450px side panel (1d). At 390 the sheet takes the screen (the
-  // documented reflow: a column would leave nothing of the page), so the same
-  // parts are claimed at either width.
-  "as-dock panel": [
-    AS_FRAME,
-    AS_SETUP,
-    AS_COMPOSER,
-    AS_CONTEXT_BUTTON,
-    AS_PILL,
-    AS_MIC,
-    AS_SEND,
-    AS_SIZE_CONTROLS,
-  ],
-  // The full page (1e): the thread column and the context column at their
-  // widths, the composer always, and the thread verb whichever header owns it.
-  "as-page page": [
-    AS_PAGE_FRAME,
-    AS_PAGE_THREADS,
-    AS_PAGE_SIDE,
-    AS_NEW_THREAD,
-    AS_COMPOSER,
-    AS_SIZE_CONTROLS,
-  ],
-  // Settings → Assistant (1p + 1n): the trust table the pill's copy comes from,
-  // and the Speech section built from the server's own speech read.
-  "as-settings speech": [
-    AS_SETTINGS_PAGE,
-    AS_TRUST_RADIOS,
-    AS_TRUST_TABLE,
-    AS_TRUST_TABLE_ROWS,
-    AS_SPEECH,
-    AS_SPEECH_SWITCHES,
+    ...EDITOR_CANVAS_LANDMARKS,
+    {
+      id: "editor-panel-inputs",
+      desc: "the Inputs drawer",
+      any: [{ testid: "editor-panel-inputs" }],
+    },
   ],
 };
 
-/**
- * The landmarks a captured screen must show, or `undefined` when no entry
- * exists (which, for a badge that HAS a design render, is itself a defect).
- * Pass-varying names find their entry by shape.
- */
 export function landmarksFor(badge: string, name: string): Landmark[] | undefined {
   const exact = DESIGN_LANDMARKS[`${badge} ${name}`];
   if (exact !== undefined) return exact;
-  // `2e schedule-run-9c1e04f2` → `2e schedule-run-*`: a per-pass id collapses.
   const byShape = `${badge} ${name.replace(/[0-9a-f]{6,}/gi, "*")}`;
   return DESIGN_LANDMARKS[byShape];
 }
@@ -3022,9 +930,6 @@ export function landmarksFor(badge: string, name: string): Landmark[] | undefine
 
 const ESCAPE = (value: string): string => value.replace(/["\\]/g, "\\$&");
 
-/** What "on this screen" means: the page's MAIN content, plus an open dialog
- * (which lives inside main today — named anyway so a portaled dialog is still
- * a landmark carrier and never a miss). */
 function scopes(page: Page): Locator[] {
   return [
     page.locator("main"),
@@ -3033,14 +938,14 @@ function scopes(page: Page): Locator[] {
 }
 
 function specLocator(scope: Locator, spec: LandmarkSpec): Locator {
+  if ("selector" in spec) {
+    return scope.locator(spec.selector);
+  }
   if ("testid" in spec) {
     const value = ESCAPE(spec.testid);
-    // A trailing `*` is the prefix form: the slug-carrying testids the server
-    // names can only be addressed by the part the design owns.
     const attribute = spec.testid.endsWith("*")
       ? `[data-testid^="${ESCAPE(spec.testid.slice(0, -1))}"]`
       : `[data-testid="${value}"]`;
-    // `except` narrows the prefix: each excluded id is cut out of the match.
     const excluded = (spec.except ?? [])
       .map((testid) => `:not([data-testid="${ESCAPE(testid)}"])`)
       .join("");
@@ -3055,26 +960,12 @@ function specLocator(scope: Locator, spec: LandmarkSpec): Locator {
   return scope.getByText(spec.text);
 }
 
-/**
- * The landmarks of `landmarks` that this width does NOT show, in design order.
- * One page round trip per landmark: the specs union into one locator, and the
- * page answers whether ANY of its matches is rendered — the same rule the
- * reflow collectors use (`display:none`, `visibility:hidden` and a zero box are
- * not rendered; scroll position is irrelevant). `ANY`, not `first`: at 390 the
- * thread list pane is the hidden twin of the `← Threads` link that replaces it,
- * and it sits earlier in the DOM, so asking only about the first match would
- * read the documented reflow as a missing landmark.
- */
 export async function missingLandmarks(
   page: Page,
   landmarks: Landmark[],
   width: number,
 ): Promise<Landmark[]> {
   const roots = scopes(page);
-  // A `host: "page"` landmark searches the whole document — the app-shell
-  // claim (the 2c/3c sidebar, the assistant popover) that lives outside
-  // `<main>`. Nothing else opts into it; the per-page lists keep the strict
-  // main-plus-dialog reading.
   const pageRoots = [page.locator("body")];
   const missing: Landmark[] = [];
   for (const landmark of landmarks) {
@@ -3087,16 +978,31 @@ export async function missingLandmarks(
         candidate = candidate === null ? located : candidate.or(located);
       }
     }
+    const measure = landmark.measure ?? null;
     const shown =
       candidate === null
         ? false
-        : await candidate.evaluateAll((elements: Element[]) =>
-            elements.some((el) => {
-              const cs = window.getComputedStyle(el);
-              if (cs.display === "none" || cs.visibility === "hidden") return false;
-              const box = el.getBoundingClientRect();
-              return box.width > 0 && box.height > 0;
-            }),
+        : await candidate.evaluateAll(
+            (elements: Element[], m: LandmarkMeasure | null) =>
+              elements.some((el) => {
+                const cs = window.getComputedStyle(el);
+                if (cs.display === "none" || cs.visibility === "hidden") return false;
+                const box = el.getBoundingClientRect();
+                if (box.width <= 0 || box.height <= 0) return false;
+                if (!m) return true;
+                const tol = m.tol ?? 2;
+                const w = m.box === "offset" ? (el as HTMLElement).offsetWidth : box.width;
+                const h = m.box === "offset" ? (el as HTMLElement).offsetHeight : box.height;
+                if (m.width !== undefined && Math.abs(w - m.width) > tol) return false;
+                if (m.height !== undefined && Math.abs(h - m.height) > tol) return false;
+                if (m.minHeight !== undefined && h < m.minHeight - tol) return false;
+                if (m.radius !== undefined) {
+                  const r = parseFloat(cs.borderTopLeftRadius || "0");
+                  if (Number.isNaN(r) || Math.abs(r - m.radius) > tol) return false;
+                }
+                return true;
+              }),
+            measure,
           );
     if (!shown) missing.push(landmark);
   }

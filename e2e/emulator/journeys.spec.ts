@@ -1,299 +1,130 @@
-// The emulator's first journeys — the screens the design already has.
-// Journeys are added as screens land; each step name matches its screen
-// (test.step), and every screen goes through `emu.screen(badge, name)`.
-//
-// The journeys play the DESIGN, not whatever the UI happens to show today:
-// if a design element is missing, the journey FAILS with a clear assertion
-// message and the fixture records it as a kind=assertion defect — the loop
-// is supposed to turn the design into a clean pass, not walk around the
-// old UI.
-//
-// Screen badges pair with docs/design/handoff-workflows/png/<badge>.png
-// (1b 1c 1e 1g 2a 2c 2d 2e); the Projects Review badges will land later
-// under docs/design/handoff-projects/png/.
-import { expect, test } from "./fixtures.js";
-import { EMU_ALICE_STATE, EMU_ADMIN_STATE, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
-import path from "node:path";
+// journeys.spec.ts — end-to-end redesign walkthrough: Home (all + project) →
+// Factory index & New workflow sheet → Studio editor (canvas, Box select +
+// WrapPanel + GoalFrame, Versions, Make live) → Chats (list, new chat,
+// thread) → Manage (Projects, Runners, Agents & models).
+import { test, expect, apiMutate } from "./fixtures";
+import { EMU_ADMIN_STATE, EMU_BASE_URL } from "./env";
 
-/** Escape a pass-scoped value before matching it as page text. */
-const reEscape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+test.use({ storageState: EMU_ADMIN_STATE });
 
-/**
- * 1b — the /workflows index: H1 "Workflows", the starter cards, the list.
- * 1b folders — the same index with a workflow filed in a folder (finding
- *      10, 43b8d28): ONE flat list narrowed by the toolbar's `All folders`
- *      filter select. Driven through the row's `⋯` menu → `Move to
- *      folder…`, exactly as a user files a workflow; the workflow is filed
- *      back to Unfiled at the end of the step.
- * 1c — the New workflow dialog: name field, START FROM cards, Cancel +
- *      "Create and open canvas".
- * 1g — Workflow Studio: the canvas view after creating from the
- *      "Plan with approval" template.
- */
-test.describe("workflows-index", () => {
-  test.describe.configure({ mode: "serial", timeout: 5 * 60_000 });
-  test.use({ storageState: EMU_ADMIN_STATE });
+test("redesign journey: Home, Factory, Studio editor, Chats, Manage", async ({
+  page,
+  request,
+  emu,
+}) => {
+  test.setTimeout(120_000);
+  const ts = Date.now().toString(36);
+  const projectName = `Emu Journey ${ts}`;
 
-  test("index, the new-workflow dialog, and Studio from a template", async ({ page, emu }) => {
-    // This pass's own workflow, created by the 1g step and filed into a
-    // folder by the 1b folders step: both names carry the pass id, so a
-    // replay never collides with an earlier pass's rows.
-    const workflowName = `Emu plan ${EMU_PASS_ID}`;
-    const folderName = `emu-${EMU_PASS_ID}`;
-
-    await test.step("1b — the workflows index", async () => {
-      await page.goto("/workflows");
-      await expect(
-        page.getByRole("heading", { name: "Workflows", level: 1 }),
-        "design 1b: the H1 reads 'Workflows' (not 'Pipeline library' or similar)",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("workflow-starters"),
-        "design 1b: the starter cards sit above the list (START BLANK + one card per template)",
-      ).toBeVisible();
-      await expect(
-        page.getByTestId("workflows-new-workflow"),
-        "design 1b: one primary 'New workflow' button in the header",
-      ).toBeVisible();
-      await emu.screen("1b", "index");
-    });
-
-    await test.step("1c — the New workflow dialog", async () => {
-      await page.getByTestId("workflows-new-workflow").click();
-      const dialog = page.getByTestId("new-workflow-dialog");
-      await expect(
-        dialog,
-        "design 1c: 'New workflow' opens a dialog, not an inline form",
-      ).toBeVisible();
-      await expect(dialog.getByRole("heading", { name: "New workflow" })).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Create and open canvas" }),
-        "design 1c: the primary action is 'Create and open canvas'",
-      ).toBeVisible();
-      await emu.screen("1c", "new-workflow");
-    });
-
-    await test.step("1g — create from 'Plan with approval' and land in Studio", async () => {
-      // A duplicated slug would 409 inline in the dialog (an expected,
-      // declared failure — the journey reads the error and fixes the name);
-      // the names are pass-stamped, so this should not fire.
-      emu.expectFailure(/\/api\/v1\/pipelines$/, 409);
-      await page.getByTestId("library-new-name-input").fill(workflowName);
-      const plan = page.getByTestId("new-workflow-template-plan-with-approval");
-      await expect(
-        plan,
-        "design 1c: 'Plan with approval' is one of the START FROM cards in the dialog",
-      ).toBeVisible();
-      await plan.click();
-      await page.getByTestId("library-new-submit").click();
-      // Creation lands on the draft's Studio route — the template's canvas,
-      // not a raw YAML dump (design 1g).
-      await page.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
-        timeout: 30_000,
-      });
-      await expect(
-        page.getByTestId("studio-page"),
-        "design 1g: creating from the template lands on the Workflow Studio",
-      ).toBeVisible({ timeout: 30_000 });
-      await emu.screen("1g", "studio");
-    });
-
-    // Finding 10 (43b8d28) turned design 1b's folder panels into a filter:
-    // the list stays flat, `Move to folder…` in each row's menu still files
-    // the workflow, and the toolbar's `All folders` select narrows the list.
-    // Nothing else in the suite ever files a workflow, so without this step
-    // the folder filter is unproven. The workflow moved here is the one THIS
-    // pass just created, and it is filed back to Unfiled before the step
-    // ends: the folder dies with the pass and no later screen (or journey)
-    // sees it.
-    await test.step("1b folders — file it in a folder through the row menu", async () => {
-      await page.goto("/workflows");
-      const row = page
-        .locator('[data-testid^="workflow-row-"]')
-        .filter({ hasText: workflowName })
-        .first();
-      await expect(
-        row,
-        "design 1b: the workflow this pass created is a row in the index",
-      ).toBeVisible({ timeout: 30_000 });
-      const slug = ((await row.getAttribute("data-testid")) ?? "").replace(/^workflow-row-/, "");
-      expect(slug.length, "the row's testid carries its slug (the menu's hook)").toBeGreaterThan(0);
-
-      // The user's path: the row's `⋯` menu, never a PATCH behind its back.
-      await row.getByTestId(`workflow-menu-${slug}`).click();
-      const moveToFolder = page.getByRole("menuitem", { name: /move to folder/i });
-      await expect(
-        moveToFolder,
-        "design 1b: the row's menu offers 'Move to folder…'",
-      ).toBeVisible();
-      await moveToFolder.click();
-
-      const dialog = page.getByTestId("move-folder-dialog");
-      await expect(dialog, "'Move to folder…' opens a dialog with a folder field").toBeVisible();
-      await page.getByTestId("move-folder-input").fill(folderName);
-      await page.getByTestId("move-folder-submit").click();
-      await expect(dialog, "the dialog closes once the move is written").toBeHidden({
-        timeout: 30_000,
-      });
-
-      // Finding 10: folders are a FILTER, not panels. Once the library
-      // carries a folder, the toolbar gains the `All folders` select; the
-      // pick writes `?folder=`, so a filtered list is a shareable address —
-      // and the filtered flat list holds exactly the filed workflow.
-      const filter = page.getByTestId("workflows-folder-filter");
-      await expect(
-        filter,
-        "finding 10: filing a workflow adds the 'All folders' filter select to the toolbar",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        filter.locator('option[value=""]'),
-        "the filter's default shows the whole flat list",
-      ).toHaveText("All folders");
-      await filter.selectOption(folderName);
-      await expect(
-        page,
-        "the folder pick writes ?folder= — the filtered list is shareable",
-      ).toHaveURL(/[?&]folder=/);
-      await expect(
-        page.getByTestId("workflows-filter-folder"),
-        `the filter names its own pick (${folderName})`,
-      ).toContainText(new RegExp(`in ${reEscape(folderName)}`, "i"));
-      await expect(
-        page.getByTestId(`workflow-row-${slug}`),
-        `the filtered list holds the workflow filed into ${folderName}`,
-      ).toBeVisible();
-      await expect(
-        page.locator('[data-testid^="workflow-row-"]'),
-        "the folder filter leaves exactly the one filed workflow in the flat list",
-      ).toHaveCount(1);
-
-      await emu.screen("1b", "folders");
-    });
-
-    await test.step("1b folders — file it back so the pass leaves the index as it found it", async () => {
-      // Back to the unfiltered flat list — the pick from the previous step
-      // left `?folder=` on the address.
-      await page.goto("/workflows");
-      const row = page
-        .locator('[data-testid^="workflow-row-"]')
-        .filter({ hasText: workflowName })
-        .first();
-      const slug = ((await row.getAttribute("data-testid")) ?? "").replace(/^workflow-row-/, "");
-      await row.getByTestId(`workflow-menu-${slug}`).click();
-      await page.getByRole("menuitem", { name: /move to folder/i }).click();
-      const dialog = page.getByTestId("move-folder-dialog");
-      await expect(dialog, "the dialog opens again to unfile").toBeVisible();
-
-      // The dialog's way back is its `Unfiled` quick-pick, and one chip per
-      // folder is the contract. (2026-10 pass-2 defect, since fixed: the
-      // index once handed the dialog a folder list that already ended in
-      // `Unfiled` while the dialog added its own chip — the LEFT one was an
-      // ordinary folder chip that typed the word "Unfiled" into the field
-      // and filed the row in a folder literally named Unfiled. The pickers
-      // now take `realFolderNames` — never the sentinel — and the soft
-      // check below keeps that from lapsing silently.)
-      const unfiledChips = page.getByTestId("move-folder-option-unfiled");
-      const chipCount = await unfiledChips.count();
-      const chipRow = (
-        await dialog.locator('[data-testid^="move-folder-option-"]').allTextContents()
-      ).join(" | ");
-      if (chipCount !== 1) {
-        await dialog.screenshot({
-          path: path.join(EMU_OUT_DIR, "move-folder-dialog-defect.png"),
-        });
-      }
-      expect
-        .soft(
-          chipCount,
-          `'Move to folder…' offers one Unfiled quick-pick; this dialog drew ${chipCount} ` +
-            `("${chipRow.slice(0, 90)}"): the index's folder list already ends in Unfiled and the ` +
-            "dialog adds its own, so the left-hand one files the row in a folder NAMED " +
-            "'Unfiled' instead of unfileing it; both carry " +
-            "data-testid=move-folder-option-unfiled. " +
-            `Evidence: out/${EMU_PASS_ID}/move-folder-dialog-defect.png`,
-        )
-        .toBe(1);
-
-      await unfiledChips.last().click();
-      await expect(
-        page.getByTestId("move-folder-input"),
-        "the dialog's own Unfiled chip clears the folder field",
-      ).toHaveValue("");
-      await page.getByTestId("move-folder-submit").click();
-      // An empty folder is the dialog's documented unfile ("leave it empty to
-      // unfile"), so the write is `PATCH {folder: null}` — PipelineUpdate says
-      // `folder: [string, "null"]`, `null` clears it. The dialog closes only if
-      // the server took it; if it stays open it is showing the rejection inline
-      // (Playwright's failure screenshot catches that).
-      await expect(
-        dialog,
-        "filing a workflow back as unfiled closes the dialog — an empty folder is the " +
-          "dialog's own unfile path (PATCH {folder:null}); if it stayed open the write was " +
-          "rejected (see the api defect: PATCH /api/v1/pipelines/{id} -> 4xx)",
-      ).toBeHidden({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("workflows-folder-filter").locator(`option[value="${folderName}"]`),
-        `the empty folder is gone — no filter choice left for it (${folderName}; the select itself disappears once no folder remains)`,
-      ).toHaveCount(0);
-      await expect(
-        page.getByTestId(`workflow-row-${slug}`),
-        "the workflow is back in the flat list, where the rest of the suite finds it",
-      ).toBeVisible({ timeout: 30_000 });
-    });
+  // Ensure at least one project and agent profile exist for scoped/chat steps.
+  const projRes = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/projects`, {
+    name: projectName,
+    description: "Emulator redesign walkthrough project",
   });
-});
+  expect(projRes.status()).toBe(201);
+  const project = (await projRes.json()) as { id: string; name: string };
 
-/**
- * The cross-project thread: start one from /threads (the page's own New
- * thread dialog), send one message, and read the thread page.
- *
- * The journey is alice's — the seeded M4 lab gives the org admin (admin) no
- * project membership, and a thread starts in a project workspace, so the
- * org admin would hit the dialog's honest "No projects where you can start
- * a thread" instead of the design.
- */
-test.describe("thread", () => {
-  test.describe.configure({ mode: "serial", timeout: 5 * 60_000 });
-  test.use({ storageState: EMU_ALICE_STATE });
+  const profilesRes = await request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
+  expect(profilesRes.ok()).toBe(true);
+  const profilesBody = (await profilesRes.json()) as {
+    items?: { id: string; name: string }[];
+  };
+  const firstProfile = profilesBody.items?.[0];
+  expect(firstProfile, "at least one agent profile is seeded").toBeTruthy();
 
-  test("start a thread from /threads and send one message", async ({ page, emu }) => {
-    await test.step("the thread list", async () => {
-      await page.goto("/threads");
-      await expect(
-        page.getByTestId("threads-page"),
-        "the /threads page renders its cross-project list",
-      ).toBeVisible({ timeout: 30_000 });
-    });
+  // 1. Home (All projects)
+  await page.goto(`${EMU_BASE_URL}/`);
+  await expect(page.getByTestId("home-all")).toBeVisible();
+  await expect(page.getByTestId("home-prompt")).toBeVisible();
+  await emu.screen("home", "all");
 
-    await test.step("start a thread", async () => {
-      await page.getByTestId("threads-new-open").click();
-      const dialog = page.getByTestId("new-conversation-dialog");
-      await expect(dialog).toBeVisible();
-      const projectSelect = dialog.getByTestId("new-conversation-dialog-project");
-      const firstProject = projectSelect.locator("option").nth(1);
-      await expect(firstProject, "a writable project is offered for a new thread").toBeAttached();
-      await projectSelect.selectOption({ label: (await firstProject.textContent())?.trim() ?? "" });
-      await page.getByTestId("conversation-new-title").fill(`Emu thread ${EMU_PASS_ID}`);
-      const profileSelect = page.getByTestId("conversation-new-profile");
-      const firstProfile = profileSelect.locator("option").nth(1);
-      await expect(firstProfile, "an agent profile is offered for the new thread").toBeAttached();
-      await profileSelect.selectOption({ label: (await firstProfile.textContent())?.trim() ?? "" });
-      await page.getByTestId("conversation-new-submit").click();
-      await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/, { timeout: 30_000 });
-      await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
-    });
+  // 2. Project Home
+  await page.goto(`${EMU_BASE_URL}/p/${project.id}`);
+  await expect(page.getByTestId("project-home")).toBeVisible();
+  await expect(page.getByTestId("starter-pills")).toBeVisible();
+  await emu.screen("project", "home");
 
-    await test.step("send one message", async () => {
-      const composer = page.getByTestId("composer-input");
-      await expect(composer, "the controller's composer is enabled").toBeEnabled({
-        timeout: 30_000,
-      });
-      await composer.fill("Hello from the emulator — this pass is scripted, not human.");
-      await page.getByTestId("composer-send").click();
-      // The prompt is accepted into the journal (the composer clears); the
-      // turn itself is not waited for — the screen is the claim.
-      await expect(page.getByTestId("composer-input")).toHaveValue("");
-      await emu.screen("threads-1g", "thread");
-    });
-  });
+  // 3. Factory index + New workflow sheet
+  await page.getByTestId("pill-factory").click();
+  await expect(page).toHaveURL(/\/factory$/);
+  await expect(page.getByTestId("factory-index")).toBeVisible();
+  await emu.screen("factory", "index");
+
+  await page.getByTestId("factory-new").click();
+  await expect(page.getByTestId("new-workflow-sheet")).toBeVisible();
+  await emu.screen("factory", "sheet");
+
+  // Create via Describe it -> Sketch it -> Studio editor
+  await page.getByTestId("new-workflow-description").fill(`Emu journey flow ${ts}`);
+  await page.getByTestId("new-workflow-sketch").click();
+  await expect(page).toHaveURL(/\/factory\/[^/]+\?draft=/);
+  await expect(page.getByTestId("studio-page")).toBeVisible();
+  await expect(page.getByTestId("studio-canvas")).toBeVisible();
+  await emu.screen("editor", "canvas");
+
+  // 4. Editor: Box select -> WrapPanel -> Repeat until -> GoalFrame
+  const toolbar = page.getByRole("toolbar", { name: "Canvas tools" });
+  await toolbar.getByRole("button", { name: "Box select (B)" }).click();
+
+  const firstCard = page
+    .locator(
+      '[data-testid^="canvas-step-"]:not([data-testid^="canvas-step-tile-"]):not([data-testid^="canvas-step-fact-"]):not([data-testid^="canvas-step-row-"]) > [role="button"]',
+    )
+    .first();
+  await expect(firstCard).toBeVisible();
+  await firstCard.click();
+
+  await expect(page.getByTestId("wrap-panel")).toBeVisible();
+  await emu.screen("editor", "wrap");
+
+  await page.getByTestId("wrap-tab-repeat").click();
+  await page.getByTestId("wrap-goal-input").fill("Tests pass and the change is verified.");
+  await page.getByTestId("wrap-submit").click();
+  await expect(page.getByTestId("goal-frame")).toBeVisible();
+  await emu.screen("editor", "goal");
+
+  // 5. Versions panel + Make live
+  await page.getByTestId("editor-versions-btn").click();
+  await expect(page.getByTestId("versions-panel")).toBeVisible();
+  await emu.screen("editor", "versions");
+  await page.getByTestId("versions-panel-close").click();
+  await expect(page.getByTestId("versions-panel")).toBeHidden();
+
+  await page.getByTestId("studio-publish").click();
+  await expect(page.getByTestId("studio-publish")).toBeDisabled();
+
+  // 6. Chats: reset scope to All via rail -> Chats list -> new chat -> thread
+  await page.goto(`${EMU_BASE_URL}/chats`);
+  await expect(page).toHaveURL(/\/chats$/);
+  await expect(page.getByTestId("chats")).toBeVisible();
+  await emu.screen("chats", "list");
+
+  await page.getByTestId("chat-new").click();
+  await expect(page).toHaveURL(/\/chats\/new$/);
+  await expect(page.getByTestId("chat-new-pane")).toBeVisible();
+  await emu.screen("chats", "new");
+
+  await page.getByTestId("new-chat-project-chip").click();
+  await page.getByTestId(`new-chat-project-${project.id}`).click();
+  await page.getByTestId("new-chat-agent-picker").click();
+  await page.getByTestId(`agent-option-${firstProfile!.id}`).click();
+  await page.getByTestId("new-chat-prompt-input").fill(`Emu journey chat ${ts}`);
+  await page.getByTestId("new-chat-prompt-send").click();
+
+  await expect(page).toHaveURL(/\/chats\/[^/]+$/);
+  await expect(page.getByTestId("chat-thread")).toBeVisible();
+  await emu.screen("chats", "thread");
+
+  // 7. Manage: Projects -> Runners -> Agents & models
+  await page.goto(`${EMU_BASE_URL}/manage/projects`);
+  await expect(page.getByTestId("manage-projects")).toBeVisible();
+  await emu.screen("manage", "projects");
+
+  await page.getByTestId("manage-nav-runners").click();
+  await expect(page.getByTestId("manage-runners")).toBeVisible();
+  await emu.screen("manage", "runners");
+
+  await page.getByTestId("manage-nav-agents").click();
+  await expect(page.getByTestId("manage-agents")).toBeVisible();
+  await emu.screen("manage", "agents");
 });

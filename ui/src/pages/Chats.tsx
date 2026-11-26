@@ -24,32 +24,28 @@ export default function Chats() {
 
   const hasId = Boolean(conversationId);
   const isNew = !conversationId || conversationId === "new";
-
-  if (narrow) {
-    return (
-      <div data-testid="chats" className="h-full min-h-0 bg-surface">
-        {!hasId ? (
-          <ChatList scope={scope} />
-        ) : isNew ? (
-          <NewChatPane scope={scope} showBack />
-        ) : (
-          <ChatThread conversationId={conversationId!} scope={scope} showBack />
-        )}
-      </div>
-    );
-  }
+  // Keep a single stable wrapper and child slot order so resizing across 768px
+  // never unmounts ChatThread / NewChatPane and drops open sheets or drafts.
+  const showList = !narrow || !hasId;
+  const showDetail = !narrow || hasId;
 
   return (
     <div
       data-testid="chats"
-      className="grid h-full min-h-0 grid-cols-[300px_minmax(0,1fr)] bg-surface"
+      className={
+        narrow
+          ? "h-full min-h-0 bg-surface"
+          : "grid h-full min-h-0 grid-cols-[300px_minmax(0,1fr)] bg-surface"
+      }
     >
-      <ChatList scope={scope} selectedId={!isNew ? conversationId : ""} />
-      {isNew ? (
-        <NewChatPane scope={scope} />
-      ) : (
-        <ChatThread conversationId={conversationId!} scope={scope} />
-      )}
+      {showList ? <ChatList scope={scope} selectedId={!isNew ? conversationId : ""} /> : null}
+      {showDetail ? (
+        isNew ? (
+          <NewChatPane scope={scope} showBack={narrow} />
+        ) : (
+          <ChatThread conversationId={conversationId!} scope={scope} showBack={narrow} />
+        )
+      ) : null}
     </div>
   );
 }

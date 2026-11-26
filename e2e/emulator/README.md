@@ -34,7 +34,7 @@ journeys are added as screens land.
      via `emu.expectFailure(/regex/, status)` (e.g. a deliberate 409/422
      shown inline);
    - a **sideways scroll** at either viewport — `document.documentElement.scrollWidth <= innerWidth`
-     is asserted, but a violation is *recorded* (the screenshot still
+     is asserted, but a violation is _recorded_ (the screenshot still
      proves the screen), not thrown;
    - **overlapping content** at either viewport — leaf text and controls whose
      boxes paint over one another (`reflow.ts` `findOverlaps`), recorded as
@@ -117,7 +117,7 @@ e2e/emulator/out/<passId>/
 - A defect is anything the fixture records: `pageerror`, `console`,
   `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`, `overlap`,
   `design`, `made-up-data`. A pass is clean when results.json holds zero defect lines.
-- Deliberate failures a journey exercises inline are *declared*:
+- Deliberate failures a journey exercises inline are _declared_:
   `emu.expectFailure(/\/api\/v1\/pipelines$/, 409)`. Anything undeclared
   with status ≥ 400 is a defect.
 - Filing is fingerprint-deduplicated across open and closed issues; a
@@ -141,7 +141,7 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   real phone-only collapse forces one — every entry gets reported). A key (or
   reach) ending in `*` is a prefix pattern for dynamic testids: it covers
   items whose own testid matches the stem, and the reach resolves per item —
-  `edge-add-label-survey-plan` is excused only while *its own*
+  `edge-add-label-survey-plan` is excused only while _its own_
   `edge-add-survey-plan` renders at 390. A tab's
   identity name ignores a live count badge inside it (a run can add
   `Artifacts 1` between the two captures — see dbirks/communication#22).
@@ -251,7 +251,7 @@ button, a section, a field. Specs address elements by
 - `{ role, name?, level? }` — an accessible role with a name **regex**
   (`{ role: "heading", name: /^RUNNING NOW/i }` catches the panel whatever
   its count reads), or
-- `{ text }` — a copy regex over words the *design* wrote (`/^pinned r/i`,
+- `{ text }` — a copy regex over words the _design_ wrote (`/^pinned r/i`,
   `/not used in any repo yet/i`), never a repo name, a count or a run id.
 
 A landmark is satisfied when **ANY** of its specs matches an element that
@@ -375,9 +375,9 @@ UI to show what the API serves, or an honest empty state.
   again), screens both sides of the handoff.
 - `empty-and-error`: 1b no-match search and 2e's "uses no workflow yet" +
   `+ use a library workflow` CTA (alice creates a pass-stamped empty project
-  + repo over the API first — project-wide pins cover every repo of a
-  project, ADR-0060); 1e not-found for a random UUID (the 404 is declared
-  via `emu.expectFailure`).
+  - repo over the API first — project-wide pins cover every repo of a
+    project, ADR-0060); 1e not-found for a random UUID (the 404 is declared
+    via `emu.expectFailure`).
 - `server-error` (`server-error.spec.ts`): every reviewed screen's SERVER-
   ERROR state — 1b, 1c, 1e, 1g, 2a, 2c, 2d, 2e, project-1b, repo-1e,
   threads-1g. `page.route` answers the one GET the page cannot render
@@ -467,7 +467,7 @@ UI to show what the API serves, or an honest empty state.
   asked chat's workspace shows no `modified_paths`). The second agent is
   never staged by hand — if the live model will not emit the block, or the
   asked turn cannot answer on the lab's launcher (a never-asks launcher
-  fails `ask` closed, ADR-0069), this leg stays RED and names the cause.  
+  fails `ask` closed, ADR-0069), this leg stays RED and names the cause.
 
 Journeys share the pass's lab serially (`workers: 1`); names are
 pass-stamped (`EMU_PASS_ID`) so passes never collide. Cleanup is only for

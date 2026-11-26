@@ -133,7 +133,8 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
           labelProps={{ "data-testid": `workspace-state-${workspace.id}` }}
         />
         <span className="text-[12.5px] font-semibold">
-          {workspace.scope_kind} · {workspace.workspace_mode}
+          {workspace.scope_kind === "conversation" ? "chat" : workspace.scope_kind} ·{" "}
+          {workspace.workspace_mode}
         </span>
         <span className="font-mono text-[10.5px] text-muted">
           worker {shortId(workspace.worker_id)}

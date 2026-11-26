@@ -70,8 +70,8 @@ export interface ScreenGuardHit {
   snippets: string[];
 }
 
-/** The retired nouns, word-bounded and case-insensitive. */
-const RETIRED_WORDS = ["chat", "chats", "conversation", "conversations"];
+/** The retired nouns, word-bounded and case-insensitive. (Redesign restored "chat" / "chats" as canonical IA.) */
+const RETIRED_WORDS = ["conversation", "conversations"];
 
 /**
  * The implementation words finding 12 retired from visible copy (T9), plus
@@ -147,6 +147,8 @@ const WRITTEN_CONTENT_TESTIDS = [
   "assistant-context-chip",
   "assistant-change-list",
   "assistant-page-change",
+  "since-you-left-headline",
+  "chat-title",
   "artifact-preview-prose",
   "artifact-preview-raw",
   "artifact-preview-markdown",
@@ -176,6 +178,14 @@ const WRITTEN_CONTENT_TESTID_PREFIXES = [
   // like the transcript it previews (acceptance 42808462555: an agent's own
   // sentence "…(server, conversation 01a1c56f)" filed as chrome).
   "thread-last-line-",
+  "chat-row-",
+  "new-chat-recent-",
+  "since-row-",
+  "happening-chat-",
+  "happening-run-",
+  "starter-pill-resume-",
+  "needs-you-card-",
+  "running-row-",
   "catchup-row-",
   "catchup-card-",
   "catchup-item-stop-",
@@ -372,7 +382,10 @@ export function screenGuardDetail(hit: ScreenGuardHit): string {
     // chrome around a hit, collapsed to one line.
     const where =
       hit.snippets.length > 0
-        ? ` — matched in: ${hit.snippets.slice(0, 3).map((s) => `“${s}”`).join(" ; ")}`
+        ? ` — matched in: ${hit.snippets
+            .slice(0, 3)
+            .map((s) => `“${s}”`)
+            .join(" ; ")}`
         : "";
     parts.push(
       `retired IA word in visible chrome text: ${hit.words

@@ -533,8 +533,8 @@ class EmuRecorder {
       // collector is self-contained (DOM only, no module references).
       const parity = await this.page.evaluate(
         (srcs) => ({
-          items: (new Function(`return (${srcs.items})`)())(),
-          stateFingerprint: (new Function(`return (${srcs.fingerprint})`)())(),
+          items: new Function(`return (${srcs.items})`)()(),
+          stateFingerprint: new Function(`return (${srcs.fingerprint})`)()(),
         }),
         { items: collectReflowItems.toString(), fingerprint: collectStateFingerprint.toString() },
       );

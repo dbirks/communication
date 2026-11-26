@@ -73,7 +73,7 @@ describe("project workspaces", () => {
     renderApp({ path: `/manage/projects/${projectId}`, routes: routes() });
 
     const row = await screen.findByTestId(`workspace-row-${workspaceFixture.id}`);
-    expect(row.textContent).toContain("conversation · worktree");
+    expect(row.textContent).toContain("chat · worktree");
     expect(row.textContent).toContain("vol-7c1f7c");
     // A machine-produced ref is shown, and it is not a button.
     expect(row.textContent).toContain(workspaceFixture.repos[0]?.run_ref ?? "");

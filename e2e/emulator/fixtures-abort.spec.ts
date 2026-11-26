@@ -93,7 +93,11 @@ test.describe("isBenignStreamAbort", () => {
   });
 
   test("a journal feed that died for a non-abort reason still files", () => {
-    for (const errorText of ["net::ERR_CONNECTION_RESET", "net::ERR_EMPTY_RESPONSE", "ns_error::60"]) {
+    for (const errorText of [
+      "net::ERR_CONNECTION_RESET",
+      "net::ERR_EMPTY_RESPONSE",
+      "ns_error::60",
+    ]) {
       assert(
         !isBenignStreamAbort(input({ errorText })),
         `a dead stream with its own net error is not a client teardown: ${errorText}`,

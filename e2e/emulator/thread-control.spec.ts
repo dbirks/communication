@@ -1,77 +1,55 @@
-// Journey: thread control handoff (the composer belongs to the controller).
-//
-// Alice starts a thread (like journeys.spec.ts' thread, name-stamped
-// `Emu ctrl <passId>`), returns control to the agent — the composer then
-// honestly refuses her ("Only the controller can prompt.") — and takes
-// control back: the composer is enabled for her again. Screenshots at each
-// beat.
-import { expect, test } from "./fixtures.js";
-import { EMU_ALICE_STATE, EMU_PASS_ID } from "./env.js";
+// thread-control.spec.ts — Chats controller handoff in the redesigned Chats UI:
+// create chat from NewChatPane, Return control / Take control via ChatHeader's
+// ⋯ menu, verifying controller-badge and composer state at both widths.
+import { test, expect, apiMutate } from "./fixtures";
+import { EMU_ADMIN_STATE, EMU_BASE_URL } from "./env";
 
-test.describe("thread-control (alice)", () => {
-  test.describe.configure({ mode: "serial", timeout: 8 * 60_000 });
-  test.use({ storageState: EMU_ALICE_STATE });
+test.use({ storageState: EMU_ADMIN_STATE });
 
-  test("return control, then take it back — the composer follows the controller", async ({
-    page,
-    emu,
-  }) => {
-    await test.step("start a thread", async () => {
-      await page.goto("/threads");
-      await expect(page.getByTestId("threads-page")).toBeVisible({ timeout: 30_000 });
-      await page.getByTestId("threads-new-open").click();
-      const dialog = page.getByTestId("new-conversation-dialog");
-      await expect(dialog).toBeVisible();
-      const projectSelect = dialog.getByTestId("new-conversation-dialog-project");
-      const firstProject = projectSelect.locator("option").nth(1);
-      await expect(firstProject, "a writable project is offered for a new thread").toBeAttached();
-      await projectSelect.selectOption({ label: (await firstProject.textContent())?.trim() ?? "" });
-      await page.getByTestId("conversation-new-title").fill(`Emu ctrl ${EMU_PASS_ID}`);
-      const profileSelect = page.getByTestId("conversation-new-profile");
-      const firstProfile = profileSelect.locator("option").nth(1);
-      await expect(firstProfile, "an agent profile is offered for the new thread").toBeAttached();
-      await profileSelect.selectOption({ label: (await firstProfile.textContent())?.trim() ?? "" });
-      await page.getByTestId("conversation-new-submit").click();
-      await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/, { timeout: 30_000 });
-      await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
-    });
-
-    await test.step("the starter is the controller: composer enabled", async () => {
-      await expect(
-        page.getByTestId("composer-input"),
-        "the thread starter controls the agent: the composer is enabled",
-      ).toBeEnabled({ timeout: 30_000 });
-    });
-
-    await test.step("return control — the composer honestly locks", async () => {
-      const give = page.getByTestId("return-control");
-      await expect(
-        give,
-        "design 4f: the controller can hand control back with `Return control`",
-      ).toBeVisible({ timeout: 30_000 });
-      await give.click({ timeout: 20_000 });
-      await expect(
-        page.getByTestId("take-control"),
-        "design 4f: after returning control, `Take control` appears",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("composer-input"),
-        "a non-controller cannot prompt: the composer is disabled",
-      ).toBeDisabled({ timeout: 30_000 });
-      await emu.screen("threads-1g", "not-controller");
-    });
-
-    await test.step("take control back — composer enabled for this user", async () => {
-      await page.getByTestId("take-control").click({ timeout: 20_000 });
-      await expect(
-        page.getByTestId("composer-input"),
-        "design 4f: after `Take control`, the composer is enabled for this user",
-      ).toBeEnabled({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("controller-badge"),
-        "design 4f: the controller line says this user is in control",
-      ).toContainText(/control/i, { timeout: 30_000 });
-      await emu.screen("threads-1g", "took-control");
-    });
+test("chat controller handoff: create, return control, take control", async ({
+  page,
+  request,
+  emu,
+}) => {
+  test.setTimeout(90_000);
+  const ts = Date.now().toString(36);
+  const projRes = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/projects`, {
+    name: `Emu Ctrl ${ts}`,
   });
+  expect(projRes.status()).toBe(201);
+  const project = (await projRes.json()) as { id: string; name: string };
+
+  const profilesRes = await request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
+  expect(profilesRes.ok()).toBe(true);
+  const profiles = ((await profilesRes.json()) as { items?: { id: string }[] }).items ?? [];
+  expect(profiles.length).toBeGreaterThan(0);
+
+  await page.goto(`${EMU_BASE_URL}/p/${project.id}/chats/new`);
+  await expect(page.getByTestId("chat-new-pane")).toBeVisible();
+  await emu.screen("chats", "new");
+
+  await page.getByTestId("new-chat-agent-picker").click();
+  await page.getByTestId(`agent-option-${profiles[0].id}`).click();
+  await page.getByTestId("new-chat-prompt-input").fill(`Control handoff probe ${ts}`);
+  await page.getByTestId("new-chat-prompt-send").click();
+
+  await expect(page).toHaveURL(new RegExp(`/p/${project.id}/chats/[^/]+$`));
+  await expect(page.getByTestId("chat-thread")).toBeVisible();
+  await expect(page.getByTestId("controller-badge")).toContainText("you control");
+  await emu.screen("chats", "thread");
+
+  // Open header ⋯ menu and Return control.
+  await page.getByTestId("chat-menu").click();
+  await expect(page.getByTestId("return-control")).toBeVisible();
+  await page.getByTestId("return-control").click();
+
+  await expect(page.getByTestId("controller-badge")).toContainText("no controller");
+
+  // Open ⋯ menu again and Take control back.
+  await page.getByTestId("chat-menu").click();
+  await expect(page.getByTestId("take-control")).toBeVisible();
+  await page.getByTestId("take-control").click();
+
+  await expect(page.getByTestId("controller-badge")).toContainText("you control");
+  await expect(page.getByTestId("composer-input")).toBeEnabled();
 });

@@ -79,6 +79,7 @@ export interface MockDatum {
 const WF = "docs/design/handoff-workflows/Workflows Review.dc.html";
 const PR = "docs/design/handoff-projects/Projects Review.dc.html";
 const SB = "docs/design/handoff-projects/Sidebar.dc.html";
+const RD = "docs/design/redesign/Prototype.dc.html";
 
 export const MOCK_DATA: readonly MockDatum[] = [
   /* ------------------------------------------------------- people */
@@ -285,6 +286,43 @@ export const MOCK_DATA: readonly MockDatum[] = [
     text: "Insert a code reviewer after the tests",
     source: `${WF} 1f — the assistant box's filled request above "Propose"`,
   },
+
+  /* -------------------------------- redesign prototype (Prototype.dc.html) */
+  { text: "Dana", source: `${RD} — sample team member in atlas` },
+  { text: "Sam", source: `${RD} — sample team member / runner owner ("Sam's Mac mini")` },
+  { text: "atlas", source: `${RD} — sample project in rail and Home` },
+  { text: "ledger", source: `${RD} — sample project and repo in rail and Home` },
+  { text: "relay", source: `${RD} — sample project in rail and Home` },
+  { text: "atlas-web", source: `${RD} — sample repository in atlas` },
+  { text: "atlas-api", source: `${RD} — sample repository in atlas` },
+  { text: "atlas-mobile", source: `${RD} — sample repository in atlas` },
+  { text: "relay-infra", source: `${RD} — sample repository in relay` },
+  { text: "fix-issue", source: `${RD} — sample workflow in Factory and chats` },
+  { text: "review-prs", source: `${RD} — sample workflow in Factory and Home` },
+  { text: "nightly-triage", source: `${RD} — sample scheduled workflow in Factory` },
+  { text: "release-web", source: `${RD} — sample workflow in atlas` },
+  { text: "release-ledger", source: `${RD} — sample workflow in ledger` },
+  { text: "dep-bump", source: `${RD} — sample workflow in ledger` },
+  { text: "lab-01", source: `${RD} — sample runner in Manage → Runners` },
+  { text: "lab-02", source: `${RD} — sample runner in Manage → Runners` },
+  { text: "sams-mini", source: `${RD} — sample runner in Manage → Runners` },
+  { text: "ci-spot-3", source: `${RD} — sample runner in Manage → Runners` },
+  { text: "Sam's Mac mini", source: `${RD} — sample runner description in Manage → Runners` },
+  { text: "Checkout flag naming", source: `${RD} — sample chat title` },
+  { text: "Checkout redesign merged", source: `${RD} — sample Since you left headline` },
+  { text: "Fix #318 date parsing", source: `${RD} — sample chat title` },
+  { text: "parseDay()", source: `${RD} — sample codex reply symbol` },
+  { text: "Why is search slow on Safari?", source: `${RD} — sample chat title` },
+  { text: "Plan migration 0042", source: `${RD} — sample chat title` },
+  { text: "Migration 0042", source: `${RD} — sample approval/workflow item` },
+  { text: "Review migration 0042", source: `${RD} — sample starter pill in ledger` },
+  { text: "Node pool upgrade checklist", source: `${RD} — sample chat title` },
+  { text: "Write release notes for v2.14.1", source: `${RD} — sample starter pill in ledger` },
+  { text: "Feb 29 invoices import cleanly", source: `${RD} — sample goal-frame text` },
+  { text: "checkout-redesign", source: `${RD} — sample flag name in chat transcript` },
+  { text: "checkout_v2", source: `${RD} — sample flag name in chat transcript` },
+  { text: "#318", source: `${RD} — sample issue number` },
+  { text: "#322", source: `${RD} — sample issue number` },
 ];
 
 /** Just the texts, in list order — the payload `findMockTexts` scans for. */

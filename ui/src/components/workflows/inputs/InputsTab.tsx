@@ -164,10 +164,11 @@ export function InputsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, draftRead.data, draftId]);
 
-  /** Open the row editor on the property the text now holds. */
+  /** Open the row editor on the property the text now holds, unless the
+   * author already opened a row while validation was finishing. */
   function openEditorOnText(text: string, name: string) {
     const created = draftInputSpecs(text).find((spec) => spec.name === name);
-    if (created) setExpanded(editorOf(created));
+    if (created) setExpanded((current) => current ?? editorOf(created));
   }
 
   /** Run one edit: save straight to the open draft, or clone a draft first

@@ -64,10 +64,7 @@ async function expectRunActionAbsent(page: Page, testid: string, timeout = 30_00
  * a pass; a run STILL running whose header contradicts the contract is a real
  * defect and re-throws.
  */
-async function sampleRunningHeader(
-  page: Page,
-  runStatus: () => Promise<string>,
-): Promise<boolean> {
+async function sampleRunningHeader(page: Page, runStatus: () => Promise<string>): Promise<boolean> {
   await page.reload().catch(() => undefined);
   const actions = page.getByTestId("run-header-actions");
   const pause = actions.getByTestId("run-pause");
@@ -380,7 +377,7 @@ test.describe("run-gate-artifacts (alice)", () => {
         await expect(crumbLinks.nth(1), "T8: the second crumb says Runs").toHaveText(/Runs/);
         await expect(crumbLinks.nth(1)).toHaveAttribute(
           "href",
-          new RegExp(`/p/${projectId}/runs$`),
+          new RegExp(`/p/${projectId}/factory$`),
         );
 
         // Row 2 — the title and the state chip share ONE row. `run-header-title`
@@ -394,10 +391,7 @@ test.describe("run-gate-artifacts (alice)", () => {
         });
         const titleText = ((await title.textContent()) ?? "").trim();
         expect(titleText, "T8: the title is not empty").not.toBe("");
-        await expect(
-          chip,
-          "T8 row 2: the state chip sits on the title's row",
-        ).toBeVisible();
+        await expect(chip, "T8 row 2: the state chip sits on the title's row").toBeVisible();
         expect(((await chip.textContent()) ?? "").trim(), "T8: the chip carries a word").not.toBe(
           "",
         );
