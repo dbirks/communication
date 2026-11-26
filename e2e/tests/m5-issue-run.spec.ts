@@ -390,35 +390,30 @@ test.describe("W3 start a run from a GitHub issue", () => {
       // with the issue-run document whole, the way m5-journey replaces its
       // clone with the process.exec twin.
       await gotoApp(admin, "/workflows");
-      await expect(admin.getByTestId("library-page")).toBeVisible();
-      // Design 1c: the New workflow dialog is the index's only creation
-      // surface — a name, the id derived from it (changed here to the
-      // suite's own slug), and the starter as a card.
-      await admin.getByTestId("workflows-new-workflow").click();
-      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
-      await admin.getByTestId("library-new-name-input").fill(SLUG);
-      await admin.getByTestId("new-workflow-id-change").click();
-      await admin.getByTestId("library-new-slug-input").fill(SLUG);
-      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
-      await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      await expect(admin).toHaveURL(`${BASE_URL}/factory`);
+      await admin.getByTestId("factory-new").click();
+      await admin.getByTestId("new-workflow-import").click();
+      await admin
+        .getByTestId("import-yaml-doc")
+        .fill(ISSUE_PIPELINE_YAML.replace("__SLUG__", SLUG));
+      await admin.getByTestId("import-yaml-slug").fill(SLUG);
+      await admin.getByTestId("import-yaml-name").fill(SLUG);
+      await admin.getByTestId("import-yaml-submit").click();
+      await admin.waitForURL(/\/factory\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}/);
       pipelinePath = `/workflows/${new URL(admin.url()).pathname.split("/")[2]}`;
-      // The Studio's YAML view is the same authoring surface the old editor
-      // exposed as its textarea.
-      await admin.getByTestId("studio-view-yaml").click();
-      await admin.getByTestId("studio-yaml").fill(ISSUE_PIPELINE_YAML.replace("__SLUG__", SLUG));
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-yaml").click();
       await expect(admin.getByTestId("studio-yaml")).toHaveValue(/github_issue/);
       await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: process\.exec/);
       await shot(admin, "m5w3-01-issue-draft");
     });
     await test.step("Save → Validate → the server says valid", async () => {
-      await admin.getByTestId("studio-save").click();
-      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("studio-validate").click();
-      // Publish is gated on the stored verdict, so the verdict is the gate.
-      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
+      await admin.getByTestId("studio-yaml-validate").click();
+      await expect(admin.getByTestId("studio-yaml-verdict")).toHaveText("valid", {
         timeout: 30_000,
       });
+      await expect(admin.getByTestId("studio-yaml-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("editor-panel-close").click();
       await expect(admin.getByTestId("studio-publish")).toBeEnabled();
     });
     await test.step("Publish → r1 is immutable and listed", async () => {
@@ -428,7 +423,7 @@ test.describe("W3 start a run from a GitHub issue", () => {
       });
       // Design 1e: the revision rows list on the workflow page's History tab.
       await gotoApp(admin, `${pipelinePath}/history`);
-      await expect(admin.getByTestId("revision-row-1")).toContainText("r1");
+      await expect(admin.getByTestId("versions-row-v1")).toContainText("v1");
       await shot(admin, "m5w3-02-published-r1");
     });
   });
@@ -453,6 +448,7 @@ test.describe("W3 start a run from a GitHub issue", () => {
       // `+ use a library workflow` picker, whose single `Use` verb resolves
       // the newest published revision and posts the whole-project pin.
       await gotoApp(alice, `${projectPath}/workflows`);
+      await expect(alice).toHaveURL(`${BASE_URL}${projectPath}/factory`);
       await expect(alice.getByTestId("project-pipelines")).toBeVisible();
       await expect(
         alice

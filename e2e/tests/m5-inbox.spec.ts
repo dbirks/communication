@@ -3,7 +3,7 @@
 // member's session, a fact written entirely by the running agent and not
 // seeded for the assertion. Finding 03 retired the Inbox page: the cross-
 // project carrier of "a thread exists somewhere and reaches me without a
-// reload" is now the `/threads` list, and the prompt itself is read on the
+// reload" is now the `/chats` list, and the prompt itself is read on the
 // thread page.
 //
 // It runs against the M4 lab by env override only, exactly like m5-journey —
@@ -25,7 +25,7 @@
 // reads the served `permission_mode` back off the row.
 //
 // WHY BOB'S THREADS LIST IS OPENED AFTER THE PROMPT IS PENDING: the list read
-// behind `/threads` happens when the page mounts, so the page is therefore
+// behind `/chats` happens when the page mounts, so the page is therefore
 // navigated to once and afterwards touched only by polling its DOM — no
 // reload, no re-navigation.
 // What is proved is that a fact from alice's turn reaches bob's view of the
@@ -96,6 +96,7 @@ const TITLE = `inbox two-context ${stamp}`;
 // One tool call with exact content, so the request is the subject of the test
 // and not a model that happens to wander: `ask` puts this in front of a human.
 const PROMPT =
+  `${TITLE}\n` +
   "Use the Write tool to create a file named INBOX-NOTES.md in the repository " +
   "checkout containing exactly: ping from alice. Then stop.";
 
@@ -115,7 +116,7 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
   let alice: Page;
   let bob: Page;
   let projectPath = ""; // /p/{M4 Exit id}
-  let conversationPath = ""; // /threads/{conversation id}
+  let conversationPath = ""; // /p/{project id}/chats/{conversation id}
   let conversationId = "";
   /** The request the pending card exposed; every later step reads this one. */
   let permissionLabel = "";
@@ -175,16 +176,16 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
       ? "admin creates the lab-launcher profile and the seed writes its autonomous mode"
       : "admin creates an ask-mode profile and the row serves ask",
     async () => {
-      await test.step("/profiles → NEW AGENT (the route takes a name and a launcher, nothing else)", async () => {
-        await gotoApp(admin, "/profiles");
-        await expect(admin.getByTestId("agents-page")).toBeVisible();
+      await test.step("Manage → Agents → New profile (name and launcher)", async () => {
+        await gotoApp(admin, "/manage/agents");
+        await expect(admin.getByTestId("manage-agents")).toBeVisible();
         // The library role is what the New profile button's presence means
         // (ADR-0030); the form itself now lives in the dialog it opens.
         await expect(admin.getByTestId("agents-new-open")).toBeVisible();
         const row = profileRow(admin);
         if ((await row.count()) === 0) {
           await admin.getByTestId("agents-new-open").click();
-          await expect(admin.getByTestId("agents-new-form")).toBeVisible();
+          await expect(admin.getByTestId("new-profile-dialog")).toBeVisible();
           await admin.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
           // The new dialog picks the launcher by agent card (radio), not a select;
           // `agents-new-launcher-select` is the disabled "Other ACP agent" catch-all.
@@ -202,8 +203,8 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
           // holds the profile list from before the upsert (the dialog create
           // fetched it as `ask`). Reload the page so the chip read below is
           // the served row, not the stale cache.
-          await gotoApp(admin, "/profiles");
-          await expect(admin.getByTestId("agents-page")).toBeVisible();
+          await gotoApp(admin, "/manage/agents");
+          await expect(admin.getByTestId("manage-agents")).toBeVisible();
         }
         // The created row, read back from the served list. The permission mode
         // is served by the profile's detail panel — the row opens it. Under
@@ -212,12 +213,14 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
         // that is the only mode the never-asks launcher may run under (ADR-0069).
         await expect(row).toHaveCount(1, { timeout: 30_000 });
         const rowId = ((await row.first().getAttribute("data-testid")) ?? "").replace(
-          /^agent-item-/,
+          /^agent-row-/,
           "",
         );
-        await admin.getByTestId(`agent-row-${rowId}`).click();
+        await admin.getByTestId(`agent-name-${rowId}`).click();
         await expect(admin.getByTestId(`agent-permission-${rowId}`)).toHaveText(
-          new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous \\(sandbox is the boundary\\)" : "ask"}$`),
+          new RegExp(
+            `^permission: ${IS_PI_LAUNCHER ? "autonomous \\(sandbox is the boundary\\)" : "ask"}$`,
+          ),
         );
         await shot(admin, "m5-inbox-01-ask-profile");
       });
@@ -238,11 +241,11 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
         });
         conversationId = conversationPath.split("/").pop() ?? "";
         expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
-        await expect(alice.getByTestId("conversation-title")).toHaveText(TITLE);
+        await expect(alice.getByTestId("chat-title")).toHaveText(TITLE);
         // The profile the page says it launched, in the mode the row served.
         // The new thread meta renders the profile name as its own `·`-separated
         // field (no `profile:` prefix), so assert the name itself.
-        await expect(alice.getByTestId("conversation-meta")).toContainText(PROFILE_NAME);
+        await expect(alice.getByTestId("chat-people")).toContainText(PROFILE_NAME);
         // A real session on a real worker, or there is nothing to wait for.
         // The binding names the lab's launcher (ADR-0069: pi is never-asks).
         await expect(alice.getByTestId("agent-session")).toContainText(`agent: ${LAB_LAUNCHER}`, {
@@ -298,15 +301,15 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
 
   test(
     IS_PI_LAUNCHER
-      ? "bob's threads list carries the conversation with no permission affordance, and nothing reloads"
-      : "bob's threads list carries the conversation, and nothing reloads",
+      ? "bob's chats list carries the conversation with no permission affordance, and nothing reloads"
+      : "bob's chats list carries the conversation, and nothing reloads",
     async () => {
-      await test.step("bob's threads list is opened once, then only polled", async () => {
+      await test.step("bob's chats list is opened once, then only polled", async () => {
         // Finding 03: the Inbox page is retired (a `/inbox` visit redirects to
         // Today); the cross-project list the pending thread must reach is the
-        // shared 1g pane at `/threads`.
-        await gotoApp(bob, "/threads");
-        await expect(bob.getByTestId("threads-page")).toBeVisible({ timeout: 30_000 });
+        // cross-project list at `/chats`.
+        await gotoApp(bob, "/chats");
+        await expect(bob.getByTestId("chat-list")).toBeVisible({ timeout: 30_000 });
         await markDocument(bob);
       });
       if (IS_PI_LAUNCHER) {
@@ -317,22 +320,19 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
           // nothing would pass vacuously on a row that never arrived, so the
           // row itself is asserted first, over the window a pending request
           // would have taken to land.
-          const row = bob.getByTestId(`thread-row-${conversationId}`);
+          const row = bob.getByTestId(`chat-row-${conversationId}`);
           await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
           await expect
-            .poll(
-              async () => row.locator('[data-testid*="permission" i]').count(),
-              {
-                timeout: 20_000,
-                message: "a permission affordance appeared on a launcher that never asks (ADR-0069)",
-              },
-            )
+            .poll(async () => row.locator('[data-testid*="permission" i]').count(), {
+              timeout: 20_000,
+              message: "a permission affordance appeared on a launcher that never asks (ADR-0069)",
+            })
             .toBe(0);
           // The row wears the conversation's own status word, and names the
           // conversation the wire carries it under.
           await expect(row).toContainText(/active|idle/i);
           await expect(row).toContainText(TITLE);
-          expect(bob.url()).toContain("/threads");
+          expect(bob.url()).toContain("/chats");
           expect(await markerSurvived(bob)).toBe(true);
           await shot(bob, "m5-inbox-03-bob-threads-autonomous");
         });
@@ -344,13 +344,13 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
         // pending fact it carried is asserted on bob's own session in the next
         // test — the card is on his open page, not a list chip. Here the claim
         // is the cross-project arrival itself, proved without a reload.
-        const row = bob.getByTestId(`thread-row-${conversationId}`);
+        const row = bob.getByTestId(`chat-row-${conversationId}`);
         // Bounded: a prompt whose conversation never reaches his list fails here.
         await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
         // The row names the conversation the wire carries it under, and it
         // lives on the same document bob landed on.
         await expect(row).toContainText(TITLE);
-        expect(bob.url()).toContain("/threads");
+        expect(bob.url()).toContain("/chats");
         // No reload, proved rather than claimed: the marker set on this exact
         // document is still there.
         expect(await markerSurvived(bob)).toBe(true);
@@ -364,13 +364,13 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
       ? "bob opens it and sees a running turn with no request to answer (ADR-0069)"
       : "bob opens it and sees the pending request — one he is not offered to answer",
     async () => {
-      await test.step("the threads list's own row link, not a hand-built url", async () => {
-        // The /threads row IS the link (C1: it goes to the standalone thread
+      await test.step("the chats list's own row link, not a hand-built url", async () => {
+        // The chat row is the link (it goes to the standalone chat
         // page). Clicking it keeps bob on the document his list rendered on.
-        await bob.getByTestId(`thread-row-${conversationId}`).click();
-        // The thread row's link goes to the standalone thread page (C1).
-        await bob.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
-        await expect(bob.getByTestId("conversation-title")).toHaveText(TITLE);
+        await bob.getByTestId(`chat-row-${conversationId}`).click();
+        // The chat row links to the standalone chat page.
+        await bob.waitForURL(/\/chats\/[0-9a-f-]{36}/, { timeout: 30_000 });
+        await expect(bob.getByTestId("chat-title")).toHaveText(TITLE);
       });
       if (IS_PI_LAUNCHER) {
         await test.step("no card exists to pin, and his open page learns the end with no reload", async () => {
@@ -384,12 +384,12 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
           await expect(bob.getByTestId("composer-input")).toBeDisabled();
           await expectTurnStatus(
             bob,
-            /completed|cancelled|failed|interrupted/,
+            /done|cancelled|failed|interrupted/,
             PERMISSION_REQUEST_TIMEOUT_MS,
           );
           await expect(bob.getByTestId("transcript")).not.toContainText("awaiting a decision");
           await expect(bob.getByTestId("transcript")).not.toContainText("answered");
-          expect(bob.url()).toContain(conversationPath);
+          expect(new URL(bob.url()).pathname).toBe(`/chats/${conversationId}`);
           expect(await markerSurvived(bob)).toBe(true);
           await shot(bob, "m5-inbox-04-bob-autonomous-live");
         });
@@ -410,7 +410,7 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
         // card tells him who owns the decision and gives him no control at all.
         await expect(bob.getByTestId("permission-readonly")).toContainText("Only the controller");
         await expect(openPermissionCard(bob).getByRole("button")).toHaveCount(0);
-        expect(bob.url()).toContain(conversationPath);
+        expect(new URL(bob.url()).pathname).toBe(`/chats/${conversationId}`);
         expect(await markerSurvived(bob)).toBe(true);
         await shot(bob, "m5-inbox-04-bob-sees-pending");
       });
@@ -427,11 +427,7 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
           // ADR-0069: the mode makes no review claim, so the journal holds no
           // verdict row — no `conversation.permission.decided`, no “answered …”
           // line — and the turn leaves the conversation cleanly.
-          await expectTurnStatus(
-            alice,
-            /completed|cancelled|failed|interrupted/,
-            TURN_CLOSE_TIMEOUT_MS,
-          );
+          await expectTurnStatus(alice, /done|cancelled|failed|interrupted/, TURN_CLOSE_TIMEOUT_MS);
           await expect(alice.getByTestId("transcript")).not.toContainText("answered");
           await expect(alice.getByTestId("transcript")).not.toContainText("approved");
           await expect(alice.getByTestId("composer-input")).toBeEnabled({ timeout: 30_000 });
@@ -457,15 +453,15 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
         await shot(bob, "m5-inbox-05-decision-live");
       });
       await test.step("close cleanly: the turn is left terminal, not abandoned in flight", async () => {
-        const terminal = /completed|cancelled|failed|interrupted/;
+        const terminal = /done|cancelled|failed|interrupted/;
         const closed = await expectTurnStatus(alice, terminal, TURN_CLOSE_TIMEOUT_MS)
           .then(() => true)
           .catch(() => false);
         if (!closed) {
           // Press the page's own Stop rather than leaving an open turn holding
           // the conversation (and the worker's agent session) behind us.
-          await alice.getByTestId("stop-turn").click();
-          await expectTurnStatus(alice, /cancelled|completed|failed|interrupted/, INBOX_TIMEOUT_MS);
+          await alice.getByTestId("stop-turn").click({ timeout: INBOX_TIMEOUT_MS });
+          await expectTurnStatus(alice, /cancelled|done|failed|interrupted/, INBOX_TIMEOUT_MS);
         }
         await expect(alice.getByTestId("composer-input")).toBeEnabled({ timeout: 30_000 });
       });
@@ -479,7 +475,7 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
 function profileRow(page: Page) {
   return page
     .getByTestId("agent-list")
-    .locator('[data-testid^="agent-item-"]')
+    .locator('[data-testid^="agent-row-"]')
     .filter({ hasText: PROFILE_NAME });
 }
 

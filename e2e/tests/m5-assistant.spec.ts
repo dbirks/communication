@@ -1,7 +1,7 @@
 // M5 assistant arm, re-pointed at Assistant v2 (ADR-0050 + its finding-08
-// ⌘K/⌘J addendum): ⌘J opens the read-only assistant popover (⌘K belongs to
-// the jump palette; the palette's Ask row hands off to the popover). One question
-// posted from the popover's composer, an answer rendered in the caller's
+// ⌘K/⌘J addendum): ⌘J opens the read-only Quick chat panel (⌘K belongs to
+// the jump palette; the palette's Ask row hands off to the panel). One question
+// posted from the panel's composer, an answer rendered in the caller's
 // assistant conversation transcript with the tools it looked at, and every
 // link the answer carries landing on a real page rather than "Not found".
 //
@@ -260,6 +260,35 @@ function servedLabelWithoutIds(label: string): string {
   return text;
 }
 
+/** Canonical destination for legacy links the assistant may still serve. */
+function destinationPath(route: string): string {
+  const path = new URL(route, BASE_URL).pathname;
+  if (["/catch-up", "/inbox", "/board"].includes(path)) return "/";
+  if (path === "/projects") return "/manage/projects";
+  if (["/ops", "/settings/operations"].includes(path)) return "/manage/runners";
+  if (/^\/(?:profiles|agents)(?:\/|$)/.test(path))
+    return path.replace(/^\/(?:profiles|agents)/, "/manage/agents");
+  if (/^\/settings(?:\/|$)/.test(path)) return "/manage/agents";
+  if (/^\/(?:workflows\/)?(?:steps|collections)(?:\/|$)/.test(path)) return "/manage/agents";
+  if (/^\/(?:workflows|library)(?:\/|$)/.test(path))
+    return path
+      .replace(/^\/(?:workflows|library)/, "/factory")
+      .replace(/\/(?:yaml|used-in|history|drafts\/[^/]+)$/, "");
+  if (/^\/threads(?:\/|$)/.test(path)) return path.replace(/^\/threads/, "/chats");
+  const project = path.match(/^\/(?:p|projects)\/([^/]+)(?:\/(.*))?$/);
+  if (project) {
+    const [, id, tail = ""] = project;
+    if (tail === "settings") return `/manage/projects/${id}`;
+    if (tail === "members") return "/manage/people";
+    if (["runs", "workflows", "pipelines"].includes(tail)) return `/p/${id}/factory`;
+    if (/^(?:threads|conversations)(?:\/|$)/.test(tail))
+      return `/p/${id}/${tail.replace(/^(?:threads|conversations)/, "chats")}`;
+    if (/^runs\/[^/]+$/.test(tail) && path.startsWith("/projects/")) return `/${tail}`;
+    if (path.startsWith("/projects/")) return `/p/${id}${tail ? `/${tail}` : ""}`;
+  }
+  return path;
+}
+
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
 test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
@@ -337,7 +366,7 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
     await shot(alice, "m5-assistant-00-signed-in");
   });
 
-  test("Ask from the assistant popover: the answer names M4 Exit and shows the tools it used", async () => {
+  test("Ask from the Quick chat panel: the answer names M4 Exit and shows the tools it used", async () => {
     if (!assistantAvailable) test.skip(true, skipReason);
     const served: AssistantAnswerServed[] = [];
     const onMessageResponse = (res: import("@playwright/test").Response) => {
@@ -359,11 +388,11 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
         }
       })();
     };
-    await test.step("Ctrl J opens the assistant popover and the question is sent", async () => {
+    await test.step("Ctrl J opens the Quick chat panel and the question is sent", async () => {
       await gotoApp(alice, "/");
       alice.on("response", onMessageResponse);
       await alice.keyboard.press("Control+J");
-      await expect(alice.getByTestId("assistant-popover")).toBeVisible();
+      await expect(alice.getByTestId("quick-chat")).toBeVisible();
       const input = alice.getByTestId("assistant-composer-input");
       await expect(input).toBeVisible();
       await input.fill(QUESTION);
@@ -552,7 +581,7 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
       await test.step(`link ${i + 1}/${links.length} — “${label}” (${route})`, async () => {
         if (i === 0) {
           // The product's own way to a link: click the rendered button, which
-          // navigates to the served route (the popover stays open over the
+          // navigates to the served route (the panel stays open over the
           // destination — Esc closes it, the conversation survives).
           await alice
             .locator("[data-testid='assistant-msg-assistant']")
@@ -567,17 +596,19 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
         }
         // The destination is the served route's PATH and the app served it to
         // the signed-in session — and it is not the app's "Not found" page.
-        const expectedPath = new URL(route, BASE_URL).pathname;
+        const expectedPath = destinationPath(route);
         await expect
           .poll(() => new URL(alice.url()).pathname, {
             message: `landed on ${new URL(alice.url()).pathname}, not the served route ${route}`,
           })
           .toBe(expectedPath);
-        await expect(alice.getByTestId("user-badge")).toBeVisible();
+        await expect(alice.getByTestId("top-bar")).toBeVisible();
         await expect(alice.getByText(NOT_FOUND_TEXT)).toHaveCount(0);
-        // Close the popover so the next landing is judged on the page, not
+        // Close the panel so the next landing is judged on the page, not
         // on the overlay standing over it.
-        await alice.keyboard.press("Escape");
+        if (await alice.getByTestId("quick-chat").isVisible()) {
+          await alice.getByTestId("quick-chat-close").click();
+        }
         await shot(alice, `m5-assistant-02-link-${i + 1}`);
       });
     }

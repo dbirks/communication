@@ -1845,7 +1845,13 @@ export function StudioPage() {
                         ? viewDocumentText
                         : studio.text
                   }
-                  filename={`${pipeline.data?.slug ?? pipelineId}.yaml`}
+                  filename={
+                    // A published revision's file carries its number
+                    // (`<slug>-r<n>.yaml`); a draft's is the bare slug.
+                    isViewingHistory && viewingRevision.data
+                      ? `${pipeline.data?.slug ?? pipelineId}-r${viewingRevision.data.revision_number}.yaml`
+                      : `${pipeline.data?.slug ?? pipelineId}.yaml`
+                  }
                 />
               )
             ) : panelParam === "inputs" ? (

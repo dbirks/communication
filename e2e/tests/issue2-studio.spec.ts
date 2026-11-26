@@ -17,7 +17,7 @@
 // AGENT_TURN_TIMEOUT_MS waits are needed.
 //
 // Every journey step calls the local `evidence()`: a full-page screenshot
-// into ${E2E_EVIDENCE_DIR ?? "test-results/issue2"}/<name>.png plus one
+// into ${E2E_EVIDENCE_DIR ?? "../test-results/issue2"}/<name>.png plus one
 // console line `EVIDENCE <name>: <what it proves>`.
 //
 // Re-run safety: A2 PUBLISHES a customized revision (code_review + a
@@ -44,7 +44,7 @@ const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
 const STAMP = process.env.E2E_ISSUE2_STAMP ?? Date.now().toString(36);
 const PIPELINE_SLUG = "feature-development-deterministic";
-const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "test-results/issue2";
+const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "../test-results/issue2";
 
 /** One piece of journey evidence: a screenshot plus a single log line. */
 async function evidence(page: Page, name: string, what: string): Promise<void> {
@@ -187,13 +187,18 @@ function countKind(document: string, kind: string): number {
   return document.split("\n").filter((line) => line.trim() === want).length;
 }
 
-/** Read-only YAML drawer behind the editor's `…` menu → View YAML. */
-async function readYaml(page: Page): Promise<string> {
+/** Read the draft YAML editor or the published revision viewer. */
+async function readYaml(page: Page, published = false): Promise<string> {
   await page.getByTestId("editor-more-btn").click();
   await expect(page.getByTestId("editor-more-menu")).toBeVisible();
   await page.getByTestId("editor-menu-yaml").click();
   const panel = page.getByTestId("editor-panel-yaml");
   await expect(panel).toBeVisible();
+  if (!published) {
+    const editor = panel.getByTestId("studio-yaml");
+    await expect(editor).toBeVisible();
+    return editor.inputValue();
+  }
   const viewer = panel.getByTestId("yaml-view");
   await expect(viewer).toBeVisible();
   const lines = await viewer
@@ -378,7 +383,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await evidence(
       page,
       "studio-a1-yaml",
-      "Read-only View YAML confirms the inspector's work: id: code_review (kind agent.acp, profile m4-reviewer), review's dependsOn now names code_review, on-failure continue",
+      "The draft YAML editor confirms the inspector's work: id: code_review (kind agent.acp, profile m4-reviewer), review's dependsOn now names code_review, on-failure continue",
     );
   });
 
@@ -577,7 +582,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await expect(page.getByTestId("version-viewing-banner")).toBeVisible();
     await expect(page.getByTestId(`canvas-scope-${state.untilId}`)).toBeVisible();
     await page.getByTestId("versions-panel-close").click();
-    const revisionYaml = await readYaml(page);
+    const revisionYaml = await readYaml(page, true);
     expect(revisionYaml).toContain("kind: until");
     expect(revisionYaml).toContain("maxIterations: 2");
     await backToCanvas(page);

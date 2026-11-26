@@ -29,6 +29,7 @@
 // rather than hanging it. The API assertions use the signed-in browser
 // context's own request context (`adminContext.request`, which shares its
 // cookies), because every pipeline route below is `HandleAuthed`.
+import { readFile } from "node:fs/promises";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { gotoApp, shot, signIn } from "./helpers.js";
@@ -40,7 +41,6 @@ const EDIT_TIMEOUT_MS = Number(process.env.E2E_W4_EDIT_TIMEOUT_MS ?? 120_000);
 
 const ADMIN = { subject: "admin", name: "admin" };
 /** The starter the New workflow dialog clones (design 1c's template card). */
-const TEMPLATE_ID = "plan-with-approval";
 const stamp = process.env.E2E_W4_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
 const SLUG = `w4-prompt-${stamp}`;
 
@@ -135,31 +135,29 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
     });
   });
 
-  test("step 1 — admin clones the Plan with approval sample", async () => {
-    await test.step("Workflows → New workflow → start from: Plan with approval", async () => {
+  test("step 1 — admin imports the Plan with approval sample", async () => {
+    await test.step("Factory → New workflow → import Plan with approval", async () => {
       await gotoApp(admin, "/workflows");
-      await expect(admin.getByTestId("library-page")).toBeVisible();
-      // Design 1c: the New workflow dialog is the index's only creation
-      // surface — a name, the id derived from it (changed here to the
-      // suite's own slug), and the starter as a card.
-      await admin.getByTestId("workflows-new-workflow").click();
-      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
-      await admin.getByTestId("library-new-name-input").fill(SLUG);
-      await admin.getByTestId("new-workflow-id-change").click();
-      await admin.getByTestId("library-new-slug-input").fill(SLUG);
-      await admin.getByTestId(`new-workflow-template-${TEMPLATE_ID}`).click();
-      await admin.getByTestId("library-new-submit").click();
-      // A template is not a revision: the click path lands on the draft it
-      // seeded's Workflow Studio, at /workflows/:id/drafts/:draftId
-      // (m5-journey step 1).
-      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      await expect(admin).toHaveURL(`${BASE_URL}/factory`);
+      await admin.getByTestId("factory-new").click();
+      await admin.getByTestId("new-workflow-import").click();
+      const template = await readFile(
+        "../ui/src/lib/pipeline/templates/plan-with-approval.yaml.txt",
+        "utf8",
+      );
+      await admin
+        .getByTestId("import-yaml-doc")
+        .fill(template.replace("name: plan-with-approval", `name: ${SLUG}`));
+      await admin.getByTestId("import-yaml-slug").fill(SLUG);
+      await admin.getByTestId("import-yaml-name").fill(SLUG);
+      await admin.getByTestId("import-yaml-submit").click();
+      await admin.waitForURL(/\/factory\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}/);
       const cloneUrl = new URL(admin.url());
       pipelinePath = `/workflows/${cloneUrl.pathname.split("/")[2]}`;
-      draftId = cloneUrl.pathname.split("/").at(-1) ?? "";
+      draftId = cloneUrl.searchParams.get("draft") ?? "";
       expect(draftId).toMatch(/^[0-9a-f-]{36}$/);
-      // The Studio's YAML view is the same authoring surface the old editor
-      // exposed as its textarea.
-      await admin.getByTestId("studio-view-yaml").click();
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-yaml").click();
       const yaml = admin.getByTestId("studio-yaml");
       await expect(yaml).toHaveValue(new RegExp(SLUG));
       // The sample as shipped: the node this suite must rewrite in step 2.
@@ -226,13 +224,12 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
     await test.step("open the agent step's per-step form (W4's field set)", async () => {
       // The canvas steps are addressed by node id (survey, plan, approve,
       // publish_plan), so the rewritten node is `canvas-step-plan`.
-      await admin.getByTestId("studio-view-canvas").click();
+      await admin.getByTestId("editor-panel-close").click();
       await admin.getByTestId("canvas-step-plan").click();
-      await expect(admin.getByTestId("insp-node")).toBeVisible();
-      await expect(admin.getByTestId("insp-kind-chip")).toContainText("agent.acp");
+      await expect(admin.getByTestId("agent-step-card")).toBeVisible();
     });
     await test.step("replace the prompt and watch the YAML line change", async () => {
-      const prompt = admin.getByTestId("insp-config-prompt");
+      const prompt = admin.getByTestId("agent-card-prompt");
       // The form reads the document, not a shadow model: it shows exactly
       // what the rewrite put at config.prompt.
       await expect(prompt).toHaveValue(PLACEHOLDER_PROMPT);
@@ -242,27 +239,26 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       await prompt.press("Tab");
       // The field write lands on the one line its JSON pointer names, so
       // the Studio's YAML view now carries the sentinel verbatim.
-      await admin.getByTestId("studio-view-yaml").click();
+      await admin.getByTestId("agent-card-close").click();
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-yaml").click();
       const input = admin.getByTestId("studio-yaml");
       await expect(input).toHaveValue(literal(SENTINEL));
       await expect(input).not.toHaveValue(literal(PLACEHOLDER_PROMPT));
       await expect(input).toHaveValue(/kind: agent\.acp/);
-      await expect(admin.getByTestId("studio-dirty")).toHaveText("unsaved");
+      await expect(admin.getByTestId("studio-yaml-dirty")).toBeVisible();
       await shot(admin, "w4-03-prompt-edited");
     });
   });
 
   test("step 4 — save, validate, publish r1", async () => {
     await test.step("Save → the dirty flag clears; Validate → the server says valid", async () => {
-      await admin.getByTestId("studio-save").click();
-      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, {
+      await admin.getByTestId("studio-yaml-validate").click();
+      await expect(admin.getByTestId("studio-yaml-verdict")).toHaveText("valid", {
         timeout: 30_000,
       });
-      await admin.getByTestId("studio-validate").click();
-      // Publish is gated on the stored verdict, so the verdict is the gate.
-      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
-        timeout: 30_000,
-      });
+      await expect(admin.getByTestId("studio-yaml-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("editor-panel-close").click();
       await expect(admin.getByTestId("studio-publish")).toBeEnabled();
     });
     await test.step("Publish → r1 is immutable and listed", async () => {
@@ -272,7 +268,7 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       });
       // Design 1e: the revision rows list on the workflow page's History tab.
       await gotoApp(admin, `${pipelinePath}/history`);
-      await expect(admin.getByTestId("revision-row-1")).toContainText("r1");
+      await expect(admin.getByTestId("versions-row-v1")).toContainText("v1");
       await shot(admin, "w4-04-published-r1");
     });
   });
@@ -311,8 +307,10 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       // The History tab's r1 row deep-links into the YAML tab, which renders
       // the served revision document (design 1e/2d).
       await gotoApp(admin, `${pipelinePath}/history`);
-      await expect(admin.getByTestId("revision-row-1")).toBeVisible({ timeout: 30_000 });
-      await admin.getByTestId("revision-row-1").click();
+      await expect(admin.getByTestId("versions-row-v1")).toBeVisible({ timeout: 30_000 });
+      await admin.getByTestId("versions-select-v1").click();
+      await admin.getByTestId("editor-more-btn").click();
+      await admin.getByTestId("editor-menu-yaml").click();
       const yaml = admin.getByTestId("yaml-view");
       await expect(yaml).toBeVisible({ timeout: 30_000 });
       await expect(yaml).toContainText(SENTINEL);

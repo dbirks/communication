@@ -499,7 +499,8 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
     );
 
     fireEvent.click(within(line).getByTestId("assistant-error-link"));
-    await waitFor(() => expect(seen[seen.length - 1]).toBe("/settings/operations"));
+    // `routes.ops()` answers Manage → Runners now (the redesign's route table).
+    await waitFor(() => expect(seen[seen.length - 1]).toBe("/manage/runners"));
   });
 
   /**

@@ -48,7 +48,7 @@ const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 const STAMP = process.env.E2E_ISSUE2_STAMP ?? Date.now().toString(36);
 const PROJECT_SLUG = "m4-exit";
 const FALLBACK_SLUG = "feature-development-deterministic";
-const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "test-results/issue2";
+const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "../test-results/issue2";
 const PUBLISHED_PATH = path.join(EVIDENCE_DIR, "published.json");
 /** Lab identities (docs/compatibility/probes/m4/seed.sh), named here so the
  * directory row's display name is the one the journey asserts on. */
@@ -588,11 +588,10 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // app's apiFetch does (from GET /api/v1/me).
     await repinAssignment(page, projectId, published.pipelineId as string, state.revisionDigest);
 
-    // Design project-1b-workflows: the Workflows tab is ONE panel of 2e rows
-    // — the assignment's old “when to run” block became the row's own
-    // STARTS WHEN box. The panel's row for this pipeline, with its
-    // STARTS WHEN box open (the 2e default), is what proves it is live here.
+    // The legacy project workflows URL redirects to scoped Factory, where
+    // the schedules and triggers panel shows the pinned assignment.
     await page.goto(`${projectPath}/workflows`);
+    await expect(page).toHaveURL(`${BASE_URL}${projectPath}/factory`);
     await expect(page.getByTestId("project-pipelines")).toBeVisible();
     const assignedRow = page
       .locator('[data-testid^="project-workflow-row-"]')
@@ -627,15 +626,14 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
       }
     }
 
-    // Start the run from the project's New run flow. Design 1b: the RUNS
-    // panel carries no "New run" button of its own — the header band's
-    // `Start run` is the page's one door, landing here with `?new=1`. The
+    // Start the run from the project Home prompt. The
     // form defaults to its FIRST assignment, so the studio-pinned one must be
     // picked explicitly — robustly, and proven by the goal input the
     // deterministic revision shows.
-    await page.goto(`${projectPath}/runs`);
-    await page.getByTestId("project-start-run").click();
-    await expect(page).toHaveURL(/[?&]new=1/);
+    await page.goto(projectPath);
+    await page.getByTestId("home-prompt-run").click();
+    await expect(page.getByRole("dialog", { name: "Start a run" })).toBeVisible();
+    await page.getByTestId("home-start-run-project").selectOption(projectId);
     await selectPipelineAssignment(page, state.pipelineSlug);
     await page.getByTestId("new-run-input-goal").fill(`issue2 acceptance ${STAMP}`);
     // 1k (run by hand): the typed form has no separate repo chooser — the
