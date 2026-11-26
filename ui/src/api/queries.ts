@@ -10,7 +10,7 @@
  */
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
-import { apiFetch, conversationConflictOf, setCsrfToken } from "./client";
+import { ApiError, apiFetch, conversationConflictOf, problemCauseOf, setCsrfToken } from "./client";
 import { agentProfileVersionsKey } from "./useProfileVersions";
 import type { components } from "./schema";
 import type {
@@ -176,6 +176,72 @@ export function useProject(projectId: string) {
     enabled: projectId.length > 0,
   });
 }
+
+/**
+ * `PATCH /api/v1/projects/{projectId}` with `default_agent_profile_id`
+ * (ADR-0086): the profile the agent chip preselects for work started in this
+ * project, or `null` to clear it. A body that named nothing is `400`, so the
+ * id is required here even when it is `null`.
+ *
+ * The write is the project's optimistic CAS, exactly like the ADR-0072
+ * agent-mail switch beside it: it carries the `version` the read returned, and
+ * a stale one answers `409` and changes nothing — the caller then shows its
+ * sentence and the project is refetched rather than overwritten.
+ * `400 invalid_agent_profile` is the server's refusal of a profile outside the
+ * project's organization; it stays the mutation's error for the caller to
+ * word, never a silently-dropped pick.
+ */
+export function useSetProjectDefaultAgent(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProjectDefaultAgentPatch) =>
+      apiFetch<Project>(`/api/v1/projects/${projectId}`, { method: "PATCH", json: body }),
+    onSuccess: async (fresh) => {
+      queryClient.setQueryData(queryKeys.project(fresh.id), fresh);
+      const list = queryClient.getQueryData<ProjectList>(queryKeys.projectList);
+      if (list) {
+        queryClient.setQueryData<ProjectList>(queryKeys.projectList, {
+          ...list,
+          items: list.items.map((item) => (item.id === fresh.id ? fresh : item)),
+        });
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.project(fresh.id) });
+    },
+    onError: (error) => {
+      // A lost CAS: the server wrote nothing, so the truth lives there — read
+      // it back rather than keep offering the version that just failed.
+      if (error instanceof ApiError && error.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+      }
+    },
+  });
+}
+
+/**
+ * The one sentence for a failed default-agent write, in the words a person
+ * reads: a stale `version` says the project moved under them (and the hook has
+ * already refetched it), and `invalid_agent_profile` says the profile is not
+ * this project's to name. Any other failure keeps the caller's generic
+ * sentence (`null` here means "not one of these two").
+ */
+export function defaultAgentSaveSentence(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.status === 409) return "Someone else changed this project. Try again.";
+  if (error.status === 400 && problemCauseOf(error) === "invalid_agent_profile") {
+    return "That agent profile isn't available in this project.";
+  }
+  return null;
+}
+
+/** `PATCH /api/v1/projects/{projectId}` body for the default agent alone
+ * (ADR-0086): the id, or `null` to clear it, plus the version it is written
+ * against. The mail switch is absent, so the server leaves it alone. */
+export type ProjectDefaultAgentPatch = Omit<
+  components["schemas"]["ProjectSettingsPatch"],
+  "agent_mail_enabled"
+> & {
+  default_agent_profile_id: string | null;
+};
 
 export function useRepositories(projectId: string) {
   return useQuery({

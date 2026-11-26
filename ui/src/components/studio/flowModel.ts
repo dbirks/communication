@@ -511,10 +511,10 @@ export function toFlow(
   // round footer never overlap child step cards.
   const GROUP_PAD = 8;
   const GOAL_TOP_PAD = 76;
-  // Terminal steps inside a GoalFrame render a 10px dashed stub + 22px "+"
-  // button below the card (31px). 64px reserves an 8px+ gap above the
-  // footer line ("up to N rounds · …") so the add button never overlaps it.
-  const GOAL_BOTTOM_PAD = 64;
+  // Terminal steps inside a GoalFrame render a 10px dashed stub + 44px hit
+  // button below the card (~53px) above the 32px footer ("up to N rounds · …").
+  // 88px preserves clear separation between the terminal + target and footer.
+  const GOAL_BOTTOM_PAD = 88;
   const GOAL_SIDE_PAD = 22;
   // Deepest scopes first, so a nested group is expanded before its parent.
   const scopes = [...abs.values()]

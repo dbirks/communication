@@ -929,7 +929,7 @@ describe("computeTopFitViewport (design 1g: top-aligned, never magnified)", () =
     expect(vp).not.toBeNull();
     expect(vp.zoom).toBeLessThanOrEqual(1);
     // The graph's top box (y=0) lands exactly FIT_TOP_PAD_PX under the pane.
-    expect(vp.y).toBe(50);
+    expect(vp.y).toBe(FIT_TOP_PAD_PX);
     // The graph (x 0..200) centres in the 700px pane at its zoom.
     expect(vp.x + 100 * vp.zoom).toBeCloseTo(350, 6);
   });
@@ -939,7 +939,7 @@ describe("computeTopFitViewport (design 1g: top-aligned, never magnified)", () =
     // Content 280px tall + padding fits in 400 → still exactly top-aligned
     // at full scale, no magnification.
     expect(vp.zoom).toBe(1);
-    expect(vp.y).toBe(50);
+    expect(vp.y).toBe(FIT_TOP_PAD_PX);
   });
 
   it("refuses degenerate panes and boxes like the centred fit does", () => {

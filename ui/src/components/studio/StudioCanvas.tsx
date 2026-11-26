@@ -546,9 +546,9 @@ export function computeFitViewport(
 }
 
 /** CSS px between the pane's top edge and the graph's first box when the
- * canvas fits itself (design 1g: the chain starts ~50px below the top and
- * rides top-aligned, it is NOT vertically centred). */
-export const FIT_TOP_PAD_PX = 50;
+ * canvas fits itself (design 1g / R5: clears the top-right 44px phone action
+ * buttons at top-4 so fitted graphs start below the chrome, not behind it). */
+export const FIT_TOP_PAD_PX = 72;
 
 /** The app-shell phone breakpoint — the same `width < 560px` split the
  * APP-SHELL-PHONE rule in styles/tokens.css uses to give every control in

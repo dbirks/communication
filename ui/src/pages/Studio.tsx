@@ -8,7 +8,7 @@
  * live-run canvas overlay with VerdictStack, and synthetic Trigger node.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { IconDots, IconHistory, IconPlayerPlay, IconX } from "@tabler/icons-react";
 import { parse as parseYaml } from "yaml";
@@ -34,7 +34,7 @@ import {
   viewValidate,
   viewDraftSummary,
 } from "../api/m4view";
-import type { NodeExecutionDetail, PipelineRevision } from "../api/types";
+import type { Draft, NodeExecutionDetail, PipelineRevision } from "../api/types";
 import type {
   NodeExecutionSummary,
   PipelineDraftSummary,
@@ -60,6 +60,7 @@ import {
   type ScopePath,
 } from "../lib/pipeline/graphDoc";
 import { projectRun } from "../lib/pipeline/runEvents";
+import { withProjectDefaultAgent } from "../lib/defaultAgent";
 import { semanticDiff } from "../lib/pipeline/semanticDiff";
 import { overlays } from "../lib/pipeline/workbench";
 import { duplicateNode } from "../lib/pipeline/duplicateNode";
@@ -320,8 +321,15 @@ export function StudioPage() {
   const { pipelineId = "", draftId: routeDraftId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const scope = useScope();
   const project = useProject(scope ?? "");
+  // ADR-0086: the profile a step this editor adds starts on. All scope has no
+  // project to ask, and deleting a profile clears every project that named it
+  // (`ON DELETE SET NULL`, migration 00036), so the project's own read is the
+  // fact here — no second list is consulted. A step that already names a
+  // profile is never overwritten (see `withProjectDefaultAgent`).
+  const defaultAgentProfileId = project.data?.default_agent_profile_id ?? null;
   const explicitDraftId = routeDraftId ?? searchParams.get("draft") ?? "";
   const panelParam = searchParams.get("panel");
   const runParam = searchParams.get("run") ?? "";
@@ -803,7 +811,13 @@ export function StudioPage() {
 
   function insertOnEdge(edge: GraphEdge, kind: string, acceptAmbiguity = false) {
     const title = `Insert a step between ${edge.from} and ${edge.to}`;
-    const result = studio.apply((text) => insertOnEdgeOp(text, edge, kind, { acceptAmbiguity }));
+    const result = studio.apply((text) =>
+      withProjectDefaultAgent(
+        insertOnEdgeOp(text, edge, kind, { acceptAmbiguity }),
+        kind,
+        defaultAgentProfileId,
+      ),
+    );
     if (result.ok) {
       setOpError(null);
       setSelectedIds(result.changed[0] !== undefined ? [result.changed[0]] : []);
@@ -824,7 +838,13 @@ export function StudioPage() {
   }
 
   function handleAddAfter(afterId: string | null, nodeScope: ScopePath, kind: string) {
-    runOp((text) => addNode(text, { kind, scope: nodeScope, after: afterId }));
+    runOp((text) =>
+      withProjectDefaultAgent(
+        addNode(text, { kind, scope: nodeScope, after: afterId }),
+        kind,
+        defaultAgentProfileId,
+      ),
+    );
   }
 
   function handleDelete(ids: string[]) {
@@ -916,7 +936,10 @@ export function StudioPage() {
       }
     }
     try {
-      const revision = await publish.mutateAsync({ version: studio.getSavedVersion() });
+      const cachedVersion =
+        queryClient.getQueryData<Draft>(queryKeys.draft(draftId))?.version ?? 0;
+      const version = Math.max(studio.getSavedVersion(), cachedVersion);
+      const revision = await publish.mutateAsync({ version });
       setPublishNote(`published as r${revision.revision_number} ${revision.version_label}`);
       setValidateOpen(false);
     } catch (error) {
@@ -1009,6 +1032,51 @@ export function StudioPage() {
   }, [baseDocument, parseOk, studio.text]);
 
   // Loading & error guards (all hooks ran above)
+  if (!runParam && (pipeline.isError || (!explicitDraftId && drafts.isError))) {
+    const err = pipeline.isError ? pipeline.error : drafts.error;
+    const notFound = err instanceof ApiError && err.status === 404;
+    return (
+      <div className="min-h-[calc(100dvh-44px)] bg-paper" data-testid="studio-error-page">
+        <StudioFailureTitle
+          pipelineName={pipeline.data?.display_name || pipeline.data?.slug || null}
+          pipelineFolder={pipeline.data?.folder ?? null}
+        />
+        <section aria-label="Workflow unavailable" className="px-[22px] py-[22px] md:px-[28px]">
+          <div className="max-w-[70ch]">
+            {notFound ? (
+              <ProjectUnavailable
+                testid="studio-draft-error"
+                label="Workflow unavailable"
+                copy="Workflow not found or you do not have access."
+                hint="The breadcrumb above opens Factory. There is nothing to retry: this workflow is not here."
+              />
+            ) : (
+              <ProblemBanner
+                error={err}
+                fallback="The workflow could not be read."
+                subject="this workflow"
+                hint="Nothing is shown until the workflow loads."
+                retry={{
+                  onClick: () => {
+                    if (pipeline.isError) void pipeline.refetch();
+                    if (drafts.isError) void drafts.refetch();
+                  },
+                  pending: pipeline.isFetching || drafts.isFetching,
+                  testid: "studio-draft-retry",
+                }}
+                back={{
+                  to: routes.factory(scope),
+                  label: "← Back to Factory",
+                  testid: "studio-back-to-workflows",
+                }}
+                testid="studio-draft-error"
+              />
+            )}
+          </div>
+        </section>
+      </div>
+    );
+  }
   if (
     (!runParam &&
       !explicitDraftId &&
@@ -1428,7 +1496,11 @@ export function StudioPage() {
           showToolIsland={!isViewingRun}
           onIslandAdd={(kind, position) => {
             const result = studio.apply((text) =>
-              addNode(text, { kind, scope: [], after: selectedId }),
+              withProjectDefaultAgent(
+                addNode(text, { kind, scope: [], after: selectedId }),
+                kind,
+                defaultAgentProfileId,
+              ),
             );
             if (result.ok) {
               setOpError(null);
@@ -1795,6 +1867,17 @@ export function StudioPage() {
         {/* ?panel=yaml, ?panel=inputs, or ?panel=used-in */}
         {panelParam === "yaml" || panelParam === "used-in" || panelParam === "inputs" ? (
           <div
+            role={phone ? "dialog" : undefined}
+            aria-modal={phone ? true : undefined}
+            aria-label={
+              phone
+                ? panelParam === "yaml"
+                  ? "Workflow YAML"
+                  : panelParam === "inputs"
+                    ? "Workflow inputs"
+                    : "Used in"
+                : undefined
+            }
             data-testid={`editor-panel-${panelParam}`}
             className={
               phone
@@ -1802,8 +1885,8 @@ export function StudioPage() {
                   ? "fixed inset-x-0 top-0 bottom-0 z-40 flex flex-col overflow-y-auto bg-surface p-4"
                   : "fixed inset-x-0 bottom-0 z-40 max-h-[80dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
                 : panelParam === "yaml" || panelParam === "inputs"
-                  ? "absolute right-4 top-[58px] bottom-4 z-30 flex w-[520px] max-w-[calc(100%-32px)] flex-col overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
-                  : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-74px)] w-[420px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+                  ? "absolute right-4 top-[58px] bottom-[52px] z-30 flex w-[520px] max-w-[calc(100%-32px)] flex-col overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+                  : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-114px)] w-[420px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
             }
           >
             <div className="mb-2 flex items-center justify-end">

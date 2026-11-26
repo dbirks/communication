@@ -23,6 +23,7 @@ import ProjectDetail from "./ProjectDetail";
 import { FRAME_BATCH_MS } from "../../api/events";
 import {
   FakeEventSource,
+  claudeProfile,
   envelopeFixture,
   meFixture,
   mockFetch,
@@ -115,7 +116,51 @@ describe("/manage/projects/:projectId — the agent-mail setting (ADR-0072)", ()
   });
 });
 
-describe("/manage/projects/:projectId — the feed and the members list the members page carried", () => {
+describe("/manage/projects/:projectId \u2014 the default agent the DETAILS block carries (ADR-0086)", () => {
+  it("mounts the same line the project home prints, inside the details block", async () => {
+    renderDetail(
+      {
+        ...projectFixture,
+        default_agent_profile_id: claudeProfile.id,
+        default_agent_profile_name: claudeProfile.name,
+      },
+      [{ path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } }],
+    );
+
+    await screen.findByTestId("detail-details");
+    const line = await screen.findByTestId("project-default-agent");
+    // It is the DETAILS block that carries it, not a block of its own.
+    expect(line.closest("section[aria-label='Details']")).toBeTruthy();
+    expect(within(line).getByText("Default agent")).toBeTruthy();
+    // A maintainer moves it through the shared picker, named by the profile.
+    await waitFor(() =>
+      expect(within(line).getByTestId("project-default-agent-change").textContent).toContain(
+        claudeProfile.name,
+      ),
+    );
+  });
+
+  it("a member who may not manage the project reads the name and gets no write", async () => {
+    renderDetail(
+      {
+        ...projectFixture,
+        my_role: "viewer",
+        default_agent_profile_id: claudeProfile.id,
+        default_agent_profile_name: claudeProfile.name,
+      },
+      [{ path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } }],
+    );
+
+    const line = await screen.findByTestId("project-default-agent");
+    expect(within(line).getByTestId("project-default-agent-name").textContent).toBe(
+      claudeProfile.name,
+    );
+    expect(within(line).queryByTestId("project-default-agent-change")).toBeNull();
+    expect(within(line).queryByTestId("project-default-agent-clear")).toBeNull();
+  });
+});
+
+describe("/manage/projects/:projectId \u2014 the feed and the members list the members page carried", () => {
   it("renders an incoming SSE repository.added event and refetches members", async () => {
     const { requests } = renderDetail(projectFixture);
     await screen.findByTestId("detail-name");

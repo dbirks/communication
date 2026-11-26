@@ -15,9 +15,11 @@
  *                                                               selected secret, which is
  *                                                               that section's job)
  *
- * DETAILS is read-only and says so: `PATCH /api/v1/projects/{id}` moves exactly
- * one setting today (`agent_mail_enabled`, ADR-0072), so a name or description
- * field would be a form that cannot save.
+ * DETAILS holds the project's own facts, which are read-only — `PATCH
+ * /api/v1/projects/{id}` moves two settings (`default_agent_profile_id`,
+ * ADR-0086, and `agent_mail_enabled`, ADR-0072) and no name or description, so
+ * a text field here would be a form that cannot save. The default agent is the
+ * project home's own `DefaultAgentLine`, mounted in this block.
  */
 import { useState } from "react";
 import { Link, useParams } from "react-router";
@@ -26,6 +28,7 @@ import { useProject, useRepositories } from "../../api/queries";
 import type { Project } from "../../api/types";
 import { ProblemBanner, Spinner } from "../../components/Feedback";
 import { AgentMailPanel } from "../ProjectSettings";
+import { DefaultAgentLine } from "../../components/home/DefaultAgentLine";
 import { AddRepositoryDialog } from "../../components/project/AddRepositoryDialog";
 import { MembersPanel } from "../../components/project/MembersPanel";
 import ActivityFeed from "../../components/ActivityFeed";
@@ -85,6 +88,11 @@ export default function ProjectDetail({ projectId }: ProjectDetailProps) {
 
       <Block label="Details" testid="detail-label-details">
         <Details project={data} />
+        {/* ADR-0086: the project's default agent is the same line the project
+            home prints, mounted under the project's own facts. */}
+        <div className="pt-[10px]">
+          <DefaultAgentLine project={data} />
+        </div>
       </Block>
 
       <Block label="Repositories" testid="detail-label-repositories">
@@ -166,8 +174,9 @@ export function Details({ project }: { project: Project }) {
         </div>
       ))}
       <p className="pt-[4px] text-[12.5px] text-muted" data-testid="detail-edit-note">
-        The project&#39;s one writable setting is agent mail, below. The name, slug and description
-        come from the project&#39;s create and are not editable here.
+        The name, slug and description come from the project&#39;s create and are not editable here.
+        The settings this page does move are the project&#39;s default agent just below and its
+        agent-mail switch under AGENT MAIL.
       </p>
     </dl>
   );

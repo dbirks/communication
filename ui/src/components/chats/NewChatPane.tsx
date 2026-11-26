@@ -5,6 +5,11 @@
  * repository chip (when the selected project has > 1 repository), and
  * AgentPicker. Creates the conversation with its first prompt and navigates to
  * the new thread.
+ *
+ * The agent chip starts on `pickDefaultAgent` (ADR-0086) — the choice stored
+ * for this project, else the project's default agent, else the first profile —
+ * and a profile picked here is stored the same way the Home box stores it, so
+ * the two boxes remember one choice instead of two.
  */
 import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -23,6 +28,7 @@ import { FormError } from "../Feedback";
 import { Menu, type MenuEntry } from "../ds/Menu";
 import { PromptBox, PromptChip } from "../ds/PromptBox";
 import { AgentPicker } from "../shell/AgentPicker";
+import { pickDefaultAgent, rememberAgentChoice, storedAgentChoice } from "../../lib/defaultAgent";
 import { useThreadList } from "../threads/ThreadListPane";
 import { legacyRunThreadTitle } from "../threads/runThreadTitle";
 
@@ -85,7 +91,17 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
   const repoItems = repositories.data?.items ?? [];
 
   const profileItems = profiles.data?.items ?? [];
-  const effectiveProfileId = selectedProfileId ?? profileItems[0]?.id ?? null;
+  // ADR-0086's one preselect order, shared with the Home prompt box: an
+  // explicit pick in this pane wins, then the choice stored for this project,
+  // then the project's own default agent while it is still offered, then the
+  // first profile.
+  const effectiveProfileId =
+    selectedProfileId ??
+    pickDefaultAgent({
+      stored: storedAgentChoice(activeProjectId),
+      projectDefault: activeProject?.default_agent_profile_id,
+      profiles: profileItems,
+    });
 
   const create = useCreateConversation(activeProjectId);
 
@@ -188,8 +204,9 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
             open={projectMenuOpen}
             onClose={() => setProjectMenuOpen(false)}
             triggerRef={projectTriggerRef}
-            side="top"
+            side="bottom"
             width={220}
+            className="max-h-[min(320px,calc(100vh-140px))] overflow-y-auto"
             caption="PROJECT"
             ariaLabel="Project"
             data-testid="new-chat-project-menu"
@@ -216,8 +233,9 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
             open={repoMenuOpen}
             onClose={() => setRepoMenuOpen(false)}
             triggerRef={repoTriggerRef}
-            side="top"
+            side="bottom"
             width={220}
+            className="max-h-[min(320px,calc(100vh-140px))] overflow-y-auto"
             caption="REPOSITORY"
             ariaLabel="Repository"
             data-testid="new-chat-repo-menu"
@@ -229,6 +247,9 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
         value={effectiveProfileId}
         onChange={(id) => {
           setSelectedProfileId(id);
+          // The same key the Home prompt box writes: the pick is one choice per
+          // project, not one per box.
+          rememberAgentChoice(activeProjectId, id);
           setValidationError(null);
         }}
         testid="new-chat-agent-picker"

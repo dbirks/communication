@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
 import { HOME_PROJECT_KEY, HomePrompt, titleFromPrompt } from "./HomePrompt";
 import {
   claudeProfile,
+  codexProfile,
   conversationFixture,
   meFixture,
   mockFetch,
@@ -265,5 +266,92 @@ describe("HomePrompt (project scope)", () => {
         `/p/${projectFixture.id}/chats/${conversationFixture.id}`,
       ),
     );
+  });
+});
+
+describe("the agent chip's starting profile (ADR-0086)", () => {
+  const codexAgent = { ...codexProfile };
+
+  it("preselects the project's default agent when nothing was chosen here", async () => {
+    // The default is NOT the first profile, so the pick can only come from the
+    // project's own row.
+    const withDefault = {
+      ...projectFixture,
+      default_agent_profile_id: codexAgent.id,
+      default_agent_profile_name: codexAgent.name,
+    };
+    renderPrompt(baseRoutes([withDefault], [], [claudeProfile, codexAgent]));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(codexAgent.name),
+    );
+  });
+
+  it("the choice stored in this browser still outranks the project's default", async () => {
+    localStorage.setItem(`communication.home.agent.${projectFixture.id}`, claudeProfile.id);
+    const withDefault = {
+      ...projectFixture,
+      default_agent_profile_id: codexAgent.id,
+      default_agent_profile_name: codexAgent.name,
+    };
+    renderPrompt(baseRoutes([withDefault], [], [claudeProfile, codexAgent]));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(claudeProfile.name),
+    );
+  });
+
+  it("ignores a default that is no longer one of the profiles", async () => {
+    const stale = {
+      ...projectFixture,
+      default_agent_profile_id: "deleted-profile",
+      default_agent_profile_name: "Deleted profile",
+    };
+    renderPrompt(baseRoutes([stale], [], [claudeProfile, codexAgent]), {
+      projectId: projectFixture.id,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(claudeProfile.name),
+    );
+    expect(screen.getByTestId("home-prompt-agent").textContent).not.toContain("Deleted");
+  });
+
+  it("sends the preselected default without anyone touching the chip", async () => {
+    const withDefault = {
+      ...projectFixture,
+      default_agent_profile_id: codexAgent.id,
+      default_agent_profile_name: codexAgent.name,
+    };
+    const { requests } = renderPrompt(
+      [
+        ...baseRoutes([withDefault], [], [claudeProfile, codexAgent]),
+        {
+          path: `/api/v1/projects/${projectFixture.id}/conversations`,
+          method: "POST",
+          body: conversationFixture,
+        },
+      ],
+      { projectId: projectFixture.id },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(codexAgent.name),
+    );
+    fireEvent.change(screen.getByTestId("home-prompt-input"), {
+      target: { value: "Triage the flaky tests" },
+    });
+    fireEvent.click(screen.getByTestId("home-prompt-send"));
+
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/conversations`, "POST").length,
+      ).toBe(1),
+    );
+    const body = JSON.parse(
+      requestsTo(requests, `/api/v1/projects/${projectFixture.id}/conversations`, "POST")[0].body ??
+        "{}",
+    );
+    expect(body.agent_profile_id).toBe(codexAgent.id);
   });
 });

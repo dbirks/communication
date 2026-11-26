@@ -12,10 +12,11 @@
  * nothing when the issue read cannot answer, and a workflow's trigger line is
  * the Factory's own sentence for the assignment's real schedules.
  */
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
 import {
+  claudeProfile,
   conversationSummaryFixture,
   meFixture,
   projectFixture,
@@ -283,5 +284,54 @@ describe("/p/:projectId — the project home", () => {
     });
     await screen.findByTestId("project-home-error");
     expect(await screen.findByTestId("project-home-retry")).toBeTruthy();
+  });
+
+  it("prints the project's default agent under the workflows that live here", async () => {
+    renderApp({
+      path: `/p/${projectId}`,
+      routes: routesFor({
+        [projectPath]: {
+          path: projectPath,
+          method: "GET",
+          body: {
+            ...projectFixture,
+            default_agent_profile_id: claudeProfile.id,
+            default_agent_profile_name: claudeProfile.name,
+          },
+        },
+        "/api/v1/agent-profiles": {
+          path: "/api/v1/agent-profiles",
+          body: { items: [claudeProfile] },
+        },
+      }),
+    });
+
+    const line = await screen.findByTestId("project-default-agent");
+    // A maintainer moves the default, so the name rides the picker chip.
+    await waitFor(() =>
+      expect(screen.getByTestId("project-default-agent-change").textContent).toContain(
+        claudeProfile.name,
+      ),
+    );
+    // CONTRACT "Agents & models" 3: the line sits under "Workflows here".
+    const workflows = screen.getByTestId("workflows-here");
+    expect(line.compareDocumentPosition(workflows) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  });
+
+  it("says 'none yet' for a project with no default agent", async () => {
+    renderApp({
+      path: `/p/${projectId}`,
+      routes: routesFor({
+        [projectPath]: {
+          path: projectPath,
+          method: "GET",
+          body: { ...projectFixture, my_role: "viewer" },
+        },
+      }),
+    });
+
+    const line = await screen.findByTestId("project-default-agent");
+    expect(line.textContent).toContain("none yet");
+    expect(screen.queryByTestId("project-default-agent-change")).toBeNull();
   });
 });

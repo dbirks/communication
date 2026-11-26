@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewChatPane } from "./NewChatPane";
 import type { ConversationSummary } from "../../api/types";
 import {
   claudeProfile,
+  codexProfile,
   conversationFixture,
   conversationSummaryFixture,
   meFixture,
@@ -113,5 +114,121 @@ describe("NewChatPane", () => {
     expect(screen.getByTestId("new-chat-recent-chat-1").getAttribute("href")).toBe("/chats/chat-1");
     expect(screen.getByTestId("new-chat-recent-chat-5")).toBeTruthy();
     expect(screen.queryByTestId("new-chat-recent-chat-6")).toBeNull();
+  });
+});
+
+/** The pane for a project whose default agent is NOT the first profile, with
+ * the profile list and both project reads stubbed. */
+function renderScopedWithDefault(defaultId: string | null, defaultName: string | null) {
+  const scopedProject = {
+    ...projectFixture,
+    default_agent_profile_id: defaultId,
+    default_agent_profile_name: defaultName,
+  };
+  const routes: RouteStub[] = [
+    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/projects", body: { items: [scopedProject] } },
+    { path: `/api/v1/projects/${projectFixture.id}`, method: "GET", body: scopedProject },
+    { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
+    { path: `/api/v1/projects/${projectFixture.id}/repos`, body: { items: [] } },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/conversations`,
+      method: "GET",
+      body: { items: [] },
+    },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/conversations`,
+      method: "POST",
+      status: 201,
+      body: { ...conversationFixture, id: "new-conv-1" },
+    },
+  ];
+  const { requests } = mockFetch(routes);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[`/p/${projectFixture.id}/chats/new`]}>
+        <Routes>
+          <Route
+            path="*"
+            element={
+              <>
+                <NewChatPane scope={projectFixture.id} />
+                <PathDisplay />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { requests };
+}
+
+describe("the agent chip's starting profile (ADR-0086)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    // The per-project agent memory is this browser's, not the suite's.
+    localStorage.clear();
+  });
+
+  it("preselects the project's default agent, not the first profile", async () => {
+    renderScopedWithDefault(codexProfile.id, codexProfile.name);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-agent-picker").textContent).toContain(codexProfile.name),
+    );
+  });
+
+  it("the choice stored for this project wins over the project's default", async () => {
+    localStorage.setItem(`communication.home.agent.${projectFixture.id}`, claudeProfile.id);
+    renderScopedWithDefault(codexProfile.id, codexProfile.name);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-agent-picker").textContent).toContain(claudeProfile.name),
+    );
+  });
+
+  it("a default that is no longer offered falls back to the first profile", async () => {
+    renderScopedWithDefault("deleted-profile", "Deleted profile");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-agent-picker").textContent).toContain(claudeProfile.name),
+    );
+    expect(screen.getByTestId("new-chat-agent-picker").textContent).not.toContain("Deleted");
+  });
+
+  it("starts a chat on the preselected default, and remembers a pick for the project", async () => {
+    const { requests } = renderScopedWithDefault(codexProfile.id, codexProfile.name);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-agent-picker").textContent).toContain(codexProfile.name),
+    );
+    fireEvent.change(screen.getByTestId("new-chat-prompt-input"), {
+      target: { value: "Skim the failing suite" },
+    });
+    fireEvent.click(screen.getByTestId("new-chat-prompt-send"));
+
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/conversations`, "POST"),
+      ).toHaveLength(1),
+    );
+    expect(
+      JSON.parse(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/conversations`, "POST")[0]
+          .body!,
+      ).agent_profile_id,
+    ).toBe(codexProfile.id);
+
+    // A pick made here is the same per-project memory the Home box writes.
+    fireEvent.click(screen.getByTestId("new-chat-agent-picker"));
+    fireEvent.click(await screen.findByTestId(`agent-option-${claudeProfile.id}`));
+    expect(localStorage.getItem(`communication.home.agent.${projectFixture.id}`)).toBe(
+      claudeProfile.id,
+    );
   });
 });

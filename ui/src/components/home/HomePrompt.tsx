@@ -6,9 +6,7 @@
  * `NewConversationDialog` sends (`agent_profile_id`, `title`, optional
  * `prompt`, optional `repository`) — the typed text is the first prompt, and
  * the title is its first line — then navigates to the new chat
- * (`routes.chat(id, projectId)`). The agent chip is the shared `AgentPicker`
- * and defaults to nothing chosen, exactly as the dialog's required profile
- * select does.
+ * (`routes.chat(id, projectId)`). The agent chip is the shared `AgentPicker`.
  *
  * In All scope the box carries a project chip (IconFolder + the project
  * name) opening a ds `Menu` of `useProjects()`, and starts on the most
@@ -17,6 +15,10 @@
  * the chosen project has more than one repository a repository chip joins
  * it; its default is the dialog's default — no repository — and picking one
  * sends its name in the create body.
+ *
+ * The agent chip starts on `pickDefaultAgent` (ADR-0086): this person's stored
+ * choice for the project, else the project's own default agent, else the first
+ * profile.
  *
  * With no projects at all the box is disabled and the footer says so with a
  * link to Manage → Projects.
@@ -31,6 +33,7 @@ import {
   useRepositories,
 } from "../../api/queries";
 import { AgentPicker } from "../shell/AgentPicker";
+import { pickDefaultAgent, rememberAgentChoice, storedAgentChoice } from "../../lib/defaultAgent";
 import { Menu } from "../ds/Menu";
 import { PromptBox, PromptChip } from "../ds/PromptBox";
 import { FormError } from "../Feedback";
@@ -93,27 +96,19 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
 
   const profilesQuery = useAgentProfiles();
   const profiles = profilesQuery.data?.items ?? [];
-  let storedAgent: string | null = null;
-  try {
-    storedAgent = selectedId
-      ? localStorage.getItem(`communication.home.agent.${selectedId}`)
-      : null;
-  } catch {
-    // Storage may be unavailable in private browsing.
-  }
-  const preferredAgent = agentPicks[selectedId] ?? storedAgent;
-  // NewConversationDialog initializes its profile to ""; it has no default,
-  // so fall back to the first profile.
+  const preferredAgent = agentPicks[selectedId] ?? storedAgentChoice(selectedId);
+  // ADR-0086's one order: the choice stored for this project, else the project's
+  // default profile while it is still offered, else the first profile.
   const profileId = selectedId
-    ? (profiles.find((profile) => profile.id === preferredAgent)?.id ?? profiles[0]?.id ?? null)
+    ? pickDefaultAgent({
+        stored: preferredAgent,
+        projectDefault: selected?.default_agent_profile_id,
+        profiles,
+      })
     : null;
   const pickAgent = (id: string) => {
     setAgentPicks((picks) => ({ ...picks, [selectedId]: id }));
-    try {
-      localStorage.setItem(`communication.home.agent.${selectedId}`, id);
-    } catch {
-      // Keep the selection in memory when storage is unavailable.
-    }
+    rememberAgentChoice(selectedId, id);
   };
 
   const reposQuery = useRepositories(selectedId);

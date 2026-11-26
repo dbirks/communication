@@ -176,6 +176,9 @@ export function WrapPanel({
 
   return (
     <div
+      role={sheet ? "dialog" : undefined}
+      aria-modal={sheet ? true : undefined}
+      aria-label={sheet ? "Wrap selected steps" : undefined}
       data-testid="wrap-panel"
       className={`flex flex-col gap-[12px] border border-line bg-surface p-[14px] shadow-[var(--shadow-pop)] ${containerLayout} ${className}`}
     >

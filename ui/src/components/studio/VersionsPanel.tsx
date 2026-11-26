@@ -83,10 +83,12 @@ export function VersionsPanel({
 
   const containerClass = sheet
     ? "w-full rounded-t-[18px] rounded-b-none border-t border-line bg-surface shadow-[var(--shadow-modal)] max-h-[75dvh] overflow-y-auto"
-    : "w-[304px] rounded-[12px] border border-line bg-surface shadow-[var(--shadow-pop)] max-h-[calc(100dvh-140px)] overflow-y-auto";
+    : "w-[304px] rounded-[12px] border border-line bg-surface shadow-[var(--shadow-pop)] max-h-[calc(100dvh-175px)] overflow-y-auto";
 
   return (
     <section
+      role={sheet ? "dialog" : undefined}
+      aria-modal={sheet ? true : undefined}
       data-testid="versions-panel"
       aria-label="Versions"
       className={`flex flex-col ${containerClass}`}

@@ -9,7 +9,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Draft, Me, ValidateResponse } from "../api/types";
-import { meFixture, mockFetch, requestsTo, type RouteStub } from "../test/fakes";
+import {
+  claudeProfile,
+  meFixture,
+  mockFetch,
+  projectFixture,
+  requestsTo,
+  type RouteStub,
+} from "../test/fakes";
 import {
   WIRE_DRAFT_ID,
   WIRE_PIPELINE_ID,
@@ -336,6 +343,56 @@ spec:
     expect(screen.queryByTestId("studio-op-error")).toBeNull();
     expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBeTruthy();
     expect(await screen.findByTestId("agent-step-card")).toBeTruthy();
+  });
+
+  it("starts a new agent step on the project's default agent (ADR-0086)", async () => {
+    const projectId = projectFixture.id;
+    const defaultProfile = {
+      id: "prof-project-default",
+      name: "Team default",
+      launcher_id: "claude",
+      permission_mode: "ask",
+      created_at: "2026-11-20T10:00:00Z",
+      version: 1,
+    };
+    mount(`/p/${projectId}/factory/${WIRE_PIPELINE_ID}?draft=${WIRE_DRAFT_ID}`, [
+      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+      {
+        path: `/api/v1/projects/${projectId}`,
+        body: {
+          ...projectFixture,
+          default_agent_profile_id: defaultProfile.id,
+          default_agent_profile_name: defaultProfile.name,
+        },
+      },
+      { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, defaultProfile] } },
+    ]);
+
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(screen.getByTestId("tool-island"));
+
+    // The card the new step opens with already carries the project's default.
+    const card = await screen.findByTestId("agent-step-card");
+    await waitFor(() =>
+      expect(within(card).getByTestId("agent-card-picker").textContent).toContain(
+        defaultProfile.name,
+      ),
+    );
+  });
+
+  it("with no project scope a new agent step still starts on no profile", async () => {
+    // No `/p/` prefix and no remembered scope: there is no project to ask.
+    window.sessionStorage.removeItem("communication.scope");
+    mount(studioPath, [
+      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+      { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
+    ]);
+
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(screen.getByTestId("tool-island"));
+
+    const card = await screen.findByTestId("agent-step-card");
+    expect(within(card).getByTestId("agent-card-picker").textContent).toContain("Choose agent");
   });
 
   it("debounces autosave by 800ms after edits and bakes layout into metadata.ui", async () => {

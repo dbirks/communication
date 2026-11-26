@@ -195,7 +195,7 @@ function HarnessRow({
       data-testid={
         single ? `agent-account-${harness}-${items[0].worker_name}` : `agent-account-${harness}`
       }
-      className="grid min-h-[44px] grid-cols-[160px_1fr_auto] items-center gap-3 border-b border-line-soft py-2"
+      className="grid min-h-[44px] grid-cols-1 items-start gap-2 border-b border-line-soft py-2 sm:grid-cols-[160px_minmax(0,1fr)_auto] sm:items-center sm:gap-3"
     >
       <span className="text-[13.5px] font-semibold">{harnessLabel(harness)}</span>
       <span className="min-w-0">
@@ -206,22 +206,22 @@ function HarnessRow({
         ) : single ? (
           <StateLine item={items[0]} />
         ) : (
-          <span className="block space-y-[2px]">
+          <span className="block space-y-[4px]">
             {items.map((item) => (
               <span
                 key={`${item.launcher}/${item.worker_id}`}
                 data-testid={`agent-account-${item.launcher}-${item.worker_name}`}
-                className="block"
+                className="flex flex-wrap items-baseline gap-x-1"
               >
                 <span className="font-mono text-[11px] text-muted">{item.worker_name}</span>
-                {" — "}
+                <span aria-hidden="true">—</span>
                 <StateLine item={item} />
               </span>
             ))}
           </span>
         )}
       </span>
-      <span className="flex shrink-0 items-center gap-2">
+      <span className="flex shrink-0 flex-wrap items-center gap-2">
         {items.map((item) => {
           const needsAccent =
             item.state === "signed_out" ||

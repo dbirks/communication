@@ -5,9 +5,10 @@
  * One project, at a glance: the prompt box that starts work in it, the three
  * pills that start the specific things this project has, what is happening
  * right now, what happened while the reader was away, and — in the right column
- * — the repositories and the workflows that live here. The old page's tab band
- * is gone: the rail and the pill in the top bar are the navigation now, so this
- * page is not framed by a second copy of it.
+ * — the repositories, the workflows that live here, and the project's default
+ * agent (ADR-0086). The old page's tab band is gone: the rail and the pill in
+ * the top bar are the navigation now, so this page is not framed by a second
+ * copy of it.
  *
  * Layout is the handoff's: max-width 1180, `1fr 300px`, gap 40, padding 28 36 —
  * one column below 900px, and the phone's 20/16 inset below 768 (CONTRACT.md
@@ -30,6 +31,7 @@ import { ProblemBanner, Spinner } from "../components/Feedback";
 import Page from "../components/ds/Page";
 import { PromptChip } from "../components/ds/PromptBox";
 import { StartRunDialog } from "../components/home/StartRunDialog";
+import { DefaultAgentLine } from "../components/home/DefaultAgentLine";
 import { HappeningNow } from "../components/home/HappeningNow";
 import { HomePrompt } from "../components/home/HomePrompt";
 import { RepoList } from "../components/home/RepoList";
@@ -128,6 +130,9 @@ export default function Project() {
         <div className="flex min-w-0 flex-col gap-[28px]">
           <RepoList projectId={data.id} />
           <WorkflowsHere projectId={data.id} />
+          {/* CONTRACT "Agents & models" 3: the project's default agent, one
+              line under the workflows that live here. */}
+          <DefaultAgentLine project={data} />
         </div>
       </div>
 
