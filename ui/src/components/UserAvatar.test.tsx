@@ -5,8 +5,10 @@
  * (the person changed providers, the host is unreachable) and a broken-image
  * glyph is the one thing a face cannot be.
  *
- * The rules this pins are the ones the design brief fixed: a 4px-radius SQUARE
- * with a 1px `line-strong` border (the app has no circles), `alt=""` because the
+ * The rules this pins are the ones the design brief fixed: the app's square —
+ * a 4px-radius box with a 1px `line-strong` border — and the redesign rail's
+ * circle (README §1: a 30px circle, 1px ink border, mono 10.5 initials);
+ * `alt=""` because the
  * name prints beside it, `referrerPolicy="no-referrer"` so the picture host
  * never learns who loaded it, and the initials rule — up to two words, first
  * letters, upper-cased.
@@ -97,5 +99,24 @@ describe("UserAvatar without a picture", () => {
   it("draws a question mark rather than an empty box for a name with no letters", () => {
     render(<UserAvatar name="  " avatarUrl="" size={32} />);
     expect(screen.getByTestId("user-avatar").textContent).toBe("?");
+  });
+});
+
+describe("UserAvatar in the circle shape (the redesign rail, README §1)", () => {
+  it("is a 30px circle with a 1px ink border and mono 10.5 initials", () => {
+    render(<UserAvatar name="David Birks" size={30} shape="circle" />);
+    const tile = screen.getByTestId("user-avatar");
+    expect(tile.className).toContain("rounded-full");
+    expect(tile.className).toContain("border-ink");
+    expect(tile.style.width).toBe("30px");
+    expect(tile.style.fontSize).toBe("10.5px");
+  });
+
+  it("clips a picture to the circle", () => {
+    render(<UserAvatar name="David Birks" avatarUrl={PICTURE} size={30} shape="circle" />);
+    const tile = screen.getByTestId("user-avatar");
+    expect(tile.className).toContain("rounded-full");
+    expect(tile.className).toContain("overflow-hidden");
+    expect(screen.getByTestId("user-avatar-img")).toBeTruthy();
   });
 });

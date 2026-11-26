@@ -113,6 +113,16 @@ describe("AgentPicker", () => {
     expect(chip.textContent).toContain("Choose agent");
   });
 
+  it("prints the chip label at 600 ink and a picker chevron (review SH-3)", () => {
+    renderPicker({ value: claudeA.id });
+    const chip = screen.getByTestId("agent-picker");
+    const label = chip.querySelector(".font-semibold");
+    expect(label?.textContent).toBe("Bravo Claude");
+    expect(label?.className).toContain("text-ink");
+    // the robot icon and the chevron
+    expect(chip.querySelectorAll("svg")).toHaveLength(2);
+  });
+
   it("keyboard: open, ArrowDown, Enter chooses the profile and closes", () => {
     const onChange = vi.fn();
     renderPicker({ onChange });

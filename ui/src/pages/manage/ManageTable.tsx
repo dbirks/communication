@@ -4,12 +4,16 @@
  * label the design uses above a block.
  *
  * The table is presentational on purpose — a section owns the reading and
- * hands it cells. Below 640px the same row cannot be a row any more (five
- * columns of 13.5px text at 390px is unreadable, and CONTRACT forbids
- * horizontal page scroll), so the row mounts as a stacked card that prints
- * `LABEL value` lines. Which one mounts is a `matchMedia` question, exactly
- * like the Shell's phone frame (`components/Shell.tsx`): a table that only
- * gets `display:none` is still a table in the accessibility tree.
+ * hands it cells. At desktop it sits in the design's one card (review
+ * 15-1280-2): 1px `line`, radius 12, white, 16px inner side padding, the
+ * header row printed inside the frame. Below 640px the same row cannot be a
+ * row any more (five columns of 13.5px text at 390px is unreadable, and
+ * CONTRACT forbids horizontal page scroll), so the row mounts as a stacked
+ * card that prints `LABEL value` lines — its own card already, so it does
+ * not sit inside the table's one. Which layout mounts is a `matchMedia`
+ * question, exactly like the Shell's phone frame (`components/Shell.tsx`):
+ * a table that only gets `display:none` is still a table in the
+ * accessibility tree.
  */
 import type { ReactNode } from "react";
 import { Link } from "react-router";
@@ -52,6 +56,9 @@ const STACK_CARD = "mb-[8px] rounded-[10px] border border-line bg-surface p-[12p
 const STACK_LINE = "flex items-baseline gap-[8px] py-[2px] text-[13.5px]";
 const STACK_LABEL =
   "shrink-0 font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-faint";
+/** A long mono name (a worker's pod name) breaks anywhere rather than
+ * orphaning a tail outside the card (review 15-390-3). */
+const STACK_VALUE = "min-w-0 [overflow-wrap:anywhere]";
 
 const NAME_LINK =
   "text-ink underline decoration-line-strong underline-offset-2 hover:text-accent-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
@@ -88,7 +95,7 @@ function ManageRows({
             {columns.map((column, index) => (
               <div key={column.key} className={STACK_LINE}>
                 <span className={STACK_LABEL}>{column.label}</span>
-                <span className={`min-w-0 ${index === 0 ? "font-semibold" : ""}`}>
+                <span className={`${STACK_VALUE} ${index === 0 ? "font-semibold" : ""}`}>
                   {cellContent(row, column, firstKey, testid)}
                 </span>
               </div>
@@ -99,33 +106,48 @@ function ManageRows({
     );
   }
   return (
-    <table className="w-full border-collapse" data-testid={testid} data-layout="table">
-      <thead>
-        <tr>
-          {columns.map((column) => (
-            <th key={column.key} scope="col" className={`${HEADER_CELL} ${column.className ?? ""}`}>
-              {column.label}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.id} data-testid={`${testid}-row-${row.id}`}>
-            {columns.map((column, index) => (
-              <td
-                key={column.key}
-                className={`${BODY_CELL} border-b border-line-soft ${
-                  index === 0 ? "font-semibold " : ""
-                }${column.className ?? ""}`}
-              >
-                {cellContent(row, column, firstKey, testid)}
-              </td>
+    <div
+      data-testid={`${testid}-card`}
+      className="overflow-hidden rounded-[12px] border border-line bg-surface"
+    >
+      <div className="px-[16px]">
+        <table
+          className="w-full border-collapse [&>tbody>tr:last-child>td]:border-b-0"
+          data-testid={testid}
+          data-layout="table"
+        >
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th
+                  key={column.key}
+                  scope="col"
+                  className={`${HEADER_CELL} ${column.className ?? ""}`}
+                >
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id} data-testid={`${testid}-row-${row.id}`}>
+                {columns.map((column, index) => (
+                  <td
+                    key={column.key}
+                    className={`${BODY_CELL} border-b border-line-soft ${
+                      index === 0 ? "font-semibold " : ""
+                    }${column.className ?? ""}`}
+                  >
+                    {cellContent(row, column, firstKey, testid)}
+                  </td>
+                ))}
+              </tr>
             ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

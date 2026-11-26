@@ -468,11 +468,10 @@ function systemLine(
 ): { text: string; raw?: string; noticeKind?: string } | null {
   switch (event.type) {
     case "conversation.created":
-      // The Projects handoff's first copy rule: “Conversations” becomes
-      // “Threads” everywhere (docs/design/handoff-projects/README.md § 1) — the
-      // event type is the wire's and stays `conversation.created`; the sentence
-      // a person reads is the app's.
-      return { text: `Thread started with ${str(payload, "agent_profile_name") || "an agent"}` };
+      // The redesign's copy rule (CONTRACT "What happens to the old app":
+      // Threads → Chats): the event type is the wire's and stays
+      // `conversation.created`; the sentence a person reads is the app's.
+      return { text: `Chat started with ${str(payload, "agent_profile_name") || "an agent"}` };
     case "conversation.control.transferred": {
       // A uuid in a sentence nobody can act on is not information: the journal
       // identifies principals by id, the transcript names them.

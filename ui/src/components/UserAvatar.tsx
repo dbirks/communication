@@ -2,10 +2,11 @@
  * UserAvatar — the signed-in person's face, or the initials they would have
  * got before the identity provider released a picture.
  *
- * The shape is the app's, not the internet's: a 4px-radius SQUARE with a 1px
- * `line-strong` border, exactly like the initials box the sidebar footer has
- * always drawn. A circle would make this one control the only round thing on
- * the screen.
+ * Two shapes: the app's square (4px radius, 1px `line-strong` border — the
+ * initials box the app has always drawn) and the redesign rail's CIRCLE (a
+ * 1px ink border, README §1 "the user avatar (30px circle, 1px ink border,
+ * mono 10.5 initials)"). The rail asks for the circle; every other surface
+ * keeps the square.
  *
  * The image is decoration: `alt=""`, because the name prints beside it (in the
  * sidebar footer, and under it on `/profile`), and a screen reader that said
@@ -21,8 +22,8 @@
  */
 import { useState } from "react";
 
-/** The three sizes the app draws: footer/rail, list rows, the Profile page. */
-export type UserAvatarSize = 24 | 32 | 64;
+/** The sizes the app draws: rail (circle), list rows, the Profile page. */
+export type UserAvatarSize = 24 | 30 | 32 | 64;
 
 /** The initials rule: the first letter of up to two words, upper-cased.
  * "David Birks" → "DB", "dbirks" → "D", "" → nothing (the tile draws "?"). */
@@ -36,7 +37,7 @@ export function initialsOf(name: string): string {
 }
 
 /** Mono initials per size — the tile's own type scale, small faces included. */
-const INITIALS_PX: Record<UserAvatarSize, number> = { 24: 10.5, 32: 12, 64: 20 };
+const INITIALS_PX: Record<UserAvatarSize, number> = { 24: 10.5, 30: 10.5, 32: 12, 64: 20 };
 
 export interface UserAvatarProps {
   /** The display name: printed as initials when there is no picture. */
@@ -44,6 +45,8 @@ export interface UserAvatarProps {
   /** `GET /api/v1/me` → `avatar_url`: an https URL, or "" for none. */
   avatarUrl?: string;
   size?: UserAvatarSize;
+  /** "square" (the app's own box) or "circle" (the redesign rail's ring). */
+  shape?: "square" | "circle";
   /** Root test handle — the footer tile is `user-avatar`, the Profile page's
    * face is `profile-avatar`. */
   testid?: string;
@@ -54,6 +57,7 @@ export default function UserAvatar({
   name,
   avatarUrl,
   size = 24,
+  shape = "square",
   testid = "user-avatar",
   className = "",
 }: UserAvatarProps) {
@@ -62,8 +66,9 @@ export default function UserAvatar({
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const url = avatarUrl && avatarUrl !== failedUrl ? avatarUrl : "";
   const box = { width: `${size}px`, height: `${size}px` };
-  const frame =
-    `grid shrink-0 place-items-center overflow-hidden rounded-[4px] border border-line-strong bg-fill ${className}`.trim();
+  const frame = `grid shrink-0 place-items-center overflow-hidden border bg-fill ${
+    shape === "circle" ? "rounded-full border-ink" : "rounded-[4px] border-line-strong"
+  } ${className}`.trim();
 
   if (!url) {
     return (

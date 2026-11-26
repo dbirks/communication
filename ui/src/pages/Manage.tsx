@@ -22,7 +22,7 @@
  * largest tree in the section (profiles, skills, step templates, models,
  * assistant), and Manage should not pull it into the initial chunk.
  */
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router";
 import {
   IconFolders,
@@ -108,6 +108,17 @@ function Content({ section, itemId }: { section: ManageSection; itemId?: string 
 
 /** The sub-nav: the column at desktop, the pill row on a phone. */
 function SubNav({ active, narrow }: { active: ManageSection; narrow: boolean }) {
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // Review 15-390-2: the chip row scrolls sideways, so it must not open at
+  // its start with the current section off-screen — the active chip is
+  // scrolled into view whenever the row mounts or the section changes.
+  useEffect(() => {
+    if (!narrow) return;
+    const chip = rowRef.current?.querySelector<HTMLElement>(`[data-testid="manage-nav-${active}"]`);
+    chip?.scrollIntoView?.({ inline: "center", block: "nearest" });
+  }, [active, narrow]);
+
   const title = (
     <span
       className={
@@ -124,13 +135,20 @@ function SubNav({ active, narrow }: { active: ManageSection; narrow: boolean }) 
     return (
       <nav
         aria-label="Manage"
-        className="flex shrink-0 items-center gap-[6px] overflow-x-auto border-b border-line px-3 py-2"
+        className="flex shrink-0 items-center gap-[6px] border-b border-line px-3 py-2"
         data-testid="manage-nav"
       >
         {title}
-        {ITEMS.map((item) => (
-          <NavPill key={item.key} item={item} active={active} pill />
-        ))}
+        {/* CONTRACT: phone touch targets ≥ 44px (review 15-390-1); the edge
+            fade (15-390-2) says the row keeps scrolling sideways. */}
+        <div
+          ref={rowRef}
+          className="flex min-w-0 flex-1 items-center gap-[6px] overflow-x-auto [mask-image:linear-gradient(90deg,transparent,#000_12px,#000_calc(100%-12px),transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {ITEMS.map((item) => (
+            <NavPill key={item.key} item={item} active={active} pill />
+          ))}
+        </div>
       </nav>
     );
   }
@@ -161,14 +179,14 @@ function NavPill({
   const selected = item.key === active;
   const { Icon } = item;
   const shape = pill
-    ? `shrink-0 rounded-full border ${selected ? "border-ink bg-ink text-white" : "border-line"} px-[10px] text-[13.5px]`
-    : `rounded-[8px] ${selected ? "bg-disabled-bg font-semibold" : ""}`;
+    ? `h-[44px] shrink-0 rounded-full border ${selected ? "border-ink bg-ink text-white" : "border-line"} px-[10px] text-[13.5px]`
+    : `h-[34px] rounded-[8px] ${selected ? "bg-accent-wash font-semibold" : ""}`;
   return (
     <Link
       to={routes.manage(item.key)}
       aria-current={selected ? "page" : undefined}
       data-testid={`manage-nav-${item.key}`}
-      className={`flex h-[34px] items-center gap-[9px] px-[10px] text-[13.5px] text-ink no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${shape}`}
+      className={`flex items-center gap-[9px] px-[10px] text-[13.5px] text-ink no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${shape}`}
     >
       <Icon
         size={16}

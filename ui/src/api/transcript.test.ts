@@ -505,21 +505,21 @@ describe("projectTranscript", () => {
     expect(tools[5]?.kind === "tool" && tools[5]?.inputPreview).toContain('"a":1');
   });
 
-  it("says a thread started, not a conversation (Projects README: Threads everywhere)", () => {
+  it("says a chat started, not a thread (redesign CONTRACT: Threads → Chats)", () => {
     // The event type is the wire's own (`conversation.created`) and the payload
-    // names the agent profile; the sentence a person reads is the app's, and the
-    // Projects handoff renames the noun: “Conversations” becomes “Threads”
-    // everywhere (docs/design/handoff-projects/README.md § 1 copy).
+    // names the agent profile; the sentence a person reads is the app's, and
+    // the redesign CONTRACT's "What happens to the old app" renames the noun:
+    // Threads become Chats (docs/design/redesign/CONTRACT.md).
     const transcript = projectTranscript(
       frames(["conversation.created", { agent_profile_name: "claude-opus-4-5" }]),
     );
     const line = transcript.items.find((item) => item.kind === "system");
-    expect(line?.kind === "system" && line.text).toBe("Thread started with claude-opus-4-5");
+    expect(line?.kind === "system" && line.text).toBe("Chat started with claude-opus-4-5");
 
-    // No profile name on the frame: the honest fallback, still a thread.
+    // No profile name on the frame: the honest fallback, still a chat.
     const bare = projectTranscript(frames(["conversation.created", {}]));
     const bareLine = bare.items.find((item) => item.kind === "system");
-    expect(bareLine?.kind === "system" && bareLine.text).toBe("Thread started with an agent");
+    expect(bareLine?.kind === "system" && bareLine.text).toBe("Chat started with an agent");
     expect(JSON.stringify(bare.items)).not.toMatch(/conversation started/i);
   });
 

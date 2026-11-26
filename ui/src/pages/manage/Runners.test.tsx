@@ -124,6 +124,23 @@ describe("Runners status", () => {
     expect(screen.getByTestId("runner-busy-runner-b").textContent).toBe("—");
   });
 
+  it("draws offline in the interrupted state's red-brown, not muted grey (review 15-1280-4)", async () => {
+    mocks.workers.data = { items: [worker({ name: "runner-a", status: "offline" })] };
+    renderSection();
+    const cell = await screen.findByTestId("runner-status-runner-a");
+    expect(cell.className).toContain("text-st-interrupted-tag-fg");
+  });
+
+  it("puts the same-host tag in WHERE, not beside the name (review 15-1280-6)", async () => {
+    mocks.workers.data = { items: [worker({ name: "runner-a", hostname: "runner-a" })] };
+    renderSection();
+    const name = await screen.findByTestId("runner-name-runner-a");
+    expect(name.textContent).toBe("runner-a");
+    const where = screen.getByTestId("runner-where-runner-a");
+    expect(where.textContent).toContain("0.9.0");
+    expect(where.textContent).toContain("same host");
+  });
+
   it("names the host when the hostname is a second name, else the build", async () => {
     mocks.workers.data = {
       items: [

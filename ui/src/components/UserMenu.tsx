@@ -9,7 +9,9 @@
  * The avatar is `UserAvatar`: the identity provider's `picture` claim when the
  * login released one, the person's initials otherwise. The same trigger serves
  * the expanded column and the collapsed rail — `Sidebar`'s footer narrows the
- * button so only the tile prints ink there.
+ * button so only the tile prints ink there. On the redesign rail
+ * (`railAvatar`) the avatar is the README's 30px circle with a 1px ink border
+ * (review SH-1); every other host keeps the app's square tile.
  */
 import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useNavigate } from "react-router";
@@ -23,7 +25,12 @@ const MENU_LIST_ID = "user-menu-list";
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring";
 
-export default function UserMenu() {
+export interface UserMenuProps {
+  /** Draw the rail's avatar: the 30px circle with the 1px ink border. */
+  railAvatar?: boolean;
+}
+
+export default function UserMenu({ railAvatar = false }: UserMenuProps) {
   const me = useMe();
   const logout = useLogout();
   const navigate = useNavigate();
@@ -68,7 +75,13 @@ export default function UserMenu() {
         onKeyDown={onTriggerKeyDown}
         className={`flex w-full items-center gap-2 rounded-[3px] px-2 py-[3px] text-left hover:bg-fill ${FOCUS_RING}`}
       >
-        <UserAvatar name={displayName} avatarUrl={avatarUrl} size={24} testid="user-avatar" />
+        <UserAvatar
+          name={displayName}
+          avatarUrl={avatarUrl}
+          size={railAvatar ? 30 : 24}
+          shape={railAvatar ? "circle" : "square"}
+          testid="user-avatar"
+        />
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
           <strong data-testid="user-badge" className="font-semibold text-ink">
             {displayName}

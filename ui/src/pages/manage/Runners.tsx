@@ -41,21 +41,25 @@ const STATUS_GLYPH: Record<Worker["status"], string> = {
   offline: STATES.interrupted.glyph,
 };
 
-/** Worker status → the state colour the glyph + word is drawn in. */
+/** Worker status → the state colour the glyph + word is drawn in. Offline
+ * carries the ⊘ of the interrupted state, so it wears that state's own
+ * red-brown (review 15-1280-4) — never muted grey. */
 const STATUS_CLASS: Record<Worker["status"], string> = {
   online: STATES.done.tagFg,
   draining: STATES.waiting.tagFg,
-  offline: "text-muted",
+  offline: STATES.interrupted.tagFg,
 };
 
 /** One worker's claim capacity, as the scheduler reports it. */
 type SchedulerWorkerLoad = SchedulerStatus["workers"][number];
 
 const COLUMNS: ManageColumn[] = [
-  { key: "name", label: "Name" },
-  { key: "where", label: "Where" },
-  { key: "status", label: "Status" },
-  { key: "busy", label: "Busy" },
+  // Review 15-1280-6: NAME is a mono pod name, not half the page; WHERE
+  // carries the location and gets the room.
+  { key: "name", label: "Name", className: "w-[30%]" },
+  { key: "where", label: "Where", className: "w-[28%]" },
+  { key: "status", label: "Status", className: "w-[15%]" },
+  { key: "busy", label: "Busy", className: "w-[12%]" },
   { key: "usedBy", label: "Used by" },
 ];
 
@@ -86,16 +90,22 @@ export default function RunnersSection() {
       name: (
         <span className="font-mono" data-testid={`runner-name-${worker.name}`}>
           {worker.name}
+        </span>
+      ),
+      where: (
+        <span
+          className="font-mono text-[12px]"
+          title={`version ${worker.version}`}
+          data-testid={`runner-where-${worker.name}`}
+        >
+          {whereText(worker)}
+          {/* The host tag belongs to WHERE (review 15-1280-6), not to the
+              name. */}
           {worker.hostname !== worker.name ? null : (
             <span className="ml-[6px] font-sans text-[11.5px] font-normal text-muted">
               same host
             </span>
           )}
-        </span>
-      ),
-      where: (
-        <span className="font-mono text-[12px]" title={`version ${worker.version}`}>
-          {whereText(worker)}
         </span>
       ),
       status: (

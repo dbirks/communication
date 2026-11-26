@@ -3,9 +3,9 @@
  * shared by every composer (Home prompt boxes, the chat composer, agent
  * steps on the canvas).
  *
- * The chip prints the selected profile's name, with the pinned model in
- * muted text when the profile pins one; nothing selected prints "Choose
- * agent". The popover groups the organization's profiles by harness
+ * The chip prints the selected profile's name (600 ink) with the pinned
+ * model in muted text when the profile pins one, and a chevron marking it a
+ * picker (review SH-3); nothing selected prints "Choose agent". The popover groups the organization's profiles by harness
  * (claude, codex, antigravity, then the rest alphabetically), 34px rows with
  * a ✓ slot on the selected one, a mono caption, and a "Manage agents…"
  * footer link. An admin who sees a harness whose every account row is
@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { IconRobot } from "@tabler/icons-react";
+import { IconChevronDown, IconRobot } from "@tabler/icons-react";
 import { useAgentProfiles, useMe } from "../../api/queries";
 import { useAgentAccounts } from "../../api/agentAccounts";
 import { routes } from "../../lib/routes";
@@ -183,14 +183,18 @@ export function AgentPicker({
           title={disabled ? disabledReason : "Choose the agent profile"}
           onClick={toggleOpen}
         >
-          {selected ? (
-            <>
-              {selected.name}
-              {selected.model ? <span className="text-muted"> · {selected.model}</span> : null}
-            </>
-          ) : (
-            "Choose agent"
-          )}
+          <span className="inline-flex min-w-0 items-center gap-[4px]">
+            <span className="truncate font-semibold text-ink">
+              {selected ? selected.name : "Choose agent"}
+            </span>
+            {selected?.model ? <span className="text-muted">· {selected.model}</span> : null}
+            <IconChevronDown
+              size={12}
+              stroke={1.5}
+              className="shrink-0 text-muted"
+              aria-hidden="true"
+            />
+          </span>
         </PromptChip>
         <Popover
           open={open && !disabled}

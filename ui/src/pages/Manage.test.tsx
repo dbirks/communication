@@ -21,6 +21,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Answer `(max-width: …px)` queries as a `width`px viewport would. */
+function stubViewport(width: number): void {
+  vi.stubGlobal("matchMedia", (query: string) => {
+    const max = /max-width:\s*([\d.]+)px/.exec(query);
+    let matches = true;
+    if (max) matches = width <= Number(max[1]);
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    };
+  });
+}
+
 /* Neutral fixtures: nothing here is the prototype's data. */
 const PROJECT_ID = "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80";
 const projectOne: Project = {
@@ -116,6 +135,33 @@ describe("the sub-nav", () => {
     expect(screen.getByTestId("manage-nav-runners").getAttribute("aria-current")).toBeNull();
     // Exactly one destination in the nav claims the current page.
     expect(document.querySelectorAll('nav[aria-label="Manage"] [aria-current]')).toHaveLength(1);
+  });
+
+  it("washes the selected desktop destination with the accent wash, not the grey fill (review 15-1280-3)", async () => {
+    renderManage("/manage/runners");
+    const current = await screen.findByTestId("manage-nav-runners");
+    expect(current.className).toContain("bg-accent-wash");
+    expect(current.className).not.toContain("bg-disabled-bg");
+  });
+
+  it("makes the phone chips 44px tall, fades the row's edge, and scrolls the active one into view (review 15-390-1/2)", async () => {
+    stubViewport(390);
+    const scrollIntoView = vi.fn();
+    const hadOwn = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+    Element.prototype.scrollIntoView =
+      scrollIntoView as unknown as typeof Element.prototype.scrollIntoView;
+    try {
+      renderManage("/manage/runners");
+      const chip = await screen.findByTestId("manage-nav-runners");
+      expect(chip.className).toContain("h-[44px]");
+      expect(chip.parentElement?.className).toContain("[mask-image:");
+      await waitFor(() =>
+        expect(scrollIntoView).toHaveBeenCalledWith({ inline: "center", block: "nearest" }),
+      );
+    } finally {
+      if (hadOwn) Object.defineProperty(Element.prototype, "scrollIntoView", hadOwn);
+      else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+    }
   });
 
   it("defaults the bare /manage URL to Projects", async () => {

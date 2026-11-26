@@ -63,6 +63,7 @@ afterEach(() => {
   projects.current = [];
   flags.current = {};
   me.current = undefined;
+  window.sessionStorage.removeItem("communication.scope");
 });
 
 describe("the rail's tiles", () => {
@@ -137,6 +138,31 @@ describe("the selected tile", () => {
     renderRail("/manage/runners");
     expect(screen.getByTestId("rail-manage").getAttribute("aria-current")).toBe("page");
   });
+
+  it("selects only the gear on Manage — no project tile, not even All (review 15-1280-1)", () => {
+    projects.current = [project("p-1", "Project One")];
+    // Manage's URL carries no scope; useScope falls back to the remembered
+    // one, and that must NOT print a selected tile beside the ink gear.
+    window.sessionStorage.setItem("communication.scope", "p-1");
+    renderRail("/manage/runners");
+    for (const tile of ["rail-tile-all", "rail-tile-p-1"]) {
+      const el = screen.getByTestId(tile);
+      expect(el.getAttribute("aria-current")).toBeNull();
+      expect(el.className).not.toContain("bg-ink");
+    }
+    expect(screen.getByTestId("rail-manage").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("draws the Manage gear bare at rest — no border, no fill (review SH-2)", () => {
+    renderRail("/");
+    const gear = screen.getByTestId("rail-manage");
+    expect(gear.className).not.toContain("border");
+    expect(gear.className).not.toContain("bg-");
+    // …and filled ink once selected.
+    cleanup();
+    renderRail("/manage/runners");
+    expect(screen.getByTestId("rail-manage").className).toContain("bg-ink");
+  });
 });
 
 describe("the needs-you badge", () => {
@@ -192,5 +218,15 @@ describe("the account row", () => {
     const account = screen.getByTestId("rail-account");
     expect(within(account).getByTestId("user-badge").textContent).toContain("Ada Lovelace");
     expect(within(account).getByTestId("user-menu")).toBeTruthy();
+  });
+
+  it("draws the account avatar as a 30px circle with a 1px ink border (review SH-1)", () => {
+    signedIn();
+    renderRail("/");
+    const avatar = within(screen.getByTestId("rail-account")).getByTestId("user-avatar");
+    expect(avatar.className).toContain("rounded-full");
+    expect(avatar.className).toContain("border-ink");
+    expect(avatar.style.width).toBe("30px");
+    expect(avatar.style.fontSize).toBe("10.5px");
   });
 });

@@ -99,6 +99,10 @@ export default function ProjectRail({ testid = "project-rail" }: ProjectRailProp
   const section = sectionFromPath(location.pathname);
   const onManage = location.pathname.startsWith("/manage");
   const items = projects.data?.items ?? [];
+  // On /manage/* Manage is the only selected thing on the rail (review
+  // 15-1280-1): no project scope is in the URL there, and the remembered one
+  // must not print a selected tile beside the ink gear.
+  const tileSelected = (selected: boolean) => !onManage && selected;
 
   return (
     <nav
@@ -124,17 +128,17 @@ export default function ProjectRail({ testid = "project-rail" }: ProjectRailProp
           to={tileHref(section, null)}
           title="All projects"
           aria-label="All projects"
-          aria-current={scope === null ? "true" : undefined}
+          aria-current={tileSelected(scope === null) ? "true" : undefined}
           data-testid="rail-tile-all"
           className={`grid place-items-center text-[10.5px] ${TILE_CLASS} ${tileState(
-            scope === null,
+            tileSelected(scope === null),
           )} ${FOCUS_RING}`}
         >
           All
         </Link>
         <span aria-hidden="true" className="h-px w-6 shrink-0 bg-line" />
         {items.map((project) => {
-          const selected = scope === project.id;
+          const selected = tileSelected(scope === project.id);
           return (
             <Link
               key={project.id}
@@ -163,28 +167,31 @@ export default function ProjectRail({ testid = "project-rail" }: ProjectRailProp
 
       {/* Pinned bottom group: Manage, then the account menu. */}
       <div className="mt-auto flex shrink-0 flex-col items-center gap-[10px]">
+        {/* Manage (README §1): 38×38 hit area, a bare `ti-settings` on the
+            rail at rest — no border, no fill (review SH-2) — and the filled
+            ink tile only while selected. */}
         <Link
           to={routes.manage()}
           title="Manage"
           aria-label="Manage"
           aria-current={onManage ? "page" : undefined}
           data-testid="rail-manage"
-          className={`text-ink ${TILE_CLASS} ${
-            onManage ? "border-ink bg-ink text-surface" : "border-line bg-surface"
+          className={`relative grid h-[38px] w-[38px] shrink-0 place-items-center rounded-[11px] text-ink ${
+            onManage ? "bg-ink text-surface" : ""
           } ${FOCUS_RING}`}
         >
           <IconSettings size={19} aria-hidden />
         </Link>
         {/* The account menu is the existing `UserMenu` (it carries
             `user-badge`, which the lab e2e reads). Its trigger is a
-            full-width row — avatar + name — so the 38px wrapper narrows it
-            to the avatar tile alone: the name stays in the DOM (it is the
-            trigger's accessible name) and prints no ink past the tile. */}
+            full-width row — avatar + name — so the 30px circle narrows it
+            to the avatar alone: the name stays in the DOM (it is the
+            trigger's accessible name) and prints no ink past the circle. */}
         <div
           data-testid="rail-account"
-          className="w-[38px] shrink-0 overflow-visible [&>div>button]:mx-auto [&>div>button]:w-[24px] [&>div>button]:gap-0 [&>div>button]:overflow-hidden [&>div>button]:px-0"
+          className="w-[38px] shrink-0 overflow-visible [&>div>button]:mx-auto [&>div>button]:h-[30px] [&>div>button]:w-[30px] [&>div>button]:gap-0 [&>div>button]:overflow-hidden [&>div>button]:rounded-full [&>div>button]:px-0"
         >
-          <UserMenu />
+          <UserMenu railAvatar />
         </div>
       </div>
     </nav>

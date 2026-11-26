@@ -408,7 +408,7 @@ describe("Transcript redesign layout (rx-gaps-b)", () => {
       {
         kind: "system",
         id: "sys-1",
-        text: "Thread started with Pi",
+        text: "Chat started with Pi",
         raw: "conversation.created",
         at: "2026-10-14T18:00:00Z",
       },

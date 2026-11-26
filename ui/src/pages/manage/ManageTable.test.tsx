@@ -68,12 +68,28 @@ describe("ManageTable", () => {
     expect(screen.getByTestId("t-row-one").textContent).toContain("First row");
   });
 
+  it("sits in a card at desktop: 1px line, radius 12, white, 16px side padding, header inside (review 15-1280-2)", async () => {
+    stubViewport(1280);
+    renderTable();
+    const card = await screen.findByTestId("t-card");
+    const table = screen.getByTestId("t");
+    expect(card.querySelector("table")).toBe(table);
+    expect(card.className).toContain("rounded-[12px]");
+    expect(card.className).toContain("border-line");
+    expect(card.className).toContain("bg-surface");
+    // The header row is printed inside the frame, and the table's wrapper
+    // carries the 16px inner side padding.
+    expect(table.querySelector("thead th")).toBeTruthy();
+    expect(card.firstElementChild?.className).toContain("px-[16px]");
+  });
+
   it("prints the empty sentence and no table when there are no rows", async () => {
     stubViewport(1280);
     renderTable({ rows: [] });
     const empty = await screen.findByTestId("t-empty");
     expect(empty.textContent).toBe("Nothing here yet");
     expect(screen.queryByTestId("t")).toBeNull();
+    expect(screen.queryByTestId("t-card")).toBeNull();
   });
 
   it("links a row from its first cell only", async () => {
@@ -95,7 +111,9 @@ describe("ManageTable", () => {
       expect(screen.getByTestId("t").getAttribute("data-layout")).toBe("stacked"),
     );
     const row = screen.getByTestId("t-row-one");
-    // Label: value lines, in column order — the header row is gone.
+    // Label: value lines, in column order — the header row is gone, and the
+    // stacked card is its own frame (no table card around it).
+    expect(screen.queryByTestId("t-card")).toBeNull();
     expect(row.textContent).toContain("Name");
     expect(row.textContent).toContain("First row");
     expect(row.textContent).toContain("Default branch");
