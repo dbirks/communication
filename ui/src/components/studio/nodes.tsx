@@ -77,9 +77,6 @@ function statusGlyph(state: string): string {
   return "•";
 }
 
-const chip =
-  "rounded-full border border-line bg-fill px-1.5 py-0.5 text-[10px] leading-4 text-muted";
-
 /** The ONE key fact a canvas node carries beyond icon + kind word: the
  * kind's own config value — the model name, the command, the approver, the
  * artifact — or nothing. Absent → the second line is kind word only;
@@ -90,6 +87,8 @@ function keyFactFor(kind: string, config: Record<string, unknown> | undefined): 
   const text = (v: unknown): string | null =>
     typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
   switch (kind) {
+    case "agent.acp":
+      return text(c.profile);
     case "model.chat":
       return text(c.model);
     case "process.exec": {
@@ -118,7 +117,7 @@ function keyFactFor(kind: string, config: Record<string, unknown> | undefined): 
  */
 const handleClass = (interactive: boolean): string =>
   interactive
-    ? "!h-2 !w-2 !border-transparent !bg-transparent opacity-0 hover:opacity-100 hover:!border-line-strong hover:!bg-surface"
+    ? "!h-[10px] !w-[10px] !border-[1.5px] !border-accent !bg-surface opacity-0 group-hover:opacity-100 focus:opacity-100"
     : "!h-2 !w-2 !border-transparent !bg-transparent opacity-0 !pointer-events-none";
 
 export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
@@ -128,8 +127,8 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   // The Studio canvas is ALWAYS top-to-bottom (design 1g): the handles ride
   // the node's top and bottom in every canvas view that renders a definition
   // graph, so a dragged step keeps its bottom→top connections.
-  const inPosition = Position.Top;
-  const outPosition = Position.Bottom;
+  const inPosition = data.direction === "LR" ? Position.Left : Position.Top;
+  const outPosition = data.direction === "LR" ? Position.Right : Position.Bottom;
 
   // Design 1g keeps exactly two lines in the node: the id, and kind icon +
   // kind word + one key fact. The `when` guard is not drawn on the node — it
@@ -155,7 +154,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
 
   return (
     <div
-      className="relative"
+      className="group relative"
       data-highlight={data.highlight ? "assistant-proposed" : undefined}
       data-step-node-id={data.id}
       data-testid={`canvas-step-${data.id}`}
@@ -168,85 +167,37 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         aria-label={`${data.label} step ${data.id}`}
         onClick={() => data.onSelect()}
         onKeyDown={pick}
-        className={[
-          // `items-stretch!` outranks the app-shell phone band's unlayered
-          // `main [role="button"] { align-items: center }` (styles/tokens.css).
-          // That rule is right for a 44px control; inside a 200×52 step it
-          // shrinks every line to its content width and CENTRES it, which is
-          // how the 390 node card read as centred text whose second line hung
-          // past both edges of its own box. Stretch keeps each line the box's
-          // full width, so `truncate` has something to truncate against and
-          // the words stay left-aligned at every width.
-          // Step-clip fix (measured on :15173 at 1280 and 390): every line's
-          // box must be at least as tall as the glyph run it holds, or
-          // `truncate`'s overflow:hidden cuts the descenders off — a 13.5px
-          // name in a 13.5px leading-needed 15px and showed 10. The lines now
-          // measure title 17px (leading-[17px]) + kind/fact 15px
-          // (leading-[15px]) + status 13.75/14px (leading-tight), and the
-          // three status lines fit the 50px content box of the design's
-          // 200×52 card (1 + 17 + 1 + 13.75 + 1 + 16 ≤ 50 — the kind line is
-          // 16 tall: its 14px icon rides 2px under the baseline) only with
-          // this trim spacing — so the status variant drops `py-1`, keeps a
-          // 1px `pt` for the name and lets 1px gaps do the rest. The two-line
-          // (Studio) variant: 17 + 2 + 16 + 8 (`py-[4px]`) = 43 ≤ 50, and
-          // even the deferred-chip line (a 22px pill) fits: 4 + 17 + 2 + 22
-          // + 4 = 49 — at `py-[6px]` the chip case overflowed and flex-shrink
-          // clipped the title again (ch 14 < sh 17, observed on a git.commit
-          // card).
-          "flex h-full flex-col items-stretch! rounded-md border bg-surface px-2.5 text-left outline-none",
-          data.status ? "gap-[1px] pt-[1px]" : "gap-0.5 py-[4px]",
-          selected ? "border-accent shadow-[0_0_0_2px_var(--color-accent-ring)]" : "border-line",
-          data.stale ? "opacity-70" : "",
-        ].join(" ")}
-        style={{ width: 200, height: 52 }}
+        className={`flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border bg-surface px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${selected ? "border-accent" : "border-line"} ${data.stale ? "opacity-70" : ""}`}
       >
-        <div
-          className={`truncate text-[13.5px] font-semibold leading-[17px] text-ink${menuPad}`}
-          title={`${data.id} (${data.label})`}
+        <span
+          className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[8px] ${data.kind === "model.chat" || data.kind === "agent.acp" ? "bg-accent-tint text-accent-edge" : data.kind === "human.approval" ? "bg-st-waiting-tag text-st-waiting-tag-fg" : "bg-fill text-ink-2"}`}
         >
-          {data.id}
-        </div>
-        {data.status && (
-          <div
-            className={`flex min-w-0 items-start gap-1 text-[11px] leading-tight text-ink-2${menuPad}`}
-            aria-label={`status: ${data.status.label}`}
-            data-testid={`step-status-${data.id}`}
-            title={data.status.label}
-          >
-            <span aria-hidden="true" className="shrink-0">
-              {statusGlyph(data.status.state)}
-            </span>
-            {/* Single line: the layout box reserves no room for a wrapped
-                second line — wrapping pushed the rendered node below its
-                dagre box and the neighbour edge labels grazed it. */}
-            <span className="min-w-0 truncate">{data.status.label}</span>
-          </div>
-        )}
-        <div className={`flex min-w-0 items-center gap-1.5${menuPad}`}>
+          <StepKindIcon kind={data.kind} />
+        </span>
+        <span className={`min-w-0 flex-1 ${menuPad}`}>
           <span
-            className="min-w-0 truncate font-mono text-[11px] leading-[15px] text-ink-2"
+            className="block truncate text-[13.5px] font-semibold leading-[17px]"
+            title={data.id}
+          >
+            {data.id}
+          </span>
+          <span
+            className="block truncate font-mono text-[11px] leading-[15px] text-muted"
             data-testid={`canvas-step-fact-${data.id}`}
-            // The full text the ellipsis stands for — kind word and the
-            // kind's own key fact (`model · david-birks/qwen3-8-flash-next`),
-            // which at 390 never fits the 200px box. The issue #65 icon in
-            // front of it is aria-hidden decoration, never in this string.
             title={secondLine}
           >
-            <StepKindIcon
-              kind={data.kind}
-              className="mr-[3px] inline-block shrink-0 align-[-2px]"
-            />
             {secondLine}
           </span>
-          {data.deferred && (
+          {data.status && (
             <span
-              className={chip}
-              title={`${data.kind} — ${data.deferred}: a workflow can't run this step today`}
+              className="block truncate text-[10px] leading-3"
+              aria-label={`status: ${data.status.label}`}
+              data-testid={`step-status-${data.id}`}
             >
-              {data.deferred}
+              {statusGlyph(data.status.state)} {data.status.label}
             </span>
           )}
-        </div>
+        </span>
       </div>
 
       {/* Issue #66: Duplicate/Delete left the plain-click toolbar and live on
@@ -372,8 +323,8 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
   const interactive = !data.readOnly && !data.stale;
   // The Studio canvas is ALWAYS top-to-bottom (design 1g): the handles ride
   // the scope group's top and bottom (a scope is a node like any other).
-  const inPosition = Position.Top;
-  const outPosition = Position.Bottom;
+  const inPosition = data.direction === "LR" ? Position.Left : Position.Top;
+  const outPosition = data.direction === "LR" ? Position.Right : Position.Bottom;
 
   const style: CSSProperties = {
     // The dagre group box already reserves the header bar; the border just

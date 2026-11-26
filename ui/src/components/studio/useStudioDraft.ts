@@ -393,6 +393,7 @@ export interface StudioDraft {
   setText: (text: string) => void;
   /** Move a node in `ui_layout` only — undoable, never touches the YAML. */
   move: (id: string, pos: { x: number; y: number }) => void;
+  tidy: () => void;
   undo: () => void;
   redo: () => void;
   /** PUT `{document_yaml, version, ui_layout}`; 409 → `conflict`, never a retry. */
@@ -405,7 +406,7 @@ export interface StudioDraft {
   guard: UnsavedGuard;
 }
 
-export function useStudioDraft(draftId: string): StudioDraft {
+export function useStudioDraft(draftId: string, liveText?: string): StudioDraft {
   const queryClient = useQueryClient();
   const draft = useDraft(draftId);
   const put = usePutDraft(draftId);
@@ -430,6 +431,21 @@ export function useStudioDraft(draftId: string): StudioDraft {
   useEffect(() => {
     if (parse.ok) setLastGood({ model: parse.model, document: toJsDocument(text) });
   }, [parse, text]);
+
+  useEffect(() => {
+    if (!draftId && liveText !== undefined && !dirty) {
+      setTextState(liveText);
+      setLayout(uiLayoutOfText(liveText));
+    }
+  }, [draftId, liveText, dirty]);
+
+  // A first edit may precede creation of its draft. Preserve those bytes while
+  // adopting the server's compare-and-swap version for the eventual save.
+  useEffect(() => {
+    if (draftId && draft.data && dirty && savedVersion === 0) {
+      setSavedVersion(draft.data.version);
+    }
+  }, [draftId, draft.data, dirty, savedVersion]);
 
   // Seed from the served draft whenever the local copy is not ahead of it; a
   // successful save or a `reloadTheirs` lands here with the same or newer bytes.
@@ -481,6 +497,12 @@ export function useStudioDraft(draftId: string): StudioDraft {
     setLayout((current) => ({
       nodes: { ...current.nodes, [id]: pos },
     }));
+    setDirty(true);
+  }
+
+  function tidy() {
+    pushUndo();
+    setLayout((current) => ({ ...current, nodes: {} }));
     setDirty(true);
   }
 
@@ -606,6 +628,7 @@ export function useStudioDraft(draftId: string): StudioDraft {
     apply,
     setText,
     move,
+    tidy,
     undo,
     redo,
     save,

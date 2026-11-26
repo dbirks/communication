@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import type { Draft } from "../../api/types";
 import { addNode, type OpResult } from "../../lib/pipeline/graphDoc";
 import { useStudioDraft, uiLayoutOfText, withUILayout } from "./useStudioDraft";
+import { moveDraggedNode } from "./StudioCanvas";
 import { mockFetch, requestsTo, type RouteStub } from "../../test/fakes";
 
 const DRAFT_ID = "draft-studio-00000001";
@@ -161,6 +162,8 @@ describe("useStudioDraft", () => {
       { path: draftPath, method: "PUT", body: wireDraft({ version: 6 }) },
     ]);
     await waitFor(() => expect(result.current.text).toBe(YAML));
+    const dropped = { id: "first", data: { id: "first" }, position: { x: 99, y: 111 } };
+    act(() => moveDraggedNode(dropped, [dropped], result.current.move));
     const ok = await result.current.save();
     expect(ok).toBe(true);
     const puts = requestsTo(requests, draftPath, "PUT");
@@ -176,7 +179,7 @@ describe("useStudioDraft", () => {
     expect(body.version).toBe(5);
     const baked = body.document_yaml ?? "";
     expect(baked).not.toBe(YAML);
-    expect(uiLayoutOfText(baked)).toEqual(LAYOUT);
+    expect(uiLayoutOfText(baked)).toEqual({ nodes: { first: { x: 100, y: 120 } } });
     await waitFor(() => expect(result.current.savedVersion).toBe(6));
     expect(result.current.dirty).toBe(false);
   });

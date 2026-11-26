@@ -313,9 +313,8 @@ export function ErrorEdge(props: EdgeProps<Edge<ErrorEdgeRender>>) {
         id={id}
         path={path}
         style={{
-          stroke: "var(--color-st-failed-strong)",
-          strokeWidth: 1.25,
-          strokeDasharray: "5 4",
+          stroke: "var(--color-ink-2)",
+          strokeWidth: 1.5,
         }}
       />
       <EdgeLabelRenderer>

@@ -18,6 +18,7 @@ import {
   routeEdge,
   routeLabel,
   toFlow,
+  tidyLayout,
   type FlowNodeBase,
 } from "./flowModel";
 
@@ -105,12 +106,12 @@ describe("toFlow", () => {
       // Design 1g: every step box is the fixed 200×52 rendered box, re-centred
       // on the dagre box — so the child's absolute position is the dagre
       // position shifted by half the size difference.
-      expect(child.width).toBe(200);
-      expect(child.height).toBe(52);
+      expect(child.width).toBe(168);
+      expect(child.height).toBe(56);
       const absoluteX = child.position.x + group.position.x;
       const absoluteY = child.position.y + group.position.y;
-      expect(absoluteX).toBeCloseTo(layoutNode.x + (layoutNode.width - 200) / 2);
-      expect(absoluteY).toBeCloseTo(layoutNode.y + (layoutNode.height - 52) / 2);
+      expect(absoluteX).toBeCloseTo(layoutNode.x + (layoutNode.width - 168) / 2);
+      expect(absoluteY).toBeCloseTo(layoutNode.y + (layoutNode.height - 56) / 2);
     }
   });
 
@@ -357,6 +358,14 @@ spec:
     // Always top-to-bottom: the dependency sits ABOVE the step that needs it.
     expect(flow.nodes[0]!.position.y).toBeLessThan(flow.nodes[1]!.position.y);
     expect(canvasLayout(doc)?.direction).toBe("TB");
+    const lr = toFlow(parsed.model, doc, {}, { direction: "LR" });
+    expect(lr.nodes[0]!.position.x).toBeLessThan(lr.nodes[1]!.position.x);
+    const overrides = { nodes: { [parsed.model.nodes[0]!.id]: { x: 800, y: 400 } } };
+    expect(toFlow(parsed.model, doc, overrides, { direction: "LR" }).nodes[0]!.position).toEqual({
+      x: 800,
+      y: 400,
+    });
+    expect(tidyLayout(overrides).nodes).toEqual({});
   });
 });
 
@@ -366,7 +375,7 @@ describe("routeEdge", () => {
     const dst = { x: 100, y: 150, width: 100, height: 52 };
     const { path, x, y } = routeEdge(src, dst, "v");
     // Source bottom (150, 52) → target top (150, 150): vertical first segment.
-    expect(path).toBe("M 150 52 L 150 150");
+    expect(path).toBe("M 150 52 C 150 101, 150 101, 150 150");
     expect(x).toBe(150);
     expect(y).toBe(101);
   });

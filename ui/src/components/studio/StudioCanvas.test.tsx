@@ -20,6 +20,7 @@ import {
   fitMinZoom,
   MENU_COMPACT_W_PX,
   mirrorOwnedChanges,
+  moveDraggedNode,
   parseViewportTransform,
   PHONE_VIEWPORT_PX,
   FIT_EDGE_PAD_PX,
@@ -177,6 +178,42 @@ describe("StudioCanvas", () => {
     expect(screen.getByTestId("canvas-step-row-check").textContent).toContain("after plan");
   });
 
+  it.each([
+    ["agent.acp", "profile: reviewer", "Agent · reviewer"],
+    ["process.exec", "executable: make", "Command · make"],
+    ["human.approval", "approver: team", "Gate · team"],
+  ])("renders tile, title and subline for %s", (kind, config, subline) => {
+    const yaml = `kind: Pipeline\nspec:\n  nodes:\n    - id: task\n      kind: ${kind}\n      config:\n        ${config}\n`;
+    const graph = parseGraph(yaml);
+    if (!graph.ok) throw new Error(graph.error);
+    renderCanvas({ model: graph.model, document: parse(yaml) });
+    const node = screen.getByTestId("canvas-step-task");
+    expect(node.textContent).toContain("task");
+    expect(screen.getByTestId("canvas-step-fact-task").textContent?.toLowerCase()).toBe(
+      subline.toLowerCase(),
+    );
+    expect(node.querySelector("svg")).toBeTruthy();
+    expect(node.querySelector(".rounded-\\[8px\\]")).toBeTruthy();
+  });
+
+  it("snaps a node drag before passing its position to the draft", () => {
+    const onMove = vi.fn();
+    const dropped = { id: "plan", position: { x: 157, y: 143 }, data: { id: "plan" } };
+    moveDraggedNode(dropped, [dropped], onMove);
+    expect(onMove).toHaveBeenCalledWith("plan", { x: 160, y: 140 });
+  });
+
+  it("renders edges without arrow markers", async () => {
+    const { container } = renderCanvas({ direction: "LR" });
+    await screen.findByTestId("edge-add-plan-check");
+    const paths = container.querySelectorAll(".react-flow__edge-path");
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) {
+      expect(path.getAttribute("marker-end")).toBeNull();
+      expect(path.getAttribute("marker-start")).toBeNull();
+    }
+  });
+
   it("edge + opens the picker and calls onInsertOnEdge with the picked kind", async () => {
     const onInsertOnEdge = vi.fn();
     renderCanvas({ onInsertOnEdge });
@@ -275,9 +312,9 @@ describe("StudioCanvas", () => {
     // center`; inside a step card that centres the words AND lets the second
     // line grow past the box. The card opts out, so the text is left-aligned
     // at every width and the lines truncate.
-    expect(card!.className).toContain("items-stretch!");
+    expect(card!.className).toContain("items-center");
     const fact = screen.getByTestId("canvas-step-fact-plan");
-    expect(fact.className).toContain("min-w-0");
+    expect(fact.parentElement!.className).toContain("min-w-0");
     expect(fact.className).toContain("truncate");
     // The full text (kind word + key fact) travels in the title, never cut off.
     expect(fact.getAttribute("title")).toBe(fact.textContent);
@@ -666,8 +703,7 @@ spec:
     const flow = toFlow(fixtureModel, parse(fixtureYaml), layout);
     const edge = flow.edges[0]!;
     const src = edge.sourceBox!;
-    const tgt = edge.targetBox!;
-    const firstSegment = `M ${src.x + src.width / 2} ${src.y + src.height} L ${src.x + src.width / 2} ${tgt.y}`;
+    const firstSegment = `M ${src.x + src.width / 2} ${src.y + src.height} C ${src.x + src.width / 2}`;
     const { container } = renderCanvas({ layout });
     // Edge bodies render after the nodes measure (microtask) — wait for the
     // "+" to be present, which means the path layer is in the DOM.
@@ -1243,5 +1279,56 @@ describe("evaluateConnect", () => {
       refused: null,
       proceed: true,
     });
+  });
+});
+
+describe("canvas tools", () => {
+  it("switches tools with keys but ignores text fields and modifiers", () => {
+    renderCanvas({ showToolIsland: true });
+    fireEvent.keyDown(window, { key: "h" });
+    expect(
+      screen.getByRole("button", { name: "Move around (H)" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { key: "b" });
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    expect(
+      screen.getByRole("button", { name: "Move around (H)" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    input.remove();
+    fireEvent.keyDown(window, { key: "b" });
+    expect(
+      screen.getByRole("button", { name: "Box select (B)" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("uses pane panning for move and selection dragging for box", () => {
+    const { container } = renderCanvas({ showToolIsland: true });
+    const pane = container.querySelector(".react-flow__pane")!;
+    const node = container.querySelector(".react-flow__node")!;
+    expect(pane.classList.contains("draggable")).toBe(true);
+    expect(node.classList.contains("draggable")).toBe(true);
+    fireEvent.keyDown(window, { key: "h" });
+    expect(pane.classList.contains("draggable")).toBe(true);
+    expect(node.classList.contains("draggable")).toBe(false);
+    fireEvent.keyDown(window, { key: "b" });
+    expect(pane.classList.contains("draggable")).toBe(false);
+  });
+
+  it("connects two clicked steps through validation and cancels with Escape", async () => {
+    const onConnect = vi.fn();
+    const canConnect = vi.fn(() => ({ ok: true as const }));
+    renderCanvas({ showToolIsland: true, onConnect, canConnect });
+    const plan = await screen.findByRole("button", { name: "Ask a model step plan" });
+    const check = await screen.findByRole("button", { name: "Run command / tests step check" });
+    fireEvent.keyDown(window, { key: "c" });
+    fireEvent.click(plan);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(check);
+    expect(onConnect).not.toHaveBeenCalled();
+    fireEvent.click(plan);
+    expect(canConnect).toHaveBeenCalledWith("check", "plan");
+    expect(onConnect).toHaveBeenCalledWith("check", "plan");
   });
 });

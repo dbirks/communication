@@ -7,7 +7,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Draft, Me, ValidateResponse } from "../api/types";
 import { meFixture, mockFetch, requestsTo, type RouteStub } from "../test/fakes";
@@ -15,6 +15,7 @@ import {
   WIRE_DRAFT_ID,
   WIRE_PIPELINE_ID,
   wirePipeline,
+  wireDraftSummaries,
   wireRevision,
   wireUserId,
 } from "../test/fixtures/m4/wire";
@@ -28,11 +29,14 @@ import { StudioPage } from "./Studio";
 // suite; here the stub mirrors the props the page must hand down.
 vi.mock("../components/studio/StudioCanvas", () => ({
   StudioCanvas: (props: {
+    showToolIsland?: boolean;
+    onIslandAdd?: (kind: string, pos: { x: number; y: number }) => void;
     stale?: boolean;
     staleMessage?: string;
     readOnly?: boolean;
     selectedId?: string | null;
     highlight?: string[];
+    onSelectionChange?: (ids: string[]) => void;
   }) => (
     <div
       data-testid="studio-canvas"
@@ -42,6 +46,15 @@ vi.mock("../components/studio/StudioCanvas", () => ({
       data-highlight-count={props.highlight ? props.highlight.length : 0}
     >
       {props.stale ? props.staleMessage : "canvas"}
+      {props.showToolIsland && (
+        <button
+          data-testid="tool-island"
+          onClick={() => props.onIslandAdd?.("agent.acp", { x: 20, y: 40 })}
+        >
+          Add Agent
+        </button>
+      )}
+      <button onClick={() => props.onSelectionChange?.(["plan", "check"])}>Select steps</button>
     </div>
   ),
 }));
@@ -100,6 +113,11 @@ function routes(overrides: RouteStub[] = []): RouteStub[] {
   return [...overrides, ...base];
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname + location.search}</output>;
+}
+
 function mount(path: string, overrides: RouteStub[] = []) {
   const { fetchMock, requests } = mockFetch(routes(overrides));
   const queryClient = new QueryClient({
@@ -108,7 +126,9 @@ function mount(path: string, overrides: RouteStub[] = []) {
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
+        <LocationProbe />
         <Routes>
+          <Route path="/factory/:pipelineId" element={<StudioPage />} />
           <Route path="/library/:pipelineId" element={<PipelinePage />} />
           <Route path="/library/:pipelineId/drafts/:draftId" element={<StudioPage />} />
         </Routes>
@@ -131,7 +151,7 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect((await screen.findByTestId("studio-title")).textContent).toBe("Feature development");
     // The version the draft read served, and the server's last verdict.
     expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("· DRAFT V12");
-    expect((await screen.findByTestId("studio-validation-chip")).textContent).toContain("invalid");
+    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
     // Design 1g: the header carries the Canvas/YAML tabs only — the
     // Runs/Assigned links are gone (the testids are retired).
     const tabs = await screen.findByTestId("studio-header-tabs");
@@ -149,10 +169,25 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     );
     // The authoring columns: palette on the left, the canvas in the middle,
     // the inspector's pipeline view when nothing is selected.
-    expect(await screen.findByTestId("studio-palette")).toBeTruthy();
+    expect(screen.queryByTestId("studio-palette")).toBeNull();
+    expect(await screen.findByTestId("tool-island")).toBeTruthy();
     expect((await screen.findByTestId("studio-canvas")).getAttribute("data-stale")).toBe("false");
     expect(await screen.findByTestId("insp-pipeline")).toBeTruthy();
     expect(within(header).getByTestId("studio-save")).toBeTruthy();
+  });
+
+  it("adds an agent from the island and selects it", async () => {
+    mount(studioPath, [
+      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+    ]);
+    await waitFor(() =>
+      expect(screen.getByTestId("studio-canvas").getAttribute("data-stale")).toBe("false"),
+    );
+    fireEvent.click(await screen.findByTestId("tool-island"));
+    expect(screen.queryByTestId("studio-op-error")?.textContent).toBeUndefined();
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("studio-view-yaml"));
+    expect((screen.getByTestId("studio-yaml") as HTMLTextAreaElement).value).toContain("agent.acp");
   });
 
   it("wraps the workflow name in the header instead of cutting it (pass-2 1g DEFECT)", async () => {
@@ -203,12 +238,7 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect(screen.queryByText("unsaved", { exact: false })).toBeTruthy();
     expect(page.textContent?.match(/unsaved/g)).toHaveLength(1);
 
-    const bar = screen.getByTestId("studio-status-bar");
-    expect(bar.textContent).not.toContain("unsaved");
-    expect(bar.textContent).not.toContain("saved");
-    expect(screen.getByTestId("studio-status-bar-summary").textContent).toMatch(/^\d+ steps?$/);
-    // The publish reason still says what is missing, in the strip's own words.
-    expect(screen.getByTestId("studio-publish-reason").textContent).toContain("save");
+    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
   });
 
   it("replaces the old ?draft= URL shape through to the Studio route", async () => {
@@ -318,9 +348,7 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     // Valid verdict, clean bytes: publish is live; the status bar says so.
     const publish = (await screen.findByTestId("studio-publish")) as HTMLButtonElement;
     expect(publish.disabled).toBe(false);
-    expect((await screen.findByTestId("studio-publish-reason")).textContent).toBe(
-      "ready to publish",
-    );
+    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
     fireEvent.click(publish);
     await waitFor(() => expect(requestsTo(requests, publishPath, "POST")).toHaveLength(1));
     const body = JSON.parse(requestsTo(requests, publishPath, "POST")[0].body ?? "{}") as {
@@ -355,13 +383,10 @@ spec:
       dependsOn: [plan]
 `;
     mount(studioPath, [{ path: draftPath, body: wireDraft("invalid", undefined, wrapYaml) }]);
-    const outline = await screen.findByTestId("step-outline");
-    // No selection yet: no actions. Then check both steps.
-    expect(screen.queryByTestId("outline-selection-actions")).toBeNull();
-    fireEvent.click(within(outline).getByTestId("step-outline-select-plan"));
-    fireEvent.click(within(outline).getByTestId("step-outline-select-check"));
-    const actions = await screen.findByTestId("outline-selection-actions");
-    fireEvent.click(within(actions).getByTestId("outline-wrap-until"));
+    await screen.findByTestId("studio-canvas");
+    fireEvent.click(screen.getByText("Select steps"));
+    const actions = await screen.findByTestId("selection-toolbar");
+    fireEvent.click(within(actions).getByTestId("wrap-until"));
     // The wrap went through apply: the YAML now holds the until scope with
     // both members as its body, and the scope is selected for the inspector.
     await screen.findByText("Pass when (CEL)");
@@ -396,28 +421,10 @@ spec:
     ]);
     const page = await screen.findByTestId("studio-page");
     expect(page.getAttribute("data-phone")).toBe("true");
-    // No viewport-locked root and no inner scroll box: the DOCUMENT scrolls.
-    expect(page.className).not.toContain("overflow-hidden");
-    expect(page.className).not.toContain("h-screen");
-    const column = screen.getByTestId("studio-phone-column");
-    expect(column.className).not.toContain("overflow-y-auto");
-    // Palette and inspector are both in the column, in full — every step kind
-    // (not just the first four) and the selected node's form are reachable.
-    const palette = within(screen.getByTestId("studio-phone-palette-pane"));
-    expect(palette.getByTestId("studio-palette")).toBeTruthy();
-    expect(palette.getByTestId("palette-item-condition")).toBeTruthy();
-    expect(palette.getByTestId("palette-item-pipeline.invoke")).toBeTruthy();
-    expect(palette.getByTestId("palette-more-toggle")).toBeTruthy();
-    expect(
-      within(screen.getByTestId("studio-phone-inspector-pane")).getByTestId("insp-pipeline"),
-    ).toBeTruthy();
-    // The status bar wraps instead of truncating.
-    const bar = screen.getByTestId("studio-status-bar");
-    expect(bar.className).toContain("flex-wrap");
-    expect(bar.className).not.toMatch(/(^|\s)overflow-hidden(\s|$)/);
-    const reason = screen.getByTestId("studio-publish-reason");
-    expect(reason.className).toContain("w-full");
-    expect(reason.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    expect(page.className).toContain("h-full");
+    expect(page.className).toContain("overflow-hidden");
+    expect(screen.getByTestId("studio-canvas")).toBeTruthy();
+    expect(screen.queryByTestId("studio-status-bar")).toBeNull();
     vi.unstubAllGlobals();
   });
 
@@ -483,6 +490,51 @@ spec:
     expect((await screen.findByTestId("studio-diff-drawer")).textContent).toContain(
       "nothing to compare",
     );
+  });
+});
+
+describe("editor route draft resolution", () => {
+  const factoryPath = `/factory/${WIRE_PIPELINE_ID}`;
+  const draftsPath = `${pipelinePath}/drafts`;
+
+  it("opens the draft on the old route and the query route", async () => {
+    const { requests } = mount(`${factoryPath}?draft=${WIRE_DRAFT_ID}`);
+    expect(await screen.findByTestId("studio-page")).toBeTruthy();
+    expect(requestsTo(requests, draftPath)).toHaveLength(1);
+    expect(requestsTo(requests, draftsPath)).toHaveLength(0);
+    expect(screen.getByTestId("location").textContent).toContain(`?draft=${WIRE_DRAFT_ID}`);
+  });
+
+  it("opens the current user's open draft", async () => {
+    const { requests } = mount(factoryPath, [
+      { path: "/api/v1/me", body: { ...admin, id: wireUserId } },
+      { path: draftsPath, body: wireDraftSummaries },
+    ]);
+    expect((await screen.findByTestId("studio-draft-version")).textContent).toContain("DRAFT V12");
+    expect(requestsTo(requests, draftPath)).toHaveLength(1);
+  });
+
+  it("shows live before creating a draft on the first edit and saves that edit", async () => {
+    const { requests } = mount(factoryPath, [
+      { path: draftsPath, method: "GET", body: { drafts: [] } },
+      {
+        path: draftsPath,
+        method: "POST",
+        body: wireDraft("invalid", undefined, wireRevision.document_text),
+      },
+    ]);
+    await screen.findByTestId("studio-canvas");
+    expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("studio-view-yaml"));
+    const editor = screen.getByTestId("studio-yaml") as HTMLTextAreaElement;
+    const edited = editor.value + "\n# first edit";
+    fireEvent.change(editor, { target: { value: edited } });
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toContain(`?draft=${WIRE_DRAFT_ID}`),
+    );
+    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
+    expect(requestsTo(requests, draftPath, "PUT")[0].body).toContain("first edit");
   });
 });
 

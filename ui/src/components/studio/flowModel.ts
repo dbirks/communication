@@ -7,7 +7,6 @@
  * replace them by node id. Children of a scope group carry positions
  * RELATIVE to the group, as React Flow expects for `parentId` children.
  */
-import { getSmoothStepPath } from "@xyflow/react";
 import { DEFERRED_KINDS, kindWord, type DefinitionDocument } from "../../lib/pipeline/definition";
 import {
   scopeKey,
@@ -130,31 +129,15 @@ export function routeEdge(
   target: EdgeBox,
   axis: EdgeAxis,
 ): { path: string; x: number; y: number } {
-  if (axis === "v") {
-    // Orthogonal, always: down from the source's bottom edge to the target's
-    // top edge, then across to the target's centre. The authoring canvas is
-    // always top-to-bottom (design 1g), so a dragged step keeps its
-    // bottom→top connection instead of wrapping around the sides (the old
-    // left-to-right handle layout).
-    const sx = source.x + source.width / 2;
-    const sy = source.y + source.height;
-    const tx = target.x + target.width / 2;
-    const ty = target.y;
-    const path =
-      tx === sx ? `M ${sx} ${sy} L ${sx} ${ty}` : `M ${sx} ${sy} L ${sx} ${ty} L ${tx} ${ty}`;
-    return { path, x: (sx + tx) / 2, y: (sy + ty) / 2 };
-  }
-  const toRight = target.x + target.width / 2 >= source.x + source.width / 2;
-  const [path, x, y] = getSmoothStepPath({
-    sourceX: toRight ? source.x + source.width : source.x,
-    sourceY: source.y + source.height / 2,
-    sourcePosition: (toRight ? "right" : "left") as never,
-    targetX: toRight ? target.x : target.x + target.width,
-    targetY: target.y + target.height / 2,
-    targetPosition: (toRight ? "left" : "right") as never,
-    borderRadius: 6,
-  });
-  return { path, x, y };
+  const sx = axis === "v" ? source.x + source.width / 2 : source.x + source.width;
+  const sy = axis === "v" ? source.y + source.height : source.y + source.height / 2;
+  const tx = axis === "v" ? target.x + target.width / 2 : target.x;
+  const ty = axis === "v" ? target.y : target.y + target.height / 2;
+  const path =
+    axis === "v"
+      ? `M ${sx} ${sy} C ${sx} ${(sy + ty) / 2}, ${tx} ${(sy + ty) / 2}, ${tx} ${ty}`
+      : `M ${sx} ${sy} C ${(sx + tx) / 2} ${sy}, ${(sx + tx) / 2} ${ty}, ${tx} ${ty}`;
+  return { path, x: (sx + tx) / 2, y: (sy + ty) / 2 };
 }
 
 /**
@@ -240,7 +223,7 @@ const scopeScopeKey = (n: GraphNode): string => JSON.stringify(n.scope);
  * Fed-96 boxes were what let two same-rank siblings' rendered cards
  * intersect; `graphOverlap.test.tsx` pins that away.
  */
-export const STEP_BOX = { width: 200, height: 52 } as const;
+export const STEP_BOX = { width: 168, height: 56 } as const;
 
 function recenter(box: { x: number; y: number; width: number; height: number }) {
   return {
@@ -414,15 +397,23 @@ export function edgeLabelAnchor(id: string): { x: number; y: number } | null {
  */
 export function canvasLayout(
   document: unknown,
-): { laid: DefinitionGraphLayout; direction: "TB" } | null {
+): { laid: DefinitionGraphLayout; direction: "TB" } | null;
+export function canvasLayout(
+  document: unknown,
+  direction: "LR" | "TB",
+): { laid: DefinitionGraphLayout; direction: "LR" | "TB" } | null;
+export function canvasLayout(
+  document: unknown,
+  direction: "LR" | "TB" = "TB",
+): { laid: DefinitionGraphLayout; direction: "LR" | "TB" } | null {
   if (document == null) return null;
   const tb = layoutDefinition(document as DefinitionDocument, {
     spacing: "dense",
-    rankdir: "TB",
-    subgraphRankdir: "same",
+    rankdir: direction,
+    subgraphRankdir: direction === "LR" ? "opposite" : "same",
   });
   if (!tb) return null;
-  return { laid: tb, direction: "TB" };
+  return { laid: tb, direction };
 }
 
 /**
@@ -436,11 +427,11 @@ export function toFlow(
   model: GraphModel,
   document: unknown,
   layout: LayoutOverrides = {},
-  opts: { addButtons?: boolean } = {},
+  opts: { addButtons?: boolean; direction?: "LR" | "TB" } = {},
 ): FlowModel {
   // A missing document (draft not read yet, broken YAML with no last-good)
   // yields an empty flow — the canvas then shows its empty-canvas affordance.
-  const canvas = canvasLayout(document);
+  const canvas = canvasLayout(document, opts.direction ?? "TB");
   if (!canvas) return { nodes: [], edges: [] };
   const { laid, direction } = canvas;
 
@@ -787,4 +778,9 @@ export function nearestEdge(
     }
   }
   return best;
+}
+
+/** Clear saved placements so the next render uses the automatic layout. */
+export function tidyLayout(layout: LayoutOverrides): LayoutOverrides {
+  return { ...layout, nodes: {} };
 }

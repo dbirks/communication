@@ -43,13 +43,39 @@ import {
 import { ScopeNode, StepNode, type ScopeNodeRender, type StepNodeRender } from "./nodes";
 import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
+import { ToolIsland, type CanvasTool } from "./ToolIsland";
 import { PALETTE_DRAG_TYPE } from "./StudioPalette";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 
 export type UiLayout = { nodes?: Record<string, { x: number; y: number }> };
 
+/** Persist a dropped node in absolute, grid-snapped coordinates. */
+export function moveDraggedNode(
+  node: Node,
+  nodes: Node[],
+  onMove?: (id: string, pos: { x: number; y: number }) => void,
+) {
+  // The rebuild effect's data carries the pipeline node id as `id`
+  // (not `nodeId`): a dropped drag used to store its position under the
+  // key "undefined", so the layout never matched a real node and the
+  // next rebuild snapped it back to its dagre place.
+  const data = node.data as unknown as { id: string };
+  let x = node.position.x;
+  let y = node.position.y;
+  let parentId = node.parentId;
+  while (parentId) {
+    const parent = nodes.find((item) => item.id === parentId);
+    if (!parent) break;
+    x += parent.position.x;
+    y += parent.position.y;
+    parentId = parent.parentId;
+  }
+  onMove?.(data.id, { x: Math.round(x / 20) * 20, y: Math.round(y / 20) * 20 });
+}
+
 export interface StudioCanvasProps {
   model: GraphModel;
+  direction?: "LR" | "TB";
   /** The parsed JS document (for `layoutDefinition`). */
   document: unknown;
   /** Saved positions keyed by node id; override the dagre positions. */
@@ -90,6 +116,8 @@ export interface StudioCanvasProps {
    * keeps it — it is that page's accessible definition table.
    */
   hideStepList?: boolean;
+  showToolIsland?: boolean;
+  onIslandAdd?(kind: string, position: { x: number; y: number }): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +680,9 @@ function CanvasInner({
   canConnect,
   focusNodeId,
   hideStepList = false,
+  showToolIsland = false,
+  onIslandAdd,
+  direction = "TB",
 }: StudioCanvasProps) {
   const { setViewport, zoomIn, zoomOut } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -662,8 +693,8 @@ function CanvasInner({
   // beside its own "+"), a read-only or stale canvas draws none (the label keeps
   // its seat centred on the line).
   const base: FlowModel = useMemo(
-    () => toFlow(model, document, layout, { addButtons: !readOnly && !stale }),
-    [model, document, layout, readOnly, stale],
+    () => toFlow(model, document, layout, { addButtons: !readOnly && !stale, direction }),
+    [model, document, layout, readOnly, stale, direction],
   );
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -672,6 +703,42 @@ function CanvasInner({
   const [refused, setRefused] = useState<string | null>(null);
   const [canvasPickerOpen, setCanvasPickerOpen] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
+  const [tool, setTool] = useState<CanvasTool>("select");
+  const [source, setSource] = useState<string | null>(null);
+  const [islandPicker, setIslandPicker] = useState(false);
+  const toolRef = useRef(tool);
+  const sourceRef = useRef(source);
+  toolRef.current = tool;
+  sourceRef.current = source;
+  useEffect(() => {
+    if (!showToolIsland) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSource(null);
+        return;
+      }
+      const target = event.target;
+      if (
+        readOnly ||
+        stale ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        (target instanceof HTMLElement &&
+          (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))
+      )
+        return;
+      const next: Record<string, CanvasTool> = { v: "select", h: "move", b: "box", c: "connect" };
+      const selected = next[event.key.toLowerCase()];
+      if (selected) {
+        setTool(selected);
+        setSource(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showToolIsland, readOnly, stale]);
 
   // The page's callbacks are NOT stable (the page re-creates `handleAddAfter`
   // and the inline `onInsertOnEdge` arrow on every render). The rebuild effect
@@ -680,6 +747,10 @@ function CanvasInner({
   // which is what ping-ponged the selection into "Maximum update depth
   // exceeded". Read them through refs so the rebuild's dependency array stays
   // structural (model/layout/presentation) only.
+  const onConnectRef = useRef(onConnect);
+  const canConnectRef = useRef(canConnect);
+  onConnectRef.current = onConnect;
+  canConnectRef.current = canConnect;
   const onSelectRef = useRef(onSelect);
   const onAddAfterRef = useRef(onAddAfter);
   const onInsertOnEdgeRef = useRef(onInsertOnEdge);
@@ -930,14 +1001,9 @@ function CanvasInner({
 
   const onNodeDragStop = useCallback(
     (_event: unknown, node: Node) => {
-      // The rebuild effect's data carries the pipeline node id as `id`
-      // (not `nodeId`): a dropped drag used to store its position under the
-      // key "undefined", so the layout never matched a real node and the
-      // next rebuild snapped it back to its dagre place.
-      const data = node.data as unknown as { id: string };
-      onMove?.(data.id, node.position);
+      moveDraggedNode(node, nodes, onMove);
     },
-    [onMove],
+    [onMove, nodes],
   );
 
   // The hit test needs the pointer in FLOW coordinates. React Flow's
@@ -1119,6 +1185,7 @@ function CanvasInner({
       const data: StepNodeRender & Partial<ScopeNodeRender> = {
         id: scope.nodeId,
         kind: scope.kind,
+        direction: scope.scope.length ? "TB" : direction,
         label: scope.label,
         kindWord: scope.kindWord,
         deferred: scope.deferred,
@@ -1135,6 +1202,21 @@ function CanvasInner({
           // Issue #66: a plain click SELECTS — and nothing else. The
           // Duplicate/Delete menu no longer follows the click; it answers
           // right-click, the ⋯ on the selected step, and the keyboard only.
+          if (toolRef.current === "connect" && !readOnly && !stale) {
+            const from = sourceRef.current;
+            if (!from) {
+              setSource(scope.nodeId);
+              onSelectRef.current?.(scope.nodeId);
+            } else {
+              const verdict = evaluateConnect(canConnectRef.current, from, scope.nodeId);
+              if (verdict.proceed) {
+                setRefused(null);
+                onConnectRef.current?.(from, scope.nodeId);
+              } else setRefused(verdict.refused);
+              setSource(null);
+            }
+            return;
+          }
           onSelectRef.current?.(scope.nodeId);
         },
         onMenu:
@@ -1197,7 +1279,7 @@ function CanvasInner({
     });
     setNodes(rfNodes);
     setEdges(rfEdges);
-  }, [base, readOnly, stale, highlight, statusOverlay, preview]);
+  }, [base, readOnly, stale, highlight, statusOverlay, preview, direction]);
 
   /* --------------------------------------------- viewport fitting & repair
    * The canvas owns its own fit — React Flow's mount-time `fitView` prop is
@@ -1561,7 +1643,7 @@ function CanvasInner({
   return (
     <div
       ref={canvasRef}
-      className="studio-canvas flex h-full min-h-0 flex-col border border-line bg-paper"
+      className="studio-canvas flex h-full min-h-0 flex-col bg-surface"
       data-testid="studio-canvas"
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -1599,6 +1681,8 @@ function CanvasInner({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeDragStop={onNodeDragStop}
+          snapToGrid
+          snapGrid={[20, 20]}
           onConnect={handleConnect}
           onMoveStart={(event) => {
             // Only a GESTURE makes the view reader-owned. React Flow also
@@ -1621,11 +1705,60 @@ function CanvasInner({
           }
           onEdgesDelete={(deleted) => deleteGuarded(deleted.map((e) => e.id))}
           onNodeContextMenu={onNodeContextMenu}
-          nodesDraggable={!readOnly && !stale}
+          panOnDrag={tool !== "box"}
+          selectionOnDrag={tool === "box"}
+          style={tool === "move" ? { cursor: "grab" } : undefined}
+          nodesDraggable={!readOnly && !stale && tool !== "move"}
           nodesConnectable={!readOnly && !stale}
         >
-          <Background />
+          <Background color="#d6d2c8" gap={20} size={1.1} offset={10} />
         </ReactFlow>
+        {showToolIsland && (
+          <>
+            <ToolIsland
+              tool={tool}
+              onTool={(next) => {
+                setTool(next);
+                setSource(null);
+              }}
+              disabled={readOnly || stale}
+              onMoreSteps={() => setIslandPicker(true)}
+              onAddStep={(kind) => {
+                const rect = paneRef.current?.getBoundingClientRect();
+                const pos = rect
+                  ? clientToFlow(rect.left + rect.width / 2, rect.top + rect.height / 2)
+                  : { x: 0, y: 0 };
+                onIslandAdd?.(kind, {
+                  x: Math.round(pos.x / 20) * 20,
+                  y: Math.round(pos.y / 20) * 20,
+                });
+                setTool("select");
+                setSource(null);
+              }}
+            />
+            {islandPicker && (
+              <div className="absolute left-[68px] top-4 z-30">
+                <StepPicker
+                  title="Add a step"
+                  onClose={() => setIslandPicker(false)}
+                  onPick={(kind) => {
+                    const rect = paneRef.current?.getBoundingClientRect();
+                    const pos = rect
+                      ? clientToFlow(rect.left + rect.width / 2, rect.top + rect.height / 2)
+                      : { x: 0, y: 0 };
+                    onIslandAdd?.(kind, {
+                      x: Math.round(pos.x / 20) * 20,
+                      y: Math.round(pos.y / 20) * 20,
+                    });
+                    setIslandPicker(false);
+                    setTool("select");
+                    setSource(null);
+                  }}
+                />
+              </div>
+            )}
+          </>
+        )}
         {stale && (
           <div
             role="alert"
@@ -1733,7 +1866,9 @@ function CanvasInner({
         >
           {readOnly
             ? "read-only · the definition this run is pinned to"
-            : "always top to bottom · lines leave the bottom and enter the top"}
+            : direction === "LR"
+              ? "left to right · drag steps to arrange"
+              : "always top to bottom · lines leave the bottom and enter the top"}
         </span>
         <div
           className="flex shrink-0 self-end overflow-hidden rounded-[3px] border border-line-strong bg-surface max-[560px]:self-auto"
