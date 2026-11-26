@@ -31,24 +31,17 @@ import {
   gotoApp,
   openProjectBySlug,
   scrollToTopForCapture,
-  selectByOptionText,
   signIn,
 } from "./helpers.js";
+import { signInNarrowClosed } from "./shell-helpers.js";
 
 const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
 const STAMP = process.env.E2E_ISSUE2_STAMP ?? Date.now().toString(36);
-const TITLE = `issue2 one-off ${STAMP}`;
-/**
- * A thread row's own test id. Design 1g (project-tabs-2 review): the project's
- * Threads tab IS the shared 1g list pane — its own card list, and the
- * title-slugged row ids it keyed its rows by, were retired with it.
- * One thread list, one row shape, everywhere: `thread-row-<conversation id>`.
- */
-const rowTestid = (conversationId: string): string => `thread-row-${conversationId}`;
+const PROMPT = `issue2 one-off ${STAMP} — Reply with exactly the word: pong`;
+const rowTestid = (conversationId: string): string => `chat-row-${conversationId}`;
 /** A seeded lab profile that is a real claude-launcher agent. */
 const PROFILE = "m4-implementer";
-const PROMPT = "Reply with exactly the word: pong";
 const PROJECT_NAME = "M4 Exit";
 const PROJECT_SLUG = "m4-exit";
 /** A workbench read is worker polls plus the revision graph, not milliseconds. */
@@ -65,13 +58,6 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
   console.log(`EVIDENCE ${name}: ${what}`);
 }
 
-/** Fill the shared New-conversation dialog's three fields (project untouched). */
-async function fillDialog(page: Page): Promise<void> {
-  await page.getByTestId("conversation-new-title").fill(TITLE);
-  await selectByOptionText(page, "conversation-new-profile", PROFILE);
-  await page.getByTestId("conversation-new-prompt").fill(PROMPT);
-}
-
 /** A transcript item that is an AGENT message (has its speaker line). */
 function agentItem(page: Page, text: string): Locator {
   return page
@@ -84,7 +70,8 @@ function agentItem(page: Page, text: string): Locator {
 
 /** The turn statuses with no future for a reply still to come, read off the
  * page's own words (`turnStatusText` in `ui/src/api/transcript.ts`). */
-const TERMINAL_TURN_STATUS = /completed|cancelled|failed|stopped — outcome unknown/i;
+const TERMINAL_TURN_STATUS =
+  /done|completed|cancelled|failed|interrupted|stopped — outcome unknown/i;
 /** Statuses that prove the wait is watching a LIVE turn (not a stale chip). */
 const LIVE_TURN_STATUS = /idle|queued|starting|running/i;
 /** How long a terminal chip must hold (with no reply landing) before the
@@ -204,34 +191,6 @@ function nodeFromUrl(page: Page): string | null {
   return new URL(page.url()).searchParams.get("node");
 }
 
-/**
- * A sign-in variant that does NOT rely on the `user-badge` span: that span
- * (and the user menu the footer opens) live in the sidebar footer, and at the
- * 390px viewport the sidebar is the drawer behind the phone top strip's menu
- * button — both are `display:none` until the drawer opens. The sign-in chain
- * ends on the lab's own embedded UI origin (where the menu button does not
- * exist at all), so the variant navigates back to the app under test first,
- * then opens the drawer and its user menu; the menu's `sign-out` is the
- * "signed in" signal at phone width.
- */
-async function signInNarrow(page: Page, subject: string): Promise<void> {
-  await gotoApp(page, "/");
-  await page.getByTestId("sign-in").click();
-  await page.getByPlaceholder("Enter any user/subject").fill(subject);
-  await page.getByRole("button", { name: "Sign-in" }).click();
-  // Back to the app under test (baseURL), where the session cookie — shared
-  // per host across the lab's ports — is valid.
-  await gotoApp(page, "/");
-  // At 390px the sidebar (and its footer) sits behind the menu button:
-  // open the drawer, then open the footer's user menu to reach the sign-out.
-  await page.getByTestId("sidebar-open").click();
-  const drawer = page.getByTestId("sidebar").last();
-  await expect(drawer).toBeVisible();
-  await drawer.getByTestId("user-menu").click();
-  await expect(drawer.getByTestId("user-menu-list")).toBeVisible();
-  await expect(drawer.getByTestId("sign-out")).toBeVisible();
-}
-
 test.describe("issue2 conversations (A7 + run link-backs)", () => {
   test.skip(
     !ISSUE2_ENABLED,
@@ -239,138 +198,113 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   );
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("A7: one-off conversation from the header and the sidebar's New thread", async ({ page }) => {
-    // One real agent turn plus four axe passes, bounded. The ceiling sits
-    // ABOVE the reply wait so that wait's own deadline can fire first and
-    // print the turn's diagnostics (a raw playwright hard-timeout aborts the
-    // helper mid-poll and prints nothing but the locator it was waiting on).
+  test("A7: one-off chat from project Chats and global New chat, plus list search/filter", async ({
+    page,
+  }) => {
     test.setTimeout(AGENT_TURN_TIMEOUT_MS + 90_000);
     await signIn(page, "alice");
     const projectUrl = await openProjectBySlug(page, PROJECT_SLUG);
-    // The app shell is the new sidebar frame: the old top app bar's
-    // `aria-label="Primary"` header is gone (Sidebar v3 regression gate).
     await expectNoLegacyAppBar(page);
 
-    // --- Entry 1: the project overview header button (project fixed). ---
-    await page.getByTestId("project-new-conversation").click();
-    const dialog = page.getByTestId("new-conversation-dialog");
-    await expect(dialog).toBeVisible();
-    // The header entry pins the project: a printed name, not a picker select.
-    await expect(page.getByTestId("new-conversation-dialog-project")).toContainText(PROJECT_NAME);
-    expect(
-      await page.locator('select[data-testid="new-conversation-dialog-project"]').count(),
-    ).toBe(0);
-    await fillDialog(page);
+    // --- Entry 1: project-scoped New chat pane (`/p/:id/chats/new`). ---
+    await gotoApp(page, `${projectUrl}/chats`);
+    await page.getByTestId("chat-new").click();
+    await expect(page.getByTestId("chat-new-pane")).toBeVisible();
+    // In project scope the project chip is omitted (already pinned to the scope).
+    await expect(page.getByTestId("new-chat-project-chip")).toHaveCount(0);
+    await page.getByTestId("new-chat-agent-picker").click();
+    await expect(page.getByTestId("agent-picker-popover")).toBeVisible();
+    await page
+      .getByTestId("agent-picker-popover")
+      .getByRole("option")
+      .filter({ hasText: PROFILE })
+      .first()
+      .click();
+    await page.getByTestId("new-chat-prompt-input").fill(PROMPT);
+    await checkA11y(page, "new chat pane (A7)");
     await evidence(
       page,
       "conv-a7-dialog",
-      `New thread dialog opened from the ${PROJECT_SLUG} overview header with the project pinned, profile ${PROFILE} and the first prompt filled — no pipeline field exists`,
+      `New chat pane opened in ${PROJECT_SLUG} with profile ${PROFILE} and prompt filled`,
     );
-    await page.getByTestId("conversation-new-submit").click();
-    // The one-off conversation lands on its standalone thread page
-    // (`/threads/:conversationId` — route contract C1).
-    await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/);
+    await page.getByTestId("new-chat-prompt-send").click();
+    await expect(page).toHaveURL(/\/p\/[^/]+\/chats\/[0-9a-f-]{36}$/);
 
-    // The real agent turn: a bounded wait for the "pong" reply AND a terminal
-    // turn status — the page's own `turn-status` chip says the turn completed.
-    // The reply wait fails fast on a dead turn and prints its whole account
-    // (chip, wire active_turn, last agent line) — see expectLiveAgentReply.
+    // Wait for the real agent turn reply AND turn status.
     await expectLiveAgentReply(
       page,
       agentItem(page, "pong").first(),
       "pong",
       AGENT_TURN_TIMEOUT_MS,
     );
-    await expectTurnStatus(page, /completed/, AGENT_TURN_TIMEOUT_MS);
+    await expectTurnStatus(page, /done/, AGENT_TURN_TIMEOUT_MS);
     await evidence(
       page,
       "conv-a7-reply",
-      `conversation "${TITLE}" landed on its page and the m4-implementer turn completed with an agent reply containing "pong"`,
+      `chat landed and the m4-implementer turn completed with an agent reply containing "pong"`,
     );
 
-    // Design 1g: the pane header shows only the title, the mono meta line and
-    // the control pill — the "One-off thread" chip is gone with the "one-off
-    // only" default. What stays honest: a manual thread links to no run. The
-    // rail that would carry such a link is behind the thread's details
-    // disclosure now, so the disclosure is OPENED and the absence proved inside
-    // it — a closed door would make any absence assertion trivially true.
+    // Details sheet: a manual thread links to no run.
     expect(await page.getByTestId("conversation-manual-label").count()).toBe(0);
-    const a7Context = page.getByTestId("thread-context-block");
+    await page.getByTestId("chat-menu").click();
+    await page.getByTestId("chat-menu-details").click();
+    const sheet = page.getByTestId("chat-details-sheet");
+    await expect(sheet).toBeVisible();
     await expect(
-      a7Context.locator('[data-testid="part-of-run-link"]'),
-      "a manual thread has no PART OF panel to open",
+      sheet.locator('[data-testid="part-of-run-link"]'),
+      "with Details open, a manual chat links to no run",
     ).toHaveCount(0);
-    await a7Context.locator("summary").click();
-    await expect(a7Context).toHaveAttribute("open", "");
-    await expect(
-      a7Context.locator('[data-testid="part-of-run-link"]'),
-      "with the details open, a manual thread still links to no run",
-    ).toHaveCount(0);
-    expect(await page.getByTestId("part-of-run-link").count()).toBe(0);
-    await checkA11y(page, "conversation page (A7)");
+    await checkA11y(page, "chat page (A7)");
+    await page.getByTestId("chat-details-close").click();
     await evidence(
       page,
       "conv-a7-manual-label",
-      "the /threads page header carries no 'One-off thread' chip (design 1g drops it) and, with " +
-        "its Thread-details disclosure opened, no part-of-run-link or node reference",
+      "chat Details sheet shows no part-of-run-link for a manual chat",
     );
 
-    // --- Entry 2: the sidebar's `New thread` opens the SAME dialog with a picker. ---
-    // Handoff 2c/3c (finding 01): the shell's cross-project row is one thread-starting
-    // button (`new-chat`); the global "New" menu it replaced is gone from the column.
-    await page.getByTestId("new-chat").click();
-    await expect(dialog).toBeVisible();
-    // No project was passed in, so the dialog offers the project picker.
-    const picker = page.locator('select[data-testid="new-conversation-dialog-project"]');
-    await expect(picker).toBeVisible();
-    const projectOption = picker.locator("option", { hasText: PROJECT_NAME });
-    await picker.selectOption((await projectOption.first().getAttribute("value")) ?? "");
-    await expect(page.getByTestId("conversation-new-title")).toBeVisible();
-    await checkA11y(page, "sidebar New-thread dialog (A7)");
+    // --- Entry 2: unscoped `/chats/new` offers the project picker chip. ---
+    await gotoApp(page, "/chats/new");
+    await expect(page.getByTestId("chat-new-pane")).toBeVisible();
+    await page.getByTestId("new-chat-project-chip").click();
+    await expect(page.getByTestId("new-chat-project-menu")).toBeVisible();
+    await page
+      .getByTestId("new-chat-project-menu")
+      .getByRole("menuitem")
+      .filter({ hasText: PROJECT_NAME })
+      .first()
+      .click();
+    await checkA11y(page, "global New-chat pane (A7)");
     await evidence(
       page,
       "conv-a7-global-menu",
-      "the sidebar's New thread (new-chat) opened the same dialog with a working project picker set to M4 Exit",
+      "unscoped New chat pane offers the project picker chip set to M4 Exit",
     );
-    await page.keyboard.press("Escape");
-    await expect(dialog).toBeHidden();
 
-    // --- The thread list: searched, listed as the project's own, and hidden
-    // by "from runs". ---
-    // Design 1b moved the list off the project overview onto its Threads tab;
-    // the project-tabs-2 review made that tab the SAME 1g pane `/threads` draws
-    // (search field, `all` / `mine` / `from runs` chips, id-keyed rows), so the
-    // thread this test just created is found there by its own id.
-    const conversationId = new URL(page.url()).pathname.split("/").pop() ?? "";
-    expect(conversationId, "the thread page names the conversation it opened").toMatch(
-      /^[0-9a-f-]{36}$/,
-    );
-    await page.goto(`${projectUrl}/threads`);
-    await expect(
-      page.getByTestId("threads-page"),
-      "design 1g: the Threads tab is the shared list pane",
-    ).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId("threads-search").fill("issue2 one-off");
+    // --- The chat list: search and filter. ---
+    const conversationId = await (async () => {
+      await gotoApp(page, `${projectUrl}/chats`);
+      await expect(page.getByTestId("chat-list")).toBeVisible({ timeout: 15_000 });
+      await page.getByTestId("chat-search").fill(`issue2 one-off ${STAMP}`);
+      const firstRow = page
+        .locator('[data-testid^="chat-row-"]:not([data-testid^="chat-row-status-"])')
+        .first();
+      await expect(firstRow).toBeVisible({ timeout: 15_000 });
+      return ((await firstRow.getAttribute("data-testid")) ?? "").replace(/^chat-row-/, "");
+    })();
+    expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
     const row = page.getByTestId(rowTestid(conversationId));
     await expect(row).toBeVisible({ timeout: 15_000 });
-    // The row says which project it belongs to (1g's mono `project · agent`
-    // line) — the row's own claim of scope, since the tab is filtered to it.
-    await expect(row).toContainText(PROJECT_NAME);
-    // The Manual badge is retired with the old card list, so the ORIGIN fact it
-    // printed is read from the wire the row came from (ADR-0043: the list
-    // carries `origin`), and the sentence "this thread was not opened by a run"
-    // is the SAME fact one assertion below: the `from runs` chip hides it.
     const wire = await page.request.get(`${BASE_URL}/api/v1/conversations/${conversationId}`);
     expect(wire.status(), "the thread read answers").toBe(200);
     expect(
       (await wire.json()) as { origin?: string },
       "the thread this journey created is a manual one-off on the wire",
     ).toMatchObject({ origin: "manual" });
-    await checkA11y(page, "conversations list (A7)");
+    await checkA11y(page, "chats list (A7)");
     await evidence(
       page,
       "conv-a7-list-manual",
-      `searching "issue2 one-off" lists this thread's own row (thread-row-${conversationId}) in the project's 1g list pane, on a manual origin the wire confirms`,
+      `searching lists chat-row-${conversationId} in the project's chat list, on a manual origin confirmed on the wire`,
     );
     await page.getByTestId("threads-filter-runs").click();
     await expect
@@ -378,50 +312,35 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
         async () =>
           (await row.isVisible().catch(() => false)) ||
           (await page
-            .getByTestId("threads-nomatch")
+            .getByTestId("chat-list-empty")
             .isVisible()
             .catch(() => false)),
         { timeout: 15_000 },
       )
       .toBe(true);
     expect(await row.isVisible().catch(() => false)).toBe(false);
-    await evidence(
-      page,
-      "conv-a7-filter-run-hides-manual",
-      "the `from runs` chip hides the manual conversation (threads-filter-runs → threads-nomatch)",
-    );
   });
 
-  test("run-linked thread: the list finds it and its Thread details deep-link to the workbench", async ({
+  test("run-linked chat: list filter and Details sheet deep-link to the workbench", async ({
     page,
   }) => {
-    test.setTimeout(300_000); // the workbench deep-link waits are WORKBENCH_TIMEOUT_MS each
+    test.setTimeout(300_000);
     await signIn(page, "alice");
     const listUrl = await openProjectBySlug(page, PROJECT_SLUG);
-    // Design 1b + the project-tabs-2 review: the project's Threads tab IS the
-    // shared 1g pane, filtered to the project. There is no second card list and
-    // no origin badge on it — the `from runs` chip is the way to a run-origin
-    // thread, and the thread's own PART OF panel is the deep link.
-    await page.goto(`${listUrl}/threads`);
-    await expect(
-      page.getByTestId("threads-page"),
-      "design 1g: the Threads tab is the shared list pane",
-    ).toBeVisible({ timeout: 15_000 });
+    await page.goto(`${listUrl}/chats`);
+    await expect(page.getByTestId("chat-list")).toBeVisible({ timeout: 15_000 });
 
-    // Find a run-linked conversation: the pane's `from runs` chip (ADR-0043's
-    // `origin` query on the project's own list route). The M4 seed's exit runs
-    // and the workbench journeys create agent conversations; if none exists yet
-    // there is nothing to prove.
     await page.getByTestId("threads-filter-runs").click();
     await expect
       .poll(
         async () =>
           (await page
-            .getByTestId("threads-list")
+            .locator('[data-testid^="chat-row-"]:not([data-testid^="chat-row-status-"])')
+            .first()
             .isVisible()
             .catch(() => false)) ||
           (await page
-            .getByTestId("threads-nomatch")
+            .getByTestId("chat-list-empty")
             .isVisible()
             .catch(() => false)),
         { timeout: 15_000 },
@@ -429,7 +348,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       .toBe(true);
     if (
       await page
-        .getByTestId("threads-nomatch")
+        .getByTestId("chat-list-empty")
         .isVisible()
         .catch(() => false)
     ) {
@@ -439,18 +358,14 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       );
       return;
     }
-    // The row is the thread: 1g keys it by the conversation's own id and the
-    // row anchor is the thread page (route contract C1).
-    const row = page.locator('[data-testid^="thread-row-"]').first();
+    const row = page
+      .locator('[data-testid^="chat-row-"]:not([data-testid^="chat-row-status-"])')
+      .first();
     await expect(row).toBeVisible({ timeout: 15_000 });
     const rowHref = (await row.getAttribute("href")) ?? "";
-    expect(rowHref).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
+    expect(rowHref).toMatch(/\/chats\/[0-9a-f-]{36}$/);
     const conversationId = rowHref.split("/").pop() ?? "";
-    await checkA11y(page, "conversations list (run-linked)");
-    // The deep link this journey will follow must be the wire's own `run_link`
-    // (ADR-0043) — the page may speak only from that, so it is read here and
-    // compared with the rendered href below (the retired list badge used to
-    // carry the same href in its `title`).
+    await checkA11y(page, "chats list (run-linked)");
     const wire = await page.request.get(`${BASE_URL}/api/v1/conversations/${conversationId}`);
     expect(wire.status(), "the thread read answers").toBe(200);
     const linked = (await wire.json()) as {
@@ -471,32 +386,19 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       runLink.node_id ?? "",
       "the node execution stored a definition id (the deep link's `node` param)",
     ).not.toBe("");
-    await evidence(
-      page,
-      "conv-run-badge",
-      `the project's Threads tab (the 1g pane) filtered with \`from runs\` lists a run-origin thread row (thread-row-${conversationId}) whose wire row names the run_link the thread page must link to`,
-    );
+    await evidence(page, "conv-run-badge", `run-linked chat row chat-row-${conversationId} opened`);
 
-    // --- The thread page: PART OF is behind the details disclosure now. ---
+    // Chat Details sheet should carry part-of-run-link with ?node=&instance=&attempt=.
     await page.goto(rowHref);
-    await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 15_000 });
-    const context = page.getByTestId("thread-context-block");
-    await expect(
-      context,
-      "design thread view: the rail sits under the transcript behind one disclosure",
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(
-      context.locator('[data-testid="part-of-run-link"]'),
-      "the rail is collapsed by default — the deep link is not on screen until it is opened",
-    ).toBeHidden();
-    await context.locator("summary").click();
-    await expect(context).toHaveAttribute("open", "");
-    const partOfRun = page.getByTestId("part-of-run-link");
+    await expect(page.getByTestId("chat-title")).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("chat-menu").click();
+    await page.getByTestId("chat-menu-details").click();
+    const sheet = page.getByTestId("chat-details-sheet");
+    await expect(sheet).toBeVisible({ timeout: 15_000 });
+    const partOfRun = sheet.getByTestId("part-of-run-link");
     await expect(partOfRun.first()).toBeVisible({ timeout: 15_000 });
     const linkHref = (await partOfRun.first().getAttribute("href")) ?? "";
     const deep = new URL(linkHref, "http://x");
-    // Route contract C1: the workbench deep link is the project-less
-    // `/runs/:runId`, and its ADR-0043 params are the wire's own.
     expect(deep.pathname, "the panel links the run the wire named").toBe(`/runs/${runLink.run_id}`);
     expect(deep.searchParams.get("node")).toBe(String(runLink.node_id));
     expect(deep.searchParams.get("instance")).toBe(String(runLink.node_execution_id ?? ""));
@@ -505,13 +407,10 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     await evidence(
       page,
       "conv-run-conversation-page",
-      `with the Thread details disclosure opened, the thread page's part-of-run-link is the workbench deep link the wire's run_link names (${linkHref})`,
+      `with Chat Details opened, part-of-run-link is ${linkHref}`,
     );
 
-    // --- Click it: the workbench opens with that node selected. ---
     await partOfRun.first().click();
-    // SPA navigation (react-router) fires no "load" event, so waitForURL
-    // would hang; toHaveURL polls the URL until the ?node= deep link lands.
     await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}\?node=/);
     const selectedDef = nodeFromUrl(page);
     expect(selectedDef, "the workbench URL keeps the source node").not.toBeNull();
@@ -524,31 +423,33 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     await evidence(
       page,
       "conv-run-linkback",
-      "the part-of-run link landed on the Run Workbench with the source node selected in the graph and the conversation open in the dock",
+      "part-of-run link landed on the Run Workbench with the source node selected",
     );
   });
 
   test.describe("narrow 390x844", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
-    test("the new-conversation dialog fits without horizontal scroll", async ({ page }) => {
-      await signInNarrow(page, "alice");
-      await openProjectBySlug(page, PROJECT_SLUG);
-      await page.getByTestId("project-new-conversation").click();
-      const dialog = page.getByTestId("new-conversation-dialog");
-      await expect(dialog).toBeVisible();
-      const box = await dialog.boundingBox();
-      expect(box, "the dialog is on screen at 390px").not.toBeNull();
+    test("the new-chat pane fits without horizontal scroll", async ({ page }) => {
+      await signInNarrowClosed(page, "alice");
+      const projectUrl = await openProjectBySlug(page, PROJECT_SLUG);
+      await gotoApp(page, `${projectUrl}/chats/new`);
+      const pane = page.getByTestId("chat-new-pane");
+      await expect(pane).toBeVisible();
+      const promptBox = page.getByTestId("new-chat-prompt");
+      await expect(promptBox).toBeVisible();
+      const box = await promptBox.boundingBox();
+      expect(box, "the prompt box is on screen at 390px").not.toBeNull();
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.width).toBeLessThanOrEqual(390);
       const fits = await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
       );
-      expect(fits, "the page does not scroll sideways with the dialog open").toBe(true);
+      expect(fits, "the page does not scroll sideways with the new chat pane open").toBe(true);
       await evidence(
         page,
         "conv-narrow-dialog",
-        "at 390x844 the new-conversation dialog sits inside the viewport and the document does not scroll horizontally",
+        "at 390x844 the new-chat composer sits inside the viewport and the document does not scroll horizontally",
       );
     });
   });

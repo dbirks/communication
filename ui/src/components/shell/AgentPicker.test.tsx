@@ -205,4 +205,56 @@ describe("AgentPicker", () => {
     fireEvent.click(chip);
     expect(screen.queryByTestId("agent-picker-popover")).toBeNull();
   });
+
+  it("with 14 profiles: caps popover height with a scrolling listbox, flips downward when room above is tight, and scrolls focused option into view", () => {
+    const fourteen = Array.from({ length: 14 }, (_, i) =>
+      profile(
+        `p-${String(i + 1).padStart(2, "0")}`,
+        `Agent ${String(i + 1).padStart(2, "0")}`,
+        "claude",
+      ),
+    );
+    mocks.profiles = { data: { items: fourteen }, isPending: false, isError: false };
+    vi.stubGlobal("innerHeight", 900);
+
+    renderPicker({ side: "top" });
+    const chip = screen.getByTestId("agent-picker");
+    vi.spyOn(chip, "getBoundingClientRect").mockReturnValue({
+      top: 180,
+      bottom: 208,
+      left: 100,
+      right: 240,
+      width: 140,
+      height: 28,
+      x: 100,
+      y: 180,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.click(chip);
+    const popover = screen.getByTestId("agent-picker-popover");
+    expect(popover.className).toContain("max-h-[min(360px,calc(100vh-96px))]");
+    expect(popover.getAttribute("data-side")).toBe("bottom");
+
+    const listbox = screen.getByRole("listbox", { name: "Agent" });
+    expect(listbox.className).toContain("overflow-y-auto");
+    expect(screen.getByTestId("agent-picker-manage").parentElement?.className).toContain(
+      "shrink-0",
+    );
+
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(14);
+    const scrollSpy = vi.fn();
+    for (const opt of options) {
+      opt.scrollIntoView = scrollSpy;
+    }
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(options[0]);
+    expect(scrollSpy).toHaveBeenCalledWith({ block: "nearest" });
+
+    fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(options[13]);
+    expect(scrollSpy).toHaveBeenCalledTimes(2);
+  });
 });

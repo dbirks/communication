@@ -16,7 +16,7 @@ import path from "node:path";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { checkA11y } from "./a11y.js";
-import { scrollToTopForCapture, signIn } from "./helpers.js";
+import { scrollToTopForCapture } from "./helpers.js";
 
 /** The shared gate: suites only run against the app-shell lab. */
 export const SHELL_ENABLED = process.env.COMMUNICATION_E2E_SHELL === "1";
@@ -66,34 +66,35 @@ export async function checkShellScreen(
 }
 
 /**
- * Sign in at the 390px viewport. The shared `signIn` waits for `user-badge`,
- * but at phone width the sidebar (and its footer user menu) hides behind the
- * drawer's menu button — so open the drawer, open the user menu, and read the
- * menu's `sign-out` instead (the issue2 suite's same trick).
+ * Sign in at the 390px viewport. At phone width the project rail hides behind
+ * the top bar's scope trigger (`scope-open`), which opens `scope-sheet`
+ * carrying the account menu (`user-menu` → `user-menu-list` → `sign-out`).
  */
 export async function signInNarrow(page: Page, subject: string): Promise<void> {
   await page.goto(BASE_URL + "/");
   await page.getByTestId("sign-in").click();
   await page.getByPlaceholder("Enter any user/subject").fill(subject);
+  const idpOrigin = new URL(page.url()).origin;
   await page.getByRole("button", { name: "Sign-in" }).click();
+  await page.waitForURL((url) => url.origin !== idpOrigin && !url.pathname.startsWith("/auth/"));
+  await page.waitForLoadState("domcontentloaded");
   // The IdP redirect chain lands on the API's own origin (the embedded dist);
   // come back to the dev origin the journey runs against before asserting.
   await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-  // At 390px the sidebar sits behind the phone top strip's menu button:
-  // open the drawer, then open the footer's user menu to reach the sign-out.
-  await page.getByTestId("sidebar-open").click();
-  const drawer = page.getByTestId("sidebar").last();
-  await expect(drawer).toBeVisible();
-  await drawer.getByTestId("user-menu").click();
-  await expect(drawer.getByTestId("user-menu-list")).toBeVisible();
-  await expect(drawer.getByTestId("sign-out")).toBeVisible();
+  await expect(page.getByTestId("top-bar")).toBeVisible();
+  await page.getByTestId("scope-open").click();
+  const sheet = page.getByTestId("scope-sheet");
+  await expect(sheet).toBeVisible();
+  await sheet.getByTestId("user-menu").click();
+  await expect(sheet.getByTestId("user-menu-list")).toBeVisible();
+  await expect(sheet.getByTestId("sign-out")).toBeVisible();
 }
 
-/** Sign in at 390px WITHOUT leaving the drawer open. */
+/** Sign in at 390px WITHOUT leaving the scope sheet open. */
 export async function signInNarrowClosed(page: Page, subject: string): Promise<void> {
   await signInNarrow(page, subject);
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("sidebar").last()).toBeHidden();
+  await expect(page.getByTestId("scope-sheet")).toBeHidden();
 }
 
 /* ---------------------------------------------------------------- API reads. */

@@ -2,13 +2,55 @@
  * ChatHeader — 54px thread header with title, repo chip, participants,
  * control actions and details/artifacts access behind the "…" menu (redesign R3).
  */
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { Link } from "react-router";
 import { IconArrowLeft, IconDots } from "@tabler/icons-react";
 import { routes } from "../../lib/routes";
 import { FormError } from "../Feedback";
 import { Menu, type MenuEntry } from "../ds/Menu";
+import { STATES, TURN_STATE, stateOf } from "../ds/states";
 import type { ConversationSession } from "../conversation/useConversationSession";
+
+function headerTurnBadge(session: ConversationSession): {
+  label: string;
+  className: string;
+} | null {
+  const described = session.described;
+  if (!described || (!described.record && !described.active)) return null;
+  const spec = STATES[stateOf(TURN_STATE[described.status])];
+  switch (described.status) {
+    case "running":
+    case "leased":
+      return { label: "● running", className: spec.tagFg };
+    case "completed":
+      return { label: "✓ done", className: spec.tagFg };
+    case "cancelled":
+      return { label: "⊘ cancelled", className: spec.tagFg };
+    case "failed":
+      return { label: "× failed", className: spec.tagFg };
+    case "interrupted":
+      return { label: "⊘ interrupted", className: spec.tagFg };
+    case "queued":
+      return { label: "· queued", className: spec.tagFg };
+    default:
+      return { label: `${spec.glyph} ${described.status}`, className: spec.tagFg };
+  }
+}
+
+function headerControllerText(session: ConversationSession): string | null {
+  const { control, isController, nameOf } = session;
+  if (!control) return null;
+  if (isController) return "you control";
+  if (control.kind === "human") {
+    const owner =
+      control.display_name ??
+      (control.user_id ? nameOf?.(control.user_id) : undefined) ??
+      "someone";
+    return `${owner} controls`;
+  }
+  if (control.kind === "run_attempt") return "run controls";
+  return "no controller";
+}
 
 export interface ChatHeaderProps {
   session: ConversationSession;
@@ -53,6 +95,44 @@ export function ChatHeader({
   const peopleLabel =
     participants.length > 0 ? `${participants.join(", ")} · ${agentName}` : agentName;
   const controlError = takeControl.error ?? returnControl.error ?? null;
+  const turnBadge = headerTurnBadge(session);
+  const controllerText = headerControllerText(session);
+  const sessionLauncher = data.agent_session?.launcher_id ?? null;
+
+  const statusParts: { key: string; node: React.ReactNode }[] = [];
+  if (turnBadge) {
+    statusParts.push({
+      key: "turn",
+      node: (
+        <span
+          data-testid="turn-status"
+          className={`shrink-0 whitespace-nowrap ${turnBadge.className}`}
+        >
+          {turnBadge.label}
+        </span>
+      ),
+    });
+  }
+  if (controllerText) {
+    statusParts.push({
+      key: "controller",
+      node: (
+        <span data-testid="controller-badge" className="shrink-0 whitespace-nowrap text-muted">
+          {controllerText}
+        </span>
+      ),
+    });
+  }
+  if (sessionLauncher) {
+    statusParts.push({
+      key: "session",
+      node: (
+        <span data-testid="agent-session" className="shrink-0 whitespace-nowrap text-muted">
+          agent: {sessionLauncher}
+        </span>
+      ),
+    });
+  }
 
   const menuItems: MenuEntry[] = [
     {
@@ -109,7 +189,7 @@ export function ChatHeader({
     <>
       <header
         data-testid="chat-header"
-        className="flex h-[54px] shrink-0 items-center gap-[10px] border-b border-line-soft bg-surface px-[20px]"
+        className="flex min-h-[54px] shrink-0 flex-wrap items-center gap-x-[10px] gap-y-[2px] border-b border-line-soft bg-surface px-[20px] max-md:py-[6px] md:h-[54px] md:flex-nowrap"
       >
         {showBack ? (
           <Link
@@ -122,7 +202,10 @@ export function ChatHeader({
           </Link>
         ) : null}
 
-        <h1 data-testid="chat-title" className="min-w-0 truncate text-[15px] font-bold text-ink">
+        <h1
+          data-testid="chat-title"
+          className="min-w-0 truncate text-[15px] font-bold text-ink max-md:flex-1"
+        >
           {data.title}
         </h1>
 
@@ -143,7 +226,25 @@ export function ChatHeader({
           </span>
         ) : null}
 
-        <div className="min-w-0 flex-1" />
+        {statusParts.length > 0 ? (
+          <div
+            data-testid="chat-header-status"
+            className="flex min-w-0 items-center gap-[6px] overflow-x-auto font-mono text-[12px] text-muted max-md:order-last max-md:h-[24px] max-md:basis-full md:shrink-0 md:overflow-visible"
+          >
+            {statusParts.map((part, index) => (
+              <Fragment key={part.key}>
+                {index > 0 ? (
+                  <span aria-hidden="true" className="shrink-0 text-faint">
+                    ·
+                  </span>
+                ) : null}
+                {part.node}
+              </Fragment>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="hidden min-w-0 flex-1 md:block" />
 
         {status === "live" ? (
           <span data-testid="stream-status" role="status" className="sr-only">
@@ -161,7 +262,7 @@ export function ChatHeader({
 
         <span
           data-testid="chat-people"
-          className="hidden min-w-0 max-w-[240px] shrink truncate text-[12.5px] text-muted sm:inline"
+          className="hidden min-w-0 max-w-[150px] shrink truncate text-[12.5px] text-muted lg:inline"
         >
           {peopleLabel}
         </span>

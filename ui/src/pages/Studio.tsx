@@ -27,10 +27,17 @@ import {
 } from "../api/pipelines";
 import { useRun, useRunNodes } from "../api/runs";
 import { useRunEvents } from "../api/runEvents";
-import { viewNodeExecution, viewRevisionSummary, viewRun, viewValidate } from "../api/m4view";
-import type { NodeExecutionDetail } from "../api/types";
+import {
+  viewNodeExecution,
+  viewRevisionSummary,
+  viewRun,
+  viewValidate,
+  viewDraftSummary,
+} from "../api/m4view";
+import type { NodeExecutionDetail, PipelineRevision } from "../api/types";
 import type {
   NodeExecutionSummary,
+  PipelineDraftSummary,
   PipelineRevisionSummary,
   ValidateBody,
 } from "../lib/pipeline/contract";
@@ -67,6 +74,8 @@ import { TopBarLeft, TOP_BAR_LEFT_SLOT_ID } from "../components/shell/TopBarSlot
 import { StartRunDialog } from "../components/home/StartRunDialog";
 import { YamlView } from "../components/workflows/YamlView";
 import { UsedInPanel } from "../components/workflows/UsedIn";
+import { UseInRepoDialog } from "../components/workflows/UseInRepoDialog";
+import { InputsTab } from "../components/workflows/inputs/InputsTab";
 import { TriggersDialog } from "../components/workflows/TriggersDialog";
 import { usePipelineRuns, useUsedIn } from "./workflow/useUsedIn";
 import { StudioCanvas, type UiLayout } from "../components/studio/StudioCanvas";
@@ -74,6 +83,7 @@ import { StudioInspector } from "../components/studio/StudioInspector";
 import { AmbiguityDialog } from "../components/studio/AmbiguityDialog";
 import { AgentStepCard } from "../components/studio/AgentStepCard";
 import { VersionsPanel } from "../components/studio/VersionsPanel";
+import { YamlEditPanel } from "../components/studio/YamlEditPanel";
 import type { CanvasTool } from "../components/studio/ToolIsland";
 import {
   AssistantProposalBox,
@@ -267,6 +277,45 @@ function StudioUsedInDrawer({
   );
 }
 
+/** Lazy InputsTab wrapper so the project/assignment fan-out only fires when ?panel=inputs is open. */
+function StudioInputsDrawer({
+  pipelineId,
+  slug,
+  canAuthor,
+  revision,
+  revisionLoading,
+  revisionError,
+  onRevisionRetry,
+  openDraft,
+}: {
+  pipelineId: string;
+  slug: string;
+  canAuthor: boolean;
+  revision: PipelineRevision | undefined;
+  revisionLoading: boolean;
+  revisionError: unknown;
+  onRevisionRetry: () => void;
+  openDraft: PipelineDraftSummary | null;
+}) {
+  const usedIn = useUsedIn(pipelineId);
+  return (
+    <InputsTab
+      pipelineId={pipelineId}
+      slug={slug}
+      canAuthor={canAuthor}
+      revision={revision}
+      revisionLoading={revisionLoading}
+      revisionError={revisionError}
+      onRevisionRetry={onRevisionRetry}
+      openDraft={openDraft}
+      groups={usedIn.groups}
+      groupsLoading={usedIn.loading}
+      groupsError={usedIn.error}
+      embedded
+    />
+  );
+}
+
 export function StudioPage() {
   const { pipelineId = "", draftId: routeDraftId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -390,6 +439,7 @@ export function StudioPage() {
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const [tryItOpen, setTryItOpen] = useState(false);
+  const [useDialogOpen, setUseDialogOpen] = useState(false);
 
   const [validateOpen, setValidateOpen] = useState(false);
   const [validateOutcome, setValidateOutcome] = useState<ValidateBody | null>(null);
@@ -874,6 +924,21 @@ export function StudioPage() {
     }
   }
 
+  async function onValidateYaml() {
+    if (readOnly || !draftId) return;
+    setValidateFailure(null);
+    if (studio.dirty) {
+      const saved = await studio.save();
+      if (!saved) return;
+    }
+    try {
+      const body = await validate.mutateAsync();
+      setValidateOutcome(viewValidate(body));
+    } catch (error) {
+      setValidateFailure(error);
+    }
+  }
+
   async function onDiscardDraft() {
     if (readOnly || !draftId) return;
     setMoreMenuOpen(false);
@@ -928,6 +993,7 @@ export function StudioPage() {
     );
     selectOne(node.id);
     setValidateOpen(false);
+    if (phone && panelParam === "yaml") setPanel(null);
   }
 
   // Semantic diff count for the draft status indicator
@@ -997,6 +1063,10 @@ export function StudioPage() {
   const projectLabel = project.data?.name || scope || "";
   const revisions = (pipeline.data?.revisions ?? []).map(viewRevisionSummary);
   const newestPublishedId = newestRevision.data?.id ?? null;
+  const yamlEditable = Boolean(draftId) && !readOnly;
+  const parseError = parse.ok ? null : { error: parse.error, line: parse.line };
+  const yamlVerdict =
+    validateOutcome ?? (studio.dirty ? null : viewValidate(draft.data?.validation ?? null));
 
   // Draft status line in TopBarLeft
   let draftStatusNode: React.ReactNode = null;
@@ -1113,6 +1183,7 @@ export function StudioPage() {
   // Selected node details (for AgentStepCard vs full StudioInspector)
   const selectedGraphNode = selectedId ? findNode(model, selectedId) : undefined;
   const isAgentStep = selectedGraphNode?.kind === "agent.acp";
+  const isScopeNode = Boolean(selectedGraphNode?.isScope);
   const showAgentCard = Boolean(
     selectedId &&
     isAgentStep &&
@@ -1122,7 +1193,7 @@ export function StudioPage() {
     tool !== "box",
   );
   const showStepInspector =
-    Boolean(selectedId && (!isAgentStep || fullInspectorForId === selectedId)) &&
+    Boolean(selectedId && ((!isAgentStep && !isScopeNode) || fullInspectorForId === selectedId)) &&
     !showAgentCard &&
     !isViewingRun &&
     !isViewingHistory &&
@@ -1162,6 +1233,7 @@ export function StudioPage() {
           readOnly={readOnly}
           apply={studio.apply}
           onDelete={(id) => handleDelete([id])}
+          onOpenInputs={() => setPanel("inputs")}
         />
       </div>
       {studio.guard.pending === null && studio.conflict === null && !selectedId ? (
@@ -1349,6 +1421,10 @@ export function StudioPage() {
           onWrapSideBySide={readOnly ? undefined : handleWrapSideBySide}
           onEditGoal={readOnly ? undefined : handleEditGoal}
           onUnwrap={readOnly ? undefined : handleUnwrap}
+          onOpenInspector={(nodeId) => {
+            setSelectedIds([nodeId]);
+            setFullInspectorForId(nodeId);
+          }}
           showToolIsland={!isViewingRun}
           onIslandAdd={(kind, position) => {
             const result = studio.apply((text) =>
@@ -1446,7 +1522,7 @@ export function StudioPage() {
 
         {/* Top-right action buttons (Versions, Try it, Make live, …) */}
         <div
-          className="absolute right-4 top-4 z-20 flex items-center gap-[8px]"
+          className="absolute right-4 top-4 z-40 flex items-center gap-[8px]"
           data-testid="editor-top-actions"
         >
           <button
@@ -1532,7 +1608,19 @@ export function StudioPage() {
                   }}
                   className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-none"
                 >
-                  View YAML
+                  {yamlEditable ? "Edit as YAML" : "View YAML"}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="editor-menu-inputs"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setPanel("inputs");
+                  }}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-none"
+                >
+                  Run inputs…
                 </button>
                 <button
                   type="button"
@@ -1545,6 +1633,24 @@ export function StudioPage() {
                   className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-none"
                 >
                   Used in
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!newestSummary}
+                  title={
+                    newestSummary
+                      ? "Pin the newest published revision to a project or repository"
+                      : "Make this workflow live before using it in a project"
+                  }
+                  data-testid="editor-menu-use"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setUseDialogOpen(true);
+                  }}
+                  className="flex h-[34px] w-full items-center px-3 text-left text-[13px] text-ink hover:bg-accent-wash disabled:opacity-40 focus-visible:bg-accent-wash focus-visible:outline-none"
+                >
+                  Use in a project…
                 </button>
                 <button
                   type="button"
@@ -1686,14 +1792,18 @@ export function StudioPage() {
           </div>
         ) : null}
 
-        {/* ?panel=yaml or ?panel=used-in (420px right panel, or bottom sheet on phone) */}
-        {panelParam === "yaml" || panelParam === "used-in" ? (
+        {/* ?panel=yaml, ?panel=inputs, or ?panel=used-in */}
+        {panelParam === "yaml" || panelParam === "used-in" || panelParam === "inputs" ? (
           <div
             data-testid={`editor-panel-${panelParam}`}
             className={
               phone
-                ? "fixed inset-x-0 bottom-0 z-40 max-h-[80dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
-                : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-74px)] w-[420px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+                ? panelParam === "yaml" || panelParam === "inputs"
+                  ? "fixed inset-x-0 top-0 bottom-0 z-40 flex flex-col overflow-y-auto bg-surface p-4"
+                  : "fixed inset-x-0 bottom-0 z-40 max-h-[80dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
+                : panelParam === "yaml" || panelParam === "inputs"
+                  ? "absolute right-4 top-[58px] bottom-4 z-30 flex w-[520px] max-w-[calc(100%-32px)] flex-col overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+                  : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-74px)] w-[420px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
             }
           >
             <div className="mb-2 flex items-center justify-end">
@@ -1708,11 +1818,46 @@ export function StudioPage() {
               </button>
             </div>
             {panelParam === "yaml" ? (
-              <YamlView
-                text={
-                  isViewingRun ? runDocumentText : isViewingHistory ? viewDocumentText : studio.text
-                }
-                filename={`${pipeline.data?.slug ?? pipelineId}.yaml`}
+              yamlEditable ? (
+                <YamlEditPanel
+                  text={studio.text}
+                  status={status}
+                  dirty={studio.dirty}
+                  saving={studio.saving}
+                  validating={validate.isPending}
+                  parseError={parseError}
+                  verdict={yamlVerdict}
+                  validateError={validateFailure}
+                  onChange={(next) => {
+                    setValidateOutcome(null);
+                    setValidateFailure(null);
+                    studio.setText(next);
+                  }}
+                  onValidate={() => void onValidateYaml()}
+                  onGoToNode={goToNode}
+                />
+              ) : (
+                <YamlView
+                  text={
+                    isViewingRun
+                      ? runDocumentText
+                      : isViewingHistory
+                        ? viewDocumentText
+                        : studio.text
+                  }
+                  filename={`${pipeline.data?.slug ?? pipelineId}.yaml`}
+                />
+              )
+            ) : panelParam === "inputs" ? (
+              <StudioInputsDrawer
+                pipelineId={pipelineId}
+                slug={pipeline.data?.slug ?? pipelineId}
+                canAuthor={canAuthor}
+                revision={newestRevision.data}
+                revisionLoading={newestRevision.isPending && newestSummary !== null}
+                revisionError={newestRevision.isError ? newestRevision.error : null}
+                onRevisionRetry={() => void newestRevision.refetch()}
+                openDraft={draft.data ? viewDraftSummary(draft.data) : null}
               />
             ) : (
               <StudioUsedInDrawer
@@ -1755,7 +1900,18 @@ export function StudioPage() {
         open={triggersDialogOpen}
         onClose={() => setTriggersDialogOpen(false)}
         assignments={triggers.groups}
-        editing={triggers.firstEditing}
+        editing={null}
+      />
+
+      <UseInRepoDialog
+        open={useDialogOpen}
+        onClose={() => setUseDialogOpen(false)}
+        pipelineId={pipelineId}
+        workflowName={pipelineName}
+        newestPublished={newestSummary ? viewRevisionSummary(newestSummary) : null}
+        revisions={revisions}
+        initialProjectId={scope ?? undefined}
+        onAssigned={() => setPanel("used-in")}
       />
     </div>
   );

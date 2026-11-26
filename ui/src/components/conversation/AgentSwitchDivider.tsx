@@ -81,7 +81,7 @@ export function AgentSwitchDivider(props: AgentSwitchDividerProps) {
   return (
     <div
       data-testid={testId}
-      className="flex items-center gap-3 px-1 py-2"
+      className="flex items-center gap-3 rounded-[10px] border border-line bg-rail px-3 py-2"
       role="separator"
       aria-label={agentSwitchCopy(person, agent, model, carriedOver)}
     >

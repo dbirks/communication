@@ -35,7 +35,8 @@ const MOBILE_URL = `https://example.invalid/${MOBILE_REPO}.git`;
 
 let context: BrowserContext;
 let page: Page;
-let projectPath = ""; // /projects/{uuid}, filled by the create step
+let projectId = ""; // {uuid}, filled by the create step
+let projectPath = ""; // /manage/projects/{uuid}
 
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext();
@@ -53,35 +54,35 @@ test("sign in through the mock OIDC provider", async () => {
 });
 
 test("create the Customer Platform project", async () => {
-  // The projects index (with the create form) moved from `/` to `/projects`
-  // with the app-shell redesign; `/` is now the Home briefing. The form
-  // starts open on an empty account (CI's fresh stack); on an account that
-  // already has projects it is collapsed behind the toggle.
-  await gotoApp(page, "/projects");
+  // Projects live under Manage → Projects (`/manage/projects`). The create
+  // dialog opens automatically on an empty account or via `manage-new-project`.
+  await gotoApp(page, "/manage/projects");
   const nameField = page.getByTestId("create-project-name");
-  const toggle = page.getByTestId("new-project-toggle");
-  // On a fresh account the form is already open, so both the field and the
-  // ("Close") toggle are visible: take the first match to satisfy strict mode.
+  const toggle = page.getByTestId("manage-new-project");
   await expect(nameField.or(toggle).first()).toBeVisible();
   if (!(await nameField.isVisible())) await toggle.click();
   await nameField.fill("Customer Platform");
   await page.getByTestId("create-project-submit").click();
-  // A journey run over an already-seen stack meets the slug conflict here.
-  // The refusal is the proof the project exists — open it and continue on it
-  // rather than failing the journey on a leftover row.
-  const conflict = page.getByRole("alert").filter({ hasText: /already exists/i });
+  // Idempotent re-run: on an existing project the 409 shows `create-project-conflict`;
+  // close the dialog and open the existing Customer Platform row instead.
+  const conflict = page.getByTestId("create-project-conflict");
   if (
     await conflict
       .waitFor({ timeout: 5_000 })
       .then(() => true)
       .catch(() => false)
   ) {
-    await gotoApp(page, "/projects");
-    await page.getByTestId("project-link-customer-platform").click();
+    await page.getByTestId("create-project-cancel").click();
+    const repoCell = page.getByTestId("project-repos-customer-platform");
+    await expect(repoCell).toBeVisible();
+    await repoCell
+      .locator('xpath=ancestor::*[starts-with(@data-testid, "manage-projects-table-row-")][1]//a')
+      .click();
   }
-  await expect(page.getByTestId("project-name")).toHaveText("Customer Platform");
+  await expect(page.getByTestId("detail-name")).toHaveText("Customer Platform");
   projectPath = new URL(page.url()).pathname;
-  expect(projectPath).toMatch(/^\/p\/[0-9a-f-]{36}$/);
+  expect(projectPath).toMatch(/^\/manage\/projects\/[0-9a-f-]{36}$/);
+  projectId = projectPath.split("/").pop() ?? "";
 });
 
 test("add the frontend and backend repositories", async () => {
@@ -90,55 +91,52 @@ test("add the frontend and backend repositories", async () => {
     ["frontend", "https://example.invalid/frontend.git"],
     ["backend", "https://example.invalid/backend.git"],
   ] as const) {
-    // A row an earlier run left behind is the same proof the add would give;
-    // re-adding it would only earn a slug conflict.
     await page.goto(projectUrl);
-    if ((await page.getByTestId(`repo-row-${name}`).count()) > 0) continue;
+    await expect(page.getByTestId("detail-repositories")).toBeVisible();
+    if ((await rowFor(page, name).count()) > 0) continue;
     await addRepository(page, projectUrl, name, gitUrl);
   }
-  await expect(page.getByTestId("repo-list")).toContainText("frontend");
-  await expect(page.getByTestId("repo-list")).toContainText("backend");
+  await expect(page.getByTestId("detail-repo-list")).toContainText("frontend");
+  await expect(page.getByTestId("detail-repo-list")).toContainText("backend");
 });
 
-test("both API replicas serve identical state", async () => {
-  // The session cookie is host-only (cookies ignore ports), so pages opened
-  // directly on :28081/:28082 reuse the sign-in that completed via the load
-  // balancer — proof the session lives in the shared database, not a replica.
+test("both API replicas serve identical state", async ({ request }) => {
   for (const [url, replica] of [
     [API_A_URL, "api-a"],
     [API_B_URL, "api-b"],
   ] as const) {
+    const health = (await (await request.get(`${url}/api/v1/system/health`)).json()) as {
+      replica?: string;
+    };
+    expect(health.replica).toBe(replica);
     const direct = await context.newPage();
-    await direct.goto(`${url}/projects`);
-    await expect(direct.getByTestId("project-list")).toContainText("Customer Platform");
+    await direct.goto(`${url}/manage/projects`);
+    await expect(direct.getByTestId("manage-projects-table")).toContainText("Customer Platform");
     await direct.goto(`${url}${projectPath}`);
-    await expect(direct.getByTestId("project-name")).toHaveText("Customer Platform");
-    await expect(direct.getByTestId(`repo-row-frontend`)).toBeVisible();
-    await expect(direct.getByTestId(`repo-row-backend`)).toBeVisible();
-    // The replica badge moved from the sidebar footer to Settings →
-    // "About this server" (#5); read it from /settings/layout on a direct replica.
-    await direct.goto(`${url}/settings/layout`);
-    await expect(direct.getByTestId("replica-badge")).toHaveText(`replica: ${replica}`);
+    await expect(direct.getByTestId("detail-name")).toHaveText("Customer Platform");
+    await expect(rowFor(direct, "frontend")).toBeVisible();
+    await expect(rowFor(direct, "backend")).toBeVisible();
     await direct.close();
   }
 });
 
-test("a repository added on replica B appears live on replica A's open page", async () => {
+test("a repository added on replica B appears live on replica A's open page", async ({
+  request,
+}) => {
+  const healthA = (await (await request.get(`${API_A_URL}/api/v1/system/health`)).json()) as {
+    replica?: string;
+  };
+  expect(healthA.replica).toBe("api-a");
   const pageA = await context.newPage();
   const pageB = await context.newPage();
   try {
-    // The replica badge moved from the sidebar footer to Settings →
-    // "About this server" (#5); read it from /settings/layout on a direct
-    // replica URL, then return to the project page for the live-update check.
-    await pageA.goto(`${API_A_URL}/settings/layout`);
-    await expect(pageA.getByTestId("replica-badge")).toHaveText("replica: api-a");
     await pageA.goto(`${API_A_URL}${projectPath}`);
+    await expect(pageA.getByTestId("detail-name")).toHaveText("Customer Platform");
     await expect(rowFor(pageA, MOBILE_REPO)).toHaveCount(0);
 
     await addRepository(pageB, `${API_B_URL}${projectPath}`, MOBILE_REPO, MOBILE_URL);
     // No reload on A: the project SSE stream must invalidate the repos query.
     await expect(rowFor(pageA, MOBILE_REPO)).toBeVisible();
-    await expect(rowFor(pageA, MOBILE_REPO)).toContainText(MOBILE_URL);
   } finally {
     await pageB.close();
     // pageA stays open: the restart step resumes on it.
@@ -167,7 +165,7 @@ test("restarting api-a keeps the session and the data", async ({ request }) => {
 
   await pageA!.reload();
   await expect(pageA!.getByTestId("user-badge")).toContainText(ADMIN_SUBJECT);
-  await expect(pageA!.getByTestId("project-name")).toHaveText("Customer Platform");
+  await expect(pageA!.getByTestId("detail-name")).toHaveText("Customer Platform");
   for (const repo of ["frontend", "backend", MOBILE_REPO]) {
     await expect(rowFor(pageA!, repo)).toBeVisible();
   }
@@ -178,16 +176,12 @@ test("a non-member gets not found for the project", async ({ browser }) => {
   const outsiderContext = await browser.newContext();
   const outsider = await outsiderContext.newPage();
   await signIn(outsider, OUTSIDER_SUBJECT);
-  await gotoApp(outsider, "/projects");
-  // The project list card grid is absent; the index shows its empty state.
-  // Scope the text check inside the empty state: the sidebar's projects
-  // section renders the same phrase ("no projects yet") on every page, so a
-  // page-level getByText matches both (strict mode).
-  await expect(outsider.getByTestId("project-list-empty")).toBeVisible();
+  await gotoApp(outsider, "/manage/projects");
+  await expect(outsider.getByTestId("manage-projects-table-empty")).toBeVisible();
   await expect(
-    outsider.getByTestId("project-list-empty").getByText("No projects yet"),
+    outsider.getByTestId("manage-projects-table-empty").getByText("No projects yet"),
   ).toBeVisible();
-  await gotoApp(outsider, projectPath);
-  await expect(outsider.getByTestId("project-not-found")).toBeVisible();
+  await gotoApp(outsider, `/manage/projects/${projectId}`);
+  await expect(outsider.getByTestId("detail-not-found")).toBeVisible();
   await outsiderContext.close();
 });

@@ -174,14 +174,21 @@ export interface MailCardProps {
 export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardProps) {
   const state = mailCardState(card.state);
   const spec = STATES[state.name];
+  const isFailed = card.state === "failed";
   return (
     <li
       data-testid={testId}
       data-link-id={card.linkId}
-      className="overflow-hidden rounded-[3px] border border-line-strong bg-surface"
+      className={`overflow-hidden rounded-[10px] border ${
+        isFailed ? "border-st-failed-pale-edge bg-st-failed-pale-body" : "border-line bg-surface"
+      }`}
     >
       <div
-        className="flex items-center gap-2 border-b border-line-strong bg-fill px-[10px] py-1.5 font-mono text-[10.5px] text-ink-2"
+        className={`flex items-center gap-2 border-b px-[10px] py-1.5 font-mono text-[10.5px] ${
+          isFailed
+            ? "border-st-failed-pale-edge bg-st-failed-pale-bar text-st-failed-pale-fg"
+            : "border-line-soft bg-rail text-ink-2"
+        }`}
         data-testid={`${testId}-bar`}
       >
         <span>

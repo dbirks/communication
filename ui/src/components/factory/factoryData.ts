@@ -24,6 +24,7 @@
  */
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch } from "../../api/client";
+import { viewRevisionSummary } from "../../api/m4view";
 import { queryKeys, useProjects } from "../../api/queries";
 import { useBoardRuns } from "../../api/board";
 import type { CrossProjectRunSummary } from "../../api/home";
@@ -48,6 +49,8 @@ import {
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import { cronInWords } from "../../lib/cronText";
 import { issueEventText } from "../workflows/IssueTriggerRow";
+import type { TriggerGroup } from "../workflows/Triggers";
+import type { UsedInRevision } from "../workflows/UsedIn";
 
 /* ------------------------------------------------------------- view model */
 
@@ -79,6 +82,14 @@ export interface FactoryWorkflowItem {
   usedIn: string[];
   /** The newest run of this workflow in scope (any state), or null. */
   lastRunAt: string | null;
+  /** Project assignment groups with schedules and issue triggers for TriggersDialog. */
+  triggerGroups?: TriggerGroup[];
+  /** Pipeline revision summaries for UseInRepoDialog. */
+  revisions?: UsedInRevision[];
+  /** Newest published revision summary for UseInRepoDialog, or null if unpublished. */
+  newestPublished?: UsedInRevision | null;
+  /** True once all project assignment lists have settled without error. */
+  assignmentsResolved?: boolean;
 }
 
 export interface FactoryWorkflows {
@@ -367,6 +378,28 @@ export function useFactoryWorkflows(scope: string | null): FactoryWorkflows {
       { id: "trigger", label: trigger.word, kind: "trigger", state: "idle" },
       ...chips.map((chip) => ({ ...chip, state: "idle" as ThumbStepState })),
     ];
+    const triggerGroups: TriggerGroup[] = [];
+    projectItems.forEach((project, pIndex) => {
+      if (scope !== null && project.id !== scope) return;
+      const assignment = assignmentLists[pIndex]?.assignments.find(
+        (candidate) => candidate.pipeline_id === pipeline.id,
+      );
+      if (!assignment) return;
+      triggerGroups.push({
+        project,
+        assignment,
+        schedules: (scheduleLists[pIndex]?.schedules ?? []).filter(
+          (s) => s.assignment_id === assignment.id,
+        ),
+        issueTriggers: (triggerLists[pIndex]?.issue_triggers ?? []).filter(
+          (t) => t.assignment_id === assignment.id,
+        ),
+        repositories: [],
+        canManage: project.my_role === "maintainer",
+      });
+    });
+    const revisions = (definitions[index]?.data?.revisions ?? []).map(viewRevisionSummary);
+    const newestPublished = revisions.find((row) => row.status === "published") ?? null;
     items.push({
       pipeline,
       steps: applyRunStates(steps, live[0]),
@@ -377,6 +410,13 @@ export function useFactoryWorkflows(scope: string | null): FactoryWorkflows {
       ).length,
       usedIn: facts.assigned.map((entry) => entry.project.name),
       lastRunAt: runsForPipeline[0]?.created_at ?? null,
+      triggerGroups,
+      revisions,
+      newestPublished,
+      assignmentsResolved:
+        !projects.isPending &&
+        !projects.isError &&
+        assignmentsFan.every((entry) => entry.isSuccess),
     });
   });
 

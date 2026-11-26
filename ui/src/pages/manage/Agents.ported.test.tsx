@@ -1,17 +1,32 @@
 /**
- * The profiles page against the fake fetch: 2e list + 3e detail on
- * `GET /api/v1/agent-profiles`, the C5 launcher registry, `GET
- * /api/v1/system/sandbox` and per-project secret metadata. The sandbox chip
- * is green only when both halves have evidence; the APM triple moves as one
- * unit; `Duplicate…` is POST + the source's pin.
+ * The profiles surface ported from the old `/profiles` page
+ * (`pages/Agents.tsx`, no longer routed) onto its replacement: Manage →
+ * Agents & models (`pages/manage/Agents.tsx`), whose table is
+ * `agents/ProfilesTable.tsx` and whose 560px sheet (`agents/ProfileSheet.tsx`)
+ * hosts the unchanged `components/profiles/ProfileDetail.tsx`.
+ *
+ * What a person does here is the same: read the sandbox chip (green only when
+ * a verified worker AND an observed `nono_required` probe agree), pin/unpin an
+ * APM triple as ONE unit, lock an unlocked pin, read what uses the profile,
+ * and see the secrets that grant it by slug only. The chip, the pin form, the
+ * lock chip, the usage rows and the secret list are the old components', so
+ * the assertions are the old page's — with the two links a profile now lives
+ * behind: `routes.profile(id)` is `/manage/agents/<id>`, and the workflows in
+ * the usage list are `/factory/<id>` (with `?draft=` for a draft use), per
+ * `docs/design/redesign/CONTRACT.md`.
+ *
+ * Retired with the old page: its `Page` band and subtitle, the 260px list
+ * column beside an always-pinned detail pane, and the list row's own `Edit`
+ * button — the redesign opens the same pin form from the sheet's SKILLS panel
+ * (`agent-apm-edit-*`), so that is what the tests click.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import AgentsPage from "./Agents";
-import type { AgentProfile, Me, SystemSandbox } from "../api/types";
-import type { Launcher } from "../lib/profiles";
+import Agents from "./Agents";
+import type { AgentProfile, Me, SystemSandbox } from "../../api/types";
+import type { Launcher } from "../../lib/profiles";
 import {
   claudeProfile,
   codexProfile,
@@ -20,7 +35,7 @@ import {
   projectFixture,
   requestsTo,
   type RouteStub,
-} from "../test/fakes";
+} from "../../test/fakes";
 
 const admin: Me = { ...meFixture, is_org_admin: true };
 
@@ -121,9 +136,12 @@ const sandboxFixture: SystemSandbox = {
   policy_digest: `sha256:${"cd".repeat(32)}`,
 };
 
-function routes(overrides: RouteStub[] = []): RouteStub[] {
+function routeStubs(overrides: RouteStub[] = []): RouteStub[] {
   return [
     ...overrides,
+    // The accounts strip's own read: empty items, so it is not this file's
+    // subject (it is `agents/AccountsStrip.test.tsx`'s).
+    { path: "/api/v1/agent-accounts", body: { items: [] } },
     { path: "/api/v1/launchers", body: launcherFixture },
     { path: "/api/v1/system/sandbox", body: sandboxFixture },
     { path: "/api/v1/projects", body: { items: [] } },
@@ -132,8 +150,10 @@ function routes(overrides: RouteStub[] = []): RouteStub[] {
   ];
 }
 
-function mount(overrides: RouteStub[] = [], entry = "/profiles") {
-  const { fetchMock, requests } = mockFetch(routes(overrides));
+/** The section, as `Manage.tsx` mounts it: the table at the section root, the
+ * profile's sheet at `/manage/agents/:itemId`. */
+function mount(overrides: RouteStub[] = [], entry = "/manage/agents") {
+  const { fetchMock, requests } = mockFetch(routeStubs(overrides));
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
@@ -141,8 +161,8 @@ function mount(overrides: RouteStub[] = [], entry = "/profiles") {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[entry]}>
         <Routes>
-          <Route path="/profiles" element={<AgentsPage />} />
-          <Route path="/profiles/:id" element={<AgentsPage />} />
+          <Route path="/manage/agents" element={<Agents />} />
+          <Route path="/manage/agents/:itemId" element={<Agents />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -150,13 +170,22 @@ function mount(overrides: RouteStub[] = [], entry = "/profiles") {
   return { fetchMock, requests };
 }
 
+/** The sheet for one profile, opened the way the section opens it: by address. */
+function mountSheet(profileId: string, overrides: RouteStub[] = []) {
+  return mount(overrides, `/manage/agents/${profileId}`);
+}
+
+/** Open the pin form the sheet's SKILLS panel offers. */
+async function openPinForm(profileId: string) {
+  fireEvent.click(await screen.findByTestId(`agent-apm-edit-${profileId}`));
+}
+
 afterEach(cleanup);
 
-describe("/profiles", () => {
-  it("renders the list, the chips and the detail of the first profile", async () => {
+describe("/manage/agents — the profiles table", () => {
+  it("renders the list and its chips, and the detail behind a row's link", async () => {
     mount();
-    // Redesign finding 02: the page is titled "Agents", not "Agent profiles".
-    expect(screen.getByRole("heading", { name: "Agents" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: /Agents & models/ })).toBeDefined();
     const claudeRow = await screen.findByTestId(`agent-row-${pinned.id}`);
     // Both halves evidenced (verified worker + observed nono probe): green.
     expect(within(claudeRow).getByTestId(`profile-chip-${pinned.id}`).textContent).toBe(
@@ -167,7 +196,10 @@ describe("/profiles", () => {
     expect(within(codexRow).getByTestId(`profile-chip-${codexProfile.id}`).textContent).toBe(
       "! NOT VERIFIED",
     );
-    // The detail pane defaults to the first profile and shows its pin.
+
+    // The sheet is the redesign's detail: the row's name opens it, and the
+    // profile's pin and permission mode answer from there.
+    fireEvent.click(screen.getByTestId(`agent-name-${pinned.id}`));
     const detail = await screen.findByTestId(`profile-detail-${pinned.id}`);
     expect(within(detail).getByTestId(`agent-apm-ref-${pinned.id}`).textContent).toBe(
       "mattpocock/skills#v1.3.1",
@@ -180,11 +212,12 @@ describe("/profiles", () => {
     );
     // Used-by: no usage report was mounted for this profile, so the read
     // errored — never a "0", never a claim the backend cannot support.
-    expect(screen.getByTestId("profiles-usage-unavailable").textContent).toBe(
+    expect((await screen.findByTestId("profiles-usage-unavailable")).textContent).toBe(
       "usage unavailable — the workflows that use this profile could not be read",
     );
-    // Clicking the codex row navigates to /profiles/:id and selects it.
-    fireEvent.click(codexRow);
+
+    // The other row's link opens its own sheet.
+    fireEvent.click(screen.getByTestId(`agent-name-${codexProfile.id}`));
     const codexDetail = await screen.findByTestId(`profile-detail-${codexProfile.id}`);
     expect(within(codexDetail).getByTestId(`agent-apm-none-${codexProfile.id}`).textContent).toBe(
       "no skill package",
@@ -192,7 +225,7 @@ describe("/profiles", () => {
   });
 
   it("lists the workflows that use a profile, with their revision facts", async () => {
-    mount([
+    mountSheet(pinned.id, [
       {
         path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
         method: "GET",
@@ -222,13 +255,12 @@ describe("/profiles", () => {
     const workflowLink = screen.getByTestId(
       "profile-usage-workflow-01987b20-0000-7000-8000-abcdef012345",
     );
-    expect(workflowLink.getAttribute("href")).toBe(
-      "/workflows/01987b20-0000-7000-8000-abcdef012345",
-    );
+    // The workflow's address is the editor now (`routes.workflow`).
+    expect(workflowLink.getAttribute("href")).toBe("/factory/01987b20-0000-7000-8000-abcdef012345");
   });
 
   it("links a draft use to the draft route and marks the row draft", async () => {
-    mount([
+    mountSheet(pinned.id, [
       {
         path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
         method: "GET",
@@ -256,13 +288,14 @@ describe("/profiles", () => {
     const workflowLink = screen.getByTestId(
       "profile-usage-workflow-01987b20-0000-7000-8000-abcdef012345",
     ) as HTMLAnchorElement;
+    // A draft is a query on the editor, not a nested path.
     expect(workflowLink.getAttribute("href")).toBe(
-      "/workflows/01987b20-0000-7000-8000-abcdef012345/drafts/01987b30-0000-7000-8000-abcdef012345",
+      "/factory/01987b20-0000-7000-8000-abcdef012345?draft=01987b30-0000-7000-8000-abcdef012345",
     );
   });
 
   it("says not used by any workflow yet when the report has no uses", async () => {
-    mount([
+    mountSheet(pinned.id, [
       {
         path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
         method: "GET",
@@ -274,7 +307,7 @@ describe("/profiles", () => {
   });
 
   it("renders the muted usage-unavailable copy when the report cannot be read", async () => {
-    mount([
+    mountSheet(pinned.id, [
       {
         path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
         method: "GET",
@@ -289,7 +322,7 @@ describe("/profiles", () => {
   });
 
   it("says showing first 200 when the report is truncated", async () => {
-    mount([
+    mountSheet(pinned.id, [
       {
         path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
         method: "GET",
@@ -330,17 +363,17 @@ describe("/profiles", () => {
 
   it("renders the honest 'not available yet' when the registry endpoint is missing", async () => {
     // No stub for /api/v1/launchers → the mock answers 404 → data null.
-    const base = routes().filter((stub) => stub.path !== "/api/v1/launchers");
+    const base = routeStubs().filter((stub) => stub.path !== "/api/v1/launchers");
     mockFetch(base);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
     });
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/profiles"]}>
+        <MemoryRouter initialEntries={[`/manage/agents/${pinned.id}`]}>
           <Routes>
-            <Route path="/profiles" element={<AgentsPage />} />
-            <Route path="/profiles/:id" element={<AgentsPage />} />
+            <Route path="/manage/agents" element={<Agents />} />
+            <Route path="/manage/agents/:itemId" element={<Agents />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -358,111 +391,14 @@ describe("/profiles", () => {
 
   it("shows no write controls to a member without the library role", async () => {
     mount([{ path: "/api/v1/me", body: meFixture }]);
-    await screen.findByTestId(`agent-row-${pinned.id}`);
-    expect(screen.queryByTestId("agents-new-form")).toBeNull();
-    expect(screen.queryByTestId(`agent-edit-${pinned.id}`)).toBeNull();
+    const row = await screen.findByTestId(`agent-row-${pinned.id}`);
+    expect(within(row).queryByTestId(`agent-edit-${pinned.id}`)).toBeNull();
+    expect(screen.queryByTestId("agents-new-open")).toBeNull();
+    // And the sheet it links to carries no write affordance either.
+    fireEvent.click(screen.getByTestId(`agent-name-${pinned.id}`));
+    await screen.findByTestId(`profile-detail-${pinned.id}`);
     expect(screen.queryByTestId(`profiles-duplicate-${pinned.id}`)).toBeNull();
-  });
-
-  it("patches all three fields as one triple from the detail's pin form", async () => {
-    const { requests } = mount([{ path: pinPath, method: "PATCH", body: pinned }]);
-    // The list row's Edit opens the APM form on the detail route.
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
-    fireEvent.change(screen.getByTestId(`agents-ref-input-${pinned.id}`), {
-      target: { value: "mattpocock/skills/skills/engineering/ask-matt#v1.3.1" },
-    });
-    fireEvent.change(screen.getByTestId(`agents-digest-input-${pinned.id}`), {
-      target: { value: `sha256:${"2b".repeat(32)}` },
-    });
-    fireEvent.click(screen.getByTestId(`agents-apm-save-${pinned.id}`));
-    await waitFor(() => expect(requestsTo(requests, pinPath, "PATCH")).toHaveLength(1));
-    const body = JSON.parse(requestsTo(requests, pinPath, "PATCH")[0].body ?? "{}");
-    expect(body).toEqual({
-      apm_package_ref: "mattpocock/skills/skills/engineering/ask-matt#v1.3.1",
-      apm_target: "claude",
-      apm_lock_digest: `sha256:${"2b".repeat(32)}`,
-      version: pinned.version,
-    });
-  });
-
-  it("saves the unlocked pin as ref plus target with no digest", async () => {
-    const { requests } = mount(
-      [
-        { path: listPath, method: "GET", body: { items: [unlockedProfile, codexProfile] } },
-        {
-          path: `/api/v1/agent-profiles/${unlockedProfile.id}/apm/lock`,
-          method: "GET",
-          body: { request_id: "", status: "none" },
-        },
-      ],
-      `/profiles/${unlockedProfile.id}`,
-    );
-    fireEvent.click(await screen.findByTestId(`agent-edit-${unlockedProfile.id}`));
-    const save = screen.getByTestId(`agents-apm-save-${unlockedProfile.id}`) as HTMLButtonElement;
-    expect(save.disabled).toBe(false);
-    fireEvent.click(save);
-    await waitFor(() =>
-      expect(
-        requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}`, "PATCH"),
-      ).toHaveLength(1),
-    );
-    const body = JSON.parse(
-      requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}`, "PATCH")[0].body ?? "{}",
-    );
-    // An unlocked pin travels without a digest; the digest field is optional.
-    expect(body).toEqual({
-      apm_package_ref: "mattpocock/skills#v1.3.1",
-      apm_target: "claude",
-      apm_lock_digest: null,
-      version: unlockedProfile.version,
-    });
-  });
-
-  it("clears the whole triple on Remove package", async () => {
-    const cleared: AgentProfile = {
-      ...pinned,
-      apm_package_ref: null,
-      apm_target: null,
-      apm_lock_digest: null,
-    };
-    const { requests } = mount([{ path: pinPath, method: "PATCH", body: cleared }]);
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
-    fireEvent.click(screen.getByTestId(`agents-apm-remove-${pinned.id}`));
-    await waitFor(() => expect(requestsTo(requests, pinPath, "PATCH")).toHaveLength(1));
-    expect(JSON.parse(requestsTo(requests, pinPath, "PATCH")[0].body ?? "{}")).toEqual({
-      apm_package_ref: null,
-      apm_target: null,
-      apm_lock_digest: null,
-      version: pinned.version,
-    });
-  });
-
-  it("shows the 422's code beside its prose", async () => {
-    const { requests } = mount([
-      {
-        path: pinPath,
-        method: "PATCH",
-        status: 422,
-        body: {
-          type: "https://communication.dev/errors/apm_pin_incomplete",
-          title: "Incomplete APM Pin",
-          status: 422,
-          detail: "apm_package_ref, apm_target and apm_lock_digest move together.",
-          code: "apm_pin_incomplete",
-        },
-      },
-    ]);
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
-    fireEvent.change(screen.getByTestId(`agents-digest-input-${pinned.id}`), {
-      target: { value: "" },
-    });
-    fireEvent.click(screen.getByTestId(`agents-apm-save-${pinned.id}`));
-    await waitFor(() => expect(requestsTo(requests, pinPath, "PATCH")).toHaveLength(1));
-    const problem = await screen.findByTestId(`agents-apm-problem-${pinned.id}`);
-    expect(problem.textContent).toContain("apm_pin_incomplete");
-    expect(within(problem).getByTestId(`agents-apm-problem-${pinned.id}-code`).textContent).toBe(
-      "[apm_pin_incomplete]",
-    );
+    expect(screen.queryByTestId(`agent-apm-edit-${pinned.id}`)).toBeNull();
   });
 
   it("duplicates the profile and carries the APM pin across", async () => {
@@ -471,7 +407,7 @@ describe("/profiles", () => {
       id: "01987a71-2222-7000-8000-copy",
       name: "Claude Code (pinned skills) copy",
     };
-    const { requests } = mount([
+    const { requests } = mountSheet(pinned.id, [
       { path: listPath, method: "POST", status: 201, body: copy },
       { path: `/api/v1/agent-profiles/${copy.id}`, method: "PATCH", body: copy },
     ]);
@@ -511,7 +447,7 @@ describe("/profiles", () => {
       slug: "db_password",
       allowed_agent_profile_ids: [codexProfile.id],
     };
-    mount([
+    mountSheet(pinned.id, [
       { path: "/api/v1/projects", body: { items: [projectFixture] } },
       { path: `/api/v1/projects/${projectFixture.id}/secrets`, body: { secrets: [secret, other] } },
     ]);
@@ -523,38 +459,8 @@ describe("/profiles", () => {
     expect(screen.getByText("value never shown")).toBeDefined();
   });
 
-  it("shows the how-to-get-digest disclosure under the digest field", async () => {
-    mount();
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
-    const details = screen.getByTestId(`agents-digest-help-${pinned.id}`);
-    expect(details.querySelector("summary")?.textContent).toContain("How do I get this?");
-    expect(details.textContent).toContain("moved tag fails closed");
-  });
-
-  it("digest help commands reflect the form's current ref and target", async () => {
-    mount();
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
-    fireEvent.change(screen.getByTestId(`agents-ref-input-${pinned.id}`), {
-      target: { value: "acme/skills#v2.0.0" },
-    });
-    fireEvent.change(screen.getByTestId(`agents-target-select-${pinned.id}`), {
-      target: { value: "codex" },
-    });
-    const block = screen.getByTestId(`agents-digest-help-block-${pinned.id}`);
-    expect(block.textContent).toContain("acme/skills#v2.0.0");
-    expect(block.textContent).toContain("--target codex");
-    expect(block.textContent).toContain("ghcr.io/dbirks/communication-worker:main");
-  });
-
-  it("copy button is disabled when the Clipboard API is absent (jsdom default)", async () => {
-    mount();
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
-    const copyBtn = screen.getByTestId(`agents-digest-help-copy-${pinned.id}`) as HTMLButtonElement;
-    expect(copyBtn.disabled).toBe(true);
-  });
-
-  it("navigates to the named profile on /profiles/:id", async () => {
-    mount([], `/profiles/${codexProfile.id}`);
+  it("opens the named profile's sheet from its address", async () => {
+    mount([], `/manage/agents/${codexProfile.id}`);
     const detail = await screen.findByTestId(`profile-detail-${codexProfile.id}`);
     // Codex's capability cells carry the fixture's evidence and nothing more.
     expect(
@@ -569,6 +475,162 @@ describe("/profiles", () => {
     expect(worker.textContent).toContain("✓ verified");
   });
 
+  it("renders the lock contents lists when a resolve reported them", async () => {
+    const withContents: AgentProfile = {
+      ...pinned,
+      apm_contents: {
+        skills: ["ask-matt"],
+        instructions: ["README.md"],
+        mcp_servers: ["github"],
+        truncated: false,
+      },
+    };
+    mountSheet(withContents.id, [
+      { path: listPath, method: "GET", body: { items: [withContents, codexProfile] } },
+      {
+        path: `/api/v1/agent-profiles/${withContents.id}/apm/lock`,
+        method: "GET",
+        body: { request_id: "", status: "none" },
+      },
+    ]);
+    const detail = await screen.findByTestId(`profile-detail-${withContents.id}`);
+    const contents = within(detail).getByTestId(`agent-apm-contents-${withContents.id}`);
+    expect(contents.textContent).toContain("ask-matt");
+    expect(contents.textContent).toContain("README.md");
+    expect(contents.textContent).toContain("github");
+    expect(contents.textContent).toContain("MCP SERVERS");
+    expect(contents.textContent).not.toContain("truncated");
+  });
+});
+
+describe("/manage/agents — the APM pin form in the sheet", () => {
+  it("patches all three fields as one triple", async () => {
+    const { requests } = mountSheet(pinned.id, [{ path: pinPath, method: "PATCH", body: pinned }]);
+    await openPinForm(pinned.id);
+    fireEvent.change(screen.getByTestId(`agents-ref-input-${pinned.id}`), {
+      target: { value: "mattpocock/skills/skills/engineering/ask-matt#v1.3.1" },
+    });
+    fireEvent.change(screen.getByTestId(`agents-digest-input-${pinned.id}`), {
+      target: { value: `sha256:${"2b".repeat(32)}` },
+    });
+    fireEvent.click(screen.getByTestId(`agents-apm-save-${pinned.id}`));
+    await waitFor(() => expect(requestsTo(requests, pinPath, "PATCH")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, pinPath, "PATCH")[0].body ?? "{}");
+    expect(body).toEqual({
+      apm_package_ref: "mattpocock/skills/skills/engineering/ask-matt#v1.3.1",
+      apm_target: "claude",
+      apm_lock_digest: `sha256:${"2b".repeat(32)}`,
+      version: pinned.version,
+    });
+  });
+
+  it("saves the unlocked pin as ref plus target with no digest", async () => {
+    const { requests } = mountSheet(unlockedProfile.id, [
+      { path: listPath, method: "GET", body: { items: [unlockedProfile, codexProfile] } },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}/apm/lock`,
+        method: "GET",
+        body: { request_id: "", status: "none" },
+      },
+    ]);
+    await openPinForm(unlockedProfile.id);
+    const save = screen.getByTestId(`agents-apm-save-${unlockedProfile.id}`) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}`, "PATCH"),
+      ).toHaveLength(1),
+    );
+    const body = JSON.parse(
+      requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}`, "PATCH")[0].body ?? "{}",
+    );
+    // An unlocked pin travels without a digest; the digest field is optional.
+    expect(body).toEqual({
+      apm_package_ref: "mattpocock/skills#v1.3.1",
+      apm_target: "claude",
+      apm_lock_digest: null,
+      version: unlockedProfile.version,
+    });
+  });
+
+  it("clears the whole triple on Remove package", async () => {
+    const cleared: AgentProfile = {
+      ...pinned,
+      apm_package_ref: null,
+      apm_target: null,
+      apm_lock_digest: null,
+    };
+    const { requests } = mountSheet(pinned.id, [{ path: pinPath, method: "PATCH", body: cleared }]);
+    await openPinForm(pinned.id);
+    fireEvent.click(screen.getByTestId(`agents-apm-remove-${pinned.id}`));
+    await waitFor(() => expect(requestsTo(requests, pinPath, "PATCH")).toHaveLength(1));
+    expect(JSON.parse(requestsTo(requests, pinPath, "PATCH")[0].body ?? "{}")).toEqual({
+      apm_package_ref: null,
+      apm_target: null,
+      apm_lock_digest: null,
+      version: pinned.version,
+    });
+  });
+
+  it("shows the 422's code beside its prose", async () => {
+    const { requests } = mountSheet(pinned.id, [
+      {
+        path: pinPath,
+        method: "PATCH",
+        status: 422,
+        body: {
+          type: "https://communication.dev/errors/apm_pin_incomplete",
+          title: "Incomplete APM Pin",
+          status: 422,
+          detail: "apm_package_ref, apm_target and apm_lock_digest move together.",
+          code: "apm_pin_incomplete",
+        },
+      },
+    ]);
+    await openPinForm(pinned.id);
+    fireEvent.change(screen.getByTestId(`agents-digest-input-${pinned.id}`), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByTestId(`agents-apm-save-${pinned.id}`));
+    await waitFor(() => expect(requestsTo(requests, pinPath, "PATCH")).toHaveLength(1));
+    const problem = await screen.findByTestId(`agents-apm-problem-${pinned.id}`);
+    expect(problem.textContent).toContain("apm_pin_incomplete");
+    expect(within(problem).getByTestId(`agents-apm-problem-${pinned.id}-code`).textContent).toBe(
+      "[apm_pin_incomplete]",
+    );
+  });
+
+  it("shows the how-to-get-digest disclosure under the digest field", async () => {
+    mountSheet(pinned.id);
+    await openPinForm(pinned.id);
+    const details = screen.getByTestId(`agents-digest-help-${pinned.id}`);
+    expect(details.querySelector("summary")?.textContent).toContain("How do I get this?");
+    expect(details.textContent).toContain("moved tag fails closed");
+  });
+
+  it("digest help commands reflect the form's current ref and target", async () => {
+    mountSheet(pinned.id);
+    await openPinForm(pinned.id);
+    fireEvent.change(screen.getByTestId(`agents-ref-input-${pinned.id}`), {
+      target: { value: "acme/skills#v2.0.0" },
+    });
+    fireEvent.change(screen.getByTestId(`agents-target-select-${pinned.id}`), {
+      target: { value: "codex" },
+    });
+    const block = screen.getByTestId(`agents-digest-help-block-${pinned.id}`);
+    expect(block.textContent).toContain("acme/skills#v2.0.0");
+    expect(block.textContent).toContain("--target codex");
+    expect(block.textContent).toContain("ghcr.io/dbirks/communication-worker:main");
+  });
+
+  it("copy button is disabled when the Clipboard API is absent (jsdom default)", async () => {
+    mountSheet(pinned.id);
+    await openPinForm(pinned.id);
+    const copyBtn = screen.getByTestId(`agents-digest-help-copy-${pinned.id}`) as HTMLButtonElement;
+    expect(copyBtn.disabled).toBe(true);
+  });
+
   it("offers Lock it for an unlocked pin and shows the queued lock chip", async () => {
     const unlocked: AgentProfile = {
       ...claudeProfile,
@@ -577,26 +639,23 @@ describe("/profiles", () => {
       apm_target: "claude",
       apm_lock_digest: null,
     };
-    const { requests } = mount(
-      [
-        { path: listPath, method: "GET", body: { items: [unlocked, codexProfile] } },
-        {
-          path: `/api/v1/agent-profiles/${unlocked.id}/apm/lock`,
-          method: "GET",
-          body: { request_id: "req-unlocked-1", status: "queued" },
-        },
-      ],
-      `/profiles/${unlocked.id}`,
-    );
+    const { requests } = mountSheet(unlocked.id, [
+      { path: listPath, method: "GET", body: { items: [unlocked, codexProfile] } },
+      {
+        path: `/api/v1/agent-profiles/${unlocked.id}/apm/lock`,
+        method: "GET",
+        body: { request_id: "req-unlocked-1", status: "queued" },
+      },
+    ]);
     const detail = await screen.findByTestId(`profile-detail-${unlocked.id}`);
     // Unlocked pin: the contents are the honest "lock it" prompt, not a
     // fabricated list.
     expect(within(detail).getByTestId(`agent-apm-unlocked-${unlocked.id}`).textContent).toContain(
       "Lock the pin to see its contents",
     );
-    // The pin form is closed until the operator opens it; the list row's Edit
-    // opens it. With ref + target saved the Lock it button is enabled.
-    fireEvent.click(await screen.findByTestId(`agent-edit-${unlocked.id}`));
+    // The pin form is closed until the operator opens it; with ref + target
+    // saved the Lock it button is enabled.
+    await openPinForm(unlocked.id);
     const lockButton = screen.getByTestId("profile-apm-lock") as HTMLButtonElement;
     expect(lockButton.disabled).toBe(false);
     fireEvent.click(lockButton);
@@ -610,45 +669,15 @@ describe("/profiles", () => {
   });
 
   it("shows the done lock chip with the recorded digest after a resolve", async () => {
-    mount([
+    mountSheet(pinned.id, [
       {
         path: `/api/v1/agent-profiles/${pinned.id}/apm/lock`,
         method: "GET",
         body: { request_id: "req-pinned-1", status: "done", error: null },
       },
     ]);
-    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
+    await openPinForm(pinned.id);
     const chip = await screen.findByTestId(`profile-apm-lock-status-${pinned.id}`);
     expect(chip.textContent).toContain("locked ✓ sha256:");
-  });
-
-  it("renders the lock contents lists when a resolve reported them", async () => {
-    const withContents: AgentProfile = {
-      ...pinned,
-      apm_contents: {
-        skills: ["ask-matt"],
-        instructions: ["README.md"],
-        mcp_servers: ["github"],
-        truncated: false,
-      },
-    };
-    mount(
-      [
-        { path: listPath, method: "GET", body: { items: [withContents, codexProfile] } },
-        {
-          path: `/api/v1/agent-profiles/${withContents.id}/apm/lock`,
-          method: "GET",
-          body: { request_id: "", status: "none" },
-        },
-      ],
-      `/profiles/${withContents.id}`,
-    );
-    const detail = await screen.findByTestId(`profile-detail-${withContents.id}`);
-    const contents = within(detail).getByTestId(`agent-apm-contents-${withContents.id}`);
-    expect(contents.textContent).toContain("ask-matt");
-    expect(contents.textContent).toContain("README.md");
-    expect(contents.textContent).toContain("github");
-    expect(contents.textContent).toContain("MCP SERVERS");
-    expect(contents.textContent).not.toContain("truncated");
   });
 });

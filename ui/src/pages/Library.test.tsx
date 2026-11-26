@@ -11,7 +11,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes, useParams } from "react-router";
+import { MemoryRouter, Route, Routes, useParams, useSearchParams } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
 import { ASSISTANT_OPEN_EVENT } from "../components/assistant/AssistantPopover";
@@ -138,6 +138,11 @@ function mount(path: string, overrides: RouteStub[] = []) {
           <Route path="/workflows" element={<LibraryPage />} />
           <Route path="/library/:pipelineId" element={<PipelinePage />} />
           <Route path="/workflows/:pipelineId" element={<PipelinePage />} />
+          {/* The redesign's editor route (`/factory/:pipelineId`, with the
+            draft carried as `?draft=`). One stub answers both shapes, so the
+            index's landing assertions stay the same testids: with a draft the
+            editor owns the page, without one the workflow page does. */}
+          <Route path="/factory/:pipelineId" element={<FactoryRouteStub />} />
           {/* The Studio route itself is tested in pages/Studio.test.tsx; the
               library only has to land the navigation there. */}
           <Route path="/library/:pipelineId/drafts/:draftId" element={<StudioRouteStub />} />
@@ -153,6 +158,19 @@ function mount(path: string, overrides: RouteStub[] = []) {
 function StudioRouteStub() {
   const { pipelineId = "", draftId = "" } = useParams();
   return <div data-testid="studio-route">{`${pipelineId} / ${draftId}`}</div>;
+}
+
+/** The editor route the redesign moved the create flows to:
+ * `/factory/<pipelineId>?draft=<draftId>` (`routes.draft`). A create without a
+ * draft lands on the editor route too, so the stub names the pipeline. */
+function FactoryRouteStub() {
+  const { pipelineId = "" } = useParams();
+  const [params] = useSearchParams();
+  const draft = params.get("draft");
+  if (draft === null) {
+    return <div data-testid="editor-route">{pipelineId}</div>;
+  }
+  return <div data-testid="studio-route">{`${pipelineId} / ${draft}`}</div>;
 }
 
 afterEach(cleanup);
@@ -199,7 +217,10 @@ describe("/workflows — the index (3a)", () => {
     expect(screen.getByTestId("workflows-tab-workflows").getAttribute("aria-current")).toBe("page");
     // (The route itself — and the old `/steps` redirect — is proven in
     // App.test.tsx; this table stubs only the library routes.)
-    expect(screen.getByTestId("workflows-tab-steps").getAttribute("href")).toBe("/workflows/steps");
+    // Steps is a Manage tab now (`routes.steps`); the strip still names it.
+    expect(screen.getByTestId("workflows-tab-steps").getAttribute("href")).toBe(
+      "/manage/agents?tab=steps",
+    );
   });
   it("lists the org workflows with the server's own chips and opens the one you click", async () => {
     mount("/workflows");
@@ -221,18 +242,11 @@ describe("/workflows — the index (3a)", () => {
       "draft · not published",
     );
     fireEvent.click(screen.getByTestId("workflow-open-feature-development"));
-    expect(await screen.findByTestId("pipeline-page")).toBeTruthy();
-    // The page you land on names the workflow by its own name (`pipeline-
-    // header-meta` rides the H1 since the header stopped printing the raw slug
-    // — pass-1 review, 2a item 3), so the wait is on that name arriving with
-    // the pipeline read.
-    await waitFor(
-      () =>
-        expect(screen.getByTestId("pipeline-header-meta").textContent).toBe(
-          wirePipeline.display_name,
-        ),
-      settled,
-    );
+    // The row opens the workflow's own editor route (`routes.workflow` →
+    // `/factory/<id>`): the redesign moved the workflow page there, so the
+    // landing is named by the pipeline id, not by the old page's header.
+    const landed = await screen.findByTestId("editor-route", undefined, settled);
+    expect(landed.textContent).toBe(WIRE_PIPELINE_ID);
   });
 
   it("names the assigned project and the trigger, and prints no draft line on the row", async () => {

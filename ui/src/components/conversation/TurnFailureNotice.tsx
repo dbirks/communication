@@ -338,7 +338,7 @@ export function TurnFailureNotice({
   return (
     <div
       data-testid={testId}
-      className="flex items-baseline gap-2 px-1 py-1 text-[12px] text-ink-2"
+      className="flex items-baseline gap-2 rounded-[10px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[12px] py-[10px] text-[12.5px] text-st-failed-pale-fg"
       role="status"
     >
       <span className={`shrink-0 font-mono text-[10.5px] not-italic ${failed.tagFg}`}>

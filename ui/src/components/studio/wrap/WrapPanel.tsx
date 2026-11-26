@@ -27,6 +27,7 @@ export interface WrapPanelProps {
   mode?: "wrap" | "edit";
   initialGoal?: GoalSpec;
   onUnwrap?: () => void;
+  onMoreSettings?: () => void;
   unsupported?: Partial<Record<GoalKind, string>>;
   onWrapRepeat: (goal: GoalSpec) => void;
   onWrapSideBySide: () => void;
@@ -81,6 +82,7 @@ export function WrapPanel({
   mode = "wrap",
   initialGoal,
   onUnwrap,
+  onMoreSettings,
   unsupported,
   onWrapRepeat,
   onWrapSideBySide,
@@ -390,6 +392,16 @@ export function WrapPanel({
                     className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
                   >
                     Unwrap
+                  </button>
+                ) : null}
+                {isEdit && onMoreSettings ? (
+                  <button
+                    type="button"
+                    data-testid="goal-card-more-settings"
+                    onClick={onMoreSettings}
+                    className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+                  >
+                    More settings
                   </button>
                 ) : null}
                 <button

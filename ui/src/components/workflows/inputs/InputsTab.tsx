@@ -57,6 +57,8 @@ export interface InputsTabProps {
   groups: UsedInGroup[];
   groupsLoading: boolean;
   groupsError: boolean;
+  /** Narrow side-panel layout (stacks columns so 520px does not clip). */
+  embedded?: boolean;
 }
 
 /** The row editor's working copy — plain strings, exactly what the fields
@@ -93,6 +95,7 @@ export function InputsTab({
   groups,
   groupsLoading,
   groupsError,
+  embedded = false,
 }: InputsTabProps) {
   const draftId = openDraft?.id ?? "";
   const draftRead = useDraft(draftId);
@@ -248,7 +251,11 @@ export function InputsTab({
 
   return (
     <div
-      className="grid min-w-0 grid-cols-1 items-start gap-[14px] lg:grid-cols-[minmax(0,1fr)_320px]"
+      className={
+        embedded
+          ? "grid min-w-0 grid-cols-1 items-start gap-[14px]"
+          : "grid min-w-0 grid-cols-1 items-start gap-[14px] lg:grid-cols-[minmax(0,1fr)_320px]"
+      }
       data-testid="inputs-tab"
     >
       {/* ---------------------------------------------------- INPUTS · n */}
@@ -276,7 +283,9 @@ export function InputsTab({
         }
       >
         <div
-          className="grid grid-cols-[minmax(0,104px)_minmax(0,96px)_minmax(0,60px)_minmax(0,1fr)] items-center gap-[6px] border-b border-line px-[12px] py-[6px] font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-faint lg:grid-cols-[130px_120px_80px_minmax(0,1fr)]"
+          className={`grid grid-cols-[minmax(0,104px)_minmax(0,96px)_minmax(0,60px)_minmax(0,1fr)] items-center gap-[6px] border-b border-line px-[12px] py-[6px] font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-faint ${
+            embedded ? "" : "lg:grid-cols-[130px_120px_80px_minmax(0,1fr)]"
+          }`}
           data-testid="inputs-header-row"
         >
           <span>name</span>
@@ -295,9 +304,9 @@ export function InputsTab({
             <div key={spec.name} data-testid={`input-item-${spec.name}`}>
               <button
                 type="button"
-                className={`grid w-full grid-cols-[minmax(0,104px)_minmax(0,96px)_minmax(0,60px)_minmax(0,1fr)] items-center gap-[6px] px-[12px] py-[8px] text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent lg:grid-cols-[130px_120px_80px_minmax(0,1fr)] ${
-                  open ? "bg-accent-wash" : "hover:bg-accent-wash/60"
-                }`}
+                className={`grid w-full grid-cols-[minmax(0,104px)_minmax(0,96px)_minmax(0,60px)_minmax(0,1fr)] items-center gap-[6px] px-[12px] py-[8px] text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
+                  embedded ? "" : "lg:grid-cols-[130px_120px_80px_minmax(0,1fr)]"
+                } ${open ? "bg-accent-wash" : "hover:bg-accent-wash/60"}`}
                 aria-expanded={open}
                 data-testid={`input-row-${spec.name}`}
                 onClick={() => {

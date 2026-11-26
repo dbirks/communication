@@ -4,10 +4,20 @@
  * documented defaults, the trust-level group, and the honest "not saved" state
  * when the server does not store preferences yet (the 404 degradation of
  * contract C2).
+ *
+ * The redesign (docs/design/redesign/CONTRACT.md) took this page's tab row
+ * apart: Layout went with the sidebar, Assistant and the agent accounts moved
+ * to Manage → Agents & models, and Operations to Manage → Runners. The tab
+ * strip's own tests — the three tabs, their hrefs, their `aria-current`, the
+ * client-side tab switching and the admin-only Accounts tab position — retired
+ * with the strip: the redesign's destinations are `pages/Manage.test.tsx` (the
+ * six-destination sub-nav), `pages/manage/Agents.test.tsx` (the `?tab=` row)
+ * and `pages/manage/agents/AccountsStrip.test.tsx` (who may see sign-ins). The
+ * bodies those tabs hosted are still tested here.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { createElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { setCsrfToken } from "../api/client";
@@ -80,56 +90,16 @@ function mount(path: string, extra: RouteStub[] = []) {
   return { fetchMock, requests };
 }
 
-/** Renders the Settings page plus a probe of the current router location. */
-function mountWithLocation(path: string) {
-  const { fetchMock, requests } = mockFetch([{ path: "/api/v1/me", body: meFixture }]);
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
-  });
-  const tree = createElement(
-    QueryClientProvider,
-    { client: queryClient },
-    createElement(
-      MemoryRouter,
-      { initialEntries: [path] },
-      createElement(LocationSpy),
-      createElement(
-        Routes,
-        null,
-        createElement(Route, { path: "/settings/:tab", element: <Settings /> }),
-      ),
-    ),
-  );
-  render(tree);
-  return { fetchMock, requests };
-}
-
-/** Reads the current router location for the client-side navigation tests. */
-function LocationSpy() {
-  const location = useLocation();
-  return <div data-testid="location-path">{location.pathname}</div>;
-}
-
+/** Is the named radio the checked one? */
 function checked(name: RegExp): boolean {
   return (screen.getByRole("radio", { name }) as HTMLInputElement).checked;
 }
 
 describe("Settings page", () => {
-  it("shows the H1 and the three tabs; the Layout tab is selected by default", () => {
-    mount("/settings/layout");
-    expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
-    const layoutTab = screen.getByTestId("settings-tab-layout");
-    const assistantTab = screen.getByTestId("settings-tab-assistant");
-    expect(layoutTab.getAttribute("href")).toBe("/settings/layout");
-    expect(layoutTab.getAttribute("aria-current")).toBe("page");
-    expect(assistantTab.getAttribute("href")).toBe("/settings/assistant");
-    expect(assistantTab.getAttribute("aria-current")).toBeNull();
-    const opsLink = screen.getByTestId("settings-ops-link");
-    expect(opsLink.getAttribute("href")).toBe("/settings/operations");
-    expect(opsLink.getAttribute("aria-current")).toBeNull();
-    expect(screen.getByTestId("settings-layout")).toBeTruthy();
-  });
-
+  // The tab strip itself retired with the page: its three tabs, their hrefs,
+  // their `aria-current` and the client-side tab switching are the redesign's
+  // Manage sub-nav now (`pages/Manage.test.tsx`) and its `?tab=` row
+  // (`pages/manage/Agents.test.tsx`). What each tab shows is tested below.
   it("renders the Assistant tab on /settings/assistant", () => {
     mount("/settings/assistant");
     expect(screen.getByTestId("settings-assistant")).toBeTruthy();
@@ -162,23 +132,6 @@ describe("Settings → Operations", () => {
 
   it("keeps the legacy /ops URL working as a redirect to the Operations tab", async () => {
     renderApp({ path: "/ops", routes: OPS_ROUTES });
-    expect(await screen.findByTestId("ops-resource-limits")).toBeTruthy();
-  });
-});
-
-describe("Settings tabs navigate client-side", () => {
-  it("switches tabs through the router without a document navigation", async () => {
-    mountWithLocation("/settings/layout");
-    expect(screen.getByTestId("location-path").textContent).toBe("/settings/layout");
-    expect(screen.getByTestId("settings-layout")).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId("settings-tab-assistant"));
-    expect(screen.getByTestId("location-path").textContent).toBe("/settings/assistant");
-    expect(screen.getByTestId("settings-assistant")).toBeTruthy();
-    expect(screen.queryByTestId("settings-layout")).toBeNull();
-
-    fireEvent.click(screen.getByTestId("settings-ops-link"));
-    expect(screen.getByTestId("location-path").textContent).toBe("/settings/operations");
     expect(await screen.findByTestId("ops-resource-limits")).toBeTruthy();
   });
 });
@@ -270,39 +223,19 @@ describe("Settings → Assistant", () => {
 });
 
 describe("Settings → Agent accounts (ADR-0085)", () => {
-  /** The same person with the organization admin role. */
-  const adminFixture = { ...meFixture, is_org_admin: true };
-  const ACCOUNTS_PATH = "/api/v1/agent-accounts";
-
   it("hides the tab from a member", async () => {
     mount("/settings/assistant");
     await waitFor(() => expect(screen.getByTestId("settings-tab-assistant")).toBeTruthy());
     expect(screen.queryByTestId("settings-tab-accounts")).toBeNull();
   });
 
-  it("shows the tab to an admin after Assistant, before Operations", async () => {
-    mount("/settings/assistant", [{ path: "/api/v1/me", body: adminFixture }]);
-    const tab = await screen.findByTestId("settings-tab-accounts");
-    expect(tab.getAttribute("href")).toBe("/settings/accounts");
-    const keys = screen.getByRole("navigation", { name: "Settings" }).querySelectorAll("a");
-    expect(Array.from(keys).map((link) => link.getAttribute("href"))).toEqual([
-      "/settings/layout",
-      "/settings/assistant",
-      "/settings/accounts",
-      "/settings/operations",
-    ]);
-  });
-
-  it("renders the account rows on /settings/accounts", async () => {
-    mount("/settings/accounts", [
-      { path: "/api/v1/me", body: adminFixture },
-      { path: ACCOUNTS_PATH, method: "GET", body: { items: [] } },
-    ]);
-    expect(await screen.findByTestId("settings-accounts")).toBeTruthy();
-    const empty = await screen.findByTestId("settings-accounts-empty");
-    expect(empty.textContent).toBe("No workers are online, so there is nothing to sign in yet.");
-    expect(screen.getByTestId("settings-tab-accounts").getAttribute("aria-current")).toBe("page");
-  });
+  // The admin-only Accounts TAB retired with the Settings tab strip: the order
+  // of those links and the tab's `aria-current` are the redesign's Manage
+  // sub-nav and `?tab=` row now (`pages/Manage.test.tsx`,
+  // `pages/manage/Agents.test.tsx`), and who may see sign-ins at all is
+  // `pages/manage/agents/AccountsStrip.test.tsx`. The account rows themselves —
+  // including the sentence for a fleet with no worker online — are tested on
+  // the component that still draws them, `pages/settings/AgentAccounts.test.tsx`.
 
   it("shows the refusal, not the Operations body, when a member opens the URL directly", async () => {
     mount("/settings/accounts");

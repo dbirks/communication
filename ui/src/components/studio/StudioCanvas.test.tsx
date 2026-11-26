@@ -15,11 +15,15 @@ import {
   chooseFloatingPanelPlacement,
   chooseNodeMenuPlacement,
   clampViewportToGraph,
+  computeEditorFitViewport,
   computeFitViewport,
   computeSelectionPaneRect,
   computeTopFitViewport,
   evaluateConnect,
   fitMinZoom,
+  GOAL_FRAME_SAFE_PAD_PX,
+  initialFitMinZoom,
+  isBoxVisibleInPane,
   MENU_COMPACT_W_PX,
   mirrorOwnedChanges,
   moveDraggedNode,
@@ -27,6 +31,7 @@ import {
   PHONE_VIEWPORT_PX,
   FIT_EDGE_PAD_PX,
   FIT_TOP_PAD_PX,
+  SMALL_WORKFLOW_MIN_ZOOM,
   StudioCanvas,
   type StudioCanvasProps,
 } from "./StudioCanvas";
@@ -1525,5 +1530,114 @@ spec:
     const btn = node.querySelector("button")!;
     fireEvent.click(btn);
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps initial fit zoom to [0.75, 1] for <= 8 steps and allows 0.4 for larger graphs", () => {
+    expect(initialFitMinZoom(1280, 4)).toBe(SMALL_WORKFLOW_MIN_ZOOM);
+    expect(initialFitMinZoom(1280, 8)).toBe(SMALL_WORKFLOW_MIN_ZOOM);
+    expect(initialFitMinZoom(1280, 9)).toBe(0.4);
+    expect(initialFitMinZoom(390, 4)).toBe(1);
+
+    const tallSmall = computeEditorFitViewport({
+      boxes: [{ x: 0, y: 0, width: 200, height: 1200 }],
+      paneWidth: 960,
+      paneHeight: 600,
+      viewportWidth: 1280,
+      stepCount: 4,
+    });
+    expect(tallSmall).not.toBeNull();
+    expect(tallSmall!.zoom).toBe(0.75);
+  });
+
+  it("leaves >= 72px top and left padding when a GoalFrame sits under top/left chrome", () => {
+    const vp = computeEditorFitViewport({
+      boxes: [{ x: 0, y: 0, width: 260, height: 220 }],
+      goalBoxes: [{ x: 0, y: 0, width: 260, height: 220 }],
+      paneWidth: 320,
+      paneHeight: 400,
+      viewportWidth: 1280,
+      stepCount: 2,
+    });
+    expect(vp).not.toBeNull();
+    expect(vp!.y).toBeGreaterThanOrEqual(GOAL_FRAME_SAFE_PAD_PX);
+    expect(vp!.x).toBeGreaterThanOrEqual(GOAL_FRAME_SAFE_PAD_PX);
+
+    expect(
+      isBoxVisibleInPane(
+        { x: 0, y: 0, width: 200, height: 150 },
+        { x: 80, y: 80, zoom: 1 },
+        960,
+        640,
+      ),
+    ).toBe(true);
+    expect(
+      isBoxVisibleInPane(
+        { x: 0, y: 0, width: 200, height: 150 },
+        { x: 20, y: 20, zoom: 1 },
+        960,
+        640,
+      ),
+    ).toBe(false);
+  });
+
+  it("opens goal edit card on GoalFrame header click and invokes onOpenInspector from More settings", async () => {
+    const goalDocText = `kind: Pipeline
+spec:
+  nodes:
+    - id: until
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: 'nodes.judge.outputs.text.contains("GOAL_MET")'
+        body:
+          nodes:
+            - id: code
+              kind: agent.acp
+              config:
+                profile: worker
+                prompt: Write code
+            - id: judge
+              kind: agent.acp
+              dependsOn: [code]
+              config:
+                profile: reviewer
+                prompt: 'Decide whether this goal is met: "Tests pass". Answer with exactly GOAL_MET or NOT_YET on the first line, then one sentence why.'
+`;
+    const parsed = parseGraph(goalDocText);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const doc = parse(goalDocText);
+    const onOpenInspector = vi.fn();
+    const onSelect = vi.fn();
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <div style={{ width: 960, height: 640 }}>
+          <StudioCanvas
+            model={parsed.model}
+            document={doc}
+            layout={{}}
+            selectedId="until"
+            readOnly={false}
+            stale={false}
+            onSelect={onSelect}
+            onOpenInspector={onOpenInspector}
+          />
+        </div>
+      </QueryClientProvider>,
+    );
+
+    const header = await screen.findByTestId("goal-frame-header");
+    fireEvent.click(header);
+    expect(await screen.findByTestId("goal-edit-anchor")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("goal-card-more-settings"));
+    expect(onOpenInspector).toHaveBeenCalledWith("until");
+    expect(screen.queryByTestId("goal-edit-anchor")).toBeNull();
+
+    // Selected scope node also exposes its ⋯ button to open More settings from NodeMenu.
+    fireEvent.click(screen.getByTestId("node-menu-button-until"));
+    fireEvent.click(await screen.findByTestId("studio-node-menu-settings"));
+    expect(onOpenInspector).toHaveBeenCalledTimes(2);
+    expect(onOpenInspector).toHaveBeenLastCalledWith("until");
   });
 });

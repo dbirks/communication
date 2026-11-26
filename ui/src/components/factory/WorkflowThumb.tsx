@@ -15,7 +15,7 @@
  * "Status is always glyph + word"). The strip is one `role="img"` with an
  * `aria-label` that says the step count and the step that needs the eye.
  */
-import { thumbAriaLabel } from "./factoryData";
+import { THUMB_STEP_LIMIT, thumbAriaLabel } from "./factoryData";
 import type { ThumbStep, ThumbStepKind, ThumbStepState } from "./factoryData";
 
 /** A chip's classes per state (`st-*` tokens only, no raw hex). The design's
@@ -84,62 +84,75 @@ export interface WorkflowThumbProps {
   className?: string;
 }
 
+/** Cap non-trigger chips to at most 5 steps + `+N` when a caller passes an
+ * uncapped list directly. */
+function capThumbSteps(steps: ThumbStep[]): ThumbStep[] {
+  const hasTrigger = steps[0]?.kind === "trigger";
+  const body = hasTrigger ? steps.slice(1) : steps;
+  if (body.length <= THUMB_STEP_LIMIT) return steps;
+  const shown = body.slice(0, THUMB_STEP_LIMIT - 1);
+  const overflow: ThumbStep = {
+    id: `+${body.length - shown.length}`,
+    label: `+${body.length - shown.length}`,
+    kind: "other",
+    state: "idle",
+  };
+  return hasTrigger ? [steps[0], ...shown, overflow] : [...shown, overflow];
+}
+
 export function WorkflowThumb({ steps, className = "" }: WorkflowThumbProps) {
-  const labelMax = chipLabelMax(steps.length);
-  const compact = steps.length > 5;
+  const displaySteps = capThumbSteps(steps);
+  const labelMax = chipLabelMax(displaySteps.length);
+  const compact = displaySteps.length > 5;
   const chipPad = compact ? CHIP_PAD_COMPACT : CHIP_PAD;
   const lineClass = compact ? LINE_COMPACT : LINE_BASE;
-  // A real chain is seven chips wide, and a row of unshrinkable ones clipped
-  // the inked trigger chip down to `al` on the lab's own `feature-development`
-  // card at 1280 (observed in the browser pass). So on a desk the step chips
-  // take the shrink and truncate, while the trigger and the `+N` overflow keep
-  // their whole word: what a strip must answer — how it starts, where the run
-  // is, how many steps hide — never depends on a long id fitting.
-  //
-  // On a phone (below 768px) one column is ~360px and even six-character
-  // labels do not fit seven chips, so the strip keeps every chip whole and
-  // scrolls sideways from its left edge instead — a squeezed `l…` chip names
-  // nothing, and a clipped `+N` would hide the step count.
+  // When the strip is narrower than the card, `mx-auto` centers it; when
+  // wider, auto-margin collapses to 0 so the strip stays left-aligned and
+  // clips only on the right behind the fade overlay, never clipping the
+  // trigger chip on the left.
   return (
     <div
       role="img"
-      aria-label={thumbAriaLabel(steps)}
+      aria-label={thumbAriaLabel(displaySteps)}
       data-testid="workflow-thumb"
-      className={`flex h-[120px] items-center justify-center overflow-hidden border-b border-line bg-rail px-[20px] max-md:justify-start max-md:overflow-x-auto ${className}`}
+      className={`relative flex h-[120px] items-center overflow-hidden border-b border-line bg-rail px-[20px] ${className}`}
       style={{
         backgroundImage: "radial-gradient(var(--color-line) 1px, transparent 1px)",
         backgroundSize: "14px 14px",
       }}
     >
-      {steps.length === 0 ? (
-        <span className="font-mono text-[10.5px] text-muted">no steps yet</span>
+      {displaySteps.length === 0 ? (
+        <span className="mx-auto font-mono text-[10.5px] text-muted">no steps yet</span>
       ) : (
-        steps.map((step, index) => {
-          const pinned = isPinnedChip(step);
-          return (
-            // A fragment is not an option: the connector belongs with the chip
-            // it precedes, so the pair travels together as one flex unit.
-            <span
-              key={step.id}
-              className={`flex min-w-0 items-center gap-[6px] ${pinned ? "shrink-0" : "shrink"}`}
-            >
-              {index > 0 ? <span aria-hidden className={lineClass} /> : null}
-              <span
-                title={step.label}
-                data-testid={`workflow-thumb-chip-${step.id}`}
-                data-state={step.state}
-                className={`${CHIP_BASE} ${chipPad} ${chipClasses(step.kind, step.state)} ${
-                  pinned ? "shrink-0" : "min-w-0 shrink max-md:shrink-0"
-                }`}
-              >
-                <span className="min-w-0 truncate max-md:overflow-visible max-md:text-clip">
-                  {chipLabel(step.label, labelMax)}
+        <div data-testid="workflow-thumb-strip" className="mx-auto flex shrink-0 items-center">
+          {displaySteps.map((step, index) => {
+            const pinned = isPinnedChip(step);
+            return (
+              <span key={step.id} className={`flex shrink-0 items-center gap-[6px]`}>
+                {index > 0 ? <span aria-hidden className={lineClass} /> : null}
+                <span
+                  title={step.label}
+                  data-testid={`workflow-thumb-chip-${step.id}`}
+                  data-state={step.state}
+                  className={`${CHIP_BASE} ${chipPad} shrink-0 ${chipClasses(step.kind, step.state)}`}
+                >
+                  <span className={pinned ? "" : "whitespace-nowrap"}>
+                    {chipLabel(step.label, labelMax)}
+                  </span>
                 </span>
               </span>
-            </span>
-          );
-        })
+            );
+          })}
+        </div>
       )}
+      {displaySteps.length > 0 ? (
+        <span
+          aria-hidden="true"
+          data-testid="workflow-thumb-fade"
+          className="pointer-events-none absolute inset-y-0 right-0 w-[32px]"
+          style={{ background: "linear-gradient(to left, var(--color-rail), transparent)" }}
+        />
+      ) : null}
     </div>
   );
 }

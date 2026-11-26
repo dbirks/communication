@@ -87,6 +87,7 @@ export function AgentPicker({
   // The accounts read answers 403 for a non-admin — it never fires for one.
   const accounts = useAgentAccounts(isAdmin);
   const [open, setOpen] = useState(false);
+  const [resolvedSide, setResolvedSide] = useState<"top" | "bottom">(side);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const list = profiles.data?.items ?? [];
@@ -98,7 +99,11 @@ export function AgentPicker({
   useEffect(() => {
     if (!open) return;
     const optionsIn = () =>
-      Array.from(document.querySelectorAll<HTMLElement>('[role="option"]:not([disabled])'));
+      Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="agent-picker-popover"] [role="option"]:not([disabled])',
+        ),
+      );
     const onKeyDown = (event: KeyboardEvent) => {
       const options = optionsIn();
       if (event.key === "Enter" || event.key === " ") {
@@ -116,11 +121,12 @@ export function AgentPicker({
       if (options.length === 0) return;
       const active = options.indexOf(document.activeElement as HTMLElement);
       event.preventDefault();
-      if (event.key === "ArrowDown") {
-        options[(active + 1 + options.length) % options.length]?.focus();
-      } else {
-        options[(active - 1 + options.length) % options.length]?.focus();
-      }
+      const target =
+        event.key === "ArrowDown"
+          ? options[(active + 1 + options.length) % options.length]
+          : options[(active - 1 + options.length) % options.length];
+      target?.focus();
+      target?.scrollIntoView?.({ block: "nearest" });
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -148,6 +154,21 @@ export function AgentPicker({
   }
 
   const close = () => setOpen(false);
+  const toggleOpen = () => {
+    setOpen((prev) => {
+      if (prev) return false;
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect && side === "top") {
+        const maxPop = Math.min(360, Math.max(120, window.innerHeight - 96));
+        const roomAbove = rect.top - 12;
+        const roomBelow = window.innerHeight - rect.bottom - 12;
+        setResolvedSide(roomAbove < maxPop && roomBelow > roomAbove ? "bottom" : "top");
+      } else {
+        setResolvedSide(side);
+      }
+      return true;
+    });
+  };
 
   return (
     <>
@@ -160,7 +181,7 @@ export function AgentPicker({
           aria-expanded={open}
           disabled={disabled}
           title={disabled ? disabledReason : "Choose the agent profile"}
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggleOpen}
         >
           {selected ? (
             <>
@@ -175,9 +196,9 @@ export function AgentPicker({
           open={open && !disabled}
           onClose={close}
           triggerRef={triggerRef}
-          side={side}
+          side={resolvedSide}
           width={280}
-          className="rounded-[12px]! shadow-[var(--shadow-pop)]!"
+          className="flex max-h-[min(360px,calc(100vh-96px))] flex-col rounded-[12px]! shadow-[var(--shadow-pop)]! [&>div:first-of-type]:shrink-0"
           caption="RUNS ON"
           data-testid="agent-picker-popover"
           ariaLabel="Agent"
@@ -189,7 +210,7 @@ export function AgentPicker({
           ) : list.length === 0 ? (
             <p className="px-2 py-[10px] text-[12px] text-muted">No agent profiles yet.</p>
           ) : (
-            <div role="listbox" aria-label="Agent">
+            <div role="listbox" aria-label="Agent" className="min-h-0 flex-1 overflow-y-auto">
               {groupProfiles(list).map((group) => {
                 const needsSignIn = signedOut.has(group.harness);
                 const header = (
@@ -247,7 +268,7 @@ export function AgentPicker({
               })}
             </div>
           )}
-          <div className="border-t border-line-soft pt-[6px]">
+          <div className="shrink-0 border-t border-line-soft pt-[6px]">
             <Link
               to={routes.manage("agents")}
               className="block px-3 py-[6px] text-[12.5px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"

@@ -203,23 +203,24 @@ export async function signIn(
   // shape of the 7-minute hangs this guards against (T10a, "today empty").
   const step = 30_000;
   await gotoApp(page, "/", step);
-  const badge = page.getByTestId("user-badge");
-  // The signed-out door is the `sign-in` link; the signed-in page shows the
-  // `user-badge` instead. Wait for whichever of the two the app actually
-  // renders (the badge lands after the shell's first `/api/v1/me` read), then
-  // fail FAST — naming the real cause — when this context is already signed in.
-  await page
-    .getByTestId("sign-in")
-    .or(badge)
-    .first()
-    .waitFor({
-      state: "visible",
-      timeout: step,
-    });
-  if (await badge.isVisible().catch(() => false)) {
+  // TopBar (`top-bar`) renders at every viewport once signed in; `user-badge`
+  // lives inside the 24px rail avatar button on desktop and inside the phone
+  // scope sheet on narrow viewports, so check `top-bar` for signed-in visibility.
+  const signedIn = page.getByTestId("top-bar");
+  await page.getByTestId("sign-in").or(signedIn).first().waitFor({
+    state: "visible",
+    timeout: step,
+  });
+  if (await signedIn.isVisible().catch(() => false)) {
+    const existing =
+      (await page
+        .getByTestId("user-badge")
+        .first()
+        .textContent()
+        .catch(() => "")) ?? "";
     throw new Error(
       `signIn(${subject}): the page is ALREADY SIGNED IN as another identity ` +
-        `(user-badge visible at ${page.url()}) — a context created inside a spec with a ` +
+        `(${existing.trim() || "session live"} at ${page.url()}) — a context created inside a spec with a ` +
         `use.storageState inherits it unless the context names one; open this door with ` +
         `browser.newContext({ storageState: { cookies: [], origins: [] } })`,
     );
@@ -233,27 +234,40 @@ export async function signIn(
     await expect(claimsField, "the mock IdP's claims box").toBeVisible({ timeout: step });
     await claimsField.fill(JSON.stringify(claims), { timeout: step });
   }
+  const idpOrigin = new URL(page.url()).origin;
   await page.getByRole("button", { name: "Sign-in" }).click({ timeout: step });
-  // The IdP redirect chain ends on the lab's own embedded UI origin (the
-  // OIDC callback is registered there); the session cookie is shared per
-  // host, so a fresh navigation to the app under test (baseURL) is signed in.
+  // Wait for the IdP -> `/auth/callback` redirect chain to land on the lab origin
+  // (where the session cookie is set for `localhost`) before returning to BASE_URL.
+  await page.waitForURL((url) => url.origin !== idpOrigin && !url.pathname.startsWith("/auth/"), {
+    timeout: step,
+  });
+  await page.waitForLoadState("domcontentloaded", { timeout: step });
   // Every later relative `page.goto` in the suite resolves against baseURL,
-  // so the suite works on the dev server's live tree from here on.
+  // so reloading `/` at baseURL works on both the lab origin and the Vite dev server.
   await gotoApp(page, "/", step);
-  await expect(page.getByTestId("user-badge"), `signIn(${subject}) ends signed in`).toBeVisible({
+  await expect(signedIn, `signIn(${subject}) ends signed in`).toBeVisible({
     timeout: step,
   });
 }
 
-/** Add a repository through the project page form and wait for its row. */
+function projectTarget(projectUrl: string): { origin: string; projectId: string } {
+  const match = projectUrl.match(/^(https?:\/\/[^/]+)?\/(?:p|manage\/projects)\/([^/?#]+)/);
+  if (!match) {
+    throw new Error(`expected a /p/<id> or /manage/projects/<id> URL, got ${projectUrl}`);
+  }
+  return { origin: match[1] ?? "", projectId: match[2] };
+}
+
+/** Add a repository through Manage → Projects → Repositories and wait for its row. */
 export async function addRepository(
   page: Page,
   projectUrl: string,
   name: string,
   gitUrl: string,
 ): Promise<void> {
-  await page.goto(projectUrl);
-  await revealAddForm(page, "repo-add-toggle", page.getByTestId("repo-name"));
+  const { origin, projectId } = projectTarget(projectUrl);
+  await page.goto(`${origin}/manage/projects/${projectId}`);
+  await revealAddForm(page, "detail-add-repository", page.getByTestId("repo-name"));
   await page.getByTestId("repo-name").fill(name);
   await page.getByTestId("repo-git-url").fill(gitUrl);
   await page.getByTestId("repo-submit").click();
@@ -281,12 +295,16 @@ async function revealAddForm(page: Page, toggleTestid: string, firstField: Locat
  * they contain lives at `/p/<id>/members`, linked from the overview's footnote.
  */
 export function projectMembersUrl(projectUrl: string): string {
+  const match = projectUrl.match(/^(https?:\/\/[^/]+)?\/(?:p|manage\/projects)\/([^/?#]+)/);
+  if (match) {
+    return `${match[1] ?? ""}/manage/people?project=${match[2]}`;
+  }
   return `${projectUrl.replace(/\/+$/, "")}/members`;
 }
 
-/** The repo table row for a given repository name. */
+/** The repo link inside Manage → Projects → Repositories. */
 export function rowFor(page: Page, name: string) {
-  return page.getByTestId(`repo-row-${name}`);
+  return page.getByTestId(`detail-repo-${name}`);
 }
 
 /** Select the `<select>` whose option text mentions `text`, by that option's value. */
@@ -405,21 +423,16 @@ export async function startConversation(
   projectUrl: string,
   options: { title: string; profile: string; prompt: string },
 ): Promise<string> {
-  await page.goto(projectUrl);
-  // Design 1b: the thread-list panel (and its `New thread` button) moved to the
-  // Threads tab; the overview's own header verb opens the same dialog, with the
-  // project fixed. The create form lives in a dialog; open it before the fields
-  // exist.
-  await page.getByTestId("project-new-conversation").click();
-  await page.getByTestId("new-conversation-dialog").waitFor();
-  await page.getByTestId("conversation-new-title").fill(options.title);
-  await selectByOptionText(page, "conversation-new-profile", options.profile);
-  await page.getByTestId("conversation-new-prompt").fill(options.prompt);
-  await page.getByTestId("conversation-new-submit").click();
-  // The standalone thread page (route contract C1: conversations live at
-  // `/threads/:conversationId`; the old `/projects/…/conversations/…` URL
-  // redirects to it, but the canonical target is what is asserted).
-  await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/);
+  const { origin, projectId } = projectTarget(projectUrl);
+  await page.goto(`${origin}/p/${projectId}/chats/new`);
+  await page.getByTestId("new-chat-prompt-input").waitFor();
+  await page.getByTestId("new-chat-agent-picker").click();
+  const popover = page.getByTestId("agent-picker-popover");
+  await expect(popover).toBeVisible();
+  await popover.getByRole("option").filter({ hasText: options.profile }).first().click();
+  await page.getByTestId("new-chat-prompt-input").fill(options.prompt);
+  await page.getByTestId("new-chat-prompt-send").click();
+  await page.waitForURL(/\/p\/[^/]+\/chats\/[0-9a-f-]{36}$|\/chats\/[0-9a-f-]{36}$/);
   return new URL(page.url()).pathname;
 }
 
@@ -637,11 +650,23 @@ export async function takeControl(page: Page, timeout = 120_000): Promise<void> 
   await expect
     .poll(
       async () => {
+        const menuTrigger = page.getByTestId("chat-menu");
+        if (!(await menuTrigger.isVisible().catch(() => false))) return false;
+        const popover = page.getByTestId("chat-menu-popover");
+        if (!(await popover.isVisible().catch(() => false))) {
+          await menuTrigger.click({ timeout: 5_000 }).catch(() => {});
+        }
         const back = page.getByTestId("return-control");
-        if (await back.isVisible().catch(() => false)) return true;
+        if (await back.isVisible().catch(() => false)) {
+          await page.keyboard.press("Escape").catch(() => {});
+          return true;
+        }
         const btn = page.getByTestId("take-control");
-        if (await btn.isEnabled().catch(() => false))
+        if (await btn.isEnabled().catch(() => false)) {
           await btn.click({ timeout: 5_000 }).catch(() => {});
+        } else {
+          await page.keyboard.press("Escape").catch(() => {});
+        }
         return false;
       },
       { timeout, intervals: [1_000] },
@@ -785,13 +810,24 @@ export async function repinAssignment(
  * Open a project from the project list by its slug; resolves to its app path
  * (`/p/<uuid>`, route contract C1), which every section link is built from.
  */
+/**
+ * Open a project from Manage → Projects by its slug; resolves to its `/p/<uuid>`
+ * project scope path so section/route callers keep working across all viewports.
+ * @deprecated Navigates via Manage → Projects instead of the retired `/projects` list.
+ */
 export async function openProjectBySlug(page: Page, slug: string): Promise<string> {
-  // The project list is its own page now (route contract C1: `/projects`);
-  // the home briefing no longer renders the project cards.
-  await gotoApp(page, "/projects");
-  await page.getByTestId(`project-link-${slug}`).click();
-  await expect(page.getByTestId("project-name")).toBeVisible();
-  return new URL(page.url()).pathname;
+  await gotoApp(page, "/manage/projects");
+  const repoCell = page.getByTestId(`project-repos-${slug}`);
+  await expect(repoCell).toBeVisible();
+  const rowLink = repoCell.locator(
+    'xpath=ancestor::*[starts-with(@data-testid, "manage-projects-table-row-")][1]//a',
+  );
+  await rowLink.click();
+  await expect(page.getByTestId("detail-name")).toBeVisible();
+  const projectId = new URL(page.url()).pathname.split("/").pop() ?? "";
+  const projectPath = `/p/${projectId}`;
+  await gotoApp(page, projectPath);
+  return projectPath;
 }
 
 /**

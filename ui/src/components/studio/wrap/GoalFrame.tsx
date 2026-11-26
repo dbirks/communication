@@ -79,7 +79,7 @@ export function GoalFrame({
             e.stopPropagation();
             onHeaderClick();
           }}
-          className="relative z-1 flex w-full flex-col gap-[4px] rounded-t-[15px] px-[14px] py-[10px] text-left hover:bg-accent/[0.04] focus-visible:outline-2 focus-visible:outline-accent"
+          className="relative z-1 flex w-full flex-col gap-[4px] rounded-t-[15px] py-[10px] pl-[14px] pr-[30px] text-left hover:bg-accent/[0.04] focus-visible:outline-2 focus-visible:outline-accent"
         >
           {headerContent}
         </button>

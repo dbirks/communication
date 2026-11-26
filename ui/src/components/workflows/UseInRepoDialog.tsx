@@ -48,6 +48,8 @@ export interface UseInRepoDialogProps {
   newestPublished: UsedInRevision | null;
   /** The pipeline's revision summaries (for the r-number in state lines). */
   revisions: UsedInRevision[];
+  /** Optional project id to preselect when opened from a project scope. */
+  initialProjectId?: string;
   /** Called after a successful create (the page switches to the Used-in tab). */
   onAssigned: () => void;
 }
@@ -94,11 +96,12 @@ function DialogBody({
   workflowName,
   newestPublished,
   revisions,
+  initialProjectId,
   onAssigned,
 }: UseInRepoDialogProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<Element | null>(null);
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(initialProjectId ?? "");
   const [repoId, setRepoId] = useState("");
   /** `true` once the reader picks "whole project" (ADR-0060 null). */
   const [wholeProject, setWholeProject] = useState(false);
@@ -186,6 +189,15 @@ function DialogBody({
     // arrived stays absent (loading is not "assignable").
     return repos !== null && repos.some((repo) => !repoIds.has(repo.id));
   });
+
+  useEffect(() => {
+    if (!listsLoaded || !reposLoaded || projectId === "") return;
+    if (!candidates.some((p) => p.id === projectId)) {
+      setProjectId("");
+      setRepoId("");
+      setWholeProject(false);
+    }
+  }, [listsLoaded, reposLoaded, projectId, candidates]);
 
   // Resolve the newest published revision digest → uuid (route 13); a pin
   // needs the id, and the summary carries none (ADR-0021 § 5).

@@ -13,13 +13,21 @@
  * never disagree: a zero part is left out, and a quiet Factory says so.
  */
 import { useState } from "react";
-import { useParams } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router";
 import { IconPlus } from "@tabler/icons-react";
-import { ProblemBanner, Spinner } from "../components/Feedback";
+import { useDuplicatePipeline } from "../api/pipelines";
+import { queryKeys, useMe, useProject, useProjects } from "../api/queries";
+import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { WorkflowCard } from "../components/factory/WorkflowCard";
 import { NewWorkflowSheet } from "../components/factory/NewWorkflowSheet";
 import { useFactoryWorkflows } from "../components/factory/factoryData";
 import type { FactoryWorkflowItem } from "../components/factory/factoryData";
+import { ProjectWorkflowsPanel } from "../components/project/workflows/ProjectWorkflowsPanel";
+import { TriggersDialog } from "../components/workflows/TriggersDialog";
+import { UseInRepoDialog } from "../components/workflows/UseInRepoDialog";
+import { hasLibraryRole } from "../lib/pipeline/authoring";
+import { routes } from "../lib/routes";
 import { useScope } from "../lib/scope";
 
 /** One clause of the headline: an optional state glyph and its words. */
@@ -85,10 +93,23 @@ export default function Factory() {
   // The scope is the URL prefix: `/p/:projectId/factory`, or All projects.
   // `useScope` is a hook and so runs on every render, whatever the params say.
   const { projectId } = useParams<{ projectId?: string }>();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const scopeFromPath = useScope();
   const scope = projectId ?? scopeFromPath;
+  const me = useMe();
+  const canAuthor = hasLibraryRole(me.data);
+  const projectQuery = useProject(scope ?? "");
+  const projects = useProjects();
   const { items, liveRuns, isPending, error, rowsIncomplete } = useFactoryWorkflows(scope);
+  const duplicate = useDuplicatePipeline(items.map((item) => item.pipeline.slug));
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [triggersItem, setTriggersItem] = useState<FactoryWorkflowItem | null>(null);
+  const [useItem, setUseItem] = useState<FactoryWorkflowItem | null>(null);
+
+  const scopedProject = scope
+    ? (projectQuery.data ?? projects.data?.items.find((p) => p.id === scope) ?? null)
+    : null;
 
   const loading = items.length === 0 && isPending;
   const empty = !loading && error === null && items.length === 0;
@@ -154,7 +175,21 @@ export default function Factory() {
 
         <div className="mt-[22px] grid grid-cols-1 gap-[20px] min-[900px]:grid-cols-2">
           {items.map((item) => (
-            <WorkflowCard key={item.pipeline.id} item={item} scope={scope} />
+            <WorkflowCard
+              key={item.pipeline.id}
+              item={item}
+              scope={scope}
+              canAuthor={canAuthor}
+              duplicating={duplicate.isPending && duplicate.variables === item.pipeline.id}
+              onOpenTriggers={() => setTriggersItem(item)}
+              onUseInProject={() => setUseItem(item)}
+              onDuplicate={() =>
+                duplicate.mutate(item.pipeline.id, {
+                  onSuccess: ({ pipeline: created, draft }) =>
+                    navigate(routes.factoryWorkflow(created.id, scope, { draft: draft.id })),
+                })
+              }
+            />
           ))}
           <button
             type="button"
@@ -166,7 +201,56 @@ export default function Factory() {
             New workflow
           </button>
         </div>
+
+        {duplicate.isError ? (
+          <div className="mt-[12px]">
+            <FormError error={duplicate.error} testid="factory-duplicate-error" />
+          </div>
+        ) : null}
+
+        {scope && scopedProject ? (
+          <section
+            aria-labelledby="factory-schedules-heading"
+            data-testid="project-pipelines"
+            className="mt-[32px] space-y-[10px]"
+          >
+            <h3
+              id="factory-schedules-heading"
+              className="m-0 font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted"
+            >
+              SCHEDULES AND TRIGGERS HERE
+            </h3>
+            <div className="[&>section]:rounded-[12px] [&>section]:border-line [&>section>[data-ds-bar]]:border-line-soft [&>section>[data-ds-bar]]:bg-rail [&>section>[data-ds-bar]]:px-[14px] [&>section>[data-ds-bar]]:py-[8px]">
+              <ProjectWorkflowsPanel projectId={scope} project={scopedProject} />
+            </div>
+          </section>
+        ) : null}
       </div>
+
+      <TriggersDialog
+        open={triggersItem !== null}
+        onClose={() => setTriggersItem(null)}
+        assignments={(triggersItem?.triggerGroups ?? []).filter((g) => g.canManage)}
+        editing={null}
+      />
+
+      <UseInRepoDialog
+        open={useItem !== null}
+        onClose={() => setUseItem(null)}
+        pipelineId={useItem?.pipeline.id ?? ""}
+        workflowName={useItem ? useItem.pipeline.display_name || useItem.pipeline.slug : ""}
+        newestPublished={useItem?.newestPublished ?? null}
+        revisions={useItem?.revisions ?? []}
+        initialProjectId={scope ?? undefined}
+        onAssigned={() => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
+          // The dialog may have assigned into any project (All scope has no
+          // project of its own), so every project's assignment list is stale.
+          void queryClient.invalidateQueries({
+            predicate: (query) => query.queryKey.includes("assignments"),
+          });
+        }}
+      />
 
       {sheetOpen ? (
         <NewWorkflowSheet

@@ -67,98 +67,92 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(10 * 60_000);
 
-  test("workflows list matches the API and revision chips come from it", async ({ page }) => {
+  test("factory list matches the API and workflow cards show triggers and states", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const pipelines = await apiPipelines(page.request);
     expect(pipelines.length).toBeGreaterThan(0);
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    const rows = page.locator('[data-testid^="workflow-row-"]');
-    await expect(rows.first()).toBeVisible({ timeout: 30_000 });
-    expect(await rows.count(), "one row per pipeline").toBe(pipelines.length);
+    await page.goto(BASE_URL + "/factory", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("factory-index")).toBeVisible({ timeout: 30_000 });
+    const cards = page.locator(
+      '[data-testid="factory-index"] article[data-testid^="workflow-card-"]',
+    );
+    await expect(cards.first()).toBeVisible({ timeout: 30_000 });
+    expect(await cards.count(), "one card per pipeline").toBe(pipelines.length);
+    await expect(page.getByTestId("factory-summary")).toContainText(
+      `${pipelines.length} ${pipelines.length === 1 ? "workflow" : "workflows"}`,
+    );
     for (const pipeline of pipelines) {
-      const chip = page.getByTestId(`workflow-revision-${pipeline.slug}`);
-      await expect(chip).toBeVisible();
-      const text = (await chip.innerText()).trim();
-      if (pipeline.revision_count > 0) {
-        // Design 1b: the row's chip is the server's own newest summary —
-        // `r<n>` (the digest moved to the workflow page). The mono chip is
-        // CSS upper-cased, so compare upper-cased text either way.
-        const upper = text.toUpperCase();
-        const [latest] = await apiPipelineRevisions(page.request, pipeline.id);
-        expect(latest, `revision summaries for ${pipeline.slug}`).toBeTruthy();
-        expect(latest.revision_number, "newest summary matches the list API").toBe(
-          pipeline.latest_revision_number,
-        );
-        expect(upper, `revision chip for ${pipeline.slug}`).toBe(`R${latest.revision_number}`);
-        expect(
-          upper,
-          `the chip for ${pipeline.slug} is the revision number alone (no digest on the row)`,
-        ).toHaveLength(`R${pipeline.latest_revision_number}`.length);
-      } else {
-        // Design 1b: a row with no revision reads `draft · not published`;
-        // `· loading` is the definition read still in flight.
-        expect(
-          ["DRAFT · NOT PUBLISHED", "· LOADING"],
-          `revision chip for ${pipeline.slug}: ${text}`,
-        ).toContain(text.toUpperCase());
-      }
+      await expect(page.getByTestId(`workflow-card-link-${pipeline.id}`)).toHaveText(
+        pipeline.display_name || pipeline.slug,
+      );
+      await expect(page.getByTestId(`workflow-card-state-${pipeline.id}`)).toBeVisible();
+      const trigger = page.getByTestId(`workflow-card-trigger-${pipeline.id}`);
+      await expect(trigger).toBeVisible();
+      expect((await trigger.innerText()).trim().length).toBeGreaterThan(0);
     }
-    await checkShellScreen(page, "workflows list", stopWatching);
+    await checkShellScreen(page, "factory list", stopWatching);
     await evidence(
       page,
       "shell-p4-workflows-list",
-      `/workflows lists exactly the ${pipelines.length} pipelines from GET /api/v1/pipelines and every revision chip reads the API's own newest summary (r<N>, or draft · not published)`,
+      `/factory lists exactly the ${pipelines.length} pipelines from GET /api/v1/pipelines with real trigger and live-state copy`,
     );
   });
 
-  test("Duplicate creates N+1 and lands on the copy's draft editor", async ({ page }) => {
+  test("Copy from New workflow sheet creates N+1 and lands on the copy's draft editor", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const before = await apiPipelines(page.request);
-    // Pick a source whose "<slug>-copy" slot is still free (the copy's slug
-    // is the source slug + "-copy").
-    const existing = new Set(before.map((p) => p.slug));
-    const source = before.find((p) => !existing.has(`${p.slug}-copy`)) ?? before[0];
-    expect(source, "a pipeline to duplicate").toBeTruthy();
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId(`workflow-row-${source!.slug}`)).toBeVisible({ timeout: 30_000 });
-    // Design 1b: the row's actions live behind its `⋯` menu — open it, then
-    // the `Duplicate` item (same test id as the old always-visible button).
-    await page.getByTestId(`workflow-menu-${source!.slug}`).click();
-    await expect(page.getByTestId(`workflow-menu-panel-${source!.slug}`)).toBeVisible();
-    await page.getByTestId(`workflow-duplicate-${source!.slug}`).click();
-    // The UI POSTs the copy and navigates to the copy's draft editor; wait
-    // for that navigation before reading the API (reading it mid-POST sees
-    // the pre-duplicate count).
-    await page.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
+    expect(before.length, "a pipeline to duplicate").toBeGreaterThan(0);
+    await page.goto(BASE_URL + "/factory", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("factory-index")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("factory-new").click();
+    const sheet = page.getByTestId("new-workflow-sheet");
+    await expect(sheet).toBeVisible();
+    const copyButtons = sheet.locator('button[data-testid^="new-workflow-copy-"]');
+    await expect(copyButtons.first()).toBeVisible({ timeout: 30_000 });
+    const firstTestId = await copyButtons.first().getAttribute("data-testid");
+    const sourceId = (firstTestId ?? "").replace("new-workflow-copy-", "");
+    const source = before.find((p) => p.id === sourceId) ?? before[0];
+    await copyButtons.first().click();
+    // NewWorkflowSheet POSTs the copy + initial draft and opens `/factory/:id?draft=:draftId`.
+    await page.waitForURL(/\/factory\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/, {
       timeout: 30_000,
     });
+    const createdId = /\/factory\/([0-9a-f-]{36})/.exec(page.url())?.[1] ?? "";
     const after = await apiPipelines(page.request);
     expect(after.length, "the API now has N+1 pipelines").toBe(before.length + 1);
-    const created = after.find((p) => p.slug === `${source!.slug}-copy`);
+    const created = after.find((p) => p.id === createdId);
     expect(created, "the copy row exists in the API with its own id").toBeTruthy();
-    await expect(page).toHaveURL(new RegExp(`/workflows/${created!.id}/drafts/[0-9a-f-]{36}$`));
+    expect(created!.slug.startsWith(`${source!.slug}-copy`)).toBe(true);
     await evidence(
       page,
       "shell-p4-duplicate",
-      `duplicating ${source!.slug} created ${created!.slug} (API count ${before.length} → ${after.length}) and the journey landed on the copy's draft editor`,
+      `duplicating ${source!.slug} via New workflow created ${created!.slug} (API count ${before.length} → ${after.length}) and landed on the copy's draft editor`,
     );
-    // The list now shows the new row.
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId(`workflow-row-${created!.slug}`)).toBeVisible({
+    // Factory now shows the new card.
+    await page.goto(BASE_URL + "/factory", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId(`workflow-card-${created!.id}`)).toBeVisible({
       timeout: 30_000,
     });
-    expect(await page.locator('[data-testid^="workflow-row-"]').count()).toBe(after.length);
+    expect(
+      await page
+        .locator('[data-testid="factory-index"] article[data-testid^="workflow-card-"]')
+        .count(),
+    ).toBe(after.length);
     stopWatching();
     await evidence(
       page,
       "shell-p4-duplicate-list",
-      `the /workflows list now carries the new row ${created!.slug} (${after.length} rows = the API's count)`,
+      `/factory now carries the new card ${created!.slug} (${after.length} cards = the API's count)`,
     );
   });
 
-  test("Studio edge + opens the picker: five kind cards, no Publish; the Agent step gets its profile select", async ({
+  test("Studio edge + opens the picker: five kind cards, no Publish; Agent step card + More settings profile select", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -184,22 +178,11 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
       source,
       `a published pipeline with an edge in its newest revision (checked ${candidates.length})`,
     ).toBeTruthy();
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId(`workflow-row-${source!.slug}`)).toBeVisible({
-      timeout: 30_000,
-    });
-    await page.getByTestId(`workflow-open-${source!.slug}`).click();
-    await page.waitForURL(new RegExp(`/workflows/${source!.id}$`), { timeout: 30_000 });
-    // Workflow page → start a fresh draft into the Studio. Design 1e moved
-    // the rows to the page's History tab; `New draft` there still clones the
-    // newest published revision — the graph `pipelineHasEdge` verified above
-    // — so the canvas is guaranteed to carry an edge and its "+"
-    // affordance, independent of any stale draft a previous run left.
-    await page.getByTestId("workflow-tab-history").click();
-    await expect(page.getByTestId("pipeline-new-draft")).toBeVisible({
-      timeout: 30_000,
-    });
-    await page.getByTestId("pipeline-new-draft").click();
+    await page.goto(BASE_URL + "/factory", { waitUntil: "domcontentloaded" });
+    const cardLink = page.getByTestId(`workflow-card-link-${source!.id}`);
+    await expect(cardLink).toBeVisible({ timeout: 30_000 });
+    await cardLink.click();
+    await page.waitForURL(new RegExp(`/factory/${source!.id}(\\?|$)`), { timeout: 30_000 });
     await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
     await checkShellScreen(page, "studio draft", stopWatching);
     const edgePlus = page.locator('[data-testid^="edge-add-"]').first();
@@ -222,10 +205,8 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
       "shell-p4-step-picker",
       "the edge + opens the step picker with exactly five primary kind cards (Agent, Command, Approval, Loop, Workflow) and no Publish card",
     );
-    // New Agent step → the inspector's profile select. Inserting on an edge
-    // whose target is guarded (a binding like `approve reads nodes.plan.*`,
-    // a when guard, a condition route) surfaces the §4 ambiguity dialog —
-    // confirm the keep-as-is insert so the step lands and is selected.
+    // New Agent step → opens the compact AgentStepCard with AgentPicker; clicking
+    // "More settings" reveals the full inspector's profile select.
     await page.getByTestId("step-picker-item-agent.acp").click();
     const ambiguity = page.getByTestId("studio-ambiguity-dialog");
     const hasAmbiguity = await ambiguity
@@ -235,6 +216,9 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     if (hasAmbiguity) {
       await page.getByTestId("studio-ambiguity-insert").click();
     }
+    await expect(page.getByTestId("agent-step-card")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("agent-card-picker")).toBeVisible();
+    await page.getByTestId("agent-card-more-settings").click();
     const select = page.getByTestId("insp-profile");
     await expect(select).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId("insp-profile-suggested")).toBeVisible();
@@ -268,7 +252,7 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     stopWatching();
   });
 
-  test("/workflows/steps registry rows with used-in from the API; Edit for all creates a new revision", async ({
+  test("/manage/agents?tab=steps registry rows with used-in from the API; Edit for all creates a new revision", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -327,6 +311,7 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     }
     expect(templates.length, "the lab has saved steps").toBeGreaterThan(0);
     await page.goto(BASE_URL + "/workflows/steps", { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(/\/manage\/agents\?tab=steps/);
     // The row ROOT only — `step-row-summary-`/`step-row-usage-` share the prefix.
     const rows = page.locator(
       '[data-testid^="step-row-"]:not([data-testid^="step-row-summary-"]):not([data-testid^="step-row-usage-"])',

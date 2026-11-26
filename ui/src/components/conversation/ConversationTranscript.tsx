@@ -26,7 +26,7 @@
  */
 import { useEffect, useState } from "react";
 import Transcript from "../Transcript";
-import { useAgentProfiles } from "../../api/queries";
+import { useAgentProfiles, useMe } from "../../api/queries";
 import type { TranscriptItem } from "../../api/transcript";
 import type { EventEnvelope } from "../../api/types";
 import { agentDisplayForLauncher, launcherNameSource } from "./agentNames";
@@ -261,6 +261,8 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
   // (`queryKeys.agentProfiles`) — the third arm of naming a launcher, used
   // only when the conversation row and its switch dividers do not answer.
   const agentProfiles = useAgentProfiles();
+  const me = useMe();
+  const currentUserId = me.data?.id ?? null;
 
   /**
    * The agent a `launcher_id` names, in the words the person chose — the read
@@ -297,6 +299,7 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
     <Transcript
       items={items}
       agentName={agentName}
+      currentUserId={currentUserId}
       canDecide={isController}
       controllerName={controllerName}
       nameOf={nameOf}
@@ -338,7 +341,7 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
   const transcriptRef = useStickyTranscript();
 
   return (
-    <div ref={transcriptRef}>
+    <div ref={transcriptRef} className="space-y-[18px]">
       {parts.map((part, index) => {
         const label = part.divider
           ? agentLabel(
@@ -351,7 +354,7 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
             key={
               part.divider ? part.divider.event_id : (part.mails[0]?.linkId ?? `segment-${index}`)
             }
-            className="space-y-[4px]"
+            className="space-y-[18px]"
           >
             {part.divider ? (
               <AgentSwitchDivider {...agentSwitchFromEvent(part.divider, nameOf)} />

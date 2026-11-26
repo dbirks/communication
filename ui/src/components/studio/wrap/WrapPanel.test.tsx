@@ -174,15 +174,17 @@ describe("WrapPanel", () => {
     expect(screen.queryByTestId("wrap-submit")).toBeNull();
   });
 
-  it("supports edit mode with prefilled goal, Update button, and Unwrap link", () => {
+  it("supports edit mode with prefilled goal, Update button, More settings link, and Unwrap link", () => {
     const onWrapRepeat = vi.fn();
     const onUnwrap = vi.fn();
+    const onMoreSettings = vi.fn();
     render(
       <WrapPanel
         count={3}
         mode="edit"
         initialGoal={{ kind: "command", text: "pnpm test", maxRounds: 5 }}
         onUnwrap={onUnwrap}
+        onMoreSettings={onMoreSettings}
         onWrapRepeat={onWrapRepeat}
         onWrapSideBySide={vi.fn()}
         onClose={vi.fn()}
@@ -198,6 +200,8 @@ describe("WrapPanel", () => {
       text: "pnpm test",
       maxRounds: 5,
     });
+    fireEvent.click(screen.getByTestId("goal-card-more-settings"));
+    expect(onMoreSettings).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByTestId("goal-unwrap"));
     expect(onUnwrap).toHaveBeenCalledTimes(1);
   });

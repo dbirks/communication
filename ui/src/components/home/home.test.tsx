@@ -383,22 +383,13 @@ describe("RecentThreads", () => {
   const projectNames = new Map([[projectFixture.id, "acme-api"]]);
   const profileNames = new Map([[conversationSummaryFixture.agent_profile_id, "Claude Code"]]);
 
-  it("renders the manual rows with project, profile and age, linking to the thread", () => {
-    const { wrapper } = harness([]);
-    render(
-      <RecentThreads
-        threads={[conversationSummaryFixture]}
-        projectNames={projectNames}
-        profileNames={profileNames}
-      />,
-      { wrapper },
-    );
-    expect(screen.getByText("Refactor billing")).toBeTruthy();
-    expect(screen.getByText("acme-api · Claude Code")).toBeTruthy();
-    const link = screen.getByText("Refactor billing").closest("a");
-    expect(link?.getAttribute("href")).toBe(`/threads/${conversationSummaryFixture.id}`);
-    expect(screen.getByTestId("home-all-threads").getAttribute("href")).toBe("/threads");
-  });
+  // RETIRED with the route flip: the briefing's RECENT THREADS panel is no
+  // longer mounted by Home (pages/Home.tsx carries HomePrompt, SinceYouLeft,
+  // NeedsYouCards, RunningList and FactoryHealth), and the rows that took a
+  // person to `/threads/<id>` are the redesign's recent-chat lists — the
+  // New chat pane's OR PICK UP rows (`components/chats/NewChatPane.test.tsx`)
+  // and Home's HAPPENING NOW chat cards (`components/home/HappeningNow.tsx`),
+  // each with its own test that the row links to `/chats/<id>`.
 
   it("shows the honest empty state with a New thread action", () => {
     const { wrapper } = harness([]);

@@ -3,9 +3,9 @@
  * line is allowed to claim. The `Open run` link is a second target inside the
  * card, so the card's own link must not cover it.
  */
-import { cleanup, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkflowCard, cardMetaLines, cardState, runLabel } from "./WorkflowCard";
 import type { FactoryWorkflowItem } from "./factoryData";
 import type { CrossProjectRunSummary } from "../../api/home";
@@ -139,5 +139,95 @@ describe("WorkflowCard", () => {
   it("keeps a runless card's state quiet", () => {
     expect(cardState(null).text).toBe("idle");
     expect(cardState(null).className).toBe("text-muted");
+  });
+
+  it("offers Triggers…, Duplicate (for authors), and Open YAML in the … menu", () => {
+    const onOpenTriggers = vi.fn();
+    const onDuplicate = vi.fn();
+    render(
+      <MemoryRouter initialEntries={["/p/proj-1/factory"]}>
+        <Routes>
+          <Route
+            path="/p/:projectId/factory"
+            element={
+              <WorkflowCard
+                item={item()}
+                scope="proj-1"
+                canAuthor
+                onOpenTriggers={onOpenTriggers}
+                onDuplicate={onDuplicate}
+              />
+            }
+          />
+          <Route
+            path="/p/:projectId/factory/:pipelineId"
+            element={<div data-testid="yaml-panel-landed" />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByTestId("workflow-card-menu"));
+    expect(screen.getByTestId("workflow-card-menu-popover")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("workflow-card-triggers"));
+    expect(onOpenTriggers).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("workflow-card-menu"));
+    fireEvent.click(screen.getByTestId("workflow-card-duplicate"));
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("workflow-card-menu"));
+    fireEvent.click(screen.getByTestId("workflow-card-yaml"));
+    expect(screen.getByTestId("yaml-panel-landed")).toBeTruthy();
+  });
+
+  it("offers Use in a project… in the … menu and on the quiet unused line when live", () => {
+    const onUseInProject = vi.fn();
+    render(
+      <MemoryRouter>
+        <WorkflowCard
+          item={item({ usedIn: [], assignmentsResolved: true })}
+          scope={null}
+          onUseInProject={onUseInProject}
+        />
+      </MemoryRouter>,
+    );
+
+    const unused = screen.getByTestId(`workflow-card-unused-${pipeline.id}`);
+    expect(unused.textContent).toBe("Not used in any project yet · Use in a project");
+    fireEvent.click(screen.getByTestId(`workflow-card-unused-use-${pipeline.id}`));
+    expect(onUseInProject).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("workflow-card-menu"));
+    fireEvent.click(screen.getByTestId("workflow-card-use"));
+    expect(onUseInProject).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides the quiet unused line when unpublished or already used", () => {
+    const onUseInProject = vi.fn();
+    const { rerender } = render(
+      <MemoryRouter>
+        <WorkflowCard
+          item={item({ usedIn: [], newestPublished: null, assignmentsResolved: true })}
+          scope={null}
+          onUseInProject={onUseInProject}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId(`workflow-card-unused-${pipeline.id}`)).toBeNull();
+    fireEvent.click(screen.getByTestId("workflow-card-menu"));
+    expect((screen.getByTestId("workflow-card-use") as HTMLButtonElement).disabled).toBe(true);
+
+    rerender(
+      <MemoryRouter>
+        <WorkflowCard
+          item={item({ usedIn: [projectFixture.name], assignmentsResolved: true })}
+          scope={null}
+          onUseInProject={onUseInProject}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId(`workflow-card-unused-${pipeline.id}`)).toBeNull();
   });
 });

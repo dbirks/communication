@@ -12,7 +12,7 @@
  * `ConversationTurn` rows rather than hand-written, so a fixture cannot claim a
  * field the API does not send.
  */
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import Transcript, { permissionWindowLabel } from "./Transcript";
 import { projectTranscript } from "../api/transcript";
@@ -43,11 +43,12 @@ function frames(): EventEnvelope[] {
   ];
 }
 
-function renderTurn(turnRows: ConversationTurn[]) {
+function renderTurn(turnRows: ConversationTurn[], currentUserId?: string | null) {
   const items = projectTranscript(frames(), nameOf, turnRows).items;
   render(
     <Transcript
       items={items}
+      currentUserId={currentUserId}
       canDecide={false}
       controllerName={null}
       nameOf={nameOf}
@@ -65,9 +66,21 @@ describe("Transcript turn submitter (ADR-0062)", () => {
     renderTurn([turnFixture({ id: turnId, submitted_by: authorId, submitted_via: "human" })]);
     expect(screen.getByText("Tidy the flaky spec")).toBeTruthy();
     expect(screen.queryByTestId("turn-on-behalf-of")).toBeNull();
-    // Today's rendering: the bold author prefix, unchanged.
-    const bubble = screen.getByText("Tidy the flaky spec").closest("li");
-    expect(bubble?.textContent).toContain("Ada Lovelace:");
+    const row = screen.getByText("Tidy the flaky spec").closest("li");
+    expect(within(row as HTMLElement).getByTestId("user-speaker").textContent).toContain(
+      "Ada Lovelace ·",
+    );
+  });
+
+  it("labels the current reader's own messages as 'you' in the author line", () => {
+    renderTurn(
+      [turnFixture({ id: turnId, submitted_by: authorId, submitted_via: "human" })],
+      authorId,
+    );
+    const row = screen.getByText("Tidy the flaky spec").closest("li") as HTMLElement;
+    const speaker = within(row).getByTestId("user-speaker");
+    expect(speaker.textContent).toMatch(/^you · \d{2}:\d{2}$/);
+    expect(speaker.getAttribute("title")).toContain("UTC");
   });
 
   it("names the author plainly when the control plane sent no submitted_via at all", () => {
@@ -76,8 +89,8 @@ describe("Transcript turn submitter (ADR-0062)", () => {
     const row = turnFixture({ id: turnId, submitted_by: authorId });
     delete row.submitted_via;
     renderTurn([row]);
-    const bubble = screen.getByText("Tidy the flaky spec").closest("li");
-    expect(bubble?.textContent).toContain("Ada Lovelace:");
+    const li = screen.getByText("Tidy the flaky spec").closest("li") as HTMLElement;
+    expect(within(li).getByTestId("user-speaker").textContent).toContain("Ada Lovelace ·");
     expect(screen.queryByTestId("turn-on-behalf-of")).toBeNull();
   });
 
@@ -91,9 +104,9 @@ describe("Transcript turn submitter (ADR-0062)", () => {
     const bubble = screen.getByText("Tidy the flaky spec").closest("li");
     expect(bubble?.textContent).not.toContain("Ada Lovelace:");
     // The meta-line style the surrounding lines wear: mono, 11px, muted.
-    expect(line.className).toContain("font-mono");
-    expect(line.className).toContain("text-[11px]");
-    expect(line.className).toContain("text-muted");
+    expect(line.parentElement?.className).toContain("font-mono");
+    expect(line.parentElement?.className).toContain("text-[11px]");
+    expect(line.parentElement?.className).toContain("text-muted");
   });
 
   it("says a schedule fired the turn", () => {
@@ -114,9 +127,8 @@ describe("Transcript turn submitter (ADR-0062)", () => {
     const items = renderTurn([]);
     expect(items[0]?.kind).toBe("user");
     expect(screen.queryByTestId("turn-on-behalf-of")).toBeNull();
-    expect(screen.getByText("Tidy the flaky spec").closest("li")?.textContent).toContain(
-      "Ada Lovelace:",
-    );
+    const li = screen.getByText("Tidy the flaky spec").closest("li") as HTMLElement;
+    expect(within(li).getByTestId("user-speaker").textContent).toContain("Ada Lovelace ·");
   });
 });
 
@@ -387,5 +399,153 @@ describe("PermissionCard expired copy (ask-mode fix 3)", () => {
         deadlineAt: "2026-10-14T18:00:00Z",
       }),
     ).toBeNull();
+  });
+});
+
+describe("Transcript redesign layout (rx-gaps-b)", () => {
+  it("collapses consecutive system lines to the last with a +N expand button and preserves hidden testids", () => {
+    const items: TranscriptItem[] = [
+      {
+        kind: "system",
+        id: "sys-1",
+        text: "Thread started with Pi",
+        raw: "conversation.created",
+        at: "2026-10-14T18:00:00Z",
+      },
+      {
+        kind: "system",
+        id: "sys-2",
+        text: "Connected to Pi",
+        raw: "agent.session.connected",
+        at: "2026-10-14T18:00:01Z",
+      },
+      {
+        kind: "system",
+        id: "sys-3",
+        text: "Turn started",
+        raw: "conversation.turn.started",
+        at: "2026-10-14T18:00:02Z",
+      },
+    ];
+    render(
+      <Transcript
+        items={items}
+        agentName="Pi"
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    // All 3 items remain queryable in DOM for test compatibility; earlier 2 are visually hidden.
+    const rows = screen.getAllByTestId("transcript-item");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.className).toContain("sr-only");
+    expect(rows[1]!.className).toContain("sr-only");
+    expect(rows[2]!.className).not.toContain("sr-only");
+    expect(rows[2]!.textContent).toContain("Turn started");
+
+    const expandBtn = screen.getByTestId("system-group-expand-sys-1");
+    expect(expandBtn.textContent).toBe("+2");
+    fireEvent.click(expandBtn);
+
+    const expandedRows = screen.getAllByTestId("transcript-item");
+    expect(expandedRows).toHaveLength(3);
+    expect(expandedRows.every((r) => !r.className.includes("sr-only"))).toBe(true);
+    expect(screen.queryByTestId("system-group-expand-sys-1")).toBeNull();
+  });
+
+  it("renders tool call as a quiet collapsed row with › chevron and expands in place", () => {
+    const toolItem: Extract<TranscriptItem, { kind: "tool" }> = {
+      kind: "tool",
+      id: "tc-row-1",
+      turnId,
+      toolCallId: "tc-1",
+      title: "git status",
+      toolKind: "execute",
+      status: "completed",
+      inputPreview: "",
+      outputPreview: "nothing to commit",
+      truncated: false,
+      startedAt: "2026-10-14T18:00:00Z",
+      lastAt: null,
+      finishedAt: "2026-10-14T18:00:02Z",
+    };
+    render(
+      <Transcript
+        items={[toolItem]}
+        agentName="Pi"
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    const toggle = screen.getByTestId("tool-row-tc-1");
+    expect(toggle.textContent).toContain("›");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.closest("li")?.className).toContain("border-line-soft");
+    expect(screen.queryByText("nothing to commit")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const output = screen.getByText("nothing to commit");
+    expect(output.closest(".bg-rail")).toBeTruthy();
+  });
+
+  it("applies pale-waiting and pale-failed tokens to PermissionCard states", () => {
+    const baseItem: Extract<TranscriptItem, { kind: "permission" }> = {
+      kind: "permission",
+      id: "perm-1",
+      turnId,
+      requestId: "req-1",
+      title: "Run tests",
+      toolKind: "execute",
+      options: [{ option_id: "yes", label: "Allow", kind: "allow_once" }],
+      status: "pending",
+      decisionOptionId: null,
+      decidedBy: null,
+      requestedAt: "2026-10-14T18:00:00Z",
+      deadlineAt: null,
+    };
+    const { rerender } = render(
+      <Transcript
+        items={[baseItem]}
+        agentName="Pi"
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    const cardPending = screen.getByTestId("permission-card");
+    expect(cardPending.className).toContain("bg-st-waiting-pale-body");
+    expect(cardPending.className).toContain("border-st-waiting-pale-edge");
+
+    rerender(
+      <Transcript
+        items={[{ ...baseItem, status: "expired" }]}
+        agentName="Pi"
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    const cardExpired = screen.getByTestId("permission-card");
+    expect(cardExpired.className).toContain("bg-st-failed-pale-body");
+    expect(cardExpired.className).toContain("border-st-failed-pale-edge");
   });
 });

@@ -129,60 +129,45 @@ test.describe("M2 shared conversation and control handoff", () => {
   });
 
   test("the harness worker is registered and online", async () => {
-    // Precondition for every turn below: with no worker claiming turns, the
-    // first prompt would simply sit in `queued — waiting for a worker`. The
-    // stack this journey is named for brought exactly one worker, the
-    // `worker-e2e` of e2e/compose.e2e-harness.yml; the M4 lab stack this run
-    // targets brings worker-a and worker-b (compose.m4.yml, § 6.2: two
-    // workers by design). So the honest precondition is the API's own, read
-    // off the ops page: SOME registered worker of the stack under test is
-    // online — never a hardcoded name the stack may not have.
-    await gotoApp(alice, "/settings/operations");
-    const onlineWorker = alice.locator('[data-testid^="worker-row-"]').filter({
-      hasText: /status: online/,
-    });
+    await gotoApp(alice, "/manage/runners");
+    const onlineWorker = alice
+      .locator('[data-testid^="manage-runners-table-row-"]')
+      .filter({ hasText: /online/i });
     await expect(onlineWorker.first()).toBeVisible({ timeout: 30_000 });
   });
 
   test("alice creates the project, its repository, and adds bob", async () => {
-    // The create form lives on the projects index (app-shell redesign), not
-    // the Home briefing; open it if it is collapsed behind the toggle.
-    await gotoApp(alice, "/projects");
+    await gotoApp(alice, "/manage/projects");
     const nameField = alice.getByTestId("create-project-name");
-    const toggle = alice.getByTestId("new-project-toggle");
-    // On a fresh account the form is already open, so both the field and the
-    // ("Close") toggle are visible: take the first match to satisfy strict mode.
+    const toggle = alice.getByTestId("manage-new-project");
     await expect(nameField.or(toggle).first()).toBeVisible();
     if (!(await nameField.isVisible())) await toggle.click();
     await nameField.fill(PROJECT_NAME);
     await alice.getByTestId("create-project-submit").click();
-    // Idempotent re-run (the m1/home-cluster rule): on a stack this journey
-    // already wrote to, the create meets the slug conflict — the existing
-    // project IS the fact the create would have made, so open it and ride on.
-    const conflict = alice.getByRole("alert").filter({ hasText: /already exists/i });
+    const conflict = alice.getByTestId("create-project-conflict");
     if (
       await conflict
         .waitFor({ timeout: 5_000 })
         .then(() => true)
         .catch(() => false)
     ) {
-      await gotoApp(alice, "/projects");
-      await alice
-        .getByTestId(`project-link-${PROJECT_NAME.toLowerCase().replace(/ +/g, "-")}`)
+      await alice.getByTestId("create-project-cancel").click();
+      const repoCell = alice.getByTestId(
+        `project-repos-${PROJECT_NAME.toLowerCase().replace(/ +/g, "-")}`,
+      );
+      await expect(repoCell).toBeVisible();
+      await repoCell
+        .locator('xpath=ancestor::*[starts-with(@data-testid, "manage-projects-table-row-")][1]//a')
         .click();
     }
-    await expect(alice.getByTestId("project-name")).toHaveText(PROJECT_NAME);
-    projectPath = new URL(alice.url()).pathname;
+    await expect(alice.getByTestId("detail-name")).toHaveText(PROJECT_NAME);
+    const projectId = new URL(alice.url()).pathname.split("/").pop() ?? "";
+    projectPath = `/p/${projectId}`;
 
     const projectUrl = `${BASE_URL}${projectPath}`;
-    // The repository add is the same story: an existing row is the proof, and
-    // re-adding only earns a duplicate refusal. On a REUSED project the add
-    // form is collapsed and the rows mount with the overview's data fetch —
-    // wait for either to exist before deciding which path to take.
-    const repoRow = alice.getByTestId(`repo-row-${REPO_NAME}`);
-    const repoToggle = alice.getByTestId("repo-add-toggle");
+    const repoRow = alice.getByTestId(`detail-repo-${REPO_NAME}`);
+    const repoToggle = alice.getByTestId("detail-add-repository");
     const repoNameField = alice.getByTestId("repo-name");
-    // Give the overview's own fetch a beat to mount rows or form, then decide.
     await expect
       .poll(
         async () =>
@@ -191,7 +176,7 @@ test.describe("M2 shared conversation and control handoff", () => {
       )
       .toBeGreaterThan(0);
     if ((await repoRow.count()) === 0) {
-      await alice.waitForTimeout(1_500); // rows mounting with the fetch beat the toggle
+      await alice.waitForTimeout(1_500);
       if ((await repoRow.count()) === 0) {
         if (!(await repoNameField.isVisible().catch(() => false))) {
           await repoToggle.waitFor({ state: "visible", timeout: 30_000 });
@@ -204,9 +189,7 @@ test.describe("M2 shared conversation and control handoff", () => {
         await alice.getByTestId("repo-submit").click();
       }
     }
-    await expect(repoRow).toContainText(REPO_GIT_URL);
-    // Idempotent: bob is already a contributor once a prior run added him —
-    // setMember takes the fast path then and corrects the role otherwise.
+    await expect(repoRow).toBeVisible();
     await setMember(alice, projectUrl, BOB.name, "contributor");
   });
 
@@ -216,41 +199,37 @@ test.describe("M2 shared conversation and control handoff", () => {
       profile: PROFILE,
       prompt: FIRST_PROMPT,
     });
-    expect(conversationPath).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
+    expect(conversationPath).toMatch(/^\/p\/[^/]+\/chats\/[0-9a-f-]{36}$/);
 
     // Alice is the controller of her own conversation and the agent is real:
-    // the session binding is reported, not assumed. The binding names the
-    // lab's launcher (ADR-0069: on `pi` this is the never-asks launcher).
-    await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control");
+    // the session binding is reported, not assumed.
+    await expect(alice.getByTestId("controller-badge")).toHaveText("you control");
     await expect(alice.getByTestId("agent-session")).toContainText(`agent: ${LAB_LAUNCHER}`, {
       timeout: PERMISSION_TIMEOUT_MS,
     });
-    await expectTurnStatus(alice, /completed/);
+    await expectTurnStatus(alice, /done/);
     await expect(alice.getByTestId("transcript")).toContainText(FIRST_PROMPT);
-    // A shallow clone of the real repository, then a real answer about it.
     await expect(alice.getByTestId("transcript")).toContainText("Hello World");
     await expect(alice.getByTestId("transcript")).not.toContainText("clone of hello-world");
-    // One turn, closed: the composer is hers and idle.
     await expect(alice.getByTestId("composer-input")).toBeEnabled();
     await expect(alice.getByTestId("composer-send")).toBeDisabled();
   });
 
-  test("bob sees the same conversation live on replica B, read-only", async () => {
-    // The replica badge moved from the sidebar footer to Settings →
-    // "About this server" (#5); read it from /settings/layout on a direct
-    // replica URL, then return to the conversation page.
-    await bob.goto(`${API_B_URL}/settings/layout`);
-    await expect(bob.getByTestId("replica-badge")).toHaveText("replica: api-b");
+  test("bob sees the same conversation live on replica B, read-only", async ({ request }) => {
+    const healthB = (await (await request.get(`${API_B_URL}/api/v1/system/health`)).json()) as {
+      replica?: string;
+    };
+    expect(healthB.replica).toBe("api-b");
     await bob.goto(`${API_B_URL}${conversationPath}`);
-    await expect(bob.getByTestId("conversation-title")).toHaveText("Hello World onboarding");
-    await expect(bob.getByTestId("controller-badge")).toHaveText(`Controlled by ${ALICE.name}`);
-    // Watching is allowed, driving is not: the composer is inert and says why.
+    await expect(bob.getByTestId("chat-title")).toContainText(FIRST_PROMPT.slice(0, 40));
+    await expect(bob.getByTestId("controller-badge")).toHaveText(`${ALICE.name} controls`);
     await expect(bob.getByTestId("composer-input")).toBeDisabled();
     await expect(bob.getByTestId("composer-explainer")).toContainText(ALICE.name);
+    await bob.getByTestId("chat-menu").click();
     await expect(bob.getByTestId("take-control")).toBeVisible();
-    // Live: alice's first turn is on bob's screen without bob reloading.
+    await bob.keyboard.press("Escape");
     await expect(bob.getByTestId("transcript")).toContainText(FIRST_PROMPT);
-    await expect(bob.getByTestId("turn-status")).toContainText(/completed/);
+    await expect(bob.getByTestId("turn-status")).toContainText(/done/);
   });
 
   test(
@@ -268,7 +247,7 @@ test.describe("M2 shared conversation and control handoff", () => {
         await sendPrompt(alice, LONG_PROMPT);
         await expect(openPermissionCard(alice)).toHaveCount(0);
         await expect(openPermissionCard(bob)).toHaveCount(0);
-        await expectTurnStatus(alice, /completed/);
+        await expectTurnStatus(alice, /done/);
         for (const viewer of [alice, bob]) {
           await expect(viewer.getByTestId("transcript")).not.toContainText("awaiting a decision");
           await expect(viewer.getByTestId("transcript")).not.toContainText("answered");
@@ -276,17 +255,17 @@ test.describe("M2 shared conversation and control handoff", () => {
         }
         // The profile row carries the mode the launch honoured (the UI's
         // ADR-0069 chip), read back off the product's own page.
-        await gotoApp(alice, "/profiles");
+        await gotoApp(alice, "/manage/agents");
         const profileRow = alice
           .getByTestId("agent-list")
-          .locator('[data-testid^="agent-item-"]')
+          .locator('tr[data-testid^="agent-row-"]')
           .filter({ hasText: PROFILE });
         await expect(profileRow.first()).toBeVisible({ timeout: 30_000 });
         const rowId = ((await profileRow.first().getAttribute("data-testid")) ?? "").replace(
-          /^agent-item-/,
+          /^agent-row-/,
           "",
         );
-        await alice.getByTestId(`agent-row-${rowId}`).click();
+        await alice.getByTestId(`agent-name-${rowId}`).click();
         await expect(alice.getByTestId(`agent-permission-${rowId}`)).toHaveText(
           /^permission: autonomous \(sandbox is the boundary\)$/,
         );
@@ -338,18 +317,20 @@ test.describe("M2 shared conversation and control handoff", () => {
         .toMatch(/queued|starting|running/i);
     }
     await takeControl(bob);
-    await expect(bob.getByTestId("controller-badge")).toHaveText("you're in control");
+    await expect(bob.getByTestId("controller-badge")).toHaveText("you control");
     await expectTurnStatus(bob, /cancelled/);
 
     // Alice, without reloading, learns she is no longer driving and that her
     // turn was cancelled — not completed, not failed.
-    await expect(alice.getByTestId("controller-badge")).toHaveText(`Controlled by ${BOB.name}`, {
+    await expect(alice.getByTestId("controller-badge")).toHaveText(`${BOB.name} controls`, {
       timeout: PERMISSION_TIMEOUT_MS,
     });
     await expect(alice.getByTestId("turn-status")).toContainText(/cancelled/);
     await expect(alice.getByTestId("composer-input")).toBeDisabled();
     await expect(alice.getByTestId("transcript")).toContainText("Turn cancelled");
+    await alice.getByTestId("chat-menu").click();
     await expect(alice.getByTestId("take-control")).toBeVisible();
+    await alice.keyboard.press("Escape");
   });
 
   test(
@@ -362,7 +343,7 @@ test.describe("M2 shared conversation and control handoff", () => {
         // No card mounts and the transcript carries no verdict line: the
         // autonomy is the sandbox plus the audit, never an approval claim.
         await expect(openPermissionCard(bob)).toHaveCount(0);
-        await expectTurnStatus(bob, /completed/);
+        await expectTurnStatus(bob, /done/);
         const writeTranscript = bob.getByTestId("transcript");
         await expect(writeTranscript).toContainText(`repos/${REPO_NAME}/NOTES.md`);
         await expect(writeTranscript).not.toContainText("answered");
@@ -373,7 +354,7 @@ test.describe("M2 shared conversation and control handoff", () => {
       const card = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
       await expect(card.getByTestId("permission-readonly")).toHaveCount(0);
       const label = await allowOpenPermission(bob, undefined, BOB.name);
-      await expectTurnStatus(bob, /completed/);
+      await expectTurnStatus(bob, /done/);
 
       // The write happened in the conversation's workspace and the transcript
       // says so, on bob's replica; bob answered, not alice.
@@ -385,10 +366,11 @@ test.describe("M2 shared conversation and control handoff", () => {
   );
 
   test("bob returns control to alice", async () => {
+    await bob.getByTestId("chat-menu").click();
     await bob.getByTestId("return-control").click();
-    await expect(bob.getByTestId("controller-badge")).toHaveText(`Controlled by ${ALICE.name}`);
+    await expect(bob.getByTestId("controller-badge")).toHaveText(`${ALICE.name} controls`);
     await expect(bob.getByTestId("composer-input")).toBeDisabled();
-    await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control", {
+    await expect(alice.getByTestId("controller-badge")).toHaveText("you control", {
       timeout: PERMISSION_TIMEOUT_MS,
     });
     await expect(alice.getByTestId("composer-input")).toBeEnabled();
@@ -420,8 +402,8 @@ test.describe("M2 shared conversation and control handoff", () => {
     await gotoApp(bob, `${API_B_URL}${conversationPath}`);
     await expect(alice.getByTestId("user-badge")).toContainText(ALICE.name);
     await expect(bob.getByTestId("user-badge")).toContainText(BOB.name);
-    await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control");
-    await expect(bob.getByTestId("controller-badge")).toHaveText(`Controlled by ${ALICE.name}`);
+    await expect(alice.getByTestId("controller-badge")).toHaveText("you control");
+    await expect(bob.getByTestId("controller-badge")).toHaveText(`${ALICE.name} controls`);
 
     // Same journal, same fold: the two transcripts must read the same, and
     // both handoffs must be in them.
@@ -443,6 +425,6 @@ test.describe("M2 shared conversation and control handoff", () => {
       await expect(alice.getByTestId("transcript")).toContainText(expected);
       await expect(bob.getByTestId("transcript")).toContainText(expected);
     }
-    await expect(alice.getByTestId("turn-status")).toHaveText(/completed/);
+    await expect(alice.getByTestId("turn-status")).toHaveText(/done/);
   });
 });

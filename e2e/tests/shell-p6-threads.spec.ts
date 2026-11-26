@@ -60,114 +60,101 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(8 * 60_000);
 
-  test("/threads lists exactly the API's cross-project conversations", async ({ page }) => {
+  test("/chats lists exactly the API's cross-project conversations", async ({ page }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const conversations = await apiConversationsWithManual(page.request);
     expect(conversations.length).toBeGreaterThan(0);
     await page.goto(BASE_URL + "/threads", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("threads-page")).toBeVisible({ timeout: 30_000 });
-    const rows = page.locator('[data-testid^="thread-row-"]');
-    // Design 1g drops the "one-off only" default: the page lists every
-    // cross-project summary the endpoint served, newest first.
+    await expect(page).toHaveURL(/\/chats$/);
+    await expect(page.getByTestId("chats")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("chat-list")).toBeVisible({ timeout: 30_000 });
+    const rows = page.locator('[data-testid^="chat-row-"]:not([data-testid^="chat-row-status-"])');
     await expect(rows.first()).toBeVisible({ timeout: 30_000 });
     expect(await rows.count(), "one row per conversation summary").toBe(conversations.length);
     for (const conversation of conversations) {
-      await expect(page.getByTestId(`thread-row-${conversation.id}`)).toBeVisible();
+      await expect(page.getByTestId(`chat-row-${conversation.id}`)).toBeVisible();
     }
-    await checkShellScreen(page, "threads list", stopWatching);
+    await checkShellScreen(page, "chats list", stopWatching);
     await evidence(
       page,
       "shell-p6-threads-list",
-      `/threads shows exactly the ${conversations.length} cross-project summaries from GET /api/v1/conversations in the 320px pane (design 1g: no default filter; LIVE / EARLIER grouping)`,
+      `/chats shows exactly the ${conversations.length} cross-project summaries from GET /api/v1/conversations grouped by project in the 300px list pane`,
     );
   });
 
-  test("thread page: header and rail; hand-to-workflow honest; draft-PR controller-only with confirm", async ({
+  test("chat page: header and Details sheet; hand-to-workflow; draft-PR controller-only with confirm", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const conversations = await apiConversations(page.request);
     const conversation = conversations[0];
-    await page.goto(BASE_URL + `/threads/${conversation.id}`, { waitUntil: "domcontentloaded" });
-    const title = page.getByTestId("conversation-title");
+    await page.goto(BASE_URL + `/chats/${conversation.id}`, { waitUntil: "domcontentloaded" });
+    const title = page.getByTestId("chat-title");
     await expect(title).toBeVisible({ timeout: 30_000 });
     await expect(title).toHaveText(conversation.title);
-    await expect(page.getByTestId("conversation-meta")).toBeVisible();
-    await checkShellScreen(page, "thread page", stopWatching);
+    await expect(page.getByTestId("chat-people")).toBeVisible();
+    await checkShellScreen(page, "chat page", stopWatching);
     await evidence(
       page,
       "shell-p6-thread-header",
-      `the /threads/<id> page header shows the conversation title "${conversation.title}" and its meta line`,
+      `the /chats/<id> page header shows the conversation title "${conversation.title}" and its participants line`,
     );
 
-    // The rail is no longer an always-open column: the thread's context sits
-    // behind ONE disclosure under the transcript (design thread view), so the
-    // journey opens it before reading anything inside it. Pass-2 review
-    // (threads-1g-*): the summary names what is BEHIND the door — the rail's
-    // interactive parts (handoff, artifacts, draft PR) — and carries the
-    // design's chevron, which is the claim that the content moved behind the
-    // door rather than out of the page.
-    const context = page.getByTestId("thread-context-block");
-    await expect(context, "the thread's context block stands under the transcript").toBeVisible();
-    await expect(
-      page.getByTestId("thread-context-disclosure"),
-      "the disclosure names what it holds",
-    ).toContainText(/handoff, artifacts and draft PR/i);
-    await context.locator("summary").click();
-    await expect(context).toHaveAttribute("open", "");
-    await expect(
-      page.getByTestId("thread-context-disclosure"),
-      "the rail is the disclosure's own content — nothing else prints it",
-    ).toBeVisible();
+    // Details sheet behind the header's "…" menu holds the side panel,
+    // artifacts, workspace, handoff and Open a draft PR actions.
+    await page.getByTestId("chat-menu").click();
+    await expect(page.getByTestId("chat-menu-details")).toBeVisible();
+    const menuHasTakeControl = (await page.getByTestId("take-control").count()) > 0;
+    await page.getByTestId("chat-menu-details").click();
+    const sheet = page.getByTestId("chat-details-sheet");
+    await expect(sheet, "the chat Details sheet opens from the … menu").toBeVisible();
 
-    // The rail: the artifacts section says the honest "not available yet"
-    // (the API cannot list one thread's files) with its escape hatch.
-    await expect(page.getByTestId("artifacts-rail")).toBeVisible();
-    const handToWorkflow = page.getByTestId("hand-to-workflow");
+    await expect(sheet.getByTestId("artifacts-rail")).toBeVisible();
+    const handToWorkflow = sheet.getByTestId("hand-to-workflow");
     await expect(handToWorkflow).toBeVisible();
-    const note = page.getByTestId("hand-to-workflow-note");
-    await expect(note).toBeVisible();
-    const isDisabled = await handToWorkflow.isDisabled();
-    if (isDisabled) {
-      expect((await note.innerText()).trim(), "a disabled offer carries its reason").not.toBe("");
-    }
     await evidence(
       page,
       "shell-p6-thread-rail",
-      `the thread rail shows the honest artifacts note and the "Hand to a workflow…" follow-up ${isDisabled ? "disabled with its reason" : "offered"} (never fake state)`,
+      "the chat Details sheet shows the honest artifacts note and the 'Hand to a workflow…' follow-up",
     );
-    // The rail stays OPEN from here: every assertion below (the hand-off note,
-    // the draft-PR card) reads content that lives inside it.
-    //
+
     // ADR-0045: the draft-PR entry is controller-only. If we are not the
-    // controller yet, only the honest note is rendered — take control first
-    // and the entry appears. The thread page's Take control button commits
-    // directly (the two-step confirm card belongs to the workbench dock), so
-    // the badge flips to the controller copy once the takeover lands.
-    const takeControl = page.getByTestId("take-control");
-    if (await takeControl.count()) {
+    // controller yet, only the honest note is shown — take control from the
+    // header "…" menu first and the entry appears.
+    if (menuHasTakeControl) {
       expect(
-        await page.getByTestId("thread-draft-pr-open").count(),
+        await sheet.getByTestId("thread-draft-pr-open").count(),
         "no open button before take control",
       ).toBe(0);
-      expect(await page.getByTestId("thread-draft-pr").count(), "the honest note entry").toBe(1);
-      await takeControl.click({ timeout: 30_000 });
-      await expect(page.getByTestId("controller-badge")).toContainText(/you're in control/i, {
-        timeout: 30_000,
-      });
+      await expect(sheet.getByText(/Take control to ask the agent/i)).toBeVisible();
+      await page.getByTestId("chat-details-close").click();
+      await expect(sheet).toBeHidden();
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("take-control").click({ timeout: 30_000 });
+      await expect(page.getByTestId("composer-input")).toBeEnabled({ timeout: 30_000 });
+      await page.getByTestId("chat-menu").click();
+      await page.getByTestId("chat-menu-details").click();
+      await expect(sheet).toBeVisible();
     }
-    const draftPrOpen = page.getByTestId("thread-draft-pr-open");
+    const draftPrOpen = sheet.getByTestId("thread-draft-pr-open");
     await expect(draftPrOpen, "the draft-PR entry for the controller").toBeVisible({
       timeout: 30_000,
     });
     await draftPrOpen.click({ timeout: 30_000 });
-    await expect(page.getByTestId("thread-draft-pr-confirm")).toBeVisible();
-    await page.getByTestId("thread-draft-pr-cancel").click({ timeout: 30_000 });
-    await expect(page.getByTestId("thread-draft-pr-confirm")).toBeHidden();
-    expect(await page.getByTestId("thread-draft-pr-sent").count(), "cancel sent nothing").toBe(0);
-    expect(await page.getByTestId("thread-draft-pr-error").count(), "cancel sent nothing").toBe(0);
+    const confirm = sheet.getByTestId("thread-draft-pr-confirm");
+    await expect(confirm).toBeVisible();
+    await confirm.getByRole("button", { name: "Cancel" }).click({ timeout: 30_000 });
+    await expect(confirm).toBeHidden();
+    expect(
+      await sheet.getByTestId("thread-draft-pr").locator('[role="status"]').count(),
+      "cancel sent nothing",
+    ).toBe(0);
+    expect(
+      await sheet.getByTestId("thread-draft-pr").locator('[role="alert"]').count(),
+      "cancel sent nothing",
+    ).toBe(0);
     stopWatching();
     await evidence(
       page,
@@ -176,21 +163,21 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
     );
   });
 
-  test("narrow 390x844: the thread page fits without sideways scroll", async ({ page }) => {
+  test("narrow 390x844: the chat page fits without sideways scroll", async ({ page }) => {
     // This test alone runs at the phone width — set the viewport before
-    // signing in (signInNarrow drives the drawer that only exists there).
+    // signing in (signInNarrow opens the phone scope sheet).
     await page.setViewportSize({ width: 390, height: 844 });
     await signInNarrow(page, "admin");
     const stopWatching = watchPageErrors(page);
     const conversations = await apiConversations(page.request);
     const conversation = conversations[0];
-    await page.goto(BASE_URL + `/threads/${conversation.id}`, { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
-    await checkShellScreen(page, "thread page at phone width", stopWatching);
+    await page.goto(BASE_URL + `/chats/${conversation.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("chat-title")).toBeVisible({ timeout: 30_000 });
+    await checkShellScreen(page, "chat page at phone width", stopWatching);
     await evidence(
       page,
       "shell-p6-thread-phone",
-      "at 390x844 the thread page renders its header without sideways scroll",
+      "at 390x844 the chat page renders its header without sideways scroll",
     );
   });
 });

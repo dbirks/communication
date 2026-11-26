@@ -8,15 +8,26 @@ import {
 } from "../api/transcript";
 import { deciderLabel } from "../api/actors";
 import type { PermissionOption } from "../api/types";
-import { formatClock } from "../lib/format";
+import { formatTime } from "../lib/format";
 
 import { PlanView } from "./m4/PlanView";
 import { MarkdownBody } from "../lib/markdown";
 
-import { Alert } from "./ds/Alert";
 import { Button } from "./ds/Button";
 import { StatusChip } from "./ds/Row";
-import { PERMISSION_STATE, STATES, TOOL_STATE, stateOf } from "./ds/states";
+import { PERMISSION_STATE, TOOL_STATE, stateOf } from "./ds/states";
+
+/** Local clock time `HH:MM` in the reader's locale (full timestamp rides `title`). */
+export function formatLocalHHMM(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
 
 /** A tool call's streamed preview, shown only when it says something. */
 function ToolPreview({
@@ -94,7 +105,7 @@ function AgentMessageBody({ text }: { text: string }) {
     // whole. Prose with no markers reads exactly as it did.
     return (
       <div
-        className="mt-1 break-words text-[13.5px] leading-[21px] text-ink"
+        className="break-words text-[14.5px] leading-[22px] text-ink"
         data-testid="agent-message-body"
       >
         <MarkdownBody text={text} paragraphClassName="m-0" />
@@ -102,7 +113,7 @@ function AgentMessageBody({ text }: { text: string }) {
     );
   }
   return (
-    <div className="mt-1" data-testid="agent-plan">
+    <div data-testid="agent-plan">
       {raw ? (
         <pre
           role="region"
@@ -162,25 +173,29 @@ function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) 
     <li
       data-testid="transcript-item"
       data-tool-call-id={item.toolCallId}
-      className="rounded-[3px] border border-line bg-surface"
+      className="overflow-hidden rounded-[10px] border border-line-soft bg-surface"
     >
       <button
         type="button"
         data-testid={`tool-row-${item.toolCallId}`}
         aria-expanded={open}
         onClick={cycle}
-        className="flex w-full items-center gap-2 px-[10px] py-[5px] text-left"
+        className="flex w-full items-center gap-2 px-[10px] py-[6px] text-left font-mono text-[12px] text-muted"
       >
-        <span className="w-[54px] shrink-0 truncate font-mono text-[10px] uppercase tracking-[.04em] text-muted">
+        <span
+          aria-hidden="true"
+          className={`inline-block w-3 shrink-0 text-center font-mono text-[12px] text-muted transition-transform ${
+            open ? "rotate-90" : ""
+          }`}
+        >
+          {"\u203a"}
+        </span>
+        <span className="shrink-0 truncate font-mono text-[11px] uppercase tracking-[.04em] text-muted">
           {item.toolKind || "tool"}
         </span>
-        {/* One line, ellipsized: the full command is one click away below. The
-            basis is content (`flex-auto`, i.e. grow+shrink+auto) — not `flex-1`
-            (basis 0%), which would leave nothing to shrink when the fixed chip /
-            timing / chevron row no longer fits and push the chevron out of the
-            column. `min-w-0` lets the title truncate under them. */}
+        {/* One line, ellipsized: the full command is one click away below. */}
         <span
-          className="min-w-0 flex-auto truncate font-mono text-[11.5px] text-ink"
+          className="min-w-0 flex-auto truncate font-mono text-[12px] text-muted"
           title={item.title}
         >
           {item.title}
@@ -202,15 +217,9 @@ function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) 
             {timing}
           </span>
         ) : null}
-        <span
-          aria-hidden="true"
-          className="w-3 shrink-0 text-center font-mono text-[10px] text-faint"
-        >
-          {open ? "▾" : "▸"}
-        </span>
       </button>
       {open ? (
-        <div className="border-t border-line px-[10px] pb-2">
+        <div className="rounded-b-[10px] border-t border-line-soft bg-rail px-[10px] pb-2 pt-1">
           <ToolPreview label="input" text={input} tall={depth === "all"} />
           <ToolPreview label="output" text={output} tall={depth === "all"} />
           {!input && !output ? (
@@ -250,6 +259,8 @@ export interface TranscriptProps {
   items: TranscriptItem[];
   /** Speaker label for an agent message (the profile name), never a uuid. */
   agentName?: string;
+  /** Signed-in reader's user id; their own messages label the author "you". */
+  currentUserId?: string | null;
   /** True only for the current controller — a viewer sees prompts read-only. */
   canDecide: boolean;
   /** Name of whoever must answer an open prompt, for the read-only explanation. */
@@ -330,8 +341,20 @@ function PermissionCard({
     return id;
   });
   const open = item.status === "pending";
+  const isExpired = item.status === "expired";
   const chosen = item.options.find((option) => option.option_id === item.decisionOptionId);
   const state = stateOf(PERMISSION_STATE[item.status]);
+
+  const cardTone = open
+    ? "border-st-waiting-pale-edge bg-st-waiting-pale-body"
+    : isExpired
+      ? "border-st-failed-pale-edge bg-st-failed-pale-body"
+      : "border-line bg-surface";
+  const barToneClass = open
+    ? "border-st-waiting-pale-edge bg-st-waiting-pale-bar text-st-waiting-pale-fg"
+    : isExpired
+      ? "border-st-failed-pale-edge bg-st-failed-pale-bar text-st-failed-pale-fg"
+      : "border-line-soft bg-rail text-ink-2";
 
   return (
     // The row carries the request id so a reader (test or human) can pin THIS
@@ -341,107 +364,126 @@ function PermissionCard({
     // takes programmatic focus (`tabIndex={-1}`) so a keyboard reader lands on
     // the ask itself, not wherever the scroll happened to park.
     <li data-testid="transcript-item" data-permission-request-id={item.requestId} tabIndex={-1}>
-      {/* Handoff rule 05: a title bar is the state's strong color only while the
-          panel needs action, i.e. only for an open request. A decided, expired
-          or cancelled prompt is a closed record — gray bar, state as a chip. */}
-      <Alert
-        state={state}
-        label="PERMISSION REQUEST"
-        barTone={open ? "strong" : "neutral"}
-        testid="permission-card"
+      <div
+        data-testid="permission-card"
         role="status"
-        meta={
-          open ? (
+        className={`overflow-hidden rounded-[10px] border ${cardTone}`}
+      >
+        <div
+          data-ds-bar=""
+          data-tone={open ? "strong" : "neutral"}
+          className={`flex items-center gap-2 border-b px-[12px] py-[6px] font-mono text-[10.5px] font-semibold tracking-[.04em] ${barToneClass}`}
+        >
+          <span aria-hidden="true">{open ? "! PERMISSION REQUEST" : "PERMISSION REQUEST"}</span>
+          {open ? (
             item.deadlineAt ? (
-              <span data-testid="permission-deadline">
+              <span className="ml-auto font-normal" data-testid="permission-deadline">
                 expires: {item.deadlineAt.slice(11, 19)} UTC
               </span>
-            ) : undefined
+            ) : null
           ) : (
-            <StatusChip
-              state={state}
-              label={item.status}
-              className="h-[15px] normal-case"
-              labelProps={{ "data-testid": `permission-status-${item.requestId}` }}
-            />
-          )
-        }
-      >
-        <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="font-semibold">{item.title}</span>
-          {item.toolKind ? (
-            <span className="font-mono text-[10.5px] text-muted">kind: {item.toolKind}</span>
+            <span className="ml-auto font-normal">
+              <StatusChip
+                state={state}
+                label={item.status}
+                className="h-[15px] normal-case"
+                labelProps={{ "data-testid": `permission-status-${item.requestId}` }}
+              />
+            </span>
+          )}
+        </div>
+        <div className="px-[12px] py-[10px] text-body">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <span className="font-semibold text-ink">{item.title}</span>
+            {item.toolKind ? (
+              <span className="font-mono text-[10.5px] text-muted">kind: {item.toolKind}</span>
+            ) : null}
+          </div>
+          {/* Status is written out, never implied by the border colour. */}
+          <p className="mt-1 text-[12.5px] text-ink" role="status">
+            status: {item.status === "pending" ? "awaiting a decision" : item.status}
+            {item.status === "decided" && item.decisionOptionId
+              ? ` — answered "${chosen?.label || item.decisionOptionId}"${
+                  item.decidedBy ? ` by ${deciderLabel(item.decidedBy, nameOf)}` : ""
+                }`
+              : ""}
+          </p>
+
+          {item.status === "expired" && permissionWindowLabel(item) ? (
+            <p className="mt-1 text-[12.5px] text-ink" data-testid="permission-expired-copy">
+              Nobody answered within {permissionWindowLabel(item)}, so the agent was told no.
+            </p>
+          ) : null}
+
+          {open && canDecide ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {item.options.map((option, index) => {
+                const kind = (option.kind ?? "").toLowerCase();
+                const label = option.label.toLowerCase();
+                const isAllow = kind.startsWith("allow") || /approve/.test(kind + label);
+                const isReject = kind.startsWith("reject") || /reject|deny/.test(kind + label);
+                return (
+                  <Button
+                    key={option.option_id}
+                    data-testid={testids[index]}
+                    variant={isAllow ? "primary" : isReject ? "danger" : "secondary"}
+                    compact
+                    disabled={deciding}
+                    onClick={() => onDecide(item.requestId, option)}
+                  >
+                    {option.label || option.option_id}
+                  </Button>
+                );
+              })}
+              <p className="sr-only" data-testid="permission-deciding" aria-live="polite">
+                {deciding ? "Sending your decision…" : ""}
+              </p>
+            </div>
+          ) : null}
+
+          {open && !canDecide ? (
+            <p className="mt-1 text-[12.5px] text-muted" data-testid="permission-readonly">
+              Open to decide. Only the controller
+              {controllerName ? ` (${controllerName})` : ""} can answer this — take control to
+              decide.
+            </p>
+          ) : null}
+
+          {error ? (
+            <p
+              role="alert"
+              className="mt-1 text-[12.5px] text-st-failed-tag-fg"
+              data-testid="permission-error"
+            >
+              × {problemOf(error).detail || "Your decision could not be recorded."}
+            </p>
           ) : null}
         </div>
-        {/* Status is written out, never implied by the border colour. */}
-        <p className="mt-1 text-[12.5px] text-ink" role="status">
-          status: {item.status === "pending" ? "awaiting a decision" : item.status}
-          {item.status === "decided" && item.decisionOptionId
-            ? ` — answered "${chosen?.label || item.decisionOptionId}"${
-                item.decidedBy ? ` by ${deciderLabel(item.decidedBy, nameOf)}` : ""
-              }`
-            : ""}
-        </p>
-
-        {/* The expiry names its own rule (docs/testing/claude-ask-mode-2026-11-11
-            proposal 3): a closed `status: expired` chip reads as a tool failure,
-            not as "the human window lapsed". The window is the card's own
-            arithmetic — the worker opened the prompt at `requested_at` with
-            `deadline_at = requested_at + PermissionTTL` — so the sentence says
-            what THIS deployment's rule was without the UI knowing its config. */}
-        {item.status === "expired" && permissionWindowLabel(item) ? (
-          <p className="mt-1 text-[12.5px] text-ink" data-testid="permission-expired-copy">
-            Nobody answered within {permissionWindowLabel(item)}, so the agent was told no.
-          </p>
-        ) : null}
-
-        {open && canDecide ? (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            {item.options.map((option, index) => {
-              // Royal = something you can do (rule 02); a reject option is
-              // the danger variant; anything else is a plain secondary.
-              const kind = (option.kind ?? "").toLowerCase();
-              const label = option.label.toLowerCase();
-              const isAllow = kind.startsWith("allow") || /approve/.test(kind + label);
-              const isReject = kind.startsWith("reject") || /reject|deny/.test(kind + label);
-              return (
-                <Button
-                  key={option.option_id}
-                  data-testid={testids[index]}
-                  variant={isAllow ? "primary" : isReject ? "danger" : "secondary"}
-                  compact
-                  disabled={deciding}
-                  onClick={() => onDecide(item.requestId, option)}
-                >
-                  {option.label || option.option_id}
-                </Button>
-              );
-            })}
-            <p className="sr-only" data-testid="permission-deciding" aria-live="polite">
-              {deciding ? "Sending your decision…" : ""}
-            </p>
-          </div>
-        ) : null}
-
-        {open && !canDecide ? (
-          <p className="mt-1 text-[12.5px] text-muted" data-testid="permission-readonly">
-            Open to decide. Only the controller
-            {controllerName ? ` (${controllerName})` : ""} can answer this — take control to decide.
-          </p>
-        ) : null}
-
-        {error ? (
-          <p
-            role="alert"
-            className="mt-1 text-[12.5px] text-st-failed-tag-fg"
-            data-testid="permission-error"
-          >
-            × {problemOf(error).detail || "Your decision could not be recorded."}
-          </p>
-        ) : null}
-      </Alert>
+      </div>
     </li>
   );
+}
+
+type SystemItem = Extract<TranscriptItem, { kind: "system" }>;
+type RenderGroup =
+  | { kind: "item"; item: TranscriptItem }
+  | { kind: "system-group"; items: SystemItem[] };
+
+function groupTranscriptItems(items: readonly TranscriptItem[]): RenderGroup[] {
+  const groups: RenderGroup[] = [];
+  for (const item of items) {
+    if (item.kind === "system") {
+      const prev = groups[groups.length - 1];
+      if (prev && prev.kind === "system-group") {
+        prev.items.push(item);
+      } else {
+        groups.push({ kind: "system-group", items: [item] });
+      }
+    } else {
+      groups.push({ kind: "item", item });
+    }
+  }
+  return groups;
 }
 
 /**
@@ -452,6 +494,7 @@ function PermissionCard({
 export default function Transcript({
   items,
   agentName = "agent",
+  currentUserId = null,
   canDecide,
   controllerName,
   nameOf,
@@ -460,6 +503,9 @@ export default function Transcript({
   decisionError,
   decisionErrorRequestId,
 }: TranscriptProps) {
+  const [expandedSystemGroups, setExpandedSystemGroups] = useState<Record<string, boolean>>({});
+  const groups = useMemo(() => groupTranscriptItems(items), [items]);
+
   if (items.length === 0) {
     return (
       <p className="text-[12.5px] text-muted" data-testid="transcript-empty">
@@ -470,70 +516,120 @@ export default function Transcript({
 
   return (
     <ol
-      className="space-y-[4px]"
+      className="space-y-[18px]"
       data-testid="transcript"
       aria-label="Thread transcript"
       aria-live="polite"
       aria-relevant="additions"
     >
-      {items.map((item) => {
-        switch (item.kind) {
-          case "user": {
-            // 4f/1g: the user's own prompt reads as a bubble on the right in
-            // the accent tint, capped at 80% of the column — the agent's prose
-            // stays plain text beside it.
-            // ADR-0062: it is only ever the *author's* line when the turn row
-            // says a human submitted it. For an automation the bubble names who
-            // authorised it on a meta line, because this prompt is not
-            // something that person typed.
-            const automation = automationViaWords(item.submittedVia);
+      {groups.map((group) => {
+        if (group.kind === "system-group") {
+          const sysItems = group.items;
+          if (sysItems.length === 1) {
+            const sys = sysItems[0];
             return (
               <li
-                key={item.id}
+                key={sys.id}
                 data-testid="transcript-item"
-                className="ml-auto w-fit max-w-[80%] rounded-[3px] border border-accent-edge bg-accent-tint px-[10px] py-2 text-[12.5px]"
+                title={sys.raw}
+                className="font-mono text-[11px] text-muted"
               >
+                {sys.text}
+              </li>
+            );
+          }
+          const first = sysItems[0];
+          const last = sysItems[sysItems.length - 1];
+          const hiddenCount = sysItems.length - 1;
+          const expanded = Boolean(expandedSystemGroups[first.id]);
+          if (expanded) {
+            return sysItems.map((sys) => (
+              <li
+                key={sys.id}
+                data-testid="transcript-item"
+                title={sys.raw}
+                className="font-mono text-[11px] text-muted"
+              >
+                {sys.text}
+              </li>
+            ));
+          }
+          return [
+            ...sysItems.slice(0, -1).map((sys) => (
+              <li key={sys.id} data-testid="transcript-item" title={sys.raw} className="sr-only">
+                {sys.text}
+              </li>
+            )),
+            <li
+              key={last.id}
+              data-testid="transcript-item"
+              title={last.raw}
+              className="flex items-baseline gap-2 font-mono text-[11px] text-muted"
+            >
+              <span>{last.text}</span>
+              <button
+                type="button"
+                data-testid={`system-group-expand-${first.id}`}
+                aria-expanded={false}
+                aria-label={`Show ${hiddenCount} earlier system ${hiddenCount === 1 ? "line" : "lines"}`}
+                onClick={() => setExpandedSystemGroups((prev) => ({ ...prev, [first.id]: true }))}
+                className="shrink-0 rounded-[4px] border border-line px-[5px] py-[1px] font-mono text-[10px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                +{hiddenCount}
+              </button>
+            </li>,
+          ];
+        }
+
+        const item = group.item;
+        switch (item.kind) {
+          case "user": {
+            // ADR-0062: it is only ever the *author's* line when the turn row
+            // says a human submitted it. For an automation the author line names
+            // who authorised it, because this prompt is not something that person typed.
+            const automation = automationViaWords(item.submittedVia);
+            const isSelf = Boolean(currentUserId && item.authorUserId === currentUserId);
+            const who = isSelf ? "you" : nameOf(item.authorUserId);
+            return (
+              <li key={item.id} data-testid="transcript-item" className="flex flex-col gap-[4px]">
                 {automation ? (
-                  <>
-                    <span
-                      className="block font-mono text-[11px] text-muted"
-                      data-testid="turn-on-behalf-of"
-                    >
+                  <div
+                    className="flex items-center gap-1.5 font-mono text-[11px] text-muted"
+                    title={formatTime(item.at)}
+                  >
+                    <span data-testid="turn-on-behalf-of">
                       on behalf of {nameOf(item.authorUserId)} · {automation}
                     </span>
-                    <span className="whitespace-pre-wrap">{item.text}</span>
-                  </>
+                    <span aria-hidden="true">·</span>
+                    <time dateTime={item.at}>{formatLocalHHMM(item.at)}</time>
+                  </div>
                 ) : (
-                  <>
-                    <span className="font-semibold">{nameOf(item.authorUserId)}:</span>{" "}
-                    <span className="whitespace-pre-wrap">{item.text}</span>
-                  </>
+                  <div
+                    className="font-mono text-[11px] text-muted"
+                    data-testid="user-speaker"
+                    title={formatTime(item.at)}
+                  >
+                    {who} · <time dateTime={item.at}>{formatLocalHHMM(item.at)}</time>
+                  </div>
                 )}
+                <p className="m-0 whitespace-pre-wrap break-words text-[14.5px] leading-[22px] text-ink">
+                  {item.text}
+                </p>
               </li>
             );
           }
           case "agent": {
-            // A whitespace-only agent message draws nothing (deployed finding
-            // 2026-11-11: pi's chunks were only "\n\n" while the model retried,
-            // and the thread printed an empty "Pi · 06:45:07 UTC" header). The
-            // fold keeps the item — the "writing…" state and the
-            // "ended without an answer" line both read it — the view just does
-            // not render an empty block.
+            // A whitespace-only agent message draws nothing.
             if (item.text.trim() === "") return null;
             return (
-              <li key={item.id} data-testid="transcript-item" className="px-1 py-1">
-                {/* 6d's speaker block: an initials box, then a mono who/when line,
-                    then the text — so a long agent message reads as a person
-                    talking, not as another bordered card. */}
+              <li key={item.id} data-testid="transcript-item" className="flex flex-col gap-[4px]">
                 <div className="flex items-center gap-2">
                   <span
-                    aria-hidden="true"
-                    className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[3px] border border-line-strong bg-surface font-mono text-[9px] font-semibold text-ink-2"
+                    className="font-mono text-[11px] text-muted"
+                    data-testid="agent-speaker"
+                    title={formatTime(item.at)}
                   >
-                    {speakerInitials(agentName)}
-                  </span>
-                  <span className="font-mono text-[10.5px] text-muted" data-testid="agent-speaker">
-                    {agentName} · {formatClock(item.at)}
+                    {agentName} · <time dateTime={item.at}>{formatLocalHHMM(item.at)}</time>
                   </span>
                   {item.final ? null : (
                     <span className="text-[12px] text-muted" role="status">
@@ -556,14 +652,22 @@ export default function Transcript({
               <li
                 key={item.id}
                 data-testid="transcript-item"
-                className="rounded-[3px] border border-line bg-fill/60 px-[10px] py-2 text-[12.5px]"
+                className="overflow-hidden rounded-[10px] border border-line-soft bg-surface"
               >
                 {/* Collapsed by default: thoughts are context, not the record. */}
-                <details>
-                  <summary className="cursor-pointer font-mono text-[10.5px] font-medium text-muted">
-                    AGENT THOUGHT {item.truncated ? "(truncated)" : ""}
+                <details className="group">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 px-[10px] py-[6px] font-mono text-[12px] text-muted">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block w-3 shrink-0 text-center font-mono text-[12px] text-muted transition-transform group-open:rotate-90"
+                    >
+                      {"\u203a"}
+                    </span>
+                    <span>Agent thought{item.truncated ? " (truncated)" : ""}</span>
                   </summary>
-                  <p className="mt-1 whitespace-pre-wrap text-muted">{item.text}</p>
+                  <div className="rounded-b-[10px] border-t border-line-soft bg-rail px-[10px] py-2 whitespace-pre-wrap text-[12.5px] text-muted">
+                    {item.text}
+                  </div>
                 </details>
               </li>
             );
@@ -581,23 +685,6 @@ export default function Transcript({
                 deciding={decidingRequestId === item.requestId}
                 error={decisionErrorRequestId === item.requestId ? decisionError : null}
               />
-            );
-          case "system":
-            return (
-              <li
-                key={item.id}
-                data-testid="transcript-item"
-                // Review 2e: the journal's machine words (`stop_reason
-                // end_turn`, `launcher_id claude`) ride the tooltip only — the
-                // visible sentence is the plain one the fold wrote.
-                title={item.raw}
-                className="flex items-baseline gap-2 px-1 py-1 text-[12px] italic text-muted"
-              >
-                <span aria-hidden="true" className={`font-mono not-italic ${STATES.info.tagFg}`}>
-                  i
-                </span>
-                {item.text}
-              </li>
             );
           default:
             return null;

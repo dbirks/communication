@@ -37,6 +37,8 @@ export interface NodeMenuProps {
   nodeId: string;
   /** Duplicate the step; hidden (not rendered) when the page has none. */
   onDuplicate?: (id: string) => void;
+  /** Open the full inspector for this node/scope. */
+  onOpenInspector?: (id: string) => void;
   onDelete: (ids: string[]) => void;
   onClose: () => void;
 }
@@ -44,6 +46,7 @@ export interface NodeMenuProps {
 const MENU_ITEMS = [
   { id: "duplicate", label: "Duplicate" },
   { id: "delete", label: "Delete" },
+  { id: "settings", label: "More settings" },
 ] as const;
 
 export function NodeMenu({
@@ -54,11 +57,12 @@ export function NodeMenu({
   nodeId,
   onMeasure,
   onDuplicate,
+  onOpenInspector,
   onDelete,
   onClose,
 }: NodeMenuProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([null, null]);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([null, null, null]);
   const [active, setActive] = useState(0);
 
   // Report the drawn box (offset* = the border box the placement math wants,
@@ -80,14 +84,18 @@ export function NodeMenu({
     return () => observer.disconnect();
   }, [onMeasure, report, compact, docked]);
 
-  // The Duplicate action is only offered when the page can run it; a canvas
-  // without a duplicate op hides the item rather than rendering a dead button.
-  const items = onDuplicate ? MENU_ITEMS : MENU_ITEMS.filter((item) => item.id !== "duplicate");
+  const items = MENU_ITEMS.filter((item) => {
+    if (item.id === "duplicate") return Boolean(onDuplicate);
+    if (item.id === "settings") return Boolean(onOpenInspector);
+    return true;
+  });
 
   const activate = (index: number) => {
     const item = items[index];
     if (item.id === "duplicate") {
       onDuplicate?.(nodeId);
+    } else if (item.id === "settings") {
+      onOpenInspector?.(nodeId);
     } else {
       onDelete([nodeId]);
     }
@@ -155,7 +163,11 @@ export function NodeMenu({
           }}
           type="button"
           data-testid={
-            item.id === "duplicate" ? "studio-node-menu-duplicate" : "studio-node-menu-delete"
+            item.id === "duplicate"
+              ? "studio-node-menu-duplicate"
+              : item.id === "settings"
+                ? "studio-node-menu-settings"
+                : "studio-node-menu-delete"
           }
           onClick={onItemClick(index)}
           className={

@@ -58,10 +58,14 @@ const repoFixture = (name: string) => ({
   created_at: "2026-10-14T15:00:00Z",
 });
 
-const baseRoutes = (projects: unknown[], repos: unknown[] = []): RouteStub[] => [
+const baseRoutes = (
+  projects: unknown[],
+  repos: unknown[] = [],
+  profiles: unknown[] = [claudeProfile],
+): RouteStub[] => [
   { path: "/api/v1/me", body: meFixture },
   { path: "/api/v1/projects", body: { items: projects } },
-  { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
+  { path: "/api/v1/agent-profiles", body: { items: profiles } },
   { path: `/api/v1/projects/${projectFixture.id}/repos`, body: { items: repos } },
   { path: `/api/v1/projects/${secondProject.id}/repos`, body: { items: [] } },
 ];
@@ -87,6 +91,41 @@ describe("titleFromPrompt", () => {
 });
 
 describe("HomePrompt (All scope)", () => {
+  it("defaults to the first project and first profile and ignores stale storage", async () => {
+    localStorage.setItem(HOME_PROJECT_KEY, "removed");
+    localStorage.setItem(`communication.home.agent.${projectFixture.id}`, "removed");
+    renderPrompt(baseRoutes([projectFixture, secondProject]));
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-project").textContent).toBe("Widgets"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(claudeProfile.name),
+    );
+  });
+
+  it("remembers agent choices separately for each project and stores project choices", async () => {
+    const secondAgent = { ...claudeProfile, id: "second-agent", name: "Second Agent" };
+    localStorage.setItem(`communication.home.agent.${secondProject.id}`, secondAgent.id);
+    renderPrompt(baseRoutes([projectFixture, secondProject], [], [claudeProfile, secondAgent]));
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(claudeProfile.name),
+    );
+    fireEvent.click(screen.getByTestId("home-prompt-agent"));
+    fireEvent.click(await screen.findByTestId(`agent-option-${secondAgent.id}`));
+    expect(localStorage.getItem(`communication.home.agent.${projectFixture.id}`)).toBe(
+      secondAgent.id,
+    );
+    fireEvent.click(screen.getByTestId("home-prompt-project"));
+    fireEvent.click(await screen.findByTestId(`home-prompt-project-option-${secondProject.id}`));
+    expect(localStorage.getItem(HOME_PROJECT_KEY)).toBe(secondProject.id);
+    expect(screen.getByTestId("home-prompt-agent").textContent).toContain(secondAgent.name);
+    fireEvent.click(screen.getByTestId("home-prompt-agent"));
+    fireEvent.click(await screen.findByTestId(`agent-option-${claudeProfile.id}`));
+    fireEvent.click(screen.getByTestId("home-prompt-project"));
+    fireEvent.click(await screen.findByTestId(`home-prompt-project-option-${projectFixture.id}`));
+    expect(screen.getByTestId("home-prompt-agent").textContent).toContain(secondAgent.name);
+  });
+
   it("starts on the stored project and names it on the chip", async () => {
     localStorage.setItem(HOME_PROJECT_KEY, secondProject.id);
     renderPrompt(baseRoutes([projectFixture, secondProject]));
@@ -136,12 +175,14 @@ describe("HomePrompt (All scope)", () => {
   });
 
   it("asks for an agent before sending and never posts", async () => {
-    const { requests } = renderPrompt(baseRoutes([projectFixture]));
+    const { requests } = renderPrompt(baseRoutes([projectFixture], [], []));
+    await screen.findByText("No agents yet");
     fireEvent.change(await screen.findByTestId("home-prompt-input"), {
       target: { value: "Start something" },
     });
     expect(await screen.findByTestId("home-prompt-need-agent")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("home-prompt-send"));
+    expect((screen.getByTestId("home-prompt-send") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("home-prompt-agent") as HTMLButtonElement).disabled).toBe(false);
     expect(
       requestsTo(requests, `/api/v1/projects/${projectFixture.id}/conversations`, "POST").length,
     ).toBe(0);
@@ -212,6 +253,9 @@ describe("HomePrompt (project scope)", () => {
       { projectId: projectFixture.id, placeholder: "What should we do in Widgets?" },
     );
     expect(screen.queryByTestId("home-prompt-project")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("home-prompt-agent").textContent).toContain(claudeProfile.name),
+    );
     expect((await screen.findByTestId("home-prompt-input")).getAttribute("placeholder")).toBe(
       "What should we do in Widgets?",
     );

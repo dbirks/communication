@@ -24,7 +24,7 @@ import {
 import { revisionQueryOptions, useAssignments, usePipelines } from "../../api/pipelines";
 import { useConversation, useProject, useRepositories, useWorkspaces } from "../../api/queries";
 import { useCreateRun, useProjectRuns } from "../../api/runs";
-import { interruptedCopy } from "../../api/transcript";
+import { interruptedCopy, runLinkOf } from "../../api/transcript";
 import { useIssueTriggers } from "../../api/useIssueTriggers";
 import { shortId } from "../../lib/format";
 import { routes } from "../../lib/routes";
@@ -37,6 +37,7 @@ import { ConversationSidePanel } from "../conversation/ConversationSidePanel";
 import { ConversationTranscript } from "../conversation/ConversationTranscript";
 import { NO_BRANCH_YET, threadBranch } from "../conversation/threadBranch";
 import { useConversationSession } from "../conversation/useConversationSession";
+import { conversationRunHref, instanceLeaf } from "../Conversations";
 import { Alert } from "../ds/Alert";
 import { Button } from "../ds/Button";
 import { TurnSandboxPanel } from "../Sandbox";
@@ -185,6 +186,8 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
   const chatNotes = useConversationAssistantNotes(conversationId);
   const dismissNote = useDismissAssistantNote();
   const noteRows = visibleAssistantNotes(chatNotes.data?.notes);
+  const runLink = useMemo(() => runLinkOf(session.events), [session.events]);
+  const apiRunLink = data?.run_link ?? null;
 
   const latestTurnId = activeTurn?.id ?? transcript.turns.at(-1)?.turnId ?? "";
 
@@ -441,6 +444,58 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
         />
 
         <div className="space-y-4 border-t border-line px-4 py-4">
+          {data.origin !== "manual" && apiRunLink ? (
+            <div className="space-y-1" data-testid="part-of-section">
+              <h3 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
+                Part of
+              </h3>
+              <div className="space-y-[4px] font-mono text-[11px] text-ink">
+                <Link
+                  to={conversationRunHref(apiRunLink)}
+                  className="text-accent-text hover:text-ink"
+                  data-testid="part-of-run-link"
+                >
+                  Part of run {apiRunLink.run_title || shortId(apiRunLink.run_id)}
+                </Link>
+                <span className="block text-faint" data-testid="part-of-node">
+                  node {apiRunLink.node_id || instanceLeaf(apiRunLink.node_instance_key)} ·
+                  execution {shortId(apiRunLink.node_execution_id)} · attempt{" "}
+                  {apiRunLink.attempt_number}
+                </span>
+              </div>
+            </div>
+          ) : data.origin !== "manual" && runLink ? (
+            <div className="space-y-1" data-testid="part-of-section">
+              <h3 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
+                Part of
+              </h3>
+              <div className="space-y-[4px] font-mono text-[11px] text-ink">
+                <Link
+                  to={routes.run(runLink.runId)}
+                  className="text-accent-text hover:text-ink"
+                  data-testid="part-of-run-link"
+                >
+                  Part of run {shortId(runLink.runId)}
+                </Link>
+                {runLink.nodeExecutionId ? (
+                  <span className="block text-faint" data-testid="part-of-node">
+                    node execution {shortId(runLink.nodeExecutionId)}
+                    {runLink.attemptId ? " · attempt " : ""}
+                    {runLink.attemptId ? (
+                      <Link
+                        to={routes.run(runLink.runId)}
+                        className="text-accent-text hover:text-ink"
+                        data-testid="part-of-attempt-link"
+                      >
+                        {shortId(runLink.attemptId)}
+                      </Link>
+                    ) : null}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <div ref={artifactsAnchorRef} id="chat-details-artifacts" className="space-y-2">
             <h3 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
               Artifacts

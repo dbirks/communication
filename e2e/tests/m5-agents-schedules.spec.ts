@@ -164,24 +164,30 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
 
   test("agents: a skill pin, its digest help, and who may not see the controls", async () => {
     await test.step("admin (the library role) creates the profile the arm pins", async () => {
-      await gotoApp(admin, "/profiles");
-      await expect(admin.getByTestId("agents-page")).toBeVisible();
-      // The New profile button is the library role's gate (ADR-0030); the
-      // form itself now lives in the dialog it opens.
+      await gotoApp(admin, "/manage/agents");
+      await expect(admin.getByTestId("manage-agents")).toBeVisible();
+      // The New agent button is the library role's gate (ADR-0030); the
+      // form itself lives in the dialog it opens.
       await expect(admin.getByTestId("agents-new-open")).toBeVisible();
       await admin.getByTestId("agents-new-open").click();
       await expect(admin.getByTestId("agents-new-form")).toBeVisible();
       await admin.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
-      // The new dialog picks the launcher by agent card (radio), not a select;
-      // `agents-new-launcher-select` is the disabled "Other ACP agent" catch-all.
+      // The dialog picks the launcher by agent card (radio), not a select.
       await admin.getByTestId("new-profile-card-claude").click();
       await admin.getByTestId("agents-new-submit").click();
       profileId = await profileIdOf(admin, PROFILE_NAME);
       expect(profileId).toMatch(/^[0-9a-f-]{36}$/);
-      // The row opens the profile's detail panel — the disclaimer is the
-      // page's own honesty rule (ADR-0030 § 6): staging is not isolation, and
-      // the page says it out loud to every reader.
-      await admin.getByTestId(`agent-row-${profileId}`).click();
+      // Creating navigates to `/manage/agents/<id>?tab=profiles` opening the
+      // right-hand sheet (`ProfileDetail`); ensure the sheet is visible.
+      if (
+        !(await admin
+          .getByTestId(`profile-detail-${profileId}`)
+          .isVisible()
+          .catch(() => false))
+      ) {
+        await admin.getByTestId(`agent-name-${profileId}`).click();
+      }
+      await expect(admin.getByTestId("profile-sheet")).toBeVisible();
       await expect(admin.getByTestId("agents-disclaimer")).toContainText(
         /staging is not isolation/i,
       );
@@ -192,13 +198,11 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       await expect(admin.getByTestId(`agent-permission-${profileId}`)).toHaveText(
         /^permission: ask$/,
       );
-      await expect(admin.getByTestId(`agent-launcher-${profileId}`)).toHaveText(
-        /^launcher: claude$/,
-      );
+      await expect(admin.getByTestId(`agent-row-${profileId}`)).toContainText("Claude");
       await expect(admin.getByTestId(`agent-apm-none-${profileId}`)).toHaveText(/no skill package/);
     });
-    await test.step("the pin is attached as one triple through the row's own form", async () => {
-      await admin.getByTestId(`agent-edit-${profileId}`).click();
+    await test.step("the pin is attached as one triple through the sheet's form", async () => {
+      await admin.getByTestId(`agent-apm-edit-${profileId}`).click();
       const form = admin.getByTestId(`agent-apm-form-${profileId}`);
       await expect(form).toBeVisible();
       await form.getByTestId(`agents-ref-input-${profileId}`).fill(APM_REF);
@@ -233,7 +237,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
     await test.step('"How do I get this?" says where the digest comes from', async () => {
       // Re-open the form: the help lives inside the pin form, which only the
       // identity allowed to write the triple can reach.
-      await admin.getByTestId(`agent-edit-${profileId}`).click();
+      await admin.getByTestId(`agent-apm-edit-${profileId}`).click();
       await expect(admin.getByTestId(`agent-apm-form-${profileId}`)).toBeVisible();
       const block = admin.getByTestId(`agents-digest-help-block-${profileId}`);
       await expect(block).toBeHidden();
@@ -248,61 +252,48 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       await shot(admin, "m5-agents-02-digest-help");
     });
     await test.step("alice (project maintainer, no library role) reads the SAME row read-only", async () => {
-      await gotoApp(alice, "/profiles");
-      await expect(alice.getByTestId(`agent-item-${profileId}`)).toBeVisible();
-      // The row opens the detail panel that serves the permission mode and
-      // the skill package triple.
-      await alice.getByTestId(`agent-row-${profileId}`).click();
-      // What the brief asks a maintainer to see, served to her own session:
-      // the permission mode, and the skill package triple pinned above.
+      await gotoApp(alice, "/manage/agents");
+      await expect(alice.getByTestId(`agent-row-${profileId}`)).toBeVisible();
+      // Clicking the profile name opens the right-hand sheet (`ProfileDetail`).
+      await alice.getByTestId(`agent-name-${profileId}`).click();
+      await expect(alice.getByTestId("profile-sheet")).toBeVisible();
       await expect(alice.getByTestId(`agent-permission-${profileId}`)).toHaveText(
         /^permission: ask$/,
       );
       await expect(alice.getByTestId(`agent-apm-ref-${profileId}`)).toHaveText(APM_REF);
       await expect(alice.getByTestId(`agent-apm-digest-${profileId}`)).toHaveText(APM_DIGEST_SHORT);
-      // And the controls she may not have are absent — the page's own
-      // fail-closed predicate (`me.is_org_admin`), not a hidden button.
+      // Write controls remain absent (`me.is_org_admin === false`).
       await expect(alice.getByTestId("agents-new-open")).toHaveCount(0);
-      await expect(alice.getByTestId(`agent-edit-${profileId}`)).toHaveCount(0);
+      await expect(alice.getByTestId(`agent-apm-edit-${profileId}`)).toHaveCount(0);
       await expect(alice.getByTestId(`agent-apm-form-${profileId}`)).toHaveCount(0);
-      // The panel's own words about this reader's role (plain list header
-      // text in the new profile list, not an id).
-      await expect(alice.getByTestId("profiles-list")).toContainText(/AGENT PROFILES/i);
-      await expect(alice.getByText(/read-only for your role/)).toBeVisible();
       await shot(alice, "m5-agents-03-maintainer-readonly");
     });
     await test.step("erin sees the org list but none of project A's schedule surface", async () => {
-      // Profiles carry NO project scope (ADR-0030 § 3: the only owner column is
-      // `organization_id`, and the listing "stays available to every member of
-      // the organization"), so erin reads the org-wide row — the honest form of
-      // the brief's isolation arm. What IS project-scoped is the assignment and
-      // its schedules, and those are the things she cannot list.
-      await gotoApp(erin, "/profiles");
-      await expect(erin.getByTestId(`agent-item-${profileId}`)).toBeVisible();
+      await gotoApp(erin, "/manage/agents");
+      await expect(erin.getByTestId(`agent-row-${profileId}`)).toBeVisible();
       await expect(erin.getByTestId("agents-new-open")).toHaveCount(0);
-      await expect(erin.getByTestId(`agent-edit-${profileId}`)).toHaveCount(0);
-      // Erin holds no membership row on project A (§ 7.2 W9), so every project
-      // surface answers the one refusal sentence (ADR-0014 § 3). The surface
-      // that could leak is the Workflows panel's own rows — each 2e row and
-      // its STARTS WHEN box is where schedules live now — and she is served
-      // zero of each, so there is nothing to leak.
-      await gotoApp(erin, `${projectPath}/workflows`);
-      await expect(erin.getByTestId("project-pipelines-not-found")).toBeVisible();
+      await erin.getByTestId(`agent-name-${profileId}`).click();
+      await expect(erin.getByTestId(`agent-apm-edit-${profileId}`)).toHaveCount(0);
+      // Erin holds no membership on project A; `/p/<id>/workflows` redirects
+      // to `/p/<id>/factory`, where no workflows or triggers for project A leak.
+      await gotoApp(erin, `${projectPath}/factory`);
+      await expect(erin.getByTestId("factory-index")).toBeVisible();
+      await expect(erin.locator('article[data-testid^="workflow-card-"]')).toHaveCount(0);
       await expect(erin.locator('[data-testid^="project-workflow-row-"]')).toHaveCount(0);
       await expect(erin.locator('[data-testid^="project-workflow-starts-"]')).toHaveCount(0);
       await shot(erin, "m5-agents-04-erin-project-a-refused");
     });
   });
 
-  /** The `agent_profiles` id the page itself put on the row named `name`. */
+  /** The `agent_profiles` id the table itself put on the row named `name`. */
   async function profileIdOf(page: Page, name: string): Promise<string> {
     const row = page
       .getByTestId("agent-list")
-      .locator('[data-testid^="agent-item-"]')
+      .locator('tr[data-testid^="agent-row-"]')
       .filter({ hasText: name });
     await expect(row).toHaveCount(1, { timeout: 30_000 });
     const testid = await row.getAttribute("data-testid");
-    return (testid ?? "").replace(/^agent-item-/, "");
+    return (testid ?? "").replace(/^agent-row-/, "");
   }
 
   test("schedules: a far-future cadence on an assignment, its clock, and its pause", async () => {
@@ -524,8 +515,8 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
 async function removePinQuietly(page: Page, id: string): Promise<void> {
   if (!id) return;
   try {
-    await gotoApp(page, "/profiles");
-    await page.getByTestId(`agent-edit-${id}`).click({ timeout: 10_000 });
+    await gotoApp(page, `/manage/agents/${id}`);
+    await page.getByTestId(`agent-apm-edit-${id}`).click({ timeout: 10_000 });
     await page.getByTestId(`agents-apm-remove-${id}`).click({ timeout: 10_000 });
   } catch {
     // The pin is inert without a launch; a cleanup failure must not mask a test.

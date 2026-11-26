@@ -76,6 +76,7 @@ export interface ChatListProps {
 export function ChatList({ scope, selectedId = "" }: ChatListProps) {
   const projectId = scope ?? "";
   const [search, setSearch] = useState("");
+  const [originFilter, setOriginFilter] = useState<"all" | "manual" | "runs">("all");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [cursor, setCursor] = useState<string | null>(null);
 
@@ -90,6 +91,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
 
   const list = useThreadList(projectId, cursor, {
     q: debouncedSearch.trim() ? debouncedSearch : undefined,
+    origin: originFilter === "runs" ? "run" : originFilter === "manual" ? "manual" : undefined,
   });
   const me = useMe();
   const projects = useProjects();
@@ -104,6 +106,8 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
   const rows = useMemo(() => {
     return list.items.filter((conversation) => {
       if (projectId && conversation.project_id !== projectId) return false;
+      if (originFilter === "runs" && conversation.origin !== "run") return false;
+      if (originFilter === "manual" && conversation.origin !== "manual") return false;
       if (query === "") return true;
       if (conversation.title.toLowerCase().includes(query)) return true;
       const legacy =
@@ -112,7 +116,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
           : null;
       return legacy ? legacy.title.toLowerCase().includes(query) : false;
     });
-  }, [list.items, projectId, query]);
+  }, [list.items, projectId, originFilter, query]);
 
   const groups = useMemo(() => {
     if (projectId) return null;
@@ -197,7 +201,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
         </Link>
       </div>
 
-      <div className="px-[8px] pb-[6px]">
+      <div className="flex flex-col gap-[6px] px-[8px] pb-[6px]">
         <input
           type="search"
           data-testid="chat-search"
@@ -207,6 +211,38 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
           onChange={(event) => setSearch(event.target.value)}
           className="h-[30px] w-full rounded-[8px] border border-line bg-surface px-[10px] text-[12.5px] text-ink placeholder:text-faint focus:border-accent focus:outline-none max-md:min-h-[44px]"
         />
+        <div
+          role="group"
+          aria-label="Chat filters"
+          data-testid="threads-filters"
+          className="grid h-[26px] grid-cols-3 gap-[2px] rounded-[8px] bg-disabled-bg p-[2px] max-md:h-auto"
+        >
+          {(
+            [
+              { id: "all", label: "All", testid: "threads-filter-all" },
+              { id: "manual", label: "One-off", testid: "threads-filter-manual" },
+              { id: "runs", label: "From runs", testid: "threads-filter-runs" },
+            ] as const
+          ).map((option) => {
+            const active = originFilter === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={active}
+                data-testid={option.testid}
+                onClick={() => setOriginFilter(option.id)}
+                className={`flex items-center justify-center rounded-[6px] border px-[6px] text-[12px] leading-none focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] ${
+                  active
+                    ? "border-fill-edge bg-surface font-semibold text-ink"
+                    : "border-transparent font-medium text-muted hover:text-ink"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {list.isPending ? (
@@ -237,7 +273,8 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
       {list.loaded && !list.isError ? (
         rows.length === 0 ? (
           <p data-testid="chat-list-empty" className="px-[8px] py-[10px] text-[12.5px] text-muted">
-            {list.items.length > 0 || (projectId.length > 0 && query !== "")
+            {list.items.length > 0 ||
+            (projectId.length > 0 && (query !== "" || originFilter !== "all"))
               ? "No chats match your search."
               : "No chats yet."}
           </p>

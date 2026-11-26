@@ -50,6 +50,7 @@ vi.mock("../components/studio/StudioCanvas", () => ({
     onWrapSideBySide?: (ids: string[]) => void;
     onEditGoal?: (scopeId: string, goal: GoalSpec) => void;
     onUnwrap?: (scopeId: string) => void;
+    onOpenInspector?: (nodeId: string) => void;
     renderNodeOverlay?: (arg: {
       nodeId: string;
       placement: { left: number; top: number; side: "right" | "left" };
@@ -136,6 +137,13 @@ vi.mock("../components/studio/StudioCanvas", () => ({
         </button>
         <button type="button" data-testid="mock-unwrap" onClick={() => props.onUnwrap?.("until")}>
           Unwrap scope
+        </button>
+        <button
+          type="button"
+          data-testid="mock-open-inspector"
+          onClick={() => props.onOpenInspector?.("until")}
+        >
+          Open inspector
         </button>
         {props.selectedId
           ? props.renderNodeOverlay?.({
@@ -303,12 +311,13 @@ spec:
     expect(await screen.findByTestId("editor-inspector-panel")).toBeTruthy();
     expect(screen.queryByTestId("agent-step-card")).toBeNull();
 
-    // Close inspector and open View YAML via "..." menu
+    // Close inspector and open Edit as YAML via "..." menu
     fireEvent.click(screen.getByTestId("editor-inspector-close"));
     fireEvent.click(screen.getByTestId("editor-more-btn"));
+    expect(screen.getByTestId("editor-menu-yaml").textContent).toBe("Edit as YAML");
     fireEvent.click(screen.getByTestId("editor-menu-yaml"));
     expect(await screen.findByTestId("editor-panel-yaml")).toBeTruthy();
-    expect(screen.getByTestId("yaml-view").textContent).toContain(
+    expect((screen.getByTestId("studio-yaml") as HTMLTextAreaElement).value).toContain(
       "Review unit test coverage first.",
     );
   });
@@ -476,32 +485,49 @@ spec:
     await waitFor(() =>
       expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBe("until"),
     );
+    expect(screen.queryByTestId("editor-inspector-panel")).toBeNull();
+
+    // Open full inspector explicitly (via GoalFrame "More settings" or node menu).
+    fireEvent.click(screen.getByTestId("mock-open-inspector"));
+    expect(await screen.findByTestId("editor-inspector-panel")).toBeTruthy();
 
     // Open YAML panel to verify the until scope + goal judge step
     fireEvent.click(screen.getByTestId("editor-more-btn"));
     fireEvent.click(screen.getByTestId("editor-menu-yaml"));
-    expect((await screen.findByTestId("yaml-view")).textContent).toContain("kind: until");
-    expect(screen.getByTestId("yaml-view").textContent).toContain("GOAL_MET");
+    expect(((await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement).value).toContain(
+      "kind: until",
+    );
+    expect((screen.getByTestId("studio-yaml") as HTMLTextAreaElement).value).toContain("GOAL_MET");
     fireEvent.click(screen.getByTestId("editor-panel-close"));
 
     // Edit goal to command kind, then unwrap
     fireEvent.click(screen.getByTestId("mock-edit-goal"));
     fireEvent.click(screen.getByTestId("editor-more-btn"));
     fireEvent.click(screen.getByTestId("editor-menu-yaml"));
-    expect((await screen.findByTestId("yaml-view")).textContent).toContain("executable: npm");
+    expect(((await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement).value).toContain(
+      "executable: npm",
+    );
     fireEvent.click(screen.getByTestId("editor-panel-close"));
 
     fireEvent.click(screen.getByTestId("mock-unwrap"));
     fireEvent.click(screen.getByTestId("editor-more-btn"));
     fireEvent.click(screen.getByTestId("editor-menu-yaml"));
-    expect((await screen.findByTestId("yaml-view")).textContent).not.toContain("kind: until");
+    expect(((await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement).value).not.toContain(
+      "kind: until",
+    );
     fireEvent.click(screen.getByTestId("editor-panel-close"));
 
-    // Side by side wrap
+    // Side by side wrap keeps the new scope selected without opening the inspector
     fireEvent.click(screen.getByTestId("mock-wrap-side"));
+    await waitFor(() =>
+      expect(screen.getByTestId("studio-canvas").getAttribute("data-selected")).toBe("parallel"),
+    );
+    expect(screen.queryByTestId("editor-inspector-panel")).toBeNull();
     fireEvent.click(screen.getByTestId("editor-more-btn"));
     fireEvent.click(screen.getByTestId("editor-menu-yaml"));
-    expect((await screen.findByTestId("yaml-view")).textContent).toContain("kind: parallel");
+    expect(((await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement).value).toContain(
+      "kind: parallel",
+    );
   });
 
   it("renders ?run=<runId> read-only overlay, VerdictStack judge reason, and top-center run banner", async () => {
@@ -834,5 +860,123 @@ describe("the assistant proposal lifecycle (via Workflow settings)", () => {
     fireEvent.click(screen.getByTestId("assistant-proposal-discard"));
     expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
     expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
+  });
+});
+
+describe("editor gaps: Edit as YAML, Run inputs, Use in a project", () => {
+  it("edits YAML through the draft save path and keeps lastGood canvas on parse error", async () => {
+    const { requests } = mount(studioPath, [{ path: draftPath, body: parseableDraft() }]);
+    await screen.findByTestId("studio-canvas");
+
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    expect(screen.getByTestId("editor-menu-yaml").textContent).toBe("Edit as YAML");
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+
+    const textarea = (await screen.findByTestId("studio-yaml")) as HTMLTextAreaElement;
+    expect(screen.getByTestId("editor-panel-yaml").className).toContain("w-[520px]");
+
+    // Parse error keeps the canvas on the last good document and shows studio-yaml-error
+    fireEvent.change(textarea, { target: { value: "kind: Pipeline\nspec: [" } });
+    const err = await screen.findByTestId("studio-yaml-error");
+    expect(err.textContent?.length).toBeGreaterThan(0);
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-stale")).toBe("true");
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-read-only")).toBe("true");
+
+    // Valid edit restores canvas and saves via debounced autosave PUT
+    vi.useFakeTimers();
+    fireEvent.change(textarea, {
+      target: {
+        value: `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: updated-yaml
+spec:
+  nodes:
+    - id: plan
+      kind: agent.acp
+      config:
+        profile: reviewer
+        prompt: Updated via YAML.
+`,
+      },
+    });
+    expect(screen.queryByTestId("studio-yaml-error")).toBeNull();
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-stale")).toBe("false");
+
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1);
+    expect(requestsTo(requests, draftPath, "PUT")[0].body).toContain("Updated via YAML.");
+  });
+
+  it("stays read-only View YAML when viewing an older version", async () => {
+    mount(studioPath, [
+      { path: `/api/v1/runs`, body: { runs: [] } },
+      { path: draftPath, body: parseableDraft(validValidation as ValidateResponse) },
+    ]);
+    await screen.findByTestId("studio-canvas");
+
+    fireEvent.click(screen.getByTestId("editor-versions-btn"));
+    const panel = await screen.findByTestId("versions-panel");
+    fireEvent.click(within(panel).getByTestId(`versions-select-v${wireRevision.revision_number}`));
+    await screen.findByTestId("version-viewing-banner");
+
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    expect(screen.getByTestId("editor-menu-yaml").textContent).toBe("View YAML");
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    expect(await screen.findByTestId("yaml-view")).toBeTruthy();
+    expect(screen.queryByTestId("studio-yaml")).toBeNull();
+  });
+
+  it("mounts Run inputs… panel from the … menu and from the inspector Who fills these → link", async () => {
+    mount(studioPath, [
+      { path: draftPath, body: parseableDraft() },
+      { path: `/api/v1/runs`, body: { runs: [] } },
+    ]);
+    await screen.findByTestId("studio-canvas");
+
+    // Open Workflow settings inspector and click "Who fills these →"
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-settings"));
+    const link = await screen.findByTestId("insp-inputs-who-fills");
+    expect(link.textContent).toBe("Who fills these →");
+    fireEvent.click(link);
+
+    const panel = await screen.findByTestId("editor-panel-inputs");
+    expect(panel.className).toContain("w-[520px]");
+    expect(await within(panel).findByTestId("inputs-tab")).toBeTruthy();
+    expect(within(panel).getByTestId("who-fills")).toBeTruthy();
+
+    // Also reachable directly from the "…" menu
+    fireEvent.click(screen.getByTestId("editor-panel-close"));
+    expect(screen.queryByTestId("editor-panel-inputs")).toBeNull();
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-inputs"));
+    expect(await screen.findByTestId("editor-panel-inputs")).toBeTruthy();
+  });
+
+  it("opens UseInRepoDialog from the editor … menu, preselected in a project scope", async () => {
+    mount(`/p/proj-1/factory/${WIRE_PIPELINE_ID}?draft=${WIRE_DRAFT_ID}`, [
+      { path: draftPath, body: parseableDraft() },
+      {
+        path: "/api/v1/projects/proj-1",
+        body: { id: "proj-1", slug: "p1", name: "Project One", my_role: "maintainer" },
+      },
+      {
+        path: "/api/v1/projects",
+        body: { items: [{ id: "proj-1", slug: "p1", name: "Project One", my_role: "maintainer" }] },
+      },
+      { path: "/api/v1/projects/proj-1/assignments", body: { assignments: [] } },
+      { path: "/api/v1/projects/proj-1/repos", body: { items: [] } },
+    ]);
+    await screen.findByTestId("studio-canvas");
+
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-use"));
+
+    await screen.findByTestId("use-in-repo-dialog");
+    const select = (await screen.findByTestId("assign-project-select")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("proj-1"));
   });
 });

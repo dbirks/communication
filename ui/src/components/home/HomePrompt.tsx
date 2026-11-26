@@ -23,8 +23,13 @@
  */
 import { useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
-import { IconFolder, IconPackage } from "@tabler/icons-react";
-import { useCreateConversation, useProjects, useRepositories } from "../../api/queries";
+import { IconFolder, IconPackage, IconRobot } from "@tabler/icons-react";
+import {
+  useAgentProfiles,
+  useCreateConversation,
+  useProjects,
+  useRepositories,
+} from "../../api/queries";
 import { AgentPicker } from "../shell/AgentPicker";
 import { Menu } from "../ds/Menu";
 import { PromptBox, PromptChip } from "../ds/PromptBox";
@@ -74,18 +79,42 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
 
   const [storedId, setStoredId] = useState<string | null>(() => readStoredProject());
   const [repository, setRepository] = useState<string | null>(null);
-  const [profileId, setProfileId] = useState<string | null>(null);
+  const [agentPicks, setAgentPicks] = useState<Record<string, string>>({});
   const [text, setText] = useState("");
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const projectRef = useRef<HTMLButtonElement>(null);
   const repoRef = useRef<HTMLButtonElement>(null);
 
-  // The stored pick only counts while the project still exists; a single
-  // project is not a choice, so the box opens on it (the dialog's rule).
+  // A stored project only counts while it still exists.
   const picked = storedId && projects.some((project) => project.id === storedId) ? storedId : "";
-  const selectedId = projectId ?? (picked || (projects.length === 1 ? projects[0].id : ""));
+  const selectedId = projectId ?? (picked || projects[0]?.id || "");
   const selected = projects.find((project) => project.id === selectedId) ?? null;
+
+  const profilesQuery = useAgentProfiles();
+  const profiles = profilesQuery.data?.items ?? [];
+  let storedAgent: string | null = null;
+  try {
+    storedAgent = selectedId
+      ? localStorage.getItem(`communication.home.agent.${selectedId}`)
+      : null;
+  } catch {
+    // Storage may be unavailable in private browsing.
+  }
+  const preferredAgent = agentPicks[selectedId] ?? storedAgent;
+  // NewConversationDialog initializes its profile to ""; it has no default,
+  // so fall back to the first profile.
+  const profileId = selectedId
+    ? (profiles.find((profile) => profile.id === preferredAgent)?.id ?? profiles[0]?.id ?? null)
+    : null;
+  const pickAgent = (id: string) => {
+    setAgentPicks((picks) => ({ ...picks, [selectedId]: id }));
+    try {
+      localStorage.setItem(`communication.home.agent.${selectedId}`, id);
+    } catch {
+      // Keep the selection in memory when storage is unavailable.
+    }
+  };
 
   const reposQuery = useRepositories(selectedId);
   const repos = reposQuery.data?.items ?? [];
@@ -150,7 +179,7 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
         onSubmit={submit}
         rows={2}
         disabled={noProjects}
-        busy={create.isPending}
+        busy={create.isPending || !selectedId || !profileId}
         footer={footer}
         chips={
           <>
@@ -234,14 +263,24 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
                 />
               </>
             ) : null}
-            <AgentPicker
-              value={profileId}
-              onChange={setProfileId}
-              side="bottom"
-              testid="home-prompt-agent"
-              disabled={noProjects || !selectedId}
-              disabledReason={noProjects ? "Add a project first" : "Choose a project first"}
-            />
+            {selectedId && profilesQuery.isSuccess && profiles.length === 0 ? (
+              <PromptChip
+                testid="home-prompt-agent"
+                icon={<IconRobot size={14} stroke={1.5} aria-hidden />}
+                onClick={() => navigate(routes.manage("agents"))}
+              >
+                No agents yet
+              </PromptChip>
+            ) : (
+              <AgentPicker
+                value={profileId}
+                onChange={pickAgent}
+                side="bottom"
+                testid="home-prompt-agent"
+                disabled={noProjects || !selectedId}
+                disabledReason={noProjects ? "Add a project first" : "Choose a project first"}
+              />
+            )}
             {extraChips}
           </>
         }

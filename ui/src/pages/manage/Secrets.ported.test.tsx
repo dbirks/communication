@@ -1,14 +1,26 @@
 /**
- * `/projects/:id/settings` — J8. The tests that matter here are the ones about
- * what is *not* on screen: a value that was typed into a create form must not
- * come back, and a path that escapes the checkout must not be postable.
+ * Manage → Secrets (`/manage/secrets?project=<id>`): the secret-metadata,
+ * create/rotate/revoke, `.env` mount and materialization-audit behaviours the
+ * old per-project Settings page (`pages/ProjectSettings.tsx`) used to own.
+ *
+ * The redesign moved the three panels — `SecretsPanel`, `SecretMountsPanel`,
+ * `MaterializationsPanel` — out of `/p/:p/settings` and into this section
+ * unchanged (`pages/manage/Secrets.tsx`), so every assertion below is the one
+ * the old page carried; only the address and the way the project is chosen
+ * (the `?project=` filter) are new. Nothing was weakened on the way: the value
+ * still never comes back, a refusal still reads as a refusal, and the mount
+ * form still refuses a path that escapes the checkout.
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { renderApp } from "../test/render";
+import { cleanup, render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import SecretsSection from "./Secrets";
 import {
   claudeProfile,
   meFixture,
+  mockFetch,
   projectFixture,
   requestsTo,
   secretFixture,
@@ -19,8 +31,13 @@ import {
   workspaceFixture,
   revokedSecretFixture,
   type RouteStub,
-} from "../test/fakes";
-import type { Member, Project, Repository, SecretMaterialization } from "../api/types";
+} from "../../test/fakes";
+import type { Member, Project, Repository, SecretMaterialization } from "../../api/types";
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const projectId = projectFixture.id;
 const projectPath = `/api/v1/projects/${projectId}`;
@@ -55,10 +72,13 @@ const materialization: SecretMaterialization = {
   cleaned_by: "startup_sweep",
 };
 
-function settingsRoutes(project: Project, extra: RouteStub[] = []): RouteStub[] {
+function secretsRoutes(project: Project, extra: RouteStub[] = []): RouteStub[] {
   return [
     { path: "/api/v1/me", body: meFixture },
     ...extra,
+    // The section picks the project out of the caller's project list; first
+    // match wins in the fetch mock, so the list above any override.
+    { path: "/api/v1/projects", method: "GET", body: { items: [project] } },
     { path: secretsPath, method: "GET", body: { secrets: [secretFixture, revokedSecretFixture] } },
     {
       path: mountsPath,
@@ -74,17 +94,26 @@ function settingsRoutes(project: Project, extra: RouteStub[] = []): RouteStub[] 
   ];
 }
 
-function renderSettings(project: Project = projectFixture, extra: RouteStub[] = []) {
-  return renderApp({
-    // The *router* path, not the API path: `projectPath` is `/api/v1/projects/…`.
-    path: `/projects/${projectId}/settings`,
-    routes: settingsRoutes(project, extra),
+function renderSecrets(project: Project = projectFixture, extra: RouteStub[] = []) {
+  const { requests } = mockFetch(secretsRoutes(project, extra));
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[`/manage/secrets?project=${projectId}`]}>
+        <Routes>
+          <Route path="/manage/secrets" element={<SecretsSection />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { requests };
 }
 
-describe("/projects/:projectId/settings — secret metadata", () => {
+describe("/manage/secrets — secret metadata", () => {
   it("lists SecretRef metadata and says plainly that no value is listed", async () => {
-    renderSettings();
+    renderSecrets();
 
     const row = await screen.findByTestId(`secret-row-${secretFixture.slug}`);
     expect(row.textContent).toContain("project");
@@ -105,20 +134,17 @@ describe("/projects/:projectId/settings — secret metadata", () => {
   });
 
   it("reads as an allowlist denial when no profile may receive a secret", async () => {
-    renderSettings();
+    renderSecrets();
     const revoked = await screen.findByTestId(`secret-row-${revokedSecretFixture.slug}`);
     // Empty allowlist is "denied to every profile", never a blank cell.
     expect(revoked.textContent).toContain("no profile may receive it");
   });
 
   it("shows the honest empty state when a project has no references", async () => {
-    renderApp({
-      path: `/projects/${projectId}/settings`,
-      routes: settingsRoutes(projectFixture, [
-        { path: secretsPath, method: "GET", body: { secrets: [] } },
-        { path: mountsPath, method: "GET", body: { secret_mounts: [] } },
-      ]),
-    });
+    renderSecrets(projectFixture, [
+      { path: secretsPath, method: "GET", body: { secrets: [] } },
+      { path: mountsPath, method: "GET", body: { secret_mounts: [] } },
+    ]);
 
     expect((await screen.findByTestId("secret-list-empty")).textContent).toMatch(
       /no secret references yet/i,
@@ -129,7 +155,7 @@ describe("/projects/:projectId/settings — secret metadata", () => {
   });
 
   it("reports a forbidden secrets read instead of an empty list", async () => {
-    renderSettings({ ...projectFixture, my_role: "viewer" }, [
+    renderSecrets({ ...projectFixture, my_role: "viewer" }, [
       {
         path: secretsPath,
         method: "GET",
@@ -149,10 +175,10 @@ describe("/projects/:projectId/settings — secret metadata", () => {
   });
 });
 
-describe("/projects/:projectId/settings — the value never comes back", () => {
+describe("/manage/secrets — the value never comes back", () => {
   it("posts the typed value once, then holds nothing on screen", async () => {
     const created = { ...secretFixture, id: "01987a76-9999-7000-8000-abcdef012345" };
-    const { requests } = renderSettings(projectFixture, [
+    const { requests } = renderSecrets(projectFixture, [
       { path: secretsPath, method: "POST", status: 201, body: created },
     ]);
 
@@ -185,7 +211,7 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
   });
 
   it("keeps a malformed slug from being posted at all", async () => {
-    const { requests } = renderSettings(projectFixture, [
+    const { requests } = renderSecrets(projectFixture, [
       { path: secretsPath, method: "POST", status: 201, body: secretFixture },
     ]);
     fireEvent.change(await screen.findByTestId("secret-slug"), { target: { value: "Bad_Slug" } });
@@ -198,7 +224,7 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
   });
 
   it("says a duplicate slug is a rotation, not a second reference", async () => {
-    renderSettings(projectFixture, [
+    renderSecrets(projectFixture, [
       {
         path: secretsPath,
         method: "POST",
@@ -222,7 +248,7 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
 
   it("rotates by adding a version through a masked input that clears", async () => {
     const versionsPath = `${secretsPath}/${secretId}/versions`;
-    const { requests } = renderSettings(projectFixture, [
+    const { requests } = renderSecrets(projectFixture, [
       { path: versionsPath, method: "POST", status: 200, body: { secret_version: 4 } },
     ]);
 
@@ -246,7 +272,7 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
 
   it("revokes with the version-0 semantics named on the button's target", async () => {
     const revokePath = `${secretsPath}/${secretId}:revoke`;
-    const { requests } = renderSettings(projectFixture, [
+    const { requests } = renderSecrets(projectFixture, [
       { path: revokePath, method: "POST", body: revokedSecretFixture },
     ]);
     fireEvent.click(await screen.findByTestId(`secret-revoke-${secretFixture.slug}`));
@@ -255,7 +281,7 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
 
   it("flips the audit policy explicitly rather than silently", async () => {
     const putPath = `${secretsPath}/${secretId}`;
-    const { requests } = renderSettings(projectFixture, [
+    const { requests } = renderSecrets(projectFixture, [
       {
         path: putPath,
         method: "PUT",
@@ -271,7 +297,7 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
   });
 
   it("gives a viewer no write affordance at all, and says why", async () => {
-    renderSettings({ ...projectFixture, my_role: "viewer" });
+    renderSecrets({ ...projectFixture, my_role: "viewer" });
     await screen.findByTestId("secret-list");
     expect(screen.queryByTestId("secret-create-form")).toBeNull();
     expect(screen.queryByTestId(`secret-revoke-${secretFixture.slug}`)).toBeNull();
@@ -280,9 +306,9 @@ describe("/projects/:projectId/settings — the value never comes back", () => {
   });
 });
 
-describe("/projects/:projectId/settings — the `.env` mount form", () => {
+describe("/manage/secrets — the `.env` mount form", () => {
   it("warns about the four `.env` contract rules before anything is typed", async () => {
-    renderSettings();
+    renderSecrets();
     await screen.findByTestId(`secret-row-${secretFixture.slug}`);
     const lines = screen.getAllByTestId("mount-policy-line").map((line) => line.textContent);
     expect(lines.join(" ")).toContain("0600");
@@ -294,7 +320,7 @@ describe("/projects/:projectId/settings — the `.env` mount form", () => {
   });
 
   it("refuses an absolute path locally, with the reason under the field", async () => {
-    const { requests } = renderSettings();
+    const { requests } = renderSecrets();
     await screen.findByTestId(`secret-row-${secretFixture.slug}`);
     fireEvent.change(screen.getByTestId("mount-secret"), { target: { value: secretId } });
     fireEvent.change(screen.getByTestId("mount-repo"), { target: { value: repositoryId } });
@@ -307,7 +333,7 @@ describe("/projects/:projectId/settings — the `.env` mount form", () => {
   });
 
   it("refuses traversal with `path not in workspace`", async () => {
-    renderSettings();
+    renderSecrets();
     await screen.findByTestId(`secret-row-${secretFixture.slug}`);
     fireEvent.change(screen.getByTestId("mount-secret"), { target: { value: secretId } });
     fireEvent.change(screen.getByTestId("mount-repo"), { target: { value: repositoryId } });
@@ -318,7 +344,7 @@ describe("/projects/:projectId/settings — the `.env` mount form", () => {
   });
 
   it("posts a relative target with the repository it lives under", async () => {
-    const { requests } = renderSettings(projectFixture, [
+    const { requests } = renderSecrets(projectFixture, [
       { path: mountsPath, method: "POST", status: 201, body: secretMountFixture },
     ]);
     await screen.findByTestId(`secret-row-${secretFixture.slug}`);
@@ -343,7 +369,7 @@ describe("/projects/:projectId/settings — the `.env` mount form", () => {
   });
 
   it("validates an env delivery by variable name, not by path", async () => {
-    const { requests } = renderSettings();
+    const { requests } = renderSecrets();
     await screen.findByTestId(`secret-row-${secretFixture.slug}`);
     fireEvent.change(screen.getByTestId("mount-secret"), { target: { value: secretId } });
     fireEvent.change(screen.getByTestId("mount-delivery"), { target: { value: "env" } });
@@ -359,7 +385,7 @@ describe("/projects/:projectId/settings — the `.env` mount form", () => {
   });
 
   it("names the lifecycle rule on the row rather than paraphrasing it", async () => {
-    renderSettings();
+    renderSecrets();
     await screen.findByTestId(`secret-row-${secretFixture.slug}`);
     const row = await screen.findByTestId(`secret-mount-row-${secretFixture.slug}`);
     expect(row.textContent).toContain(secretMountFixture.relative_path ?? "");
@@ -372,26 +398,22 @@ describe("/projects/:projectId/settings — the `.env` mount form", () => {
 
   it("removes a mount", async () => {
     const deletePath = `${mountsPath}/${mountId}`;
-    const { requests } = renderSettings();
+    const { requests } = renderSecrets();
     await screen.findByTestId(`secret-mount-row-${secretFixture.slug}`);
     fireEvent.click(screen.getByTestId(`secret-mount-delete-${mountId}`));
     await waitFor(() => expect(requestsTo(requests, deletePath, "DELETE").length).toBe(1));
   });
 });
 
-describe("/projects/:projectId/settings — materialization audit", () => {
+describe("/manage/secrets — materialization audit", () => {
   it("fills the audit panel only once a secret is selected", async () => {
-    renderSettings(
-      projectFixture,
-
-      [
-        {
-          path: `${secretsPath}/${secretId}/materializations`,
-          method: "GET",
-          body: { materializations: [materialization] },
-        },
-      ],
-    );
+    renderSecrets(projectFixture, [
+      {
+        path: `${secretsPath}/${secretId}/materializations`,
+        method: "GET",
+        body: { materializations: [materialization] },
+      },
+    ]);
 
     expect((await screen.findByTestId("materialization-empty")).textContent).toContain(
       "Select a secret",
@@ -406,7 +428,7 @@ describe("/projects/:projectId/settings — materialization audit", () => {
   });
 
   it("raises a finding when a materialization reports no cleanup", async () => {
-    renderSettings(projectFixture, [
+    renderSecrets(projectFixture, [
       {
         path: `${secretsPath}/${secretId}/materializations`,
         method: "GET",
@@ -421,7 +443,7 @@ describe("/projects/:projectId/settings — materialization audit", () => {
   });
 
   it("says a secret that was never materialized was never materialized", async () => {
-    renderSettings(projectFixture, [
+    renderSecrets(projectFixture, [
       {
         path: `${secretsPath}/${secretId}/materializations`,
         method: "GET",
@@ -432,79 +454,5 @@ describe("/projects/:projectId/settings — materialization audit", () => {
     expect((await screen.findByTestId("materialization-list-empty")).textContent).toContain(
       "Never materialized",
     );
-  });
-});
-
-describe("the agent-mail setting (ADR-0072)", () => {
-  it("shows the default off, PATCHes the switch with the project version, and reports the fresh state", async () => {
-    const enabled: Project = { ...projectFixture, agent_mail_enabled: true, version: 2 };
-    // The settings route answers GETs; make the refetch after the PATCH
-    // return the patched project, as the server would (the stub body
-    // function counts this route's requests, 1-based).
-    const { requests } = renderSettings(projectFixture, [
-      { path: projectPath, method: "PATCH", body: enabled },
-      { path: projectPath, method: "GET", body: (n: number) => (n > 1 ? enabled : projectFixture) },
-    ]);
-    const panel = await screen.findByTestId("agent-mail-panel");
-    expect(within(panel).getByTestId("agent-mail-state").textContent).toContain("off");
-    const toggle = within(panel).getByTestId("agent-mail-toggle") as HTMLInputElement;
-    expect(toggle.checked).toBe(false);
-
-    fireEvent.click(toggle);
-    await waitFor(
-      () =>
-        expect(screen.getByTestId("agent-mail-state").textContent).toContain(
-          "on — threads in this project may ask",
-        ),
-      { timeout: 2000 },
-    );
-    const calls = requestsTo(requests, projectPath, "PATCH");
-    expect(calls).toHaveLength(1);
-    expect(JSON.parse(String(calls[0].body))).toEqual({ agent_mail_enabled: true, version: 1 });
-  });
-
-  it("a read-only role sees the state but cannot move it", async () => {
-    renderSettings({ ...projectFixture, my_role: "viewer", agent_mail_enabled: true });
-    const panel = await screen.findByTestId("agent-mail-panel");
-    expect((within(panel).getByTestId("agent-mail-toggle") as HTMLInputElement).disabled).toBe(
-      true,
-    );
-    expect(within(panel).getByTestId("agent-mail-locked").textContent).toContain("maintainer");
-    expect(within(panel).getByTestId("agent-mail-state").textContent).toContain("on");
-  });
-
-  it("a lost CAS race says so instead of pretending the write landed", async () => {
-    renderSettings(projectFixture, [{ path: projectPath, method: "PATCH", status: 409 }]);
-    fireEvent.click(await screen.findByTestId("agent-mail-toggle"));
-    const error = await screen.findByTestId("agent-mail-error");
-    expect(error.textContent).toContain("beneath you");
-  });
-});
-
-describe("the settings section's tabs (finding 09)", () => {
-  it("marks Settings current and offers Members as the section's other tab", async () => {
-    renderSettings();
-
-    await screen.findByTestId("settings-title");
-    const nav = screen.getByRole("navigation", { name: "Settings sections" });
-    const tabs = within(nav).getAllByRole("link");
-    expect(tabs.map((tab) => tab.getAttribute("data-testid"))).toEqual([
-      "project-settings-tab-settings",
-      "project-settings-tab-members",
-    ]);
-    // Routes, not fragments: Members is the page that already owns the list.
-    expect(tabs.map((tab) => tab.getAttribute("href"))).toEqual([
-      `/p/${projectId}/settings`,
-      `/p/${projectId}/members`,
-    ]);
-    expect(
-      within(nav).getByTestId("project-settings-tab-settings").getAttribute("aria-current"),
-    ).toBe("page");
-    expect(
-      within(nav).getByTestId("project-settings-tab-members").getAttribute("aria-current"),
-    ).toBeNull();
-    // It is a tab strip, not the hover-only menu the sidebar used to hide these
-    // behind: no action on this page waits for a pointer.
-    expect(nav.querySelectorAll("[class*='opacity-0']")).toHaveLength(0);
   });
 });

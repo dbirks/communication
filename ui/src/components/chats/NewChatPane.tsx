@@ -12,6 +12,7 @@ import { IconArrowLeft, IconChevronDown, IconFolder, IconGitBranch } from "@tabl
 import {
   useAgentProfiles,
   useCreateConversation,
+  useProject,
   useProjects,
   useRepositories,
 } from "../../api/queries";
@@ -39,6 +40,7 @@ export interface NewChatPaneProps {
 export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
   const navigate = useNavigate();
   const projects = useProjects();
+  const scopedProject = useProject(scope ?? "");
   const profiles = useAgentProfiles();
   const recentList = useThreadList(scope ?? "", null);
 
@@ -61,7 +63,23 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
   const activeProjectId =
     scope ?? (selectedProjectId || (writableProjects.length === 1 ? writableProjects[0].id : ""));
 
-  const activeProject = (projects.data?.items ?? []).find((p) => p.id === activeProjectId) ?? null;
+  const resolvedScopedProject = scope
+    ? (scopedProject.data ?? (projects.data?.items ?? []).find((p) => p.id === scope) ?? null)
+    : null;
+  const activeProject = scope
+    ? resolvedScopedProject
+    : (writableProjects.find((p) => p.id === activeProjectId) ?? null);
+
+  const isScopedViewer = Boolean(scope && resolvedScopedProject?.my_role === "viewer");
+  const noWritableProjects = !scope && projects.data !== undefined && writableProjects.length === 0;
+  const cannotStartChat = isScopedViewer || noWritableProjects;
+  const viewerNotice = isScopedViewer
+    ? resolvedScopedProject?.name
+      ? `You can read chats in ${resolvedScopedProject.name}, but only members can start one.`
+      : "You can read chats here, but only members can start one."
+    : noWritableProjects
+      ? "You can read chats, but only members can start one."
+      : null;
 
   const repositories = useRepositories(activeProjectId);
   const repoItems = repositories.data?.items ?? [];
@@ -250,22 +268,51 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
       <div className="mx-auto mt-[14vh] flex w-full max-w-[700px] flex-col gap-[18px] px-[20px] pb-[40px]">
         <h2 className="text-center text-[24px] font-bold text-ink">New chat</h2>
 
-        <PromptBox
-          value={text}
-          onChange={(next) => {
-            setText(next);
-            if (validationError) setValidationError(null);
-          }}
-          onSubmit={handleSubmit}
-          placeholder="What should we work on?"
-          label="New chat prompt"
-          autoFocus
-          rows={2}
-          busy={create.isPending}
-          chips={chips}
-          footer={validationError || create.error ? footer : undefined}
-          testid="new-chat-prompt"
-        />
+        {cannotStartChat ? (
+          <div
+            data-testid="new-chat-prompt"
+            className="rounded-[14px] border border-line-strong bg-surface px-[16px] py-[14px] shadow-[var(--shadow-prompt)]"
+          >
+            <textarea
+              data-testid="new-chat-prompt-input"
+              aria-label="New chat prompt"
+              value=""
+              rows={2}
+              readOnly
+              disabled
+              placeholder="What should we work on?"
+              className="block w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint disabled:text-disabled-fg"
+            />
+            <div className="mt-[10px] flex items-center gap-[8px]">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-[6px]">{chips}</div>
+            </div>
+            {viewerNotice ? (
+              <div
+                className="mt-[8px] text-[12.5px] text-muted"
+                data-testid="new-chat-viewer-notice"
+              >
+                {viewerNotice}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <PromptBox
+            value={text}
+            onChange={(next) => {
+              setText(next);
+              if (validationError) setValidationError(null);
+            }}
+            onSubmit={handleSubmit}
+            placeholder="What should we work on?"
+            label="New chat prompt"
+            autoFocus
+            rows={2}
+            busy={create.isPending}
+            chips={chips}
+            footer={validationError || create.error ? footer : undefined}
+            testid="new-chat-prompt"
+          />
+        )}
 
         {recentChats.length > 0 ? (
           <div className="mt-[10px] flex flex-col gap-[4px]" data-testid="new-chat-pick-up">

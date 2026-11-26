@@ -50,6 +50,16 @@ function expectedChip(
   return workerHalf && probeHalf ? "REQUIRED · VERIFIED" : "NOT VERIFIED";
 }
 
+/** Harness label as Manage → Agents → ProfilesTable renders it. */
+function harnessLabel(launcherId: string): string {
+  const known: Record<string, string> = {
+    claude: "Claude",
+    codex: "Codex",
+    antigravity: "Antigravity",
+  };
+  return known[launcherId] ?? launcherId.charAt(0).toUpperCase() + launcherId.slice(1);
+}
+
 /** GET /api/v1/agent-profiles, then find the row just created by name. */
 async function createdProfile(request: import("@playwright/test").APIRequestContext) {
   const after = await apiAgentProfiles(request);
@@ -74,13 +84,13 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
       await apiSandbox(page.request),
     ];
     expect(profiles.length).toBeGreaterThan(0);
-    await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
-    const rows = page.locator('[data-testid^="agent-item-"]');
+    await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
+    const rows = page.locator('[data-testid^="agent-row-"]');
     await expect(rows.first()).toBeVisible({ timeout: 30_000 });
     expect(await rows.count(), "one row per profile").toBe(profiles.length);
     for (const profile of profiles) {
-      await expect(page.getByTestId(`agent-launcher-${profile.id}`)).toHaveText(
-        `launcher: ${profile.launcher_id}`,
+      await expect(page.getByTestId(`agent-row-${profile.id}`)).toContainText(
+        harnessLabel(profile.launcher_id),
       );
       const chip = page.getByTestId(`profile-chip-${profile.id}`);
       // The chip renders glyph + text; assert the text span exactly.
@@ -96,16 +106,17 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     await evidence(
       page,
       "shell-p5-list",
-      `/profiles lists the ${profiles.length} API profiles; every launcher line and sandbox chip matches C5 (/api/v1/launchers) plus /api/v1/system/sandbox`,
+      `/manage/agents lists the ${profiles.length} API profiles; every harness cell and sandbox chip matches C5 (/api/v1/launchers) plus /api/v1/system/sandbox`,
     );
 
-    // Detail: open the first row; the capability cells mirror the launcher's
-    // recorded evidence (result + date, never a promise).
+    // Detail: open the first row's sheet; the capability cells mirror the
+    // launcher's recorded evidence (result + date, never a promise).
     const profile = profiles[0];
     const launcher = launchers.find((l) => l.id === profile.launcher_id);
-    await page.getByTestId(`agent-row-${profile.id}`).click();
+    await page.getByTestId(`agent-name-${profile.id}`).click();
+    await expect(page.getByTestId("profile-sheet")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId(`profile-detail-${profile.id}`)).toBeVisible({ timeout: 30_000 });
-    expect(page.url()).toContain(`/profiles/${profile.id}`);
+    expect(page.url()).toContain(`/manage/agents/${profile.id}`);
     for (const capability of launcher?.capabilities ?? []) {
       const cell = page.getByTestId(`profile-capability-${profile.id}-${capability.capability}`);
       await expect(cell).toBeVisible();
@@ -137,7 +148,7 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const launchers = await apiLaunchers(page.request);
-    await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
     await page.getByTestId("agents-new-open").click();
     const dialog = page.getByTestId("new-profile-dialog");
     await expect(dialog).toBeVisible();
@@ -174,7 +185,7 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
   }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
     await page.getByTestId("agents-new-open").click();
     await expect(page.getByTestId("new-profile-dialog")).toBeVisible();
     await page.getByTestId("new-profile-card-claude").click();
@@ -184,25 +195,26 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     );
     await page.getByTestId("agents-new-submit").click();
     // Contract C6: on the POST 201 the dialog hands the row to the caller
-    // through onCreated and the caller closes it — /profiles navigates to
-    // the new profile's detail (no "Done" confirmation click in between).
+    // through onCreated and the caller closes it — Manage → Agents opens the
+    // new profile's sheet (no "Done" confirmation click in between).
     expect((await post).status(), "POST /api/v1/agent-profiles answers 201").toBe(201);
     const row = await createdProfile(page.request);
     await expect(page.getByTestId("new-profile-dialog")).toBeHidden();
-    await expect(page).toHaveURL(/\/profiles\/[^/]+$/);
+    await expect(page).toHaveURL(/\/manage\/agents\/[^/?]+/);
+    await expect(page.getByTestId("profile-sheet")).toBeVisible();
     await evidence(
       page,
       "shell-p5-created-dialog",
-      `creating "${PROFILE_NAME}" through the dialog closes it (the caller acts on onCreated) and lands on the new profile's detail page`,
+      `creating "${PROFILE_NAME}" through the dialog closes it (the caller acts on onCreated) and opens the new profile's sheet`,
     );
-    await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId(`agent-name-${row.id}`)).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId(`agent-launcher-${row.id}`)).toHaveText("launcher: claude");
+    await expect(page.getByTestId(`agent-row-${row.id}`)).toContainText("Claude");
     stopWatching();
     await evidence(
       page,
       "shell-p5-created-list",
-      `GET /api/v1/agent-profiles and the /profiles list both carry the new row "${PROFILE_NAME}" (id ${row.id.slice(0, 8)}…)`,
+      `GET /api/v1/agent-profiles and /manage/agents both carry the new row "${PROFILE_NAME}" (id ${row.id.slice(0, 8)}…)`,
     );
   });
 
@@ -212,7 +224,7 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const versionName = `shell p5 version ${STAMP}`;
-    await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
     await page.getByTestId("agents-new-open").click();
     const dialog = page.getByTestId("new-profile-dialog");
     await expect(dialog).toBeVisible();
@@ -224,8 +236,8 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     await page.getByTestId("agents-new-submit").click();
     expect((await post).status()).toBe(201);
     await expect(dialog).toBeHidden();
-    await expect(page).toHaveURL(/\/profiles\/[^/?]+$/);
-    const profileId = /\/profiles\/([^/?]+)/.exec(page.url())?.[1] ?? "";
+    await expect(page).toHaveURL(/\/manage\/agents\/[^/?]+/);
+    const profileId = /\/manage\/agents\/([^/?]+)/.exec(page.url())?.[1] ?? "";
     const version = page.getByTestId("profile-version");
     // A created profile carries its first version: v1.
     await expect(version).toHaveText("v1");
@@ -271,7 +283,7 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     test("phone: the dialog fits and a profile is created through it", async ({ page }) => {
       await signInNarrow(page, "admin");
       const stopWatching = watchPageErrors(page);
-      await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
+      await page.goto(BASE_URL + "/manage/agents", { waitUntil: "domcontentloaded" });
       await page.getByTestId("agents-new-open").click();
       const dialog = page.getByTestId("new-profile-dialog");
       await expect(dialog).toBeVisible();

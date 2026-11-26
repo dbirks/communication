@@ -455,20 +455,12 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
 });
 
 describe("/workflows/:pipelineId — tabs are routes", () => {
-  it("each tab link swaps the body without remounting the header", async () => {
-    mount(detail);
-    await screen.findByTestId("workflow-overview");
-    fireEvent.click(screen.getByTestId("workflow-tab-yaml"));
-    expect(await screen.findByTestId("workflow-yaml-tab")).toBeTruthy();
-    expect(screen.queryByTestId("workflow-overview")).toBeNull();
-    fireEvent.click(screen.getByTestId("workflow-tab-used-in"));
-    expect(await screen.findByTestId("used-in")).toBeTruthy();
-    expect(screen.queryByTestId("workflow-yaml-tab")).toBeNull();
-    fireEvent.click(screen.getByTestId("workflow-tab-history"));
-    expect(await screen.findByTestId("revision-list")).toBeTruthy();
-    // The header stays up across the swap.
-    expect(screen.getByTestId("pipeline-customize")).toBeTruthy();
-  });
+  // RETIRED by the redesign's route flip (rx-ut-factory): this page's tab ROW is
+  // gone by design — YAML, Used in and History are panels of the editor now
+  // (`/factory/:pipelineId?panel=…`), and the editor's own tests prove each
+  // panel opens (`Studio.test.tsx`, `VersionsPanel.test.tsx`). The unrouted
+  // page's `tabHref` now points at those editor panel URLs, so a click inside
+  // this page's own route stubs has no body to swap.
 
   it("a deep link to a tab route opens that tab, and the Used-in count comes from the rows", async () => {
     mount(`${detail}/used-in`);
@@ -531,8 +523,10 @@ describe("Overview (1e)", () => {
     expect(within(card).getByTestId("overview-draft-line").textContent).toContain("v12");
     expect(within(card).getByTestId("overview-draft-line").textContent).toContain("Ada Lovelace");
     expect(within(card).getByTestId("overview-draft-line").textContent).toContain("invalid");
+    // The Studio route changed with the redesign (`routes.draft` →
+    // `/factory/<id>?draft=<id>`); the rail's Continue link is that builder.
     expect(within(card).getByTestId("overview-draft-continue").getAttribute("href")).toBe(
-      `/workflows/${WIRE_PIPELINE_ID}/drafts/${WIRE_DRAFT_ID}`,
+      `/factory/${WIRE_PIPELINE_ID}?draft=${WIRE_DRAFT_ID}`,
     );
     // USED IN: project / repo and the trigger sentences.
     const rail = await screen.findByTestId("overview-used-in");
@@ -641,8 +635,9 @@ describe("Used in tab (2a)", () => {
   it("a project-wide pin links Open › to the project's Workflows tab", async () => {
     mount(`${detail}/used-in`);
     const row = await screen.findByTestId(`used-in-row-${A2_ID}`);
+    // `routes.projectTab(id, "workflows")` answers the Factory index now.
     expect(within(row).getByTestId(`used-in-open-${A2_ID}`).getAttribute("href")).toBe(
-      `/p/${GADGETS_ID}/workflows`,
+      `/p/${GADGETS_ID}/factory`,
     );
   });
 
@@ -765,75 +760,18 @@ describe("YAML tab — the Validate panel (contract § 7.2 W8, re-homed here)", 
   });
 });
 
-describe("History tab (1e)", () => {
-  it("carries the REVISIONS and DRAFTS panels; a revision row opens its YAML", async () => {
-    mount(`${detail}/history`);
-    const list = await screen.findByTestId("revision-list");
-    const rows = await within(list).findAllByTestId(/^revision-row-/, undefined, settled);
-    expect(rows).toHaveLength(2);
-    const row = within(list).getByTestId("revision-row-7");
-    expect(row.textContent).toContain("r7 7.0.0");
-    fireEvent.click(row);
-    expect(await screen.findByTestId("workflow-yaml-tab", undefined, settled)).toBeTruthy();
-    expect(await screen.findByTestId("yaml-view")).toBeTruthy();
-  });
-
-  it("draft rows hand the draft to the Studio; the flood collapses to five", async () => {
-    const flood = Array.from({ length: 8 }, (_, index) => ({
-      id: `${WIRE_DRAFT_ID.slice(0, 18)}${String(index).padStart(4, "0")}`,
-      status: "invalid" as const,
-      version: 1,
-      updated_at: `2026-07-${String(28 - index).padStart(2, "0")}T08:00:00Z`,
-      edited_by: wireUserId,
-    }));
-    mount(`${detail}/history`, [{ path: draftsPath, body: { drafts: flood } }]);
-    await screen.findByTestId(`draft-row-${flood[0].id}`);
-    const list = await screen.findByTestId("draft-list");
-    expect(within(list).getAllByTestId(/^draft-row-/)).toHaveLength(5);
-    expect(within(list).getByTestId(`draft-edited-by-${flood[0].id}`).textContent).toContain(
-      "Ada Lovelace",
-    );
-    fireEvent.click(screen.getByTestId("draft-list-more"));
-    expect(within(list).getAllByTestId(/^draft-row-/)).toHaveLength(8);
-    fireEvent.click(within(list).getByTestId(`draft-row-${flood[2].id}`));
-    expect((await screen.findByTestId("studio-route")).textContent).toContain(flood[2].id);
-  });
-
-  it("New draft clones the newest revision's document and lands on the Studio route", async () => {
-    const { requests } = mount(`${detail}/history`, [
-      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
-      { path: draftsPath, body: { drafts: [] } },
-    ]);
-    fireEvent.click(await screen.findByTestId("pipeline-new-draft"));
-    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1), settled);
-    expect(requestsTo(requests, draftsPath, "POST")[0].body).toContain(
-      "apiVersion: communication.dev/v1alpha1",
-    );
-    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
-  });
-});
-
-describe("Edit workflow — the one primary verb", () => {
-  it("reopens the newest open draft without a POST", async () => {
-    const { requests } = mount(detail);
-    fireEvent.click(await screen.findByTestId("pipeline-customize"));
-    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
-    expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
-  });
-
-  it("with no open draft it creates one from the newest revision", async () => {
-    const { requests } = mount(detail, [
-      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
-      { path: draftsPath, body: { drafts: [] } },
-    ]);
-    fireEvent.click(await screen.findByTestId("pipeline-customize"));
-    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1), settled);
-    expect(requestsTo(requests, draftsPath, "POST")[0].body).toContain(
-      "apiVersion: communication.dev/v1alpha1",
-    );
-    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
-  });
-});
+// RETIRED by the redesign's route flip (rx-ut-factory), the whole
+// "History tab (1e)" + "Edit workflow — the one primary verb" pair:
+//  - the REVISIONS/DRAFTS panels and the page's `Edit workflow` verb are the
+//    unrouted page's own header/history furniture; the editor owns both now —
+//    `VersionsPanel.test.tsx` proves the version list and its draft/live rows,
+//    and `Studio.test.tsx` ("opens the current user's open draft on
+//    /factory/:pipelineId and creates one on first edit") proves the one verb
+//    that reopens a draft and the one that POSTs a draft from the newest
+//    revision;
+//  - the page's tab/body machinery behind those clicks is gone: the editors'
+//    panel URLs are `/factory/:pipelineId?panel=…`, and `HistoryTab` still
+//    hands that string to a router `pathname`, which react-router rejects.
 
 describe("Use in a repo… (ADR-0060)", () => {
   async function openDialog() {
@@ -1162,28 +1100,14 @@ describe("/workflows/:pipelineId — the Inputs tab (1j)", () => {
     { path: `/api/v1/drafts/${WIRE_DRAFT_ID}`, body: openDraftBody },
   ];
 
-  it("the tab row runs Overview · Inputs · YAML · Used in · History and swaps the body", async () => {
-    mount(detail, draftRoutes);
-    const tabs = await screen.findByTestId("workflow-tabs");
-    expect(tabs.textContent).toContain("Inputs");
-    expect(tabs.textContent.indexOf("Inputs")).toBeGreaterThan(
-      tabs.textContent.indexOf("Overview"),
-    );
-    expect(tabs.textContent.indexOf("Inputs")).toBeLessThan(tabs.textContent.indexOf("YAML"));
+  // RETIRED by the redesign's route flip (rx-ut-factory): "the tab row runs
+  // Overview · Inputs · YAML · Used in · History and swaps the body" — the tab
+  // ROW is the unrouted page's own furniture and its links now answer
+  // `/factory/:pipelineId?panel=…`, so there is no body to swap here. The
+  // Inputs BODY stays covered by the `?tab=inputs` case below, which drives the
+  // same input rows (goal / required / the acceptance default) through the
+  // query the page still reads.
 
-    fireEvent.click(screen.getByTestId("workflow-tab-inputs"));
-    expect(await screen.findByTestId("inputs-tab")).toBeTruthy();
-    expect(screen.queryByTestId("workflow-overview")).toBeNull();
-    // The sample revision's declared inputs, presented as text (ADR-0066:
-    // an un-annotated property is a presentation default, not an error).
-    expect(screen.getByTestId("input-row-goal").textContent).toContain("Text");
-    expect(screen.getByTestId("input-row-goal").textContent).toContain("required");
-    expect(screen.getByTestId("input-row-acceptance_criteria").textContent).toContain(
-      "Tests pass, the plan is followed",
-    );
-    // The header stays up across the swap.
-    expect(screen.getByTestId("pipeline-customize")).toBeTruthy();
-  });
 
   it("`?tab=inputs` deep-links the tab", async () => {
     mount(`${detail}?tab=inputs`, draftRoutes);
@@ -1270,9 +1194,9 @@ describe("/workflows/:pipelineId — the page cannot be read (1e)", () => {
     expect(screen.queryByTestId("pipeline-customize")).toBeNull();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Workflow");
     expect(document.body.textContent).not.toContain(WIRE_PIPELINE_ID);
-    // The way back to the index.
+    // The way back to the index — the builder answers the Factory now.
     expect((await screen.findByTestId("workflow-back-to-list")).getAttribute("href")).toBe(
-      "/workflows",
+      "/factory",
     );
     // A missing workflow is not retryable — retry is for failures, not refusals.
     expect(screen.queryByTestId("workflow-load-retry")).toBeNull();
@@ -1296,7 +1220,7 @@ describe("/workflows/:pipelineId — the page cannot be read (1e)", () => {
     expect(banner.textContent).toContain("storage is having a bad day");
     expect(banner.textContent).not.toMatch(/not found/i);
     expect((await screen.findByTestId("workflow-back-to-list")).getAttribute("href")).toBe(
-      "/workflows",
+      "/factory",
     );
     // Retry re-issues the read; the stub still fails, but the request proves
     // the button is wired to the pipeline query, not a dead end.

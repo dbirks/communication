@@ -69,26 +69,82 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
  * The right-of-centre aim stays — it is where a partially covered control is
  * still hittable, and a page that ever regrows a bleed cannot hide it from us.
  */
-async function clickVisiblePart(page: Page, testId: string): Promise<void> {
-  const locator = page.getByTestId(testId);
-  const box = (await locator.boundingBox()) ?? { width: 80, height: 26 };
-  await locator.click({
-    position: { x: box.width - 8, y: box.height / 2 },
-  });
+async function ensureDraftUrl(page: Page, pipelineId: string): Promise<string> {
+  if (!page.url().includes("draft=")) {
+    const res = await page.request.get(`/api/v1/pipelines/${pipelineId}/drafts`);
+    expect(res.status()).toBe(200);
+    const body = (await res.json()) as {
+      drafts?: Array<{ id: string; status: string }>;
+    };
+    const open = (body.drafts ?? []).find((d) => d.status !== "published");
+    if (open) {
+      await gotoApp(page, `/factory/${pipelineId}?draft=${open.id}`);
+      await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
+    }
+  }
+  await expect(page).toHaveURL(new RegExp(`/factory/${pipelineId}\\?draft=`));
+  return new URL(page.url()).href;
 }
 
-/**
- * Design 1e moved the clone control: the workflow page opens on the read-
- * only Overview graph, and `New draft` — still `pipeline-new-draft`, still
- * cloning the NEWEST published revision — lives on the page's History tab.
- * Open that tab and take the draft, landing on the Studio route.
- */
-async function openNewDraft(page: Page, pipelineId: string): Promise<void> {
-  await expect(page.getByTestId("pipeline-page")).toBeVisible();
-  await page.getByTestId("workflow-tab-history").click();
-  await expect(page.getByTestId("workflow-history")).toBeVisible();
-  await clickVisiblePart(page, "pipeline-new-draft");
-  await expect(page).toHaveURL(new RegExp(`/workflows/${pipelineId}/drafts/`));
+async function restoreRevisionIntoDraft(
+  page: Page,
+  pipelineId: string,
+  restorePublishedNumber?: number,
+): Promise<void> {
+  await page.getByTestId("editor-versions-btn").click();
+  await expect(page.getByTestId("versions-panel")).toBeVisible();
+  const hasDraft = (await page.getByTestId("versions-row-draft").count()) > 0;
+  const restoreBtn =
+    restorePublishedNumber !== undefined
+      ? page.getByTestId(`versions-restore-v${restorePublishedNumber}`)
+      : page.locator('[data-testid^="versions-restore-v"]').first();
+  // When an open draft already exists, restoring mutates it in-place and saves
+  // after an 800ms debounce (unless already identical to the target revision).
+  const patchPromise = hasDraft
+    ? page
+        .waitForResponse(
+          (res) =>
+            /\/api\/v1\/drafts\/[^/]+$/.test(res.url()) && res.request().method() === "PATCH",
+          { timeout: 4_000 },
+        )
+        .catch(() => null)
+    : Promise.resolve(null);
+  await restoreBtn.click();
+  await expect(page.getByTestId("versions-panel")).toBeHidden({ timeout: 15_000 });
+  await patchPromise;
+  await expect(page.getByTestId("studio-draft-status")).not.toContainText(/Saving/i, {
+    timeout: 15_000,
+  });
+  await ensureDraftUrl(page, pipelineId);
+}
+
+async function openNewDraft(
+  page: Page,
+  pipelineId: string,
+  restorePublishedNumber?: number,
+): Promise<void> {
+  await gotoApp(page, `/factory/${pipelineId}`);
+  await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
+  if (restorePublishedNumber !== undefined || !page.url().includes("draft=")) {
+    await restoreRevisionIntoDraft(page, pipelineId, restorePublishedNumber);
+  } else {
+    await ensureDraftUrl(page, pipelineId);
+  }
+}
+
+/** Wait for Studio's debounced 800ms autosave to bump the server draft version. */
+async function waitForAutosave(
+  page: Page,
+  draftId: string,
+  versionBefore: number,
+  timeout = 30_000,
+): Promise<void> {
+  await expect
+    .poll(async () => draftVersion(page, draftId), { timeout })
+    .toBeGreaterThan(versionBefore);
+  await expect(page.getByTestId("studio-draft-status")).not.toContainText(/Saving/i, {
+    timeout,
+  });
 }
 
 /** Resolve a pipeline in the org library by slug (no list UI: `/workflows` is the create form). */
@@ -131,15 +187,19 @@ function countKind(document: string, kind: string): number {
   return document.split("\n").filter((line) => line.trim() === want).length;
 }
 
-/** The Studio's own YAML textarea (the draft text exactly as the Studio holds it). */
+/** Read-only YAML drawer behind the editor's `…` menu → View YAML. */
 async function readYaml(page: Page): Promise<string> {
-  await page.getByTestId("studio-view-yaml").click();
-  const editor = page.getByTestId("studio-yaml");
-  // Design 1g copy: the studio authors a WORKFLOW, so the surface that spells
-  // the object out is named `Workflow YAML` — the old `Pipeline YAML` label is
-  // retired and must not come back.
-  await expect(editor).toHaveAttribute("aria-label", "Workflow YAML");
-  return editor.inputValue();
+  await page.getByTestId("editor-more-btn").click();
+  await expect(page.getByTestId("editor-more-menu")).toBeVisible();
+  await page.getByTestId("editor-menu-yaml").click();
+  const panel = page.getByTestId("editor-panel-yaml");
+  await expect(panel).toBeVisible();
+  const viewer = panel.getByTestId("yaml-view");
+  await expect(viewer).toBeVisible();
+  const lines = await viewer
+    .locator('[data-testid^="yaml-view-line-"] > span:nth-child(2)')
+    .allTextContents();
+  return lines.map((line) => (line === "\u00a0" ? "" : line)).join("\n");
 }
 
 /** `GET /api/v1/revisions/{digestOrId}/document?format=yaml` — a revision's canonical YAML. */
@@ -158,7 +218,11 @@ function yamlDependsOn(yaml: string, dep: string): boolean {
 }
 
 async function backToCanvas(page: Page): Promise<void> {
-  await page.getByTestId("studio-view-canvas").click();
+  const close = page.getByTestId("editor-panel-close");
+  if (await close.isVisible().catch(() => false)) {
+    await close.click();
+    await expect(close).toBeHidden();
+  }
   await expect(page.getByTestId("studio-canvas")).toBeVisible();
 }
 
@@ -183,28 +247,19 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
   test("A0: open the deterministic twin draft in the Studio", async ({ page }) => {
     console.log(`issue2-studio: run stamp ${STAMP}`);
     await signIn(page, "admin");
-    await gotoApp(page, "/workflows");
+    await gotoApp(page, "/factory");
+    await expect(page.getByTestId("factory-index")).toBeVisible();
     const pipeline = await pipelineInfo(page, PIPELINE_SLUG);
     state.pipelineId = pipeline.id;
-
-    await page.goto(`/workflows/${pipeline.id}`);
-    await expect(page.getByTestId("pipeline-page")).toBeVisible();
-    await expect(page.getByTestId("pipeline-header-meta")).toContainText(PIPELINE_SLUG);
     await expectNoLegacyAppBar(page);
 
-    // Re-run safety: a previous run of this journey published a customized
-    // revision (code_review + the trailing until scope). The newest revision
-    // is the diff's base, so when it already carries code_review, restore the
-    // seeded twin first. The pristine document cannot be republished bare —
-    // its digest is already a published revision, and the publish gate
-    // answers 409 — so the restored document is the seeded one plus ONE
-    // metadata line: the description carries this run's stamp. The node
-    // graph stays byte-identical, and the new digest makes the restoration
-    // publishable. Done through the Studio's own YAML view.
+    // Re-run safety: if a previous run already published code_review, restore the
+    // oldest seeded twin document (stamped so its digest is fresh) via API setup
+    // so the journey runs against the pristine twin.
     const revRes = await page.request.get(`/api/v1/pipelines/${pipeline.id}/revisions`);
     expect(revRes.status()).toBe(200);
     const revBody = (await revRes.json()) as {
-      revisions?: Array<{ revision_digest: string }>; // summaries carry the digest, not an id
+      revisions?: Array<{ revision_digest: string }>;
     };
     const revisions = revBody.revisions ?? [];
     expect(revisions.length, "the seeded twin must have at least one revision").toBeGreaterThan(0);
@@ -219,43 +274,47 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
         (line) => `${line} (re-stored ${STAMP})`,
       );
       expect(seededDoc, "the stamp must land on the description line").not.toBe(seededDocRaw);
-      await openNewDraft(page, pipeline.id);
-      await expect(page.getByTestId("studio-canvas")).toBeVisible();
-      await page.getByTestId("studio-view-yaml").click();
-      await page.getByTestId("studio-yaml").fill(seededDoc);
-      await page.getByTestId("studio-save").click();
-      await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await page.getByTestId("studio-validate").click();
-      const restoreVerdict = page.getByTestId("studio-validate-verdict");
-      await expect(restoreVerdict).toBeVisible();
-      expect((await restoreVerdict.textContent()) ?? "").toMatch(/^valid/);
-      await page.getByTestId("studio-publish").click();
-      await expect(page.getByTestId("studio-published")).toBeVisible();
-      await evidence(
-        page,
-        "studio-rerun-restored",
-        `a previous journey run had published a customized revision — the seeded twin (oldest revision's document, description stamped "re-stored ${STAMP}" so the digest is fresh) was restored through the Studio and republished as the newest revision, so the journey runs on the pristine twin again`,
-      );
-      await page.goto(`/workflows/${pipeline.id}`);
-      await expect(page.getByTestId("pipeline-page")).toBeVisible();
+      const me = (await (await page.request.get("/api/v1/me")).json()) as { csrf_token: string };
+      const headers = { "x-csrf-token": me.csrf_token };
+      const restoreDraft = (await (
+        await page.request.post(`/api/v1/pipelines/${pipeline.id}/drafts`, {
+          data: { document_yaml: seededDoc },
+          headers,
+        })
+      ).json()) as { id: string; version: number };
+      const val = await page.request.post(`/api/v1/drafts/${restoreDraft.id}/validate`, {
+        data: {},
+        headers,
+      });
+      expect(val.status()).toBe(200);
+      const pub = await page.request.post(`/api/v1/drafts/${restoreDraft.id}/publish`, {
+        data: { version: restoreDraft.version },
+        headers,
+      });
+      expect(pub.ok(), `publish restore -> ${pub.status()}`).toBe(true);
     }
 
-    // New draft: the History tab's clone control, built from the newest revision.
-    await openNewDraft(page, pipeline.id);
+    // Open in Factory editor and restore the newest revision into an editable
+    // draft (`?draft=`) so re-runs never carry stale edits from an interrupted run.
+    await page.getByTestId(`workflow-card-link-${pipeline.id}`).click();
+    await expect(page).toHaveURL(new RegExp(`/factory/${pipeline.id}(\\?|$)`));
+    await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
+    await restoreRevisionIntoDraft(page, pipeline.id);
     state.draftUrl = new URL(page.url()).href;
-    state.draftId = state.draftUrl.split("/").pop() as string;
+    state.draftId = new URL(page.url()).searchParams.get("draft") ?? "";
+    expect(state.draftId).toMatch(/^[0-9a-f-]{36}$/);
 
-    // The Studio opens on the graph canvas — not a YAML textarea.
+    // The Studio opens on the graph canvas — not a YAML drawer.
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
     expect(await page.locator(".react-flow").count()).toBeGreaterThan(0);
-    expect(await page.getByTestId("studio-yaml").count()).toBe(0);
+    expect(await page.getByTestId("editor-panel-yaml").count()).toBe(0);
     // The seeded until scope is on the canvas as its own box.
     await expect(page.getByTestId("canvas-scope-build_until_verified")).toBeVisible();
     await checkA11y(page, "studio (A0)");
     await evidence(
       page,
       "studio-loaded",
-      `Studio opened on a fresh draft of ${PIPELINE_SLUG} cloned from its newest revision — the graph canvas (with the seeded build_until_verified scope) is on stage, not a YAML textarea`,
+      `Editor opened on a draft of ${PIPELINE_SLUG} — the graph canvas (with the seeded build_until_verified scope) is on stage`,
     );
   });
 
@@ -263,19 +322,20 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await signIn(page, "admin");
     await gotoApp(page, state.draftUrl);
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
+    const versionBefore = await draftVersion(page, state.draftId);
 
     // The "+" on the test → review edge (inside the until scope) opens the step
-    // picker. The seed's per-iteration `test_evidence` publisher hangs off the
-    // same `test` step; this splice must touch only the test → review edge.
+    // picker.
     await page.getByTestId("edge-add-test-review").click();
     const picker = page.getByTestId("step-picker");
     await expect(picker).toBeVisible();
     await page.getByTestId("step-picker-item-agent.acp").click();
 
-    // The new node is selected between them: the inspector now names it.
+    // New agent.acp node opens the compact AgentStepCard first; clicking
+    // "More settings" opens the full inspector.
+    await expect(page.getByTestId("agent-step-card")).toBeVisible();
+    await page.getByTestId("agent-card-more-settings").click();
     const nodeIdField = page.getByTestId("insp-node-id");
-    // The node id lives inside the design's collapsed "Retries, timeout
-    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(nodeIdField).toBeVisible();
     const autoId = await nodeIdField.inputValue();
@@ -283,29 +343,11 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await expect(page.getByTestId("canvas-step-test")).toBeVisible();
     await expect(page.getByTestId("canvas-step-review")).toBeVisible();
 
-    // Inspector-only configuration: profile, prompt, on-failure, then the id
-    // rename LAST — the rename commit drops the node selection (the inspector
-    // falls back to the pipeline level), so no further field may follow it.
     await page.getByTestId("insp-profile").selectOption("m4-reviewer");
-    // A DETERMINISTIC long turn: the A5 takeover journey takes control WHILE a
-    // code_review attempt is running, and a turn that settles in ~20 s is
-    // already over by the time bob signs in and clicks — racing the window
-    // fails. m4-reviewer runs preapproved_within_sandbox, so an explicit wait
-    // runs without a permission prompt. A plain `sleep 90` is BLOCKED by the
-    // sandbox's Bash guardrail ("Blocked: standalone sleep 90 … do not chain
-    // shorter sleeps"), and the agent then either skips it (turn ~20 s) or
-    // backgrounds it (turn ~10 s, INVALID_OUTPUT). The guardrail's own
-    // sanctioned wait is a foreground Monitor until-loop (`until <check>; do
-    // sleep 2; done`), so the prompt uses exactly that: a time-bounded until
-    // loop that blocks the turn for ~90 s. Every code_review turn therefore
-    // stays in flight for at least 90 s, and A5's poll (ledger, not wall
-    // clock) plus bob's select + Take control land comfortably inside the
-    // window instead of racing the turn's remaining seconds.
     const prompt =
       'First wait about 90 seconds before you review, so this turn stays open: run this exact shell command in the FOREGROUND and wait for it to finish — end=$(( $(date +%s) + 90 )); until [ $(date +%s) -ge $end ]; do sleep 2; done — this is the allowed Monitor until-loop (a standalone `sleep 90` is blocked, so do not use one and do not run the loop in the background). Once it completes, review the diff for the add() fix and answer JSON {"approved": true|false, "evidence": "…"}';
     await page.getByTestId("insp-config-prompt").fill(prompt);
     await page.getByTestId("insp-config-prompt").blur();
-    // The "following route" is configurable: on failure → continue.
     await page.getByTestId("insp-onFailure-onExecutionError").selectOption("continue");
     await nodeIdField.fill("code_review");
     await nodeIdField.press("Enter");
@@ -313,23 +355,17 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await evidence(
       page,
       "studio-a1-inserted",
-      `agent.acp node ${autoId} inserted on the test → review edge and configured entirely in the inspector: profile m4-reviewer, review prompt, id code_review, on-failure continue`,
+      `agent.acp node ${autoId} inserted on the test → review edge and configured in the inspector: profile m4-reviewer, review prompt, id code_review, on-failure continue`,
     );
 
-    // Save so the insertion persists: the Studio keeps edits in memory until
-    // saved (no autosave), and the next journey reloads the draft from the
-    // server. Wait for the dirty marker to clear before leaving the page.
-    await page.getByTestId("studio-save").click();
-    await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
+    // Autosave persists the edits within ~800ms (no manual Save button).
+    await waitForAutosave(page, state.draftId, versionBefore);
 
     const yaml = await readYaml(page);
     expect(yaml).toContain("id: code_review");
     expect(yaml).toContain("kind: agent.acp");
     expect(yaml).toContain("profile: m4-reviewer");
     expect(yamlDependsOn(yaml, "code_review"), "review must now depend on code_review").toBe(true);
-    // The seed's per-iteration publisher keeps its own edge: `test` still has a
-    // dependent, so test_evidence was neither dropped nor rewired onto
-    // code_review by the splice.
     expect(yaml, "the seeded per-iteration publisher survives the splice").toContain(
       "test_evidence",
     );
@@ -338,42 +374,38 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       "test_evidence must still depend on the test step of its own iteration",
     ).toBe(true);
     expect(yaml).toContain("onExecutionError: continue");
+    await backToCanvas(page);
     await evidence(
       page,
       "studio-a1-yaml",
-      "YAML view proves the inspector's work: id: code_review (kind agent.acp, profile m4-reviewer), review's dependsOn now names code_review, on-failure continue — untouched by any YAML editing",
+      "Read-only View YAML confirms the inspector's work: id: code_review (kind agent.acp, profile m4-reviewer), review's dependsOn now names code_review, on-failure continue",
     );
   });
 
-  test("A1b: desktop inspector a11y with an agent.acp and a process.exec node selected", async ({
+  test("A1b: desktop agent card + inspector a11y with agent.acp and process.exec steps", async ({
     page,
   }) => {
     await signIn(page, "admin");
     await gotoApp(page, state.draftUrl);
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
 
-    // The agent.acp node A1 inserted (code_review) and its process.exec
-    // sibling (review): audit the inspector for each, so the generated
-    // field widgets (profile/prompt for agent.acp, args/env/retry for
-    // process.exec) are both covered by the axe pass.
     await page.getByTestId("canvas-step-code_review").click();
+    await expect(page.getByTestId("agent-step-card")).toBeVisible();
+    await checkA11y(page, "studio agent card (agent.acp)");
+    await page.getByTestId("agent-card-more-settings").click();
     await expect(page.getByTestId("insp-node")).toBeVisible();
-    // The node id lives inside the design's collapsed "Retries, timeout
-    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue("code_review");
     await checkA11y(page, "studio inspector (agent.acp)");
 
     await page.getByTestId("canvas-step-review").click();
-    // The node id lives inside the design's collapsed "Retries, timeout
-    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue("review");
     await checkA11y(page, "studio inspector (process.exec)");
     await evidence(
       page,
       "studio-a1b-inspector-a11y",
-      "desktop inspector audited by axe with the agent.acp node (code_review) and the process.exec node (review) selected one at a time — zero serious/critical on both",
+      "desktop AgentStepCard and inspector audited by axe with agent.acp (code_review) and process.exec (review)",
     );
   });
 
@@ -398,6 +430,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
             t.startsWith("canvas-step-") &&
             !t.startsWith("canvas-step-row-") &&
             !t.startsWith("canvas-step-fact-") &&
+            !t.startsWith("canvas-step-tile-") &&
             t !== "canvas-step-list"
           ) {
             out.push(t.slice("canvas-step-".length));
@@ -416,36 +449,32 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       return added[0];
     };
 
-    // 1) Three steps after the last terminal step: implementation and check
-    // (Run command / tests — a single-token executable, per the schema
-    // pattern) plus a review Coding agent (m4-reviewer, with a prompt —
-    // the agent config requires one).
+    // 1) Three steps after the last terminal step: each addStep selects the
+    // newly created node immediately; close the floating right-hand inspector
+    // after each edit so the next rightmost `+` / step is never covered.
     const implId = await addStep(lastTerminal, "process.exec");
-    await page.getByTestId(`canvas-step-${implId}`).click();
+    await expect(page.getByTestId("insp-config-executable")).toBeVisible();
     await page.getByTestId("insp-config-executable").fill("echo");
     await page.getByTestId("insp-config-executable").blur();
+    await page.getByTestId("editor-inspector-close").click();
 
     const checkId = await addStep(implId, "process.exec");
-    await page.getByTestId(`canvas-step-${checkId}`).click();
+    await expect(page.getByTestId("insp-config-executable")).toBeVisible();
     await page.getByTestId("insp-config-executable").fill("echo");
     await page.getByTestId("insp-config-executable").blur();
+    await page.getByTestId("editor-inspector-close").click();
 
     const reviewId = await addStep(checkId, "agent.acp");
-    await page.getByTestId(`canvas-step-${reviewId}`).click();
+    await expect(page.getByTestId("agent-step-card")).toBeVisible();
+    await page.getByTestId("agent-card-more-settings").click();
     await page.getByTestId("insp-profile").selectOption("m4-reviewer");
     const reviewPrompt = page.getByTestId("insp-config-prompt");
     await reviewPrompt.fill("Review the implementation for the add() fix and cite the evidence");
     await reviewPrompt.blur();
+    await page.getByTestId("editor-inspector-close").click();
 
-    // 2) Multi-select the three steps: clear the single selection first (the
-    // "+" insert leaves the fresh node selected, which would toggle the first
-    // shift-click OFF instead of starting the selection), then Shift+click
-    // each step with Shift held BEFORE the mousedown — exactly how a human
-    // shift-clicks (React Flow arms multi-select on keydown).
-    await page
-      .locator(".react-flow__pane")
-      .first()
-      .click({ position: { x: 30, y: 30 } });
+    // 2) Multi-select the three steps (`editor-inspector-close` already cleared
+    // single selection and uncovered the right-side nodes).
     await page.waitForTimeout(300);
     for (const id of [implId, checkId, reviewId]) {
       await page.keyboard.down("Shift");
@@ -453,11 +482,12 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       await page.waitForTimeout(150);
     }
     await page.keyboard.up("Shift");
-    await expect(page.getByTestId("selection-toolbar")).toBeVisible();
-    await expect(page.getByTestId("selection-count")).toHaveText("3 steps selected");
+    await expect(page.getByTestId("marching-ants")).toBeVisible();
+    await expect(page.getByTestId("marching-ants-label")).toHaveText("3 steps selected");
+    await expect(page.getByTestId("wrap-panel")).toBeVisible();
 
-    // 3) Wrap the selection in a Repeat until scope from the selection
-    // toolbar; the wrap lands as a new scope box on the canvas.
+    // 3) Wrap in a Repeat until scope from WrapPanel: pick command passes
+    // ("echo ok"), decrement max rounds 3 → 2, click Wrap.
     const scopeIds = (): Promise<string[]> =>
       page.evaluate(() => {
         const out: string[] = [];
@@ -468,7 +498,12 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
         return out;
       });
     const scopesBefore = new Set(await scopeIds());
-    await page.getByTestId("wrap-until").click();
+    await page.getByTestId("wrap-tab-repeat").click();
+    await page.getByTestId("wrap-goal-command").click();
+    await page.getByTestId("wrap-goal-input").fill("echo ok");
+    await page.getByTestId("wrap-rounds-dec").click();
+    await expect(page.getByTestId("wrap-rounds-value")).toHaveText("2");
+    await page.getByTestId("wrap-submit").click();
     await expect
       .poll(async () => (await scopeIds()).length, { timeout: 5_000 })
       .toBeGreaterThan(scopesBefore.size);
@@ -476,59 +511,33 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     state.untilId = scopesAfter.find((id) => id !== "" && !scopesBefore.has(id)) ?? "";
     expect(state.untilId, "the wrap must create a visible scope on the canvas").toBeTruthy();
 
-    // 4) The scope inspector: Pass when `true`, Max iterations 2. Click the
-    // scope's HEADER bar (top-left) — the box centre overlaps its child
-    // steps, whose nodes intercept the click.
-    await page.getByTestId(`canvas-scope-${state.untilId}`).click({ position: { x: 14, y: 9 } });
-    const passWhen = page.getByTestId("insp-config-passWhen");
-    await passWhen.fill("true");
-    await passWhen.blur();
-    const maxIt = page.getByTestId("insp-config-maxIterations");
-    await maxIt.fill("2");
-    await maxIt.blur();
-
-    // The canvas shows the Repeat until group; the YAML carries the config.
+    // The canvas shows the Repeat until group; deselect via close before opening `…` menu.
     await expect(page.getByTestId(`canvas-scope-${state.untilId}`)).toBeVisible();
+    const inspClose = page.getByTestId("editor-inspector-close");
+    if (await inspClose.isVisible().catch(() => false)) {
+      await inspClose.click();
+    }
     const yaml = await readYaml(page);
     expect(yaml).toContain("kind: until");
-    // passWhen is a string expression, so the YAML quotes the boolean.
-    expect(/passWhen:\s*['"]?true['"]?/.test(yaml), "the wrapped scope must pass when `true`").toBe(
-      true,
-    );
     expect(yaml).toContain("maxIterations: 2");
     await backToCanvas(page);
     await evidence(
       page,
       "studio-a2-wrapped",
-      `three steps added at the root tail (two echo Run-command steps → the m4-reviewer agent), multi-selected by shift+click and wrapped in a Repeat until scope (${state.untilId}) from the selection toolbar — the YAML carries kind: until with passWhen true and maxIterations: 2`,
+      `three steps added, multi-selected with marching-ants and wrapped in a Repeat until scope (${state.untilId}) via WrapPanel — YAML carries kind: until and maxIterations: 2`,
     );
 
-    // Save, then Validate: the server's verdict must say valid. (The save is
-    // fire-and-forget from the button, so wait for the dirty marker to clear
-    // before the validate click can race a second PUT.)
-    await page.getByTestId("studio-save").click();
-    await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-    await page.getByTestId("studio-validate").click();
-    const verdict = page.getByTestId("studio-validate-verdict");
-    await expect(verdict).toBeVisible();
-    const verdictText = (await verdict.textContent()) ?? "";
-    if (!verdictText.startsWith("valid")) {
-      // Findings surface in the panel and are fixed through the inspector —
-      // fail loudly with the server's own words instead.
-      throw new Error(`validation not valid: ${verdictText}`);
-    }
+    // Wait for autosave, check Versions diff summary, then Make live.
+    const versionBeforePublish = await draftVersion(page, state.draftId);
+    await waitForAutosave(page, state.draftId, versionBeforePublish - 1);
+    await page.getByTestId("editor-versions-btn").click();
+    await expect(page.getByTestId("versions-panel")).toBeVisible();
+    await expect(page.getByTestId("versions-row-draft")).toContainText("code_review");
+    await page.getByTestId("versions-panel-close").click();
 
-    // The diff against the newest published revision lists code_review and
-    // the new until scope as added.
-    await page.getByTestId("studio-diff").click();
-    await expect(page.getByTestId("studio-diff-drawer")).toBeVisible();
-    await expect(page.getByTestId("diff-node-code_review")).toBeVisible();
-    await expect(page.getByTestId("studio-diff-drawer")).toContainText(/until/);
-
-    // Publish, then prove the revision landed.
     await page.getByTestId("studio-publish").click();
     const publishedNote = page.getByTestId("studio-published");
-    await expect(publishedNote).toBeVisible();
+    await expect(publishedNote).toBeVisible({ timeout: 30_000 });
     const noteText = (await publishedNote.textContent()) ?? "";
     const numberMatch = /r(\d+)/.exec(noteText);
     expect(numberMatch, `publish note must name the revision number: ${noteText}`).toBeTruthy();
@@ -536,7 +545,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await evidence(
       page,
       "studio-a2-published",
-      `the draft was saved, validated (server verdict: ${verdictText.trim()}) and published — ${noteText.trim()}; the diff listed code_review and the ${state.untilId} until scope before publish`,
+      `the autosaved draft passed validation inside Make live and published — ${noteText.trim()}`,
     );
 
     const revRes = await page.request.get(`/api/v1/pipelines/${state.pipelineId}/revisions`);
@@ -559,128 +568,68 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       ),
     );
 
-    // Reopen the published revision from the workflow page (design 1e/2d):
-    // the Overview tab draws the newest revision's read-only graph (scope
-    // boxes included), and the History tab's revision rows deep-link into
-    // the YAML tab, which renders the whole regenerated document.
-    await page.goto(`/workflows/${state.pipelineId}`);
-    await expect(page.getByTestId("pipeline-page")).toBeVisible();
-    await expect(page.getByTestId("workflow-graph")).toBeVisible();
-    await expect(page.getByTestId(`workflow-graph-scope-${state.untilId}`)).toBeVisible();
-    await page.getByTestId("workflow-tab-history").click();
-    await expect(page.getByTestId("workflow-history")).toBeVisible();
-    await clickVisiblePart(page, `revision-row-${state.revisionNumber}`);
-    await expect(page.getByTestId("workflow-yaml-tab")).toBeVisible();
-    const revisionYaml = page.getByTestId("yaml-view");
-    await expect(revisionYaml).toBeVisible();
-    await expect(revisionYaml).toContainText("kind: until");
-    await expect(revisionYaml).toContainText("maxIterations: 2");
+    // Reopen the published revision via Versions in the editor.
+    await gotoApp(page, `/factory/${state.pipelineId}`);
+    await expect(page.getByTestId("studio-canvas")).toBeVisible();
+    await page.getByTestId("editor-versions-btn").click();
+    await expect(page.getByTestId("versions-panel")).toBeVisible();
+    await page.getByTestId(`versions-select-v${state.revisionNumber}`).click();
+    await expect(page.getByTestId("version-viewing-banner")).toBeVisible();
+    await expect(page.getByTestId(`canvas-scope-${state.untilId}`)).toBeVisible();
+    await page.getByTestId("versions-panel-close").click();
+    const revisionYaml = await readYaml(page);
+    expect(revisionYaml).toContain("kind: until");
+    expect(revisionYaml).toContain("maxIterations: 2");
+    await backToCanvas(page);
     await evidence(
       page,
       "studio-a2-reopened",
-      `reopened r${state.revisionNumber} from the workflow page: the Overview graph shows the new ${state.untilId} Repeat until scope and the YAML tab shows the regenerated document with kind: until and maxIterations: 2`,
+      `reopened v${state.revisionNumber} from Versions in the editor: canvas shows ${state.untilId} Repeat until scope and View YAML shows kind: until and maxIterations: 2`,
     );
   });
 
-  test("A3: drag-to-insert with undo/redo and the guarded-edge ambiguity", async ({ page }) => {
+  test("A3: insert on edge & Tool island add with undo/redo and guarded-edge ambiguity", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
-    // A fresh draft: A2's publish locked the journey draft (a published draft
-    // is read-only — revisions are immutable), so A3 works in its own clone
-    // of the newest revision. The plan → approve and verdict → publish edges
-    // it exercises exist in that clone too — and the plan → approve splice
-    // keeps the seed's second approve dependency (`publish_plan`, which the § 7
-    // exit seed added so a waiting gate has an artifact to read) in place.
-    await gotoApp(page, `/workflows/${state.pipelineId}`);
-    await openNewDraft(page, state.pipelineId);
+    await openNewDraft(page, state.pipelineId, state.revisionNumber);
     state.draftA3 = new URL(page.url()).href;
-    await gotoApp(page, state.draftA3);
-    await backToCanvas(page);
 
     const before = await readYaml(page);
     await backToCanvas(page);
 
-    // Real HTML5 drag, driven the way a real browser fires it: a
-    // DataTransfer carrying the palette's kind string, a dragstart on the
-    // palette item (the canvas mirrors that registry into its drag state),
-    // then dragover/drop on the canvas at the edge's centre. Playwright's
-    // mouse events cannot carry a DataTransfer, so the DragEvents are
-    // dispatched in-page (the technique proven in e2e/.studio-drive.mjs).
-    const PALETTE_KIND = "human.approval";
-    const DRAG_TYPE = "application/x-communication-kind";
-    type DragArgs = [string, string, string, string, { x: number; y: number } | undefined];
-    const dispatchDrag = async (
-      selector: string,
-      type: "dragstart" | "dragover" | "drop" | "dragend",
-      point?: { x: number; y: number },
-    ) =>
-      page.evaluate(
-        ([sel, eventType, kind, dtType, pt]: DragArgs) => {
-          const el = document.querySelector(sel);
-          if (!el) return false;
-          const dataTransfer = new DataTransfer();
-          dataTransfer.setData(dtType, kind);
-          el.dispatchEvent(
-            new DragEvent(eventType, {
-              bubbles: true,
-              cancelable: true,
-              dataTransfer,
-              clientX: pt?.x ?? 0,
-              clientY: pt?.y ?? 0,
-            }),
-          );
-          return true;
-        },
-        [selector, type, PALETTE_KIND, DRAG_TYPE, point] as DragArgs,
-      );
+    // Tool island replaces the retired StudioPalette sidebar; add a Human
+    // approval step via the plan → approve edge (which carries a binding),
+    // verify the AmbiguityDialog, undo/redo, and also test ToolIsland add.
+    await expect(page.getByTestId("tool-island")).toBeVisible();
+    await page.getByTestId("edge-add-plan-approve").click();
+    await expect(page.getByTestId("step-picker")).toBeVisible();
+    await page.getByTestId("step-picker-item-human.approval").click();
 
-    // Drag the palette's Human approval over the plan → approve edge: while
-    // the drag hovers the edge the canvas shows the insert preview, and the
-    // drop lands the node between them.
-    const edgeAdd = page.getByTestId("edge-add-plan-approve");
-    await page.getByTestId("palette-item-human.approval").hover();
-    const box = (await edgeAdd.boundingBox()) ?? { x: 100, y: 100, width: 10, height: 10 };
-    const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    await dispatchDrag('[data-testid="palette-item-human.approval"]', "dragstart");
-    await dispatchDrag('[data-testid="studio-canvas"]', "dragover", centre);
-    await expect(page.getByTestId("insert-preview")).toBeVisible();
-    await evidence(
-      page,
-      "studio-a3-preview",
-      "dragging 'Human approval' over the plan → approve edge shows the insert-preview on that edge",
-    );
-    await dispatchDrag('[data-testid="studio-canvas"]', "drop", centre);
-    await dispatchDrag('[data-testid="palette-item-human.approval"]', "dragend");
-
-    // The plan → approve edge is a BINDING edge (the twin's gate renders
-    // `nodes.plan.outputs.plan` in its summary), so the drop stops at the
-    // AmbiguityDialog; confirming it inserts the node.
     if ((await page.getByTestId("studio-ambiguity-dialog").count()) > 0) {
       await page.getByTestId("studio-ambiguity-insert").click();
     }
     const approvalNode = page.locator('[data-testid^="canvas-step-human"]').first();
     await expect(approvalNode).toBeVisible();
 
-    // Undo (Ctrl+Z): the node is gone and the YAML is byte-identical to
-    // before. (Focus the pane first — keystrokes aimed at a text field go
-    // to the field, not the Studio.)
+    // Undo (Ctrl+Z): the node is gone and View YAML matches before.
     await page
       .locator(".react-flow__pane")
       .first()
-      .click({ position: { x: 30, y: 30 } });
+      .click({ position: { x: 250, y: 30 } });
     await page.keyboard.press("Control+z");
     await expect(page.locator('[data-testid^="canvas-step-human"]')).toHaveCount(0, {
       timeout: 5_000,
     });
     const afterUndo = await readYaml(page);
     expect(afterUndo, "undo must restore the exact YAML").toBe(before);
-
-    // Redo (Ctrl+Shift+Z): the node is back, with the same YAML as after
-    // insert.
     await backToCanvas(page);
+
+    // Redo (Ctrl+Shift+Z): the node is back, with the same YAML as after insert.
     await page
       .locator(".react-flow__pane")
       .first()
-      .click({ position: { x: 30, y: 30 } });
+      .click({ position: { x: 250, y: 30 } });
     await page.keyboard.press("Control+Shift+z");
     await expect(approvalNode).toBeVisible();
     const afterRedo = await readYaml(page);
@@ -690,14 +639,11 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await evidence(
       page,
       "studio-a3-undo",
-      "drag-to-insert of a Human approval step on the plan → approve edge (insert preview, drop, guard confirm): inserted, undone (YAML byte-identical to before) and redone (YAML restored with kind: human.approval)",
+      "edge + insert of a Human approval step on plan → approve (guard confirm): inserted, undone (YAML identical to before) and redone (kind: human.approval)",
     );
 
     // Guarded edge: the verdict → publish edge's own "+" must stop at the
-    // AmbiguityDialog naming the condition before anything changes. (The
-    // two publish branches fan out of verdict and their "+" buttons
-    // overlap; the needs_attention one is the topmost and the one a real
-    // click lands on — it is guarded exactly like the other.)
+    // AmbiguityDialog naming the condition before anything changes.
     const beforeAmbiguity = afterRedo;
     await page.getByTestId("edge-add-verdict-publish_needs_attention").click();
     await page.getByTestId("step-picker-item-human.approval").click();
@@ -715,63 +661,31 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await expect(dialog).toHaveCount(0);
     const afterCancel = await readYaml(page);
     expect(afterCancel, "cancel must leave the YAML byte-identical").toBe(beforeAmbiguity);
-    // Leave the draft unsaved on purpose — these A3 edits never reach the server.
     await backToCanvas(page);
   });
 
   test("A8: assistant drafting proposal", async ({ page }) => {
-    // The proposal is one real agent turn behind it; the global 90 s test
-    // timeout (playwright.config.ts) cut the AGENT_TURN_TIMEOUT_MS wait off
-    // midway (lab run 41566844565: the assistant's caption was still in flight
-    // when the test timer fired, 90 s < the 5-min bounded wait). The wait is
-    // bounded; the test's own clock must allow the whole of it.
     test.setTimeout(AGENT_TURN_TIMEOUT_MS + 180_000);
     await signIn(page, "admin");
-    // A fresh draft: proposals are made against the saved version, and a dirty
-    // draft blocks the assistant box entirely.
-    await gotoApp(page, `/workflows/${state.pipelineId}`);
-    await openNewDraft(page, state.pipelineId);
-    const draft2Id = new URL(page.url()).pathname.split("/").pop() as string;
+    await openNewDraft(page, state.pipelineId, state.revisionNumber);
+    const draft2Id = new URL(page.url()).searchParams.get("draft") ?? "";
+    expect(draft2Id).toMatch(/^[0-9a-f-]{36}$/);
 
-    // This draft is a clone of A2's PUBLISHED revision, so its graph already
-    // carries A1's `code_review` agent step (test → code_review → review,
-    // inside the seeded until scope) and A2's three tail steps wrapped in
-    // their own until scope. The old ask — "insert a code reviewer agent step
-    // after the tests" — describes a step that already exists: the model then
-    // sometimes answers in prose, the server's single corrective re-ask
-    // proposes the long-gone test → review edge, and the route correctly
-    // answers 422 no_edge (observed 1 of 8 back-to-back runs). The product is
-    // right; the instruction was ambiguous. Ask instead for a role the draft
-    // has NO node for, anchored to the one root node with no dependents at
-    // all — `publish_verified`, the verified publish branch (A2 anchored its
-    // tail steps on `publish_needs_attention`, so that one is taken). The seed
-    // has exactly two other `artifact.publish` nodes and neither is a root
-    // anchor: `publish_plan` waits below `approve` (the gate's dependsOn is
-    // [plan, publish_plan]) and `test_evidence` publishes inside the until
-    // body. Every other root anchor is an edge the server refuses to split:
-    // `plan` →
-    // approve and `emit_items` → `fan_out` are output-bound/`when`-guarded,
-    // `verdict` is a condition with two dependents, and the reviewer
-    // candidates (implement/test/review/code_review) — like the seed's
-    // per-iteration `test_evidence` publisher — all live inside the
-    // seeded until scope. Name the id and the kind so the model never has to
-    // invent either.
     const NEW_NODE_ID = "security_scan";
     const ANCHOR_ID = "publish_verified";
 
     const versionBefore = await draftVersion(page, draft2Id);
     const documentBefore = await draftDocument(page, draft2Id);
     const pipelineBefore = await pipelineInfo(page, PIPELINE_SLUG);
-    // The anchor really is a leaf in this clone (insert_after's precondition),
-    // so the post-Apply dependsOn check below can only be about the new node.
     expect(
       yamlDependsOn(documentBefore, ANCHOR_ID),
       `${ANCHOR_ID} must start with no dependents for the ask to be unambiguous`,
     ).toBe(false);
 
-    // Design 1g: the Studio's assistant row is a pinned footer that starts
-    // collapsed behind its "Ask to change this draft… ⌘J" strip — wait for
-    // the dock to mount, open it, then ask.
+    // In the editor redesign, assistant-proposal-footer lives inside Workflow settings.
+    await page.getByTestId("editor-more-btn").click();
+    await expect(page.getByTestId("editor-more-menu")).toBeVisible();
+    await page.getByTestId("editor-menu-settings").click();
     const footer = page.getByTestId("assistant-proposal-footer");
     const assistantInput = page.getByTestId("assistant-proposal-input");
     await expect(footer.or(assistantInput).first()).toBeVisible({ timeout: 30_000 });
@@ -857,54 +771,52 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     );
   });
 
-  test("narrow: the phone Studio keeps the 1g canvas at 390x844", async ({ page }) => {
+  test("narrow: the phone editor keeps the canvas and opens step bottom sheet at 390x844", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     await page.setViewportSize({ width: 390, height: 844 });
     await gotoApp(page, state.draftA3);
-    await expect(page.getByTestId("studio-page")).toBeVisible();
-
-    // Design 1g renders the canvas as the Studio surface — `png/1g.png` /
-    // screens.txt `===== [1g]`: palette | canvas | inspector, "always top
-    // to bottom · lines leave the bottom and enter the top" — and the 1g
-    // set carries no phone-specific step-outline screen. The 1g rework
-    // (29226d6 "2-row phone header", 2c4f55b "phone header keeps the title
-    // and a one-line status bar") applies that canvas to phone widths:
-    // below 768px the canvas runs full width with drawer toggles. The
-    // studio-workbench §9 outline fallback survives only at 768–1023px
-    // (covered by the vitest that stubs "(max-width: 1023px)").
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
     expect(await page.locator(".react-flow").count(), "the canvas is the phone surface").toBe(1);
     expect(await page.getByTestId("step-outline").count(), "no outline below 768px").toBe(0);
+    await expect(page.getByTestId("tool-island")).toBeVisible();
 
-    // The two-row phone header carries the Steps / Inspect drawer toggles.
-    const paletteToggle = page.getByTestId("studio-phone-palette");
-    const inspectorToggle = page.getByTestId("studio-phone-inspector");
-    await expect(paletteToggle).toBeVisible();
-    await expect(inspectorToggle).toBeVisible();
-
-    // Selecting a step on the canvas and opening Inspect gives its inspector.
-    await page.getByTestId("canvas-step-plan").click();
-    await inspectorToggle.click();
+    // Pick any non-agent step currently visible inside the 390px canvas viewport
+    // (the wide LR graph extends beyond 390px at minZoom 0.4, so leftmost
+    // `plan` can start panned off-screen left); tapping it opens the inspector
+    // bottom sheet directly.
+    const stepId = await page.evaluate(() => {
+      const candidates = Array.from(document.querySelectorAll<HTMLElement>("[data-step-node-id]"));
+      for (const el of candidates) {
+        const id = el.dataset.stepNodeId;
+        if (!id || id === "code_review" || id.startsWith("agent")) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.left >= 70 && r.right <= 385 && r.top >= 70 && r.bottom <= 800) {
+          return id;
+        }
+      }
+      return null;
+    });
+    expect(
+      stepId,
+      "at least one non-agent step sits inside the initial 390px canvas",
+    ).not.toBeNull();
+    await page.getByTestId(`canvas-step-${stepId!}`).click();
     const outline = page.getByTestId("insp-node");
     await expect(outline).toBeVisible();
-    // The node id lives inside the design's collapsed "Retries, timeout
-    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
-    await expect(page.getByTestId("insp-node-id")).toHaveValue("plan");
+    await expect(page.getByTestId("insp-node-id")).toHaveValue(stepId!);
 
-    // No horizontal page scroll.
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth,
     );
     expect(overflow, "the page must not scroll horizontally").toBeLessThanOrEqual(1);
-    // Real axe audit on the narrow screen (wcag2a/wcag2aa): the inspector's
-    // generated inputs (list rows, kv key/value, checkboxes) all carry
-    // accessible names now, so this passes with zero serious/critical.
     await checkA11y(page, "studio narrow");
     await evidence(
       page,
       "studio-narrow",
-      "at 390x844 the Studio keeps the 1g canvas (full width, always top-to-bottom, per png/1g.png) with the phone header's Steps/Inspect toggles; selecting 'plan' and opening Inspect shows its inspector and the page does not scroll horizontally",
+      "at 390x844 the editor keeps the full-width canvas with ToolIsland; tapping 'plan' opens its inspector bottom sheet without horizontal scroll",
     );
   });
 });

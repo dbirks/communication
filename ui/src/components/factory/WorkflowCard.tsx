@@ -16,12 +16,15 @@
  * Nothing here is invented: the state text is the newest live run's own
  * `status`/`trigger`/`steps`, and a workflow with no live run says `idle`.
  */
-import { Link } from "react-router";
+import { useRef, useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { IconDots } from "@tabler/icons-react";
 import { runIssueNumber } from "../repo/RepoLanes";
 import { currentStep } from "../board/columns";
 import type { CrossProjectRunSummary } from "../../api/home";
 import { shortId, formatAge } from "../../lib/format";
 import { routes } from "../../lib/routes";
+import { Menu, type MenuEntry } from "../ds/Menu";
 import { WorkflowThumb } from "./WorkflowThumb";
 import type { FactoryWorkflowItem } from "./factoryData";
 
@@ -73,23 +76,95 @@ export interface WorkflowCardProps {
   item: FactoryWorkflowItem;
   /** The page's scope: a project id, or null for All projects. */
   scope: string | null;
+  canAuthor?: boolean;
+  duplicating?: boolean;
+  onOpenTriggers?: () => void;
+  onUseInProject?: () => void;
+  onDuplicate?: () => void;
 }
 
-export function WorkflowCard({ item, scope }: WorkflowCardProps) {
+export function WorkflowCard({
+  item,
+  scope,
+  canAuthor = false,
+  duplicating = false,
+  onOpenTriggers,
+  onUseInProject,
+  onDuplicate,
+}: WorkflowCardProps) {
+  const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+
   const { pipeline } = item;
   const name = pipeline.display_name || pipeline.slug;
   const live = item.liveRuns[0] ?? null;
   const state = cardState(live);
   const meta = cardMetaLines(item, scope);
+  const isLive =
+    item.newestPublished !== undefined
+      ? item.newestPublished !== null
+      : pipeline.revision_count > 0;
+  const usedInResolved = item.assignmentsResolved ?? true;
+
+  const menuItems: MenuEntry[] = [];
+  if (onUseInProject) {
+    menuItems.push({
+      id: "use-in-project",
+      label: "Use in a project…",
+      testId: "workflow-card-use",
+      disabled: !isLive,
+      onSelect: () => {
+        setMenuOpen(false);
+        onUseInProject();
+      },
+    });
+  }
+  if (onOpenTriggers) {
+    menuItems.push({
+      id: "triggers",
+      label: "Triggers…",
+      testId: "workflow-card-triggers",
+      onSelect: () => {
+        setMenuOpen(false);
+        onOpenTriggers();
+      },
+    });
+  }
+  if (canAuthor && onDuplicate) {
+    menuItems.push({
+      id: "duplicate",
+      label: duplicating ? "Duplicating…" : "Duplicate",
+      testId: "workflow-card-duplicate",
+      disabled: duplicating,
+      onSelect: () => {
+        setMenuOpen(false);
+        onDuplicate();
+      },
+    });
+  }
+  menuItems.push({
+    id: "open-yaml",
+    label: "Open YAML",
+    testId: "workflow-card-yaml",
+    onSelect: () => {
+      setMenuOpen(false);
+      navigate(routes.factoryWorkflow(pipeline.id, scope, { panel: "yaml" }));
+    },
+  });
 
   return (
     <article
       data-testid={`workflow-card-${pipeline.id}`}
-      className="group relative overflow-hidden rounded-[12px] border border-line bg-surface hover:border-line-strong hover:shadow-(--shadow-pop)"
+      className={`group relative rounded-[12px] border border-line bg-surface hover:border-line-strong hover:shadow-(--shadow-pop) ${
+        menuOpen ? "z-30" : ""
+      }`}
     >
-      <WorkflowThumb steps={item.steps} />
+      <div className="overflow-hidden rounded-t-[11px]">
+        <WorkflowThumb steps={item.steps} />
+      </div>
       <div className="flex flex-col gap-[6px] px-[14px] py-[12px]">
-        <div className="flex items-baseline gap-[8px]">
+        <div className="flex items-center gap-[8px]">
           {/* The card's accessible name, and the link the whole card answers to. */}
           <Link
             to={routes.factoryWorkflow(pipeline.id, scope)}
@@ -105,6 +180,32 @@ export function WorkflowCard({ item, scope }: WorkflowCardProps) {
           >
             {state.text}
           </span>
+          <span className="relative z-20 inline-flex shrink-0">
+            <button
+              ref={menuTriggerRef}
+              type="button"
+              data-testid="workflow-card-menu"
+              aria-label={`Actions for ${name}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+              className="icon-hit inline-flex h-[26px] w-[26px] items-center justify-center rounded-[7px] border border-transparent text-muted hover:border-line hover:bg-rail hover:text-ink focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] max-md:min-w-[44px]"
+            >
+              <IconDots size={15} stroke={1.5} aria-hidden="true" />
+            </button>
+            <Menu
+              open={menuOpen}
+              onClose={() => setMenuOpen(false)}
+              triggerRef={menuTriggerRef}
+              side="bottom"
+              align="end"
+              width={180}
+              className="rounded-[12px]! shadow-[var(--shadow-pop)]!"
+              ariaLabel={`Actions for ${name}`}
+              data-testid="workflow-card-menu-popover"
+              items={menuItems}
+            />
+          </span>
         </div>
         <p
           data-testid={`workflow-card-trigger-${pipeline.id}`}
@@ -118,6 +219,22 @@ export function WorkflowCard({ item, scope }: WorkflowCardProps) {
             className="m-0 text-[12px] text-muted"
           >
             {meta}
+          </p>
+        ) : null}
+        {isLive && usedInResolved && item.usedIn.length === 0 && onUseInProject ? (
+          <p
+            data-testid={`workflow-card-unused-${pipeline.id}`}
+            className="m-0 text-[12px] text-muted"
+          >
+            {"Not used in any project yet · "}
+            <button
+              type="button"
+              onClick={onUseInProject}
+              data-testid={`workflow-card-unused-use-${pipeline.id}`}
+              className="relative z-10 font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Use in a project
+            </button>
           </p>
         ) : null}
         {live ? (

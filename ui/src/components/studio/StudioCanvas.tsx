@@ -148,6 +148,7 @@ export interface StudioCanvasProps {
   onWrapSideBySide?(nodeIds: string[]): void;
   onEditGoal?(scopeId: string, goal: GoalSpec): void;
   onUnwrap?(scopeId: string): void;
+  onOpenInspector?(nodeId: string): void;
   verdictsByScope?: Record<string, VerdictRound[]>;
   trigger?: { subline: string; onClick?: () => void } | null;
   renderNodeOverlay?: (info: {
@@ -578,6 +579,93 @@ export function fitMinZoom(viewportWidth: number): number {
   return Number.isFinite(viewportWidth) && viewportWidth < PHONE_VIEWPORT_PX ? 1 : 0.4;
 }
 
+export const SMALL_WORKFLOW_MAX_STEPS = 8;
+export const SMALL_WORKFLOW_MIN_ZOOM = 0.75;
+export const GOAL_FRAME_SAFE_PAD_PX = 72;
+
+/**
+ * Initial fit zoom floor: small workflows (<= 8 steps) never zoom below 0.75
+ * so 168x56 cards stay readable; larger workflows may zoom out to fit.
+ */
+export function initialFitMinZoom(viewportWidth: number, stepCount: number): number {
+  const base = fitMinZoom(viewportWidth);
+  return stepCount <= SMALL_WORKFLOW_MAX_STEPS ? Math.max(base, SMALL_WORKFLOW_MIN_ZOOM) : base;
+}
+
+/**
+ * Check whether a flow-coordinate box is fully visible inside the pane,
+ * keeping clear of the top/left floating chrome when requested.
+ */
+export function isBoxVisibleInPane(
+  box: { x: number; y: number; width: number; height: number },
+  vp: { x: number; y: number; zoom: number } | null,
+  paneWidth: number,
+  paneHeight: number,
+  minTopPad = GOAL_FRAME_SAFE_PAD_PX,
+  minLeftPad = GOAL_FRAME_SAFE_PAD_PX,
+  edgePad = 16,
+): boolean {
+  if (!vp || !isPositiveFinite(vp.zoom)) return false;
+  if (!isPositiveFinite(paneWidth) || !isPositiveFinite(paneHeight)) return false;
+  const left = box.x * vp.zoom + vp.x;
+  const top = box.y * vp.zoom + vp.y;
+  const right = (box.x + box.width) * vp.zoom + vp.x;
+  const bottom = (box.y + box.height) * vp.zoom + vp.y;
+  return (
+    left >= minLeftPad &&
+    top >= minTopPad &&
+    right <= paneWidth - edgePad &&
+    bottom <= paneHeight - edgePad
+  );
+}
+
+/**
+ * Initial editor viewport fit:
+ * - Clamps small workflows (<= 8 steps) to [0.75, 1] (or [1, 1] on phone).
+ * - Leaves 72px top and 72px left padding when a GoalFrame's header would sit
+ *   under the top-right action buttons or top-left tool island.
+ */
+export function computeEditorFitViewport(params: {
+  boxes: { x: number; y: number; width: number; height: number }[];
+  goalBoxes?: { x: number; y: number; width: number; height: number }[];
+  paneWidth: number;
+  paneHeight: number;
+  viewportWidth: number;
+  stepCount: number;
+}): { x: number; y: number; zoom: number } | null {
+  const { boxes, goalBoxes = [], paneWidth, paneHeight, viewportWidth, stepCount } = params;
+  const minZoom = initialFitMinZoom(viewportWidth, stepCount);
+  const vp = computeTopFitViewport(boxes, paneWidth, paneHeight, FIT_TOP_PAD_PX, minZoom, 1);
+  if (vp === null || goalBoxes.length === 0) return vp;
+
+  const overlapsChrome = goalBoxes.some((g) => {
+    const left = g.x * vp.zoom + vp.x;
+    const top = g.y * vp.zoom + vp.y;
+    return top < GOAL_FRAME_SAFE_PAD_PX || left < GOAL_FRAME_SAFE_PAD_PX;
+  });
+  if (!overlapsChrome) return vp;
+
+  const padded = computeTopFitViewport(
+    boxes,
+    paneWidth,
+    paneHeight,
+    GOAL_FRAME_SAFE_PAD_PX,
+    minZoom,
+    1,
+  );
+  if (padded === null) return null;
+
+  let minGoalX = Infinity;
+  for (const g of goalBoxes) {
+    if (Number.isFinite(g.x)) minGoalX = Math.min(minGoalX, g.x);
+  }
+  const shiftedX = Number.isFinite(minGoalX)
+    ? Math.max(padded.x, GOAL_FRAME_SAFE_PAD_PX - minGoalX * padded.zoom)
+    : padded.x;
+
+  return { x: shiftedX, y: padded.y, zoom: padded.zoom };
+}
+
 /** The viewport width the phone rule sees (no window during server render /
  * jsdom: never the phone band). */
 function currentViewportWidth(): number {
@@ -803,11 +891,12 @@ function CanvasInner({
   onWrapSideBySide,
   onEditGoal,
   onUnwrap,
+  onOpenInspector,
   verdictsByScope,
   trigger = null,
   renderNodeOverlay,
 }: StudioCanvasProps) {
-  const { setViewport, zoomIn, zoomOut } = useReactFlow();
+  const { setViewport, fitBounds, zoomIn, zoomOut } = useReactFlow();
   const rfViewport = useViewport();
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The pane the graph fills — observed so a dock drag/collapse refits. */
@@ -1647,13 +1736,31 @@ function CanvasInner({
     if (!pane) return false;
     const rect = pane.getBoundingClientRect();
     const boxes = graphBoxes();
-    const vp = computeTopFitViewport(
+    const measuredById = new Map(nodesRef.current.map((n) => [n.id, n.measured]));
+    const goalBoxes = baseRef.current.nodes
+      .filter((n) => n.type === "scope" && n.data.goal != null)
+      .map((n) => {
+        const raw = nodeBoxesRef.current[n.id];
+        if (!raw) return null;
+        const mw = measuredById.get(n.id)?.width;
+        const mh = measuredById.get(n.id)?.height;
+        return {
+          x: raw.x,
+          y: raw.y,
+          width: mw !== undefined && Number.isFinite(mw) && mw > 0 ? mw : raw.width,
+          height: mh !== undefined && Number.isFinite(mh) && mh > 0 ? mh : raw.height,
+        };
+      })
+      .filter((b): b is NonNullable<typeof b> => b !== null);
+    const stepCount = baseRef.current.nodes.filter((n) => n.type === "step").length;
+    const vp = computeEditorFitViewport({
       boxes,
-      rect.width,
-      rect.height,
-      FIT_TOP_PAD_PX,
-      fitMinZoom(currentViewportWidth()),
-    );
+      goalBoxes,
+      paneWidth: rect.width,
+      paneHeight: rect.height,
+      viewportWidth: currentViewportWidth(),
+      stepCount,
+    });
     if (vp === null) return false;
     setViewport(vp, { duration: 0 });
     lastGoodRef.current = vp;
@@ -1661,6 +1768,7 @@ function CanvasInner({
   }, [graphBoxes, setViewport]);
   const safeFitRef = useRef(safeFit);
   safeFitRef.current = safeFit;
+  const pendingWrapFocusRef = useRef(false);
 
   // Structural (first) fit + the pane's zero→real transition.
   useEffect(() => {
@@ -1670,8 +1778,39 @@ function CanvasInner({
     const realSizeJustArrived = pendingRealSizeRef.current;
     if (!structural && !realSizeJustArrived) return;
     pendingRealSizeRef.current = false;
+    if (structural && pendingWrapFocusRef.current) {
+      pendingWrapFocusRef.current = false;
+      lastFittedSetRef.current = nodeSetKey;
+      const pane = paneRef.current;
+      const rect = pane?.getBoundingClientRect();
+      const scopeNode = base.nodes.find(
+        (n) => n.type === "scope" && pageSelRef.current.includes(n.data.nodeId),
+      );
+      const raw = scopeNode ? nodeBoxesRef.current[scopeNode.id] : undefined;
+      if (rect && scopeNode && raw) {
+        const measured = nodesRef.current.find((n) => n.id === scopeNode.id)?.measured;
+        const box = {
+          x: raw.x,
+          y: raw.y,
+          width:
+            measured?.width !== undefined && Number.isFinite(measured.width) && measured.width > 0
+              ? measured.width
+              : raw.width,
+          height:
+            measured?.height !== undefined &&
+            Number.isFinite(measured.height) &&
+            measured.height > 0
+              ? measured.height
+              : raw.height,
+        };
+        if (!isBoxVisibleInPane(box, currentViewport(), rect.width, rect.height)) {
+          void fitBounds(box, { padding: "80px" as unknown as number, duration: 200 });
+        }
+      }
+      return;
+    }
     if (safeFit()) lastFittedSetRef.current = nodeSetKey;
-  }, [nodeSetKey, allMeasured, paneReal, base.nodes.length, safeFit]);
+  }, [nodeSetKey, allMeasured, paneReal, base, currentViewport, fitBounds, safeFit]);
 
   /** The pane changed size while nobody was looking at a hand-built view:
    * re-fit the graph into the new pane. When the reader HAS taken the view,
@@ -2086,6 +2225,7 @@ function CanvasInner({
             nodeId={menu.nodeId}
             onDuplicate={onDuplicate}
             onDelete={(ids) => onDelete?.(ids)}
+            onOpenInspector={onOpenInspector}
             onClose={closeMenu}
           />
         )}
@@ -2108,10 +2248,12 @@ function CanvasInner({
               reason={wrapCheck && !wrapCheck.ok ? wrapCheck.reason : null}
               sheet={phone}
               onWrapRepeat={(goal) => {
+                pendingWrapFocusRef.current = true;
                 onWrapRepeat?.(activeSelection, goal);
                 setTool("select");
               }}
               onWrapSideBySide={() => {
+                pendingWrapFocusRef.current = true;
                 onWrapSideBySide?.(activeSelection);
                 setTool("select");
               }}
@@ -2139,6 +2281,15 @@ function CanvasInner({
                 onUnwrap?.(editingScopeId);
                 setEditingScopeId(null);
               }}
+              onMoreSettings={
+                onOpenInspector
+                  ? () => {
+                      const scopeId = editingScopeId;
+                      setEditingScopeId(null);
+                      onOpenInspector(scopeId);
+                    }
+                  : undefined
+              }
               onWrapRepeat={(nextGoal) => {
                 onEditGoal?.(editingScopeId, nextGoal);
                 setEditingScopeId(null);
@@ -2168,6 +2319,7 @@ function CanvasInner({
           nodeId={menu.nodeId}
           onDuplicate={onDuplicate}
           onDelete={(ids) => onDelete?.(ids)}
+          onOpenInspector={onOpenInspector}
           onClose={closeMenu}
         />
       ) : null}

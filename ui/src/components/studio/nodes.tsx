@@ -63,6 +63,8 @@ export type ScopeNodeRender = {
   boxHeight?: number;
   /** Clicking a GoalFrame header opens its edit card. */
   onEditGoal?: () => void;
+  /** Opens this scope's NodeMenu (⋯ button on the selected scope). */
+  onMenu?: (() => void) | null;
   /** Present only when the body is empty: opens the picker, then adds inside. */
   onAddInside: ((kind: string) => void) | null;
 };
@@ -362,7 +364,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
 }
 
 export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
-  const { data } = props;
+  const { data, selected } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
   const interactive = !data.readOnly && !data.stale;
   const inPosition = data.direction === "LR" ? Position.Left : Position.Top;
@@ -370,6 +372,23 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
   const width = props.width ?? data.boxWidth ?? 224;
   const height = props.height ?? data.boxHeight ?? 160;
   const running = stepStateCategory(data.status?.state) === "running";
+  const showMenu = Boolean(selected && interactive && data.onMenu);
+  const scopeMenuBtn = showMenu ? (
+    <button
+      type="button"
+      data-testid={`node-menu-button-${data.id}`}
+      aria-label={`Actions for scope ${data.id}`}
+      aria-haspopup="menu"
+      className="icon-hit absolute! right-[6px] top-[6px] z-20 grid h-[20px] w-[20px] place-items-center rounded-[3px] border border-line bg-surface text-[12px] leading-none text-ink-2 hover:border-accent hover:text-accent"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        data.onMenu?.();
+      }}
+    >
+      <span aria-hidden="true">⋯</span>
+    </button>
+  ) : null;
 
   const emptyBodyNode = data.emptyBody ? (
     <div className="flex h-[calc(100%-2.25rem)] w-full items-center justify-center">
@@ -417,6 +436,7 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
         >
           {emptyBodyNode}
         </GoalFrame>
+        {scopeMenuBtn}
         {data.verdicts && data.verdicts.length > 0 ? (
           <div
             className="pointer-events-auto absolute left-full top-0 z-10 ml-[14px]"
@@ -454,6 +474,7 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
           </span>
         )}
       </div>
+      {scopeMenuBtn}
       {emptyBodyNode}
     </div>
   );

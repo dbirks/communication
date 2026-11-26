@@ -418,10 +418,12 @@ function PipelinePanel({
   readOnly,
   doc,
   apply,
+  onOpenInputs,
 }: {
   readOnly: boolean;
   doc: Record<string, unknown>;
   apply: (op: (text: string) => OpResult) => void;
+  onOpenInputs?: () => void;
 }) {
   const { pipelineId = "" } = useParams();
   const pipeline = usePipeline(pipelineId);
@@ -454,9 +456,21 @@ function PipelinePanel({
           here would name a control that is not one control), and the section's
           sentence under the rows where the eye lands. */}
       <section className="space-y-[6px]">
-        <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-          Run inputs
-        </span>
+        <div className="flex items-center justify-between gap-[8px]">
+          <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+            Run inputs
+          </span>
+          {onOpenInputs ? (
+            <button
+              type="button"
+              onClick={onOpenInputs}
+              data-testid="insp-inputs-who-fills"
+              className="font-mono text-[11px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              Who fills these →
+            </button>
+          ) : null}
+        </div>
         <RunInputsEditor
           readOnly={readOnly}
           inputs={inputs}
@@ -908,6 +922,7 @@ export function StudioInspector({
   readOnly,
   apply,
   onDelete,
+  onOpenInputs,
 }: {
   model: GraphModel;
   nodeId: string | null;
@@ -918,6 +933,8 @@ export function StudioInspector({
   apply: (op: (text: string) => OpResult) => void;
   /** The page's delete op — the inspector's Delete runs the same one as the keyboard. */
   onDelete?: (id: string) => void;
+  /** Open the `?panel=inputs` panel ("Who fills these →"). */
+  onOpenInputs?: () => void;
 }) {
   const [renameError, setRenameError] = useState<string | null>(null);
   /** Design 1g: model.chat's advanced fields (retries, timeout and outputs,
@@ -945,7 +962,9 @@ export function StudioInspector({
   }
 
   if (nodeId === null || node === undefined)
-    return <PipelinePanel readOnly={readOnly} doc={doc} apply={apply} />;
+    return (
+      <PipelinePanel readOnly={readOnly} doc={doc} apply={apply} onOpenInputs={onOpenInputs} />
+    );
 
   const nodeObj = nodeObjectOf(doc, node.pointer);
   if (nodeObj === null) {

@@ -87,4 +87,23 @@ describe("WorkflowThumb", () => {
     render(<WorkflowThumb steps={[]} />);
     expect(screen.getByTestId("workflow-thumb").textContent).toBe("no steps yet");
   });
+
+  it("caps direct step lists at 5 steps + +N and left-aligns with a right fade", () => {
+    const ten: ThumbStep[] = [
+      { id: "trigger", label: "manual", kind: "trigger", state: "idle" },
+      ...Array.from({ length: 9 }, (_, i) => ({
+        id: `s-${i + 1}`,
+        label: `step-${i + 1}`,
+        kind: "command" as const,
+        state: "idle" as const,
+      })),
+    ];
+    render(<WorkflowThumb steps={ten} />);
+    expect(chip("trigger")).toBeTruthy();
+    expect(chip("s-5")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-thumb-chip-s-6")).toBeNull();
+    expect(chip("+4").textContent).toBe("+4");
+    expect(screen.getByTestId("workflow-thumb-strip").className).toContain("mx-auto");
+    expect(screen.getByTestId("workflow-thumb-fade")).toBeTruthy();
+  });
 });
