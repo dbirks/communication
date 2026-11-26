@@ -284,11 +284,17 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     expect(rows.length).toBeGreaterThanOrEqual(10);
     for (const row of rows) {
       await gotoApp(page, row.old);
-      const landed = new URL(page.url());
-      expect(
-        `${landed.pathname}${landed.search}`,
-        `${row.old} must land on ${row.canonical} with its query preserved`,
-      ).toBe(row.canonical);
+      // The redirect is a client-side `<Navigate replace>`: the document lands
+      // on the old address first, so the URL is polled, not read once.
+      await expect
+        .poll(
+          async () => {
+            const landed = new URL(page.url());
+            return `${landed.pathname}${landed.search}`;
+          },
+          { message: `${row.old} must land on ${row.canonical} with its query preserved` },
+        )
+        .toBe(row.canonical);
     }
     // The workbench permalink keeps the ADR-0043 view state byte-for-byte.
     const runs = await page
@@ -298,10 +304,12 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     if (runs.length > 0) {
       const old = `/projects/${runs[0].project_id}/runs/${runs[0].id}?view=timeline`;
       await gotoApp(page, old);
-      const landed = new URL(page.url());
-      expect(`${landed.pathname}${landed.search}`, `${old} keeps ?view=timeline`).toBe(
-        `/runs/${runs[0].id}?view=timeline`,
-      );
+      await expect
+        .poll(async () => {
+          const landed = new URL(page.url());
+          return `${landed.pathname}${landed.search}`;
+        })
+        .toBe(`/runs/${runs[0].id}?view=timeline`);
     }
     await evidence(
       page,
@@ -843,7 +851,7 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       .toBe("[scope-sheet]");
     // Tab to the project's row: the sheet's rows are real links in DOM order.
     let hops = 0;
-    const targetHref = `href="/p/${project.id}"`;
+    const targetHref = `a[href="/p/${project.id}"]`;
     for (;;) {
       const active = await caretOn(page);
       if (active === targetHref) break;

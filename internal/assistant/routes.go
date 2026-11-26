@@ -18,6 +18,22 @@ var allowedRoutes = []*regexp.Regexp{
 	// Shell pages.
 	regexp.MustCompile(`^/login$`),
 	regexp.MustCompile(`^/$`),
+	// The redesign's places (docs/design/redesign/CONTRACT.md): Chats, Factory
+	// and the workflow editor, each also under a project scope, and Manage.
+	regexp.MustCompile(`^/chats$`),
+	regexp.MustCompile(`^/chats/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/chats$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/chats/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/factory$`),
+	regexp.MustCompile(`^/factory/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/factory$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/factory/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/manage$`),
+	regexp.MustCompile(`^/manage/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/manage/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_-]{1,64}$`),
+	// The addresses below this line that the redesign replaced (threads,
+	// workflows, profiles, settings, projects, …) are still mounted as
+	// redirects, so a link the assistant returns keeps resolving.
 	regexp.MustCompile(`^/threads$`),
 	regexp.MustCompile(`^/threads/[A-Za-z0-9_-]{1,64}$`),
 	// Catch up (design 8a, ADR-0078): the reader's own pile of pieces of work.
