@@ -407,8 +407,13 @@ test.describe("M2 shared conversation and control handoff", () => {
 
     // Same journal, same fold: the two transcripts must read the same, and
     // both handoffs must be in them.
-    const aliceText = (await alice.getByTestId("transcript").innerText()).trim();
-    const bobText = (await bob.getByTestId("transcript").innerText()).trim();
+    // The one difference by design (redesign README § 3): a reader's OWN
+    // messages carry the author "you". Each side's "you" is put back to that
+    // reader's name before the two folds are compared, so everything else —
+    // order, text, times, tool rows, handoff lines — must still be identical.
+    const named = (text: string, self: string) => text.replace(/^you( · )/gm, `${self}$1`);
+    const aliceText = named((await alice.getByTestId("transcript").innerText()).trim(), ALICE.name);
+    const bobText = named((await bob.getByTestId("transcript").innerText()).trim(), BOB.name);
     expect(aliceText.length).toBeGreaterThan(200);
     expect(aliceText).toBe(bobText);
     for (const expected of [
