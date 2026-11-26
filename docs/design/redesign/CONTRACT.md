@@ -126,3 +126,28 @@ each page scrolls itself: the shell is `h-dvh overflow-hidden`, the content regi
    signed out; "Manage agents…" at the bottom.
 3. **Project default agent**: one line on the project home's right column under "Workflows here".
 4. **Agent step inspector** on the canvas: a card beside the step (wrap-panel style) with the picker and prompt.
+
+## Decided differences from the prototype
+
+The prototype shows mock screens; the app also has to keep what people could already do. A reviewer comparing
+the two should treat each line below as decided, not as a defect. Anything not listed here follows the README
+and the prototype.
+
+| Where | The app has / lacks | Why |
+|---|---|---|
+| Chats list | a search field, and an All · One-off · From runs filter that appears when the list is long, a filter is active or the search has text | Existing behaviour (finding chats; separating run chats); the lab journeys use both |
+| Chat composer | "/ skill" and "# issue" chips beside the agent chip and "Run workflow" | Existing behaviour (attach a skill, link an issue); styled as the same chips |
+| Chat header | the turn status and controller ("✓ done · you control"), the agent line, and a "…" menu (Details, Artifacts, control hand-off) | Existing behaviour; the prototype's header is title, repo chip, people |
+| Quick chat footer | the trust-level and page-context chips | Existing assistant controls (what it may do without asking; whether it reads the open page) |
+| New workflow sheet | "Start from a template", collapsed, after "Or copy" | Starting from a vetted template existed before the redesign |
+| New workflow sheet | "Or from something you keep doing in chats" shows one sentence, no rows | No API detects repeated step chains yet; fake rows are not allowed |
+| Manage → Runners | no "Add runner" button | A runner registers itself when it is started; the app has nothing to add |
+| Manage → Runners | the old Operations panels (health, queue, sandbox, capability matrix, identity & storage, about) under "This server" | Operations had no other home |
+| Manage → Agents & models | Skills, Step templates, Models and Assistant tabs | Their old pages had no other home (see "What happens to the old app") |
+| Editor "…" menu | Edit as YAML (with the paste-and-validate panel), Used in, Run inputs, Use in a project, Tidy up, Discard draft | What the old workflow page and Studio could do |
+| Editor | "Repeat until a judge says" is built from a model step that answers GOAL_MET plus the existing `until` condition | No judge condition exists in the engine; a dedicated one needs an ADR |
+| Editor | a run on the canvas (`?run=`) with "Open run" / "Back to editing" | README "During a run"; the prototype has no route for it |
+| Factory, project scope | "Schedules and triggers here" under the cards | Seeing, adding and pausing a workflow's schedules had no other home |
+| Factory cards | a "…" menu (Triggers, Use in a project, Duplicate, Open YAML) and "Open run" / "Watch on canvas" on a live run | Existing actions |
+| Home | data blocks print one plain sentence when empty | Real data; the prototype is always populated |
+| Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |
