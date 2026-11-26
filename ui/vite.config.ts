@@ -8,7 +8,8 @@ import tailwindcss from "@tailwindcss/vite";
 // same-origin, exactly as it is when `serve` embeds ui/dist in production
 // (ADR-0007). Because everything is same-origin, cookies and the CSRF header
 // behave identically in dev and in the embedded build.
-const apiTarget = "http://localhost:18080";
+// COMMUNICATION_DEV_API points the dev proxy at a lab on another port.
+const apiTarget = process.env.COMMUNICATION_DEV_API ?? "http://localhost:18080";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
