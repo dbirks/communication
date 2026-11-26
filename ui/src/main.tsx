@@ -4,7 +4,11 @@ import { BrowserRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { ApiError } from "./api/client";
+import { installStaleBuildReload } from "./lib/staleBuild";
 import "./index.css";
+
+// A tab left open across a deploy asks for chunks that no longer exist.
+installStaleBuildReload();
 
 const queryClient = new QueryClient({
   defaultOptions: {
