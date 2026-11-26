@@ -183,11 +183,16 @@ export function AgentPicker({
           title={disabled ? disabledReason : "Choose the agent profile"}
           onClick={toggleOpen}
         >
-          <span className="inline-flex min-w-0 items-center gap-[4px]">
+          <span className="inline-flex min-w-0 items-center">
             <span className="truncate font-semibold text-ink">
               {selected ? selected.name : "Choose agent"}
             </span>
-            {selected?.model ? <span className="text-muted">· {selected.model}</span> : null}
+            {/* The separator carries its own spaces so the chip READS
+                "name · model" as text too (tests and screen readers), not
+                only by the flex gap. */}
+            {selected?.model ? (
+              <span className="whitespace-pre text-muted"> · {selected.model}</span>
+            ) : null}
             <IconChevronDown
               size={12}
               stroke={1.5}
