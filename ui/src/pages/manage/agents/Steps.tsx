@@ -95,12 +95,12 @@ export default function Steps() {
               {groupByFamily(templates).map(([family, items]) => (
                 <li key={family}>
                   <h2
-                    className="mb-[4px] font-mono text-[10px] font-bold tracking-[.08em] text-muted"
+                    className="mb-[6px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted"
                     data-testid={`steps-group-${family.toLowerCase()}`}
                   >
                     {family}
                   </h2>
-                  <div className="space-y-[4px]">
+                  <div className="space-y-[6px]">
                     {items.map((template) => (
                       <StepRow
                         key={template.id}

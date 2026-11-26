@@ -20,8 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { IconArrowDown, IconArrowUp, IconGripVertical, IconPlus } from "@tabler/icons-react";
-import { Button } from "../ds/Button";
-import { Input } from "../ds/Field";
+import { SoftButton } from "../ds/SoftButton";
 import { Alert } from "../ds/Alert";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { problemOf } from "../../api/client";
@@ -34,6 +33,17 @@ import {
   type APMCollectionEntry,
 } from "../../api/apmCollections";
 import { routes } from "../../lib/routes";
+
+/* The Manage chrome (docs/design/redesign/CONTRACT.md): the table header is
+ * the mono section label, rows divide on `line-soft`, the card corner is 10px
+ * and an input takes 8px with a 1px line-strong edge. */
+const TABLE_HEAD =
+  "pt-[8px] pr-3 pb-[8px] pl-0 border-b border-line text-left font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted whitespace-nowrap";
+const TABLE_CELL = "pt-[10px] pr-3 pb-[10px] pl-0 align-top text-[13px] border-b border-line-soft";
+const SOFT_INPUT =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
+const ROW_CONTROL =
+  "rounded-[6px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
 
 export interface CollectionEditorProps {
   collectionId: string;
@@ -180,22 +190,24 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
           <p className="mt-1 max-w-[720px] text-[13.5px] text-muted">{collection.description}</p>
         </div>
         <div className="flex shrink-0 items-center gap-[8px]">
-          <Button
+          <SoftButton
             variant="secondary"
+            size="lg"
             disabled={!dirty || busy !== null}
             onClick={() => void saveDraft()}
             data-testid="collection-save-draft"
           >
             {busy === "save" ? "Saving…" : "Save draft"}
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="primary"
+            size="lg"
             disabled={publishable === null || busy !== null || dirty}
             onClick={() => setConfirmOpen(true)}
             data-testid="collection-publish"
           >
             {busy === "publish" ? "Publishing…" : publishLabel}
-          </Button>
+          </SoftButton>
         </div>
       </header>
       <div className="pt-[14px]">
@@ -204,121 +216,126 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
             unsaved edits — Save draft lands them as r{highest + 1}
           </p>
         ) : null}
-        <table className="w-full border-collapse text-left" data-testid="collection-entries">
-          <thead>
-            <tr className="border-b border-line font-mono text-[10px] uppercase tracking-[.06em] text-faint">
-              <th className="w-[64px] p-[6px] font-semibold">#</th>
-              <th className="p-[6px] font-semibold">ref</th>
-              <th className="p-[6px] font-semibold">skills</th>
-              <th className="p-[6px] font-semibold">note</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry, index) => (
-              <tr
-                key={`${index}:${entry.ref}`}
-                className="border-b border-line align-top"
-                data-testid={`collection-entry-${index}`}
-              >
-                <td className="p-[6px]">
-                  <span className="flex items-center gap-[2px]">
-                    {/* The grip is the affordance; the arrows are how a keyboard
-                      (and this build) actually moves a row. */}
-                    <IconGripVertical
-                      size={14}
-                      stroke={1.7}
-                      aria-hidden="true"
-                      className="text-faint"
-                    />
-                    <button
-                      type="button"
-                      aria-label={`Move ${entry.ref} up`}
-                      disabled={index === 0}
-                      onClick={() => move(index, -1)}
-                      data-testid={`collection-entry-up-${index}`}
-                      className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    >
-                      <IconArrowUp size={14} stroke={1.7} aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Move ${entry.ref} down`}
-                      disabled={index === entries.length - 1}
-                      onClick={() => move(index, 1)}
-                      data-testid={`collection-entry-down-${index}`}
-                      className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    >
-                      <IconArrowDown size={14} stroke={1.7} aria-hidden="true" />
-                    </button>
-                  </span>
-                </td>
-                <td className="p-[6px] font-mono text-[12px] break-all text-ink-2">{entry.ref}</td>
-                <td className="p-[6px]">
-                  {(entry.skills ?? []).length === 0 ? (
-                    <span className="font-mono text-[11px] text-faint">all</span>
-                  ) : (
-                    <span className="flex flex-wrap gap-[3px]">
-                      {entry.skills?.map((skill) => (
-                        <span
-                          key={skill}
-                          className="rounded-[3px] border border-line px-[5px] py-[1px] font-mono text-[10.5px] text-ink-2"
-                        >
-                          {skill}
-                        </span>
-                      ))}
+        <div className="overflow-hidden rounded-[10px] border border-line bg-surface px-[12px]">
+          <table className="w-full border-collapse text-left" data-testid="collection-entries">
+            <thead>
+              <tr>
+                <th className={`${TABLE_HEAD} w-[64px]`}>#</th>
+                <th className={TABLE_HEAD}>ref</th>
+                <th className={TABLE_HEAD}>skills</th>
+                <th className={TABLE_HEAD}>note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, index) => (
+                <tr
+                  key={`${index}:${entry.ref}`}
+                  className="align-top"
+                  data-testid={`collection-entry-${index}`}
+                >
+                  <td className={TABLE_CELL}>
+                    <span className="flex items-center gap-[2px]">
+                      {/* The grip is the affordance; the arrows are how a keyboard
+                        (and this build) actually moves a row. */}
+                      <IconGripVertical
+                        size={14}
+                        stroke={1.7}
+                        aria-hidden="true"
+                        className="text-faint"
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Move ${entry.ref} up`}
+                        disabled={index === 0}
+                        onClick={() => move(index, -1)}
+                        data-testid={`collection-entry-up-${index}`}
+                        className={ROW_CONTROL}
+                      >
+                        <IconArrowUp size={14} stroke={1.7} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Move ${entry.ref} down`}
+                        disabled={index === entries.length - 1}
+                        onClick={() => move(index, 1)}
+                        data-testid={`collection-entry-down-${index}`}
+                        className={ROW_CONTROL}
+                      >
+                        <IconArrowDown size={14} stroke={1.7} aria-hidden="true" />
+                      </button>
                     </span>
-                  )}
+                  </td>
+                  <td className={`${TABLE_CELL} font-mono text-[12px] break-all text-ink-2`}>
+                    {entry.ref}
+                  </td>
+                  <td className={TABLE_CELL}>
+                    {(entry.skills ?? []).length === 0 ? (
+                      <span className="font-mono text-[11px] text-faint">all</span>
+                    ) : (
+                      <span className="flex flex-wrap gap-[3px]">
+                        {entry.skills?.map((skill) => (
+                          <span
+                            key={skill}
+                            className="rounded-[6px] border border-line px-[5px] py-[1px] font-mono text-[10.5px] text-ink-2"
+                          >
+                            {skill}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`${TABLE_CELL} text-[12px] text-muted`}>{entry.note ?? ""}</td>
+                </tr>
+              ))}
+              {entries.length === 0 ? (
+                <tr data-testid="collection-entries-empty">
+                  <td colSpan={4} className={`${TABLE_CELL} font-mono text-[11px] text-faint`}>
+                    no packages — this collection stages nothing
+                  </td>
+                </tr>
+              ) : null}
+              <tr data-testid="collection-add-row">
+                <td className={TABLE_CELL} />
+                <td className={`${TABLE_CELL} pr-[6px]`}>
+                  <div className="flex items-center gap-[6px]">
+                    <input
+                      type="text"
+                      aria-label="Add package ref"
+                      value={refDraft}
+                      placeholder="owner/repo[/path]#tag-or-sha"
+                      onChange={(event) => {
+                        setRefDraft(event.target.value);
+                        if (refError !== null) setRefError(null);
+                      }}
+                      className={`${SOFT_INPUT} min-w-0 flex-1 font-mono`}
+                      data-testid="collection-add-ref"
+                    />
+                    <SoftButton
+                      variant="secondary"
+                      compact
+                      onClick={addPackage}
+                      data-testid="collection-add-package"
+                    >
+                      <IconPlus size={14} stroke={1.7} aria-hidden="true" />
+                      Add package
+                    </SoftButton>
+                  </div>
+                  {refError ? (
+                    <p
+                      role="alert"
+                      className="pt-1 text-[11.5px] text-st-failed-tag-fg"
+                      data-testid="collection-add-error"
+                    >
+                      {refError}
+                    </p>
+                  ) : null}
                 </td>
-                <td className="p-[6px] text-[12px] text-muted">{entry.note ?? ""}</td>
+                <td className={TABLE_CELL} />
+                <td className={`${TABLE_CELL} border-b-0`} />
               </tr>
-            ))}
-            {entries.length === 0 ? (
-              <tr data-testid="collection-entries-empty">
-                <td colSpan={4} className="p-[10px] font-mono text-[11px] text-faint">
-                  no packages — this collection stages nothing
-                </td>
-              </tr>
-            ) : null}
-            <tr data-testid="collection-add-row">
-              <td className="p-[6px]" />
-              <td className="p-[6px]">
-                <div className="flex items-center gap-[6px]">
-                  <Input
-                    aria-label="Add package ref"
-                    value={refDraft}
-                    placeholder="owner/repo[/path]#tag-or-sha"
-                    onChange={(event) => {
-                      setRefDraft(event.target.value);
-                      if (refError !== null) setRefError(null);
-                    }}
-                    className="min-w-0 flex-1 font-mono"
-                    data-testid="collection-add-ref"
-                  />
-                  <Button
-                    variant="secondary"
-                    compact
-                    onClick={addPackage}
-                    data-testid="collection-add-package"
-                  >
-                    <IconPlus size={14} stroke={1.7} aria-hidden="true" />
-                    Add package
-                  </Button>
-                </div>
-                {refError ? (
-                  <p
-                    role="alert"
-                    className="pt-1 text-[11.5px] text-st-failed-tag-fg"
-                    data-testid="collection-add-error"
-                  >
-                    {refError}
-                  </p>
-                ) : null}
-              </td>
-              <td className="p-[6px]" />
-              <td className="p-[6px]" />
-            </tr>
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
         {problem ? (
           <Alert state="failed" label="REFUSED" role="alert" testid="collection-editor-problem">
             {problemOf(problem).detail || problemOf(problem).title}
@@ -372,7 +389,7 @@ function CollectionPublishDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="collection-publish-title"
-        className="mt-[10vh] w-full max-w-[440px] rounded-[4px] border border-line-strong bg-surface p-[14px]"
+        className="mt-[10vh] w-full max-w-[440px] rounded-[18px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)] max-md:mt-auto max-md:rounded-b-none"
         data-testid="collection-publish-dialog"
       >
         <h2
@@ -386,17 +403,17 @@ function CollectionPublishDialog({
           A published revision is immutable — later edits land a new draft.
         </p>
         <div className="mt-[12px] flex justify-end gap-[8px]">
-          <Button variant="ghost" onClick={onCancel} data-testid="collection-publish-cancel">
+          <SoftButton variant="ghost" onClick={onCancel} data-testid="collection-publish-cancel">
             Cancel
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="primary"
             disabled={busy}
-            onClick={onConfirm}
+            onClick={() => void onConfirm()}
             data-testid="collection-publish-confirm"
           >
             {busy ? "Publishing…" : `Publish r${revision}`}
-          </Button>
+          </SoftButton>
         </div>
       </div>
     </div>

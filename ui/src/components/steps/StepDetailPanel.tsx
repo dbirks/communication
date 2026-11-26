@@ -9,7 +9,7 @@
  */
 import { Link } from "react-router";
 import { Alert } from "../ds/Alert";
-import { Button } from "../ds/Button";
+import { SoftButton } from "../ds/SoftButton";
 import { StatusChip } from "../ds/Row";
 import { FormError, Spinner } from "../Feedback";
 import { ApiError } from "../../api/client";
@@ -152,10 +152,15 @@ export function StepDetailPanel({
       ) : null}
 
       {latest ? (
-        <dl className="mt-[10px] space-y-[4px]" data-testid="step-detail-facts">
+        <dl
+          className="mt-[10px] space-y-[4px] rounded-[10px] border border-line bg-surface p-[12px]"
+          data-testid="step-detail-facts"
+        >
           {facts(latest).map(([key, value]) => (
             <div key={key} className="flex items-baseline gap-[8px] text-[11.5px]">
-              <dt className="w-[86px] shrink-0 font-mono text-[10.5px] text-muted">{key}</dt>
+              <dt className="w-[86px] shrink-0 font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
+                {key}
+              </dt>
               <dd className="min-w-0 truncate font-mono text-[11px]">{value}</dd>
             </div>
           ))}
@@ -163,7 +168,7 @@ export function StepDetailPanel({
       ) : null}
 
       <section className="mt-[12px]" data-testid="step-usage">
-        <h3 className="font-mono text-[10px] font-bold tracking-[.08em] text-muted">
+        <h3 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
           {usedInHeading}
         </h3>
         {usageQuery.isPending ? (
@@ -178,7 +183,7 @@ export function StepDetailPanel({
           </p>
         ) : (
           <>
-            <ul className="mt-[4px] divide-y divide-line" data-testid="step-detail-usages">
+            <ul className="mt-[4px] divide-y divide-line-soft" data-testid="step-detail-usages">
               {usage?.uses.map((use) => (
                 <UsageRow key={`${use.pipeline_id}:${use.source}:${use.node_id}`} usage={use} />
               ))}
@@ -192,18 +197,24 @@ export function StepDetailPanel({
         )}
       </section>
 
-      <div className="mt-[12px] flex flex-col gap-[8px]">
-        <Button
+      <div className="mt-[12px] flex flex-col items-stretch gap-[8px]">
+        <SoftButton
           variant="primary"
+          size="lg"
           onClick={onEdit}
           disabled={!latest || !suggested}
           data-testid="step-detail-edit-for-all"
         >
           {suggested ? `Edit for all ${usages.length} → version ${suggested}` : "Edit for all"}
-        </Button>
-        <Button variant="secondary" onClick={onDuplicate} data-testid="step-detail-duplicate">
+        </SoftButton>
+        <SoftButton
+          variant="secondary"
+          size="lg"
+          onClick={onDuplicate}
+          data-testid="step-detail-duplicate"
+        >
           Duplicate as a new step…
-        </Button>
+        </SoftButton>
       </div>
     </div>
   );

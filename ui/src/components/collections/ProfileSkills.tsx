@@ -24,8 +24,8 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { IconArrowDown, IconArrowUp, IconX } from "@tabler/icons-react";
-import { Button } from "../ds/Button";
-import { Field, Input } from "../ds/Field";
+import { SoftButton } from "../ds/SoftButton";
+import { Field } from "../ds/Field";
 import { Alert } from "../ds/Alert";
 import { Spinner } from "../Feedback";
 import { problemOf } from "../../api/client";
@@ -45,6 +45,14 @@ export interface ProfileSkillsProps {
   profile: AgentProfile;
   canWrite: boolean;
 }
+
+/** The redesign's controls and small row affordances (CONTRACT.md "Design
+ * tokens"): 8px inputs on a 1px line-strong edge, 6px icon buttons; the old
+ * `ds` hairline/3px chrome is not used on this surface. */
+const SOFT_INPUT =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
+const ROW_CONTROL =
+  "rounded-[6px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
 
 /** The circled ordinals the design uses, ①…⑳; deeper lists fall back to `21.`. */
 function ordinal(index: number): string {
@@ -160,7 +168,7 @@ export function ProfileSkills({ profile, canWrite }: ProfileSkillsProps) {
       ) : null}
       {canWrite ? (
         <div className="flex items-center gap-[8px] pt-[6px]">
-          <Button
+          <SoftButton
             variant="secondary"
             compact
             disabled={collections.data === null}
@@ -168,7 +176,7 @@ export function ProfileSkills({ profile, canWrite }: ProfileSkillsProps) {
             data-testid={`agent-skills-attach-${profile.id}`}
           >
             Attach collection
-          </Button>
+          </SoftButton>
           <a
             href={collectionsRoute}
             className="text-[11.5px] text-muted underline underline-offset-2 hover:text-ink"
@@ -282,7 +290,7 @@ function ProfileSkillRow({
             disabled={busy || index === 0}
             onClick={() => onMove(-1)}
             data-testid={`agent-skills-up-${pin.collection_id}`}
-            className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className={ROW_CONTROL}
           >
             <IconArrowUp size={14} stroke={1.7} aria-hidden="true" />
           </button>
@@ -292,7 +300,7 @@ function ProfileSkillRow({
             disabled={busy || index === count - 1}
             onClick={() => onMove(1)}
             data-testid={`agent-skills-down-${pin.collection_id}`}
-            className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className={ROW_CONTROL}
           >
             <IconArrowDown size={14} stroke={1.7} aria-hidden="true" />
           </button>
@@ -312,7 +320,7 @@ function ProfileSkillRow({
           disabled={busy}
           onClick={onRemove}
           data-testid={`agent-skills-remove-${pin.collection_id}`}
-          className="rounded-[3px] p-[2px] text-muted hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className={ROW_CONTROL}
         >
           <IconX size={13} stroke={1.9} aria-hidden="true" />
         </button>
@@ -377,7 +385,7 @@ function AttachCollectionDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-skills-picker-title"
-        className="mt-[10vh] w-full max-w-[480px] rounded-[4px] border border-line-strong bg-surface p-[14px]"
+        className="mt-[10vh] w-full max-w-[480px] rounded-[18px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)] max-md:mt-auto max-md:rounded-b-none"
         data-testid="agent-skills-picker"
       >
         <h2
@@ -387,11 +395,13 @@ function AttachCollectionDialog({
           Attach collection
         </h2>
         <Field id="agent-skills-picker-search" label="search" className="pt-[8px]">
-          <Input
+          <input
             id="agent-skills-picker-search"
+            type="text"
             value={search}
             placeholder="name or slug"
             onChange={(event) => setSearch(event.target.value)}
+            className={SOFT_INPUT}
             data-testid="agent-skills-picker-search"
           />
         </Field>
@@ -403,7 +413,7 @@ function AttachCollectionDialog({
           </p>
         ) : (
           <ul
-            className="max-h-[320px] divide-y divide-line overflow-y-auto"
+            className="max-h-[320px] divide-y divide-line-soft overflow-y-auto"
             data-testid="agent-skills-picker-list"
           >
             {items.map((collection) => (
@@ -422,22 +432,22 @@ function AttachCollectionDialog({
                     {collection.published_revisions === 1 ? "published" : "published revisions"}
                   </span>
                 </span>
-                <Button
+                <SoftButton
                   variant="secondary"
                   compact
                   onClick={() => onAttach(collection.id)}
                   data-testid={`agent-skills-picker-attach-${collection.id}`}
                 >
                   Attach
-                </Button>
+                </SoftButton>
               </li>
             ))}
           </ul>
         )}
         <div className="flex justify-end pt-[8px]">
-          <Button variant="ghost" onClick={onClose} data-testid="agent-skills-picker-close">
+          <SoftButton variant="ghost" onClick={onClose} data-testid="agent-skills-picker-close">
             Close
-          </Button>
+          </SoftButton>
         </div>
       </div>
     </div>

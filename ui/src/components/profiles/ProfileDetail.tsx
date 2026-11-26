@@ -18,12 +18,11 @@
  *   that reference this profile in their latest published revision or an open
  *   draft, with the honest empty, loading and error states.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQueryClient, useQueries } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { Panel } from "../ds/Panel";
-import { Button } from "../ds/Button";
-import { Field, Input, Select } from "../ds/Field";
+import { SoftButton } from "../ds/SoftButton";
+import { Field } from "../ds/Field";
 import { Alert } from "../ds/Alert";
 import { StatusChip } from "../ds/Row";
 import { STATES } from "../ds/states";
@@ -70,6 +69,52 @@ const CAPABILITY_TONE: Record<string, string> = {
   not_supported: STATES.failed.tagFg,
   not_tested: "text-muted",
 };
+
+/**
+ * The sheet's own card (docs/design/redesign/CONTRACT.md "Design tokens"): a
+ * 10px corner, 1px line on white and the mono section label as its head. The
+ * old `ds/Panel` (3px corner, filled title bar) stays for the kept pages, and
+ * this one keeps the heading ids and `aria-labelledby` the panels carried.
+ */
+function SoftPanel({
+  title,
+  headingId,
+  meta,
+  children,
+}: {
+  title: string;
+  headingId: string;
+  meta?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      aria-labelledby={headingId}
+      className="overflow-hidden rounded-[10px] border border-line bg-surface"
+    >
+      <div className="flex items-center gap-[8px] border-b border-line px-[12px] py-[8px]">
+        <h3
+          id={headingId}
+          className="min-w-0 truncate font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted"
+        >
+          {title}
+        </h3>
+        {meta !== undefined ? (
+          <span className="ml-auto shrink-0 whitespace-nowrap font-mono text-[10.5px] font-normal text-faint">
+            {meta}
+          </span>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** The redesign's controls: 8px corner, 1px line-strong. */
+const SOFT_INPUT =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
+const SOFT_SELECT =
+  "rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
 
 /**
  * ACCOUNT is a join the API does not make: secrets live per project, so the
@@ -214,7 +259,7 @@ export default function ProfileDetail({
         </p>
         {canWrite ? (
           <div className="flex items-center gap-2">
-            <Button
+            <SoftButton
               variant="secondary"
               compact
               disabled={duplicateBusy}
@@ -222,7 +267,7 @@ export default function ProfileDetail({
               data-testid={`profiles-duplicate-${profile.id}`}
             >
               {duplicateBusy ? "Duplicating…" : "Duplicate…"}
-            </Button>
+            </SoftButton>
             {duplicateProblem ? (
               <ProblemCode
                 error={duplicateProblem}
@@ -233,10 +278,9 @@ export default function ProfileDetail({
         ) : null}
       </header>
 
-      <Panel
+      <SoftPanel
         title="LAUNCHER"
         headingId={`profile-launcher-${profile.id}`}
-        headingLevel={3}
         meta={<span className="font-normal">registry evidence only</span>}
       >
         {launchers == null ? (
@@ -289,12 +333,11 @@ export default function ProfileDetail({
             </p>
           </div>
         )}
-      </Panel>
+      </SoftPanel>
 
-      <Panel
+      <SoftPanel
         title="SANDBOX · NONO"
         headingId={`profile-sandbox-${profile.id}`}
-        headingLevel={3}
         meta={
           <span className="font-normal">
             {hasVerifiedWorker(sandbox) ? "verified worker online" : "no verified worker"}
@@ -306,33 +349,31 @@ export default function ProfileDetail({
           pending={sandboxQuery.isPending}
           error={sandboxQuery.error}
         />
-      </Panel>
-      <Panel
+      </SoftPanel>
+      <SoftPanel
         title="ACCOUNT"
         headingId={`profile-account-${profile.id}`}
-        headingLevel={3}
         meta={<span className="font-normal">value never shown</span>}
       >
         <AccountSection profileId={profile.id} {...accounts} />
         <p className="border-t border-line px-[10px] pt-2 text-[11px] text-muted">
           A GitHub token here lets the agent push and open PRs.
         </p>
-      </Panel>
+      </SoftPanel>
 
-      <Panel
+      <SoftPanel
         title="SKILLS"
         headingId={`profile-apm-${profile.id}`}
-        headingLevel={3}
         meta={
           canWrite ? (
-            <Button
+            <SoftButton
               variant="ghost"
               compact
               onClick={onApmToggle}
               data-testid={`agent-apm-edit-${profile.id}`}
             >
               {apmOpen ? "Close" : pinned ? "Edit" : "Attach skill package"}
-            </Button>
+            </SoftButton>
           ) : undefined
         }
       >
@@ -421,9 +462,9 @@ export default function ProfileDetail({
           Skill packages are staged into the agent&apos;s workspace; APM staging is not isolation.
         </p>
         {apmOpen && canWrite ? <ApmPinForm profile={profile} onDone={onApmToggle} /> : null}
-      </Panel>
+      </SoftPanel>
 
-      <Panel title="USED BY" headingId={`profile-usage-${profile.id}`} headingLevel={3}>
+      <SoftPanel title="USED BY" headingId={`profile-usage-${profile.id}`}>
         <div data-testid="profile-usage">
           {usageQuery.isPending ? (
             <Spinner label="Loading usage" />
@@ -446,7 +487,7 @@ export default function ProfileDetail({
               >
                 Used by {usage?.workflow_count} workflows · {usage?.step_count} steps
               </p>
-              <ul className="divide-y divide-line" data-testid="profile-usage-list">
+              <ul className="divide-y divide-line-soft" data-testid="profile-usage-list">
                 {usage?.uses.map((use) => (
                   <ProfileUsageRow
                     key={`${use.pipeline_id}:${use.source}:${use.node_id}`}
@@ -465,7 +506,7 @@ export default function ProfileDetail({
             </>
           )}
         </div>
-      </Panel>
+      </SoftPanel>
 
       <ProfileHistory profileId={profile.id} canWrite={canWrite} />
     </div>
@@ -550,7 +591,7 @@ function AccountSection({
     );
   }
   return (
-    <ul className="divide-y divide-line" data-testid={`profiles-account-${profileId}`}>
+    <ul className="divide-y divide-line-soft" data-testid={`profiles-account-${profileId}`}>
       {grants.map(({ project, secret }) => (
         <li
           key={secret.id}
@@ -720,7 +761,7 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
 
   return (
     <form
-      className="space-y-3 border-t border-line bg-fill/40 p-[10px]"
+      className="space-y-3 rounded-[10px] border border-line bg-paper p-[12px]"
       onSubmit={(event) => {
         event.preventDefault();
         void save({
@@ -747,30 +788,31 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
         }
         className="min-w-[22rem] flex-1"
       >
-        <Input
+        <input
           id={`agents-ref-${profile.id}`}
+          type="text"
           value={ref}
           placeholder="owner/repo#tag"
           onChange={(event) => setRef(event.target.value)}
-          className="font-mono"
+          className={`${SOFT_INPUT} font-mono`}
           data-testid={`agents-ref-input-${profile.id}`}
         />
       </Field>
       <div className="flex flex-wrap items-end gap-[10px]">
         <Field id={`agents-target-${profile.id}`} label="target" hint="one lock digest per target">
-          <Select
+          <select
             id={`agents-target-${profile.id}`}
             value={target}
             onChange={(event) =>
               setTarget(event.target.value as "claude" | "codex" | "agent-skills")
             }
-            className="w-auto"
+            className={`${SOFT_SELECT} w-auto`}
             data-testid={`agents-target-select-${profile.id}`}
           >
             <option value="claude">claude</option>
             <option value="codex">codex</option>
             <option value="agent-skills">agent-skills (pi)</option>
-          </Select>
+          </select>
         </Field>
         <Field
           id={`agents-digest-${profile.id}`}
@@ -789,24 +831,25 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           }
           className="min-w-[24rem] flex-[2]"
         >
-          <Input
+          <input
             id={`agents-digest-${profile.id}`}
+            type="text"
             value={digest}
             placeholder="sha256:…"
             onChange={(event) => setDigest(event.target.value)}
-            className="font-mono"
+            className={`${SOFT_INPUT} font-mono`}
             data-testid={`agents-digest-input-${profile.id}`}
           />
         </Field>
-        <Button
+        <SoftButton
           type="submit"
           variant="primary"
           disabled={patch.isPending}
           data-testid={`agents-apm-save-${profile.id}`}
         >
           {patch.isPending ? "Saving…" : `Save as v${profile.version + 1}`}
-        </Button>
-        <Button
+        </SoftButton>
+        <SoftButton
           type="button"
           variant="secondary"
           disabled={patch.isPending}
@@ -816,8 +859,8 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           data-testid={`agents-apm-remove-${profile.id}`}
         >
           Remove package
-        </Button>
-        <Button
+        </SoftButton>
+        <SoftButton
           type="button"
           variant="secondary"
           disabled={!lockReady || lockInFlight}
@@ -825,7 +868,7 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           data-testid="profile-apm-lock"
         >
           {lockInFlight ? "Locking…" : "Lock it"}
-        </Button>
+        </SoftButton>
       </div>
       {lockStatus.data?.status === "queued" ||
       lockStatus.data?.status === "claimed" ||
@@ -862,14 +905,14 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           role="alert"
           testid={`agent-apm-stale-${profile.id}`}
           action={
-            <Button
+            <SoftButton
               variant="secondary"
               compact
               onClick={() => void reloadProfile()}
               data-testid={`agent-apm-stale-reload-${profile.id}`}
             >
               Reload
-            </Button>
+            </SoftButton>
           }
         >
           <span>
@@ -945,10 +988,10 @@ export function DigestHelp({
         className="mt-1 flex items-start gap-1"
         data-testid={`agents-digest-help-block-${profileId}`}
       >
-        <pre className="min-w-0 flex-1 overflow-x-auto rounded-[3px] border border-line bg-fill px-2 py-1 font-mono text-[10.5px] whitespace-pre text-ink">
+        <pre className="min-w-0 flex-1 overflow-x-auto rounded-[8px] border border-line bg-fill px-[10px] py-[6px] font-mono text-[10.5px] whitespace-pre text-ink">
           {commandBlock}
         </pre>
-        <Button
+        <SoftButton
           type="button"
           variant="ghost"
           compact
@@ -958,7 +1001,7 @@ export function DigestHelp({
           title={navigator.clipboard ? "Copy commands" : "Clipboard not available in this context"}
         >
           {copied ? "Copied" : "Copy"}
-        </Button>
+        </SoftButton>
       </div>
     </details>
   );

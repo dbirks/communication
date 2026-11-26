@@ -13,7 +13,7 @@
  * non-admin who posts the probe reads 403 — the button is hidden here only so
  * the page does not offer a verb the reader cannot use.
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { problemOf } from "../../api/client";
 import {
   probeModel,
@@ -22,9 +22,51 @@ import {
   type OverviewModel,
   type SystemOverview,
 } from "../../api/overview";
-import { Button } from "../ds/Button";
-import { OpsError, OpsPanel, OpsSkeleton } from "./OpsPanel";
+import { SoftButton } from "../ds/SoftButton";
+import { OpsError, OpsSkeleton } from "./OpsPanel";
 import { StatusDot, type OpsStatus } from "./StatusDot";
+
+/**
+ * The panel's own frame. `components/ops/OpsPanel.tsx` is the Operations
+ * chrome the Runners tab still draws (4px corner, filled head), so the Models
+ * panel — which only Manage → Agents & models renders now — keeps the same
+ * `id` / `aria-labelledby` contract inside the redesign's card: a 10px corner,
+ * 1px line on white, and the mono section label as its head.
+ */
+function ModelsCard({
+  id,
+  title,
+  meta,
+  children,
+}: {
+  id: string;
+  title: string;
+  meta?: string;
+  children: ReactNode;
+}) {
+  const headingId = `${id}-heading`;
+  return (
+    <section
+      id={id}
+      aria-labelledby={headingId}
+      className="overflow-hidden rounded-[10px] border border-line bg-surface"
+      data-testid={id}
+    >
+      <div className="flex h-[36px] items-center gap-2 border-b border-line px-[12px]">
+        <h2
+          id={headingId}
+          className="min-w-0 truncate font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted"
+        >
+          {title}
+        </h2>
+        {meta !== undefined ? (
+          <span className="ml-auto shrink-0 font-mono text-[10.5px] text-faint">{meta}</span>
+        ) : null}
+      </div>
+      <div className="p-[12px]">{children}</div>
+    </section>
+  );
+}
 
 /**
  * The three models the APP asks (not the worker's): the tile counts these, and
@@ -100,7 +142,7 @@ export function ModelsPanel({
   const meta = hosts.size === 1 ? `via ${[...hosts][0]}` : undefined;
 
   return (
-    <OpsPanel id="ops-models" title="Models" meta={meta}>
+    <ModelsCard id="ops-models" title="Models" meta={meta}>
       {pending ? <OpsSkeleton testid="models-skeleton" /> : null}
       {error ? (
         <OpsError
@@ -163,7 +205,7 @@ export function ModelsPanel({
                       </span>
                     ) : null}
                     {probeable && isAdmin ? (
-                      <Button
+                      <SoftButton
                         variant="secondary"
                         compact
                         disabled={state.phase === "testing"}
@@ -171,7 +213,7 @@ export function ModelsPanel({
                         data-testid={`model-test-${model.kind}`}
                       >
                         {state.phase === "testing" ? "testing…" : "Test"}
-                      </Button>
+                      </SoftButton>
                     ) : null}
                     {state.phase === "done" ? (
                       <span
@@ -196,7 +238,7 @@ export function ModelsPanel({
           </ul>
         )
       ) : null}
-    </OpsPanel>
+    </ModelsCard>
   );
 }
 

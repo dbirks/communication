@@ -102,11 +102,11 @@ function StepDialogBody({
         aria-modal="true"
         aria-labelledby={titleId}
         style={{ maxWidth: "100%", width, boxSizing: "border-box" }}
-        className="rounded-[4px] border border-line bg-surface shadow-(--shadow-raised)"
+        className="mt-[6vh] rounded-[18px] border border-line bg-surface shadow-[var(--shadow-modal)] max-md:mt-auto max-md:w-full max-md:rounded-b-none"
         data-testid={testid}
       >
-        <div className="border-b border-line px-[14px] py-[10px]">
-          <h2 id={titleId} className="text-[13px] font-bold">
+        <div className="border-b border-line px-[16px] py-[12px]">
+          <h2 id={titleId} className="text-[16px] font-bold text-ink">
             {title}
           </h2>
           {hint ? (
@@ -115,7 +115,7 @@ function StepDialogBody({
             </p>
           ) : null}
         </div>
-        <div className="px-[14px] py-[12px]">{children}</div>
+        <div className="px-[16px] py-[14px]">{children}</div>
       </div>
     </div>
   );

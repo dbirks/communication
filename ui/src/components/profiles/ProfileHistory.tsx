@@ -19,7 +19,7 @@
  * - The restore is a write: it POSTs the restore and refetches the history;
  *   nothing here fabricates a version or a diff.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   useAgentProfileVersion,
   useAgentProfileVersions,
@@ -27,13 +27,52 @@ import {
 } from "../../api/useProfileVersions";
 import type { AgentProfileVersion } from "../../api/types";
 import { Alert } from "../ds/Alert";
-import { Button } from "../ds/Button";
-import { Panel } from "../ds/Panel";
+import { SoftButton } from "../ds/SoftButton";
 import { Spinner } from "../Feedback";
 import { formatAge, formatTime } from "../../lib/format";
 
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * The card the history draws in — the redesign's shell (CONTRACT.md "Design
+ * tokens"): a 10px corner, 1px line on white, and the mono section label as its
+ * head. It keeps the heading id and `aria-labelledby` the old `ds/Panel` gave
+ * the document outline.
+ */
+function HistoryCard({
+  title,
+  headingId,
+  meta,
+  children,
+}: {
+  title: string;
+  headingId: string;
+  meta?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      aria-labelledby={headingId}
+      className="overflow-hidden rounded-[10px] border border-line bg-surface"
+    >
+      <div className="flex items-center gap-[8px] border-b border-line px-[12px] py-[8px]">
+        <h3
+          id={headingId}
+          className="min-w-0 truncate font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted"
+        >
+          {title}
+        </h3>
+        {meta !== undefined ? (
+          <span className="ml-auto shrink-0 whitespace-nowrap font-mono text-[10.5px] text-faint">
+            {meta}
+          </span>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 /** The snapshot fields a version may change, in the order the diff names them. */
 const SNAPSHOT_FIELDS = [
@@ -192,12 +231,11 @@ export default function ProfileHistory({ profileId, canWrite }: ProfileHistoryPr
   const newestVersion = versions.length > 0 ? versions[versions.length - 1].version : null;
 
   return (
-    <Panel
+    <HistoryCard
       title="HISTORY"
       headingId={`profile-history-${profileId}`}
-      headingLevel={3}
       meta={
-        <span className="font-normal">
+        <span>
           {versions.length} version{versions.length === 1 ? "" : "s"}
         </span>
       }
@@ -221,7 +259,7 @@ export default function ProfileHistory({ profileId, canWrite }: ProfileHistoryPr
           </p>
         ) : null}
         {!pending && !error && display.length > 0 ? (
-          <ul className="divide-y divide-line" data-testid="profile-history-list">
+          <ul className="divide-y divide-line-soft" data-testid="profile-history-list">
             {display.map(({ version, change }) => (
               <li
                 key={version.version}
@@ -248,23 +286,23 @@ export default function ProfileHistory({ profileId, canWrite }: ProfileHistoryPr
                   {change.join(" · ")}
                 </span>
                 <span className="ml-auto flex items-center gap-x-2">
-                  <Button
+                  <SoftButton
                     variant="ghost"
                     compact
                     onClick={() => setViewing(version)}
                     data-testid={`profile-history-view-v${version.version}`}
                   >
                     View
-                  </Button>
+                  </SoftButton>
                   {canWrite ? (
-                    <Button
+                    <SoftButton
                       variant="secondary"
                       compact
                       onClick={() => setConfirming(version)}
                       data-testid={`profile-history-restore-v${version.version}`}
                     >
                       Restore v{version.version}
-                    </Button>
+                    </SoftButton>
                   ) : null}
                 </span>
               </li>
@@ -288,7 +326,7 @@ export default function ProfileHistory({ profileId, canWrite }: ProfileHistoryPr
           onClose={() => setViewing(null)}
         />
       ) : null}
-    </Panel>
+    </HistoryCard>
   );
 }
 
@@ -353,7 +391,7 @@ function ProfileHistoryConfirm({
         aria-modal="true"
         aria-labelledby="profile-history-confirm-title"
         data-testid="profile-history-confirm"
-        className="w-full max-w-[420px] rounded-[3px] border border-line-strong bg-surface p-4"
+        className="w-full max-w-[420px] rounded-[18px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)]"
       >
         <h2 id="profile-history-confirm-title" className="text-[15px] font-bold">
           Restore version v{version}
@@ -376,15 +414,15 @@ function ProfileHistoryConfirm({
           </div>
         ) : null}
         <div className="mt-3 flex justify-end gap-2">
-          <Button
+          <SoftButton
             variant="secondary"
             compact
             onClick={onClose}
             data-testid="profile-history-confirm-cancel"
           >
             Cancel
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="primary"
             compact
             disabled={restore.isPending}
@@ -392,7 +430,7 @@ function ProfileHistoryConfirm({
             data-testid="profile-history-restore-submit"
           >
             {restore.isPending ? "Restoring…" : "Restore"}
-          </Button>
+          </SoftButton>
         </div>
       </div>
     </div>
@@ -449,7 +487,7 @@ function ProfileHistoryDrawer({ profileId, version, onClose }: ProfileHistoryDra
         aria-modal="true"
         aria-label={`version v${version} — read-only snapshot`}
         data-testid="profile-history-drawer"
-        className="absolute top-0 right-0 flex h-full w-full flex-col overflow-y-auto border-l border-line bg-paper md:w-[440px]"
+        className="absolute top-0 right-0 flex h-full w-full flex-col overflow-y-auto border-l border-line bg-surface shadow-[var(--shadow-pop)] md:w-[440px]"
       >
         <header className="flex items-center gap-2 border-b border-line px-3 py-2">
           <span className="font-mono text-[11px] font-semibold tracking-wide">v{version}</span>
@@ -459,7 +497,7 @@ function ProfileHistoryDrawer({ profileId, version, onClose }: ProfileHistoryDra
             data-testid="profile-history-drawer-close"
             aria-label="Close"
             onClick={onClose}
-            className="icon-hit ml-auto rounded-[3px] px-1 text-[13px] font-semibold leading-[13px]"
+            className="icon-hit ml-auto rounded-[8px] px-1 text-[13px] font-semibold leading-[13px]"
           >
             ×
           </button>

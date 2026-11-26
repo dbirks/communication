@@ -47,6 +47,12 @@ const TRUST_TABLE_ROWS: ReadonlyArray<{ action: string; cells: [string, string, 
   { action: "Credentials, members, delete", cells: ["never", "never", "never"] },
 ];
 
+/** The Manage table chrome (docs/design/redesign/CONTRACT.md): the header row
+ * is the mono section label, the rows divide on `line-soft`. */
+const TABLE_HEAD =
+  "py-[8px] pr-[8px] text-left font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted";
+const TABLE_CELL = "py-[7px] pr-[8px] text-[13px] text-ink";
+
 export default function AssistantSettings() {
   const { trustLevel, setTrustLevel, saved } = useAssistantPrefs();
 
@@ -81,21 +87,19 @@ export default function AssistantSettings() {
 function TrustActionTable({ level }: { level: TrustLevel }) {
   return (
     <section className="px-2" data-testid="settings-assistant-trust-table">
-      <h2 className="pb-1 font-mono text-[10.5px] font-semibold tracking-[.04em] text-muted uppercase">
+      <h2 className="pb-1 font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
         Which actions ask at your level
       </h2>
       <table className="w-full border-collapse">
         <thead>
           <tr className="border-b border-line">
-            <th className="py-1 pr-2 text-left font-mono text-[11px] font-semibold tracking-[.04em] text-muted uppercase">
-              Action
-            </th>
+            <th className={TABLE_HEAD}>Action</th>
             {TRUST_TABLE_COLUMNS.map((column) => (
               <th
                 key={column.value}
                 data-testid={`settings-assistant-trust-table-head-${column.value}`}
                 aria-current={column.value === level ? "true" : undefined}
-                className={`px-2 py-1 text-center font-mono text-[11px] font-semibold tracking-[.04em] uppercase ${
+                className={`px-2 py-[8px] text-center font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] ${
                   column.value === level ? "bg-accent-wash text-ink" : "text-muted"
                 }`}
               >
@@ -109,14 +113,14 @@ function TrustActionTable({ level }: { level: TrustLevel }) {
             <tr
               key={row.action}
               data-testid={`settings-assistant-trust-table-row-${rowIndex}`}
-              className="border-b border-line"
+              className="border-b border-line-soft"
             >
-              <td className="py-1 pr-2 text-left text-[13px] text-ink">{row.action}</td>
+              <td className={TABLE_CELL}>{row.action}</td>
               {TRUST_TABLE_COLUMNS.map((column, columnIndex) => (
                 <td
                   key={column.value}
                   data-testid={`settings-assistant-trust-table-cell-${rowIndex}-${column.value}`}
-                  className={`px-2 py-1 text-center text-[13px] ${
+                  className={`px-2 py-[7px] text-center text-[13px] ${
                     column.value === level ? "bg-accent-wash text-ink" : "text-ink-2"
                   }`}
                 >
@@ -169,10 +173,10 @@ function SpeechSection() {
   const speech = status.data?.speech_model;
   return (
     <section
-      className="rounded-[3px] border border-line-strong bg-surface p-3"
+      className="rounded-[10px] border border-line bg-surface p-[14px]"
       data-testid="settings-assistant-speech"
     >
-      <h2 className="font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
+      <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
         Speech
       </h2>
       {speech ? (

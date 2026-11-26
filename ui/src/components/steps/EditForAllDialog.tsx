@@ -13,8 +13,8 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { parse, stringify } from "yaml";
 import { FormError } from "../Feedback";
-import { Button } from "../ds/Button";
-import { Field, Input, Textarea } from "../ds/Field";
+import { SoftButton } from "../ds/SoftButton";
+import { Field } from "../ds/Field";
 import {
   useCreateNodeTemplateRevision,
   type NodeTemplateRevision,
@@ -23,6 +23,12 @@ import {
 import { bumpSemver } from "./kindFamily";
 import { StepDialog } from "./StepDialog";
 import { routes } from "../../lib/routes";
+
+/** The redesign's controls: 8px corner, 1px line-strong (CONTRACT.md "Design tokens"). */
+const SOFT_INPUT =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
+const SOFT_TEXTAREA =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[8px] font-mono text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
 
 export interface EditForAllDialogProps {
   open: boolean;
@@ -105,31 +111,32 @@ export function EditForAllDialog({
           label="config (YAML or JSON)"
           hint={`the parameterized body, as revision ${latest.revision_number} carries it`}
         >
-          <Textarea
+          <textarea
             id="edit-for-all-config"
             value={doc}
             onChange={(event) => setDoc(event.target.value)}
             rows={10}
             spellCheck={false}
-            className="font-mono text-[11.5px]"
+            className={`${SOFT_TEXTAREA} text-[11.5px]`}
             data-testid="edit-for-all-config"
           />
         </Field>
         <Field id="edit-for-all-version" label="version label" hint={`suggested ${suggested}`}>
-          <Input
+          <input
             id="edit-for-all-version"
+            type="text"
             value={version}
             onChange={(event) => {
               setVersion(event.target.value);
               setError(null);
             }}
-            className="font-mono"
+            className={`${SOFT_INPUT} font-mono`}
             data-testid="edit-for-all-version"
           />
         </Field>
         {error ? <FormError error={error} testid="edit-for-all-error" /> : null}
         {result !== null ? (
-          <div className="space-y-[6px] rounded-[3px] border border-line bg-surface p-[10px] text-[12px]">
+          <div className="space-y-[6px] rounded-[10px] border border-line bg-surface p-[12px] text-[12px]">
             <p data-testid="edit-for-all-result">
               Published revision {result.revision.revision_number}{" "}
               <span className="font-mono">{result.revision.version_label}</span>
@@ -166,17 +173,17 @@ export function EditForAllDialog({
           </div>
         ) : null}
         <div className="flex justify-end gap-[8px]">
-          <Button variant="secondary" onClick={onClose} data-testid="edit-for-all-close">
+          <SoftButton variant="secondary" onClick={onClose} data-testid="edit-for-all-close">
             {result !== null ? "Done" : "Cancel"}
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="primary"
             type="submit"
             disabled={createRevision.isPending}
             data-testid="edit-for-all-submit"
           >
             {createRevision.isPending ? "Publishing…" : "Publish revision"}
-          </Button>
+          </SoftButton>
         </div>
       </form>
     </StepDialog>

@@ -1,7 +1,8 @@
 /**
- * One collection card on the Collections tab (ADR-0084): the same shell as the
- * Workflows starter cards — a 4px-corner panel with a hairline that darkens on
- * hover — carrying the mono kicker `COLLECTION · r3 · 14 PACKAGES`, the name,
+ * One collection card on the Collections tab (ADR-0084): the redesign's card
+ * shell (docs/design/redesign/CONTRACT.md — a 10px-corner card, 1px line on
+ * white, the line darkening on hover, never the old hard offset shadow) carrying
+ * the mono kicker `COLLECTION · r3 · 14 PACKAGES`, the name,
  * a two-line description clamp, and the `used by N profiles` footer.
  *
  * The counts are reads, never claims: `r{n}` and the package count come from
@@ -34,7 +35,7 @@ export function CollectionCard({ collection, usedByProfiles }: CollectionCardPro
     <Link
       to={collectionRoute(collection.id)}
       data-testid={`collection-card-${collection.id}`}
-      className="flex min-h-[120px] flex-col rounded-[4px] border border-line bg-surface p-[14px] no-underline hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+      className="flex min-h-[120px] flex-col rounded-[10px] border border-line bg-surface p-[14px] no-underline transition-colors hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
     >
       <span className="font-mono text-[10.5px] uppercase tracking-[.06em] text-faint">
         {label}

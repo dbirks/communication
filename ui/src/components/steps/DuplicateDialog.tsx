@@ -8,13 +8,17 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { FormError } from "../Feedback";
-import { Button } from "../ds/Button";
-import { Field, Input } from "../ds/Field";
+import { SoftButton } from "../ds/SoftButton";
+import { Field } from "../ds/Field";
 import { useDuplicateNodeTemplate, type NodeTemplate } from "../../api/nodeTemplates";
 import { StepDialog } from "./StepDialog";
 import { routes } from "../../lib/routes";
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/** The redesign's input: 8px corner, 1px line-strong (CONTRACT.md "Design tokens"). */
+const SOFT_INPUT =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
 
 export interface DuplicateDialogProps {
   open: boolean;
@@ -60,35 +64,38 @@ export function DuplicateDialog({ open, onClose, source }: DuplicateDialogProps)
           label="slug"
           hint="lowercase letters, digits and dashes; unique in the organization"
         >
-          <Input
+          <input
             id="duplicate-slug"
+            type="text"
             value={slug}
             onChange={(event) => setSlug(event.target.value)}
-            className="font-mono"
+            className={`${SOFT_INPUT} font-mono`}
             data-testid="duplicate-slug"
           />
         </Field>
         <Field id="duplicate-name" label="display name">
-          <Input
+          <input
             id="duplicate-name"
+            type="text"
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
+            className={SOFT_INPUT}
             data-testid="duplicate-name"
           />
         </Field>
         {error ? <FormError error={error} testid="duplicate-error" /> : null}
         <div className="flex justify-end gap-[8px]">
-          <Button variant="secondary" onClick={onClose} data-testid="duplicate-cancel">
+          <SoftButton variant="secondary" onClick={onClose} data-testid="duplicate-cancel">
             Cancel
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="primary"
             type="submit"
             disabled={duplicate.isPending || !valid}
             data-testid="duplicate-submit"
           >
             {duplicate.isPending ? "Duplicating…" : "Duplicate"}
-          </Button>
+          </SoftButton>
         </div>
       </form>
     </StepDialog>

@@ -1,8 +1,8 @@
 /**
  * The skill-collection library (ADR-0084) as Manage → Agents & models → Skills
  * (redesign R7/R8): the org's library of named, versioned skill bundles, drawn
- * as the Workflows starter cards' grid (same shell: hairline panel, 4px corner,
- * mono kicker, two-line clamp).
+ * as the redesign's card grid (1px hairline, 10px corner, mono kicker,
+ * two-line clamp).
  *
  * It is embedded-only: it draws no Page band, no title and no tab strip — the
  * old `Workflows | Steps | Collections` row went with the unrouted Workflows
@@ -26,8 +26,8 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Button } from "../../../components/ds/Button";
-import { Field, Input } from "../../../components/ds/Field";
+import { SoftButton } from "../../../components/ds/SoftButton";
+import { Field } from "../../../components/ds/Field";
 import { Alert } from "../../../components/ds/Alert";
 import { Spinner } from "../../../components/Feedback";
 import { problemOf } from "../../../api/client";
@@ -43,6 +43,11 @@ import { CollectionCard } from "../../../components/collections/CollectionCard";
 import { CollectionEditor } from "../../../components/collections/CollectionEditor";
 import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../../../lib/pipeline/authoring";
 import { routes } from "../../../lib/routes";
+
+/** The redesign's input (docs/design/redesign/README.md "Design tokens"): 8px
+ * corner, 1px line-strong — the old `ds/Field` hairline stays for kept pages. */
+const SOFT_INPUT =
+  "w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-[6px] font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent";
 
 export default function Collections() {
   const [searchParams] = useSearchParams();
@@ -157,14 +162,14 @@ function CollectionsList() {
     <div data-testid="collections-embedded">
       <div className="flex items-center justify-end">
         {canAuthor ? (
-          <button
-            type="button"
+          <SoftButton
+            variant="primary"
+            size="lg"
             onClick={() => setNewOpen(true)}
             data-testid="collections-new"
-            className="h-[34px] rounded-[8px] bg-accent px-[14px] text-[13px] font-semibold text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             New collection
-          </button>
+          </SoftButton>
         ) : (
           <span className="font-mono text-[10.5px] text-faint">
             authoring needs {LIBRARY_ROLE_LABEL}
@@ -222,7 +227,7 @@ export function NewCollectionDialog({ open, onClose }: { open: boolean; onClose:
         role="dialog"
         aria-modal="true"
         aria-labelledby="collections-new-title"
-        className="mt-[10vh] w-full max-w-[440px] rounded-[4px] border border-line-strong bg-surface p-[14px]"
+        className="mt-[10vh] w-full max-w-[440px] rounded-[18px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)] max-md:mt-auto max-md:rounded-b-none"
         data-testid="collections-new-dialog"
       >
         <h2
@@ -239,11 +244,13 @@ export function NewCollectionDialog({ open, onClose }: { open: boolean; onClose:
           }}
         >
           <Field id="collection-new-name" label="name">
-            <Input
+            <input
               id="collection-new-name"
+              type="text"
               value={name}
               placeholder="Matt Pocock skills"
               onChange={(event) => setName(event.target.value)}
+              className={SOFT_INPUT}
               data-testid="collections-new-name"
             />
           </Field>
@@ -262,23 +269,26 @@ export function NewCollectionDialog({ open, onClose }: { open: boolean; onClose:
               )
             }
           >
-            <Input
+            <input
               id="collection-new-slug"
+              type="text"
               value={effectiveSlug}
               onChange={(event) => {
                 setSlugTouched(true);
                 setSlug(event.target.value);
               }}
-              className="font-mono"
+              className={`${SOFT_INPUT} font-mono`}
               data-testid="collections-new-slug"
             />
           </Field>
           <Field id="collection-new-description" label="description">
-            <Input
+            <input
               id="collection-new-description"
+              type="text"
               value={description}
               placeholder="What this bundle gives an agent"
               onChange={(event) => setDescription(event.target.value)}
+              className={SOFT_INPUT}
               data-testid="collections-new-description"
             />
           </Field>
@@ -291,17 +301,17 @@ export function NewCollectionDialog({ open, onClose }: { open: boolean; onClose:
             </Alert>
           ) : null}
           <div className="flex justify-end gap-[8px] pt-[4px]">
-            <Button variant="ghost" onClick={onClose} data-testid="collections-new-cancel">
+            <SoftButton variant="ghost" onClick={onClose} data-testid="collections-new-cancel">
               Cancel
-            </Button>
-            <Button
+            </SoftButton>
+            <SoftButton
               type="submit"
               variant="primary"
               disabled={!canSubmit}
               data-testid="collections-new-submit"
             >
               {busy ? "Creating…" : "Create collection"}
-            </Button>
+            </SoftButton>
           </div>
         </form>
       </div>

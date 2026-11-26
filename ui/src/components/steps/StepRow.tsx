@@ -51,14 +51,14 @@ export function StepRow({ template, selected = false }: StepRowProps) {
   const usage = usageCopy(template);
 
   const stateClass = selected
-    ? "border-ink shadow-(--shadow-raised)"
-    : "border-line hover:border-line-strong";
+    ? "border-ink bg-paper"
+    : "border-line bg-surface hover:border-line-strong";
 
   return (
     <Link
       to={routes.step(template.id)}
       aria-current={selected ? "true" : undefined}
-      className={`flex h-[40px] w-full items-center gap-[9px] rounded-[3px] border bg-surface px-[10px] text-left text-ink ${stateClass}`}
+      className={`flex h-[40px] w-full items-center gap-[9px] rounded-[10px] border px-[10px] text-left text-ink transition-colors ${stateClass}`}
       data-testid={`step-row-${template.id}`}
     >
       <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
