@@ -1,312 +1,234 @@
-# Handoff: Communication UI redesign
-
-Repo: `dbirks/communication` (branch `main`, UI in `ui/src`). Implementer: Claude Code.
+# Handoff: Communication UI redesign (shell, Home, Chats, Factory)
 
 ## Overview
-
-The main user is an engineer supervising coding agents. That person needs to do two things:
-
-1. **Unblock.** Find out what agents need right now so they can keep working.
-2. **Catch up.** Find out what agents did while they were away, and understand the parts that matter.
-
-This handoff covers three kinds of work:
-
-- **Cleanup of the existing UI**: 12 review findings, each one decided.
-- **A new collapsed sidebar rail.**
-- **A new feature, Catch up**: an assistant-written overview, shared per-item tours, and a tour player.
-
-Work is ordered in `TASKS.md`. Each task there has its files and an acceptance checklist.
+This is a redesign of the Communication web UI (`ui/` in `dbirks/communication`). It replaces the 220px left sidebar and the many top-level pages with three daily places (**Home**, **Chats** and **Factory**), a **project rail** on the far left, and an **assistant** you reach with one key. The workflow editor ("Studio") becomes an open, left→right canvas: drag steps around, draw a box around steps, and wrap them in a **Repeat until** loop that ends when a **goal** is met.
 
 ## About the design files
+The files in this bundle are **design references built in HTML**. They are prototypes that show the intended look and behavior; they are not production code to copy. Recreate them in the existing app (`ui/`: Vite + React 19 + TypeScript + Tailwind v4, `@xyflow/react` for the canvas, `@tabler/icons-react` for icons), using its patterns: `ui/src/styles/tokens.css`, `ui/src/components/ds/*`, and react-router.
 
-The `.dc.html` files in `designs/` are **design references built in HTML**. They show the intended look and behavior; they are not production code. Recreate them in the existing React + Tailwind codebase (`ui/src`), using its patterns: the `ds/` components, `tokens.css`, and the `states.ts` state vocabulary. Do not copy the HTML or the inline styles.
-
-To view a file, open it in a browser with `support.js` next to it. Each canvas file holds several numbered options (`1a`, `3a`, `8b`…). Only the options named below are approved.
+- `Prototype.dc.html` is the **source of truth** for everything marked "Decided" below. Open it in a browser; it is clickable.
+- `Factory.dc.html`, `Shell.dc.html`, `Projects.dc.html`, `Chats.dc.html` and `Morning.dc.html` are the exploration boards (rounds 1–4, newest at top; every option has an id like `3e`). Use them for detail and for context on the open questions. **Don't build options that aren't in the prototype** unless this README says so.
+- `support.js` is only needed to open the `.dc.html` files locally.
 
 ## Fidelity
-
-**High fidelity**, drawn in the existing "Hairline Flat" design system: same palette, fonts, 1px hairlines, 2px offset shadows on buttons, mono for machine-produced text.
-
-Two decisions limit how far to change it:
-
-- **Finding 05:** keep the current type scale. Don't raise sizes.
-- **Finding 06:** keep the compact, tactile feel: mono metadata, uppercase panel bars, offset shadows.
-
-Where a mock disagrees with existing tokens or components, the codebase wins on component structure and the mock wins on layout and copy.
-
-## Approved designs (source of truth)
-
-| Area | Approved option | File | Section |
-|---|---|---|---|
-| Review findings 01–12 | "Decided" banner on each finding | `designs/Redesign Review.dc.html` | `#f01`–`#f12` |
-| Collapsed rail | **3a** (hover = label, click = menu with arrow) + **4a** (ways to expand) | `designs/Today Options.dc.html` | `#3a`, `#4a` |
-| Catch up page | **8a** + the compact big-backlog banner below it | `designs/Catch Up.dc.html` | `#8a` |
-| One piece of work + its shared tour | **8b** | `designs/Catch Up.dc.html` | `#8b` |
-| Tour player (full screen) | **7b** | `designs/Catch Up.dc.html` | `#7b` |
-| Decisions inside a tour | "Decisions inside the tour" idea card (Turn 8) | `designs/Catch Up.dc.html` | Turn 8, "More ideas" |
-| Today page | **Not decided yet**; see "Open decisions" | `designs/Today Options.dc.html` | 3e, 3f, 4b, 4c |
-
-`designs/Today (current).dc.html` is a rebuild of today's Today page, kept as the baseline.
+**High-fidelity** for layout, spacing, type, color and interactions in `Prototype.dc.html`. Data is mock data. Where this README and the prototype disagree, the README wins.
 
 ---
 
-## Part A: cleanup findings (all decided)
+## Decided
 
-These apply to existing screens. The exact before and after for each is in `Redesign Review.dc.html`.
+### 1. Shell (every page)
+Layout: a horizontal flex across the full viewport. From left: **project rail** (64px), then a main column. The main column holds the **top bar** (60px) and the **content** (fills the rest; each page scrolls itself).
 
-**01 · One name for conversations: "Thread".**
-- Use "thread" in every visible string: the sidebar row (now "My chats"), the "New chat" button, the "New conversation" item in NewMenu, and the `/threads` page.
-- The project route `/p/:id/conversations` becomes `/p/:id/threads`, and the old URL redirects.
-- The API and type names stay `Conversation`.
-- Update `NAV_ITEMS` in `Shell.tsx` to match.
+**Project rail** (replaces `components/Sidebar.tsx`; `Shell.tsx` loses the sidebar, the phone drawer and the floating Ask button)
+- Width 64, background `#faf9f6`, right border 1px `#e6e2d9`, padding 14px 0, items centered, gap 10.
+- Top: the existing `Mark` (26px, `components/ds/Mark.tsx`), margin-bottom 6.
+- Then tiles, 38×38, radius 11, 1px border `#e6e2d9`, background `#fff`, Red Hat Mono 12/600 initials (2 letters, uppercase):
+  - **All** (text "All", 10.5px) = cross-project scope. A 24×1 `#e6e2d9` divider follows it.
+  - One tile per project.
+  - A "+" tile with a 1px dashed `#cfcac0` border = add project.
+- Selected tile: background `#1e1d1a`, text `#fff`, border `#1e1d1a`.
+- Needs-you badge: a 15px circle at top -5 / right -6, `#f0a93a` fill, `#2a1a00` "!" in 9px/700, 2px `#faf9f6` ring. Show it when the project has anything waiting on the current user (same source as today's `useSidebarFlags` "waiting").
+- Bottom (margin-top auto): **Manage** gear (38×38, `ti-settings` 19px; selected = ink background, white icon), then the user avatar (30px circle, 1px ink border, mono 10.5 initials) → the account menu.
+- Native `title` tooltips for now. No faces on tiles (we tried it; too busy).
 
-**02 · Split "Library".**
-- Remove the LIBRARY label from the sidebar.
-- **Workflows** and **Agents** (renamed from "Agent profiles") become top-level rows.
-- **Steps** becomes a tab inside the Workflows page.
-- `/p/:id/pipelines` becomes `/p/:id/workflows`, with a redirect.
-- The rail tile reads "Workflows", not "Library". The project menu item "Workflows in use" goes away (see 09).
+**Top bar** (replaces `components/ds/AppBar.tsx` usage)
+- Height 60, white, bottom border 1px `#e6e2d9`, padding 0 16 0 24.
+- CSS grid `1fr auto 1fr`, gap 16, items centered.
+- **Left:** the context.
+  - On most pages: the project name ("All projects" / "atlas"), 16/700.
+  - In the editor: a breadcrumb `atlas / Factory / fix-issue`. Segments are 14px `#6b675e`, the last one is 700 ink, separators `/` are `#cfcac0`. The first two segments are links. After it comes the draft status: a 7px `#f0a93a` dot + "Your draft · 2 changes from live v3", 12px `#6b675e`.
+- **Center:** the section **pill**.
+  - Container: 1px `#e6e2d9` border, radius 999, padding 3, gap 2, shadow `0 1px 3px rgba(30,29,26,.06)`.
+  - Items: 32px tall, padding 0 14 0 11, radius 999, gap 7, Tabler icon 18px + label 13px.
+  - Order: Home `ti-sunrise`, Chats `ti-message`, Factory `ti-building-factory-2`. Labels are always shown.
+  - Active item: background `#1e1d1a`, white text, weight 600. Inactive: `#3a3833`, weight 500, no background.
+- **Right:**
+  - **Search or ask** field: 250×32, radius 999, 1px `#e6e2d9`, `ti-search` 15px, 12.5px `#6b675e` text, and a "⌘K" mono 10.5 chip on `#f3f1ec`.
+  - **Mic** button: 32px circle, 1px `#e6e2d9`. While listening it turns `#2f4bd6` with a white icon.
 
-**03 · No dead-end links on Today.**
-- Remove the three-callout cap in `DecisionCallout`. Add "Show *n* more" that expands in place, and drop "*n* more in Inbox ›".
-- Remove "open board ›" from `RunningNow`.
-- The empty-state **Start run** opens the same new-run dialog as the New ▾ menu, not `/projects`.
-- `/inbox` and `/board` redirect to `/`, the same way `/ops` does today.
+**Scope rules**
+- The selected rail tile sets the scope for Home, Chats and Factory.
+- "All" shows everything, tagged with its project.
+- Manage is global.
 
-**04 · One DecisionBar for workflow gates.**
-- Build one component with fixed verbs: **Approve** (primary), **Request changes** (secondary), **Reject** (danger).
-- No confirm step. On click, show a toast "Approved. The run continues in 5s." with **Undo**, and hold the POST for 5s. Undo cancels it.
-- Model-written text goes in the summary, never on these buttons.
-- Use it on Today, the Inbox card, the Approval page, and the run workbench.
-- Remove the "not a decision word" fallback in `InboxCard.tsx`.
-- If someone else decides first, show: "{Name} approved this {time} ago. Your decision wasn't recorded."
-- Agent questions inside a tour are a different case with model-provided labels; see Part C.
+### 2. Home
+**All projects** (`Prototype` → rail "All" → Home). This merges today's `/` (Today) and `/catch-up`.
+- A centered column (max 760): h2 "Morning, David. What are we working on?" (24/700, centered). Below it the **prompt box**: radius 14, 1px `#cfcac0`, padding 14 16, shadow `0 4px 18px rgba(30,29,26,.06)`. The box has a project picker chip, an agent chip, and a 32px `#2f4bd6` round send button with `ti-arrow-up`.
+- Below that, a two-column grid (max 1100; columns `1fr` and `320px`, gap 44):
+  - **Left, "Since you left":** rows on a 3-column grid (70px project in mono `#2a43b8`, the story, a time aligned right), each with a bottom border `#f0ede6`. A final "+ N routine updates" line in muted text.
+  - **Right**, three blocks in this order:
+    - **NEEDS YOU:** pale-waiting cards (`#fdf6e4` / border `#e8cf94`).
+    - **RUNNING:** in `#0f5e96`.
+    - **FACTORY HEALTH:** one sentence.
+  - Section labels are Red Hat Mono 10.5/600, letter-spacing .06em, uppercase.
+- The catch-up data is the existing brief/recap (`api/catchup`, `components/catchup/*`). It is now a section of Home, not its own page.
 
-**05 · Type scale.** No change.
+**Project home** (rail tile → Home). Max width 1180, grid `1fr 300px`, gap 40, padding 28 36.
+- Left column:
+  - **Prompt box** with the placeholder "What should we do in atlas?" and an "or run a workflow" chip.
+  - **Starter pills:** 1px `#e6e2d9`, radius 999, padding 5 11, 12.5px, with a `#2238a8` icon. The icon says what the pill does: `ti-message-plus` starts a chat, `ti-building-factory-2` runs a workflow, `ti-arrow-back-up` resumes a chat.
+  - **HAPPENING NOW:** 3 cards in a row, radius 10, padding 12 14. A live run uses `#f3f9fd` with border `#8cc8ec`; a chat uses white with border `#e6e2d9`.
+  - **Since you left** for this project only.
+- Right column: **Repos** (mono name + status), then **Workflows here**. Each workflow is one line: bold name, then its trigger in plain English, e.g. "fix-issue *when an issue gets 'ready'*". The user liked this a lot; keep the wording style.
 
-**06 · Mono and caps.** No change.
+### 3. Chats (replaces Threads / `pages/Conversation.tsx` chrome)
+- Grid `300px 1fr`.
+- **Left list:** "Chats" title + a "New" button (`#eef0fc` / `#2238a8`). Rows: 13.5/600 title, 12.5 muted last line, and a status at the right ("! you" `#7a4a00`, "● run" `#0f5e96`). Selected row: background `#f6f7fe`, radius 8. Under "All" the list is grouped by project with mono uppercase headers.
+- **New chat:** the right pane centers h2 "New chat", the prompt box (max 700), and an "OR PICK UP" list.
+- **Thread:**
+  - A 54px header: title, repo chip, people.
+  - Messages: a mono 11 author/time line + 14.5/22 text, in a column of max 720.
+  - The composer at the bottom has an agent chip and a "Run workflow" chip.
+- **Workflow suggestion:** a single pill above the composer: "Run **fix-issue** on #318 instead? *tests + goal check + review*" with a **Run it** button and an ×.
+  - It must be **clicked**. No Tab or keyboard shortcut accepts it (the user didn't want an accidental switch).
+  - Starting a run inserts a live run card in the thread (`#f3f9fd` / `#8cc8ec`, a 5-segment step strip, "Open in Factory").
 
-**07 · One layout prop per page.**
-- Each page declares `<Page layout="reading|wide|canvas">`, with one shared header band (same title baseline and left edge everywhere).
-- Delete the `workbenchBleed` regex list in `App.tsx`.
-- Move the phone breakpoint from 1024px to 768px. Between 768 and 1024px, show the collapsed rail instead of the drawer.
+### 4. Factory (replaces `pages/Workflows.tsx` and folds in runs)
+**Index:** h2 "Factory" + a one-line live summary + a "New workflow" primary button. Below it, a 2-column grid of **workflow cards** (radius 12, 1px `#e6e2d9`).
+- Top of the card: a 120px **live thumbnail** on a dot grid (`#faf9f6`, dots `#e2ded5` at 14px). The workflow's steps are drawn as small chips joined by 18px lines. The running step is blue (`#d9eefa` / `#1a6da6` / `#0f5e96`), a step waiting on a person is amber, and the trigger chip is ink.
+- Bottom of the card: the name (15/700), the trigger in plain English, and the current state at the right ("● #318 · round 2"), plus one muted line.
+- Last card: a dashed "New workflow" card.
+- Runs live here (cards + editor) and on Home. There is no Runs tab.
 
-**08 · Two shortcuts.**
-- **⌘K** opens search / jump. In the sidebar it's a field-like button reading "Search" with a ⌘K hint.
-- **⌘J** opens Ask, the assistant.
-- Ask is a **floating button** in the bottom-right corner: label "Ask", hint "⌘J", primary style. It is not in the sidebar.
-- Replace the synthetic-keydown `openAsk()` with an explicit open function. Remove the Studio capture-phase workaround if it's no longer needed.
+**New workflow sheet** (modal, 720 wide, radius 18). Contents, top to bottom:
+1. A big "Describe it" box (1.5px `#2f4bd6` border + 4px `#dfe4fa` ring) with "Say it" and **Sketch it**. Copy: "Steps get sketched on the canvas. Nothing runs until you make it live."
+2. "OR FROM SOMETHING YOU KEEP DOING IN CHATS": rows that show the detected step chain as small chips joined by arrows, each with a **Use this** button.
+3. "OR COPY" chips for existing workflows, and a "Blank canvas" link.
 
-**09 · Project actions on the project page.**
-- Remove the hover-only ⋯ menu from sidebar project rows.
-- The project header gets **+ Repository**, which opens `AddRepositoryDialog` directly, and **Settings**, with Members as a tab. Both sit next to the existing New thread and Start run buttons.
+### 5. Workflow editor (replaces `pages/Studio.tsx` + `components/studio/*`)
+**Canvas**
+- Full-bleed white with a dot grid: `radial-gradient(#d6d2c8 1.1px, transparent 1.1px)`, 20px, offset 10px.
+- **Free placement, snapping to the 20px grid. Flow goes left→right.** Drop dagre auto-layout as the default; keep a "tidy up" action if it's cheap.
+- **Edges:** smooth cubic béziers from a node's right side to the next node's left side (or bottom→top inside a vertical stack), 1.5px `#3a3833`. No arrowheads, and no dashed back-edges for loops.
+- **Nodes:** 168×56, white, 1px `#e6e2d9`, radius 10, padding 0 12, gap 10.
+  - A 30×30 icon tile (radius 8). Tile colors by kind:
+    - agent: `#eef0fc` / `#2238a8`
+    - command: `#efede7` / `#3a3833`
+    - approval: `#ffecc2` / `#7a4a00`
+    - trigger: `#1e1d1a` / white
+    - git: `#efede7`
+  - Title 13.5/600.
+  - Subline in Red Hat Mono 11px `#6b675e`, one line, ellipsis.
+  - Selected: border `#2f4bd6`.
+  - Use the step icons from `lib/stepIcons.tsx`.
+- Connection handles appear on hover (10px circle, 1.5px `#2f4bd6` ring). Drag from one to connect.
 
-**10 · Sidebar preferences.**
-- Keep: projects as a tree, and `sidebarCollapsed`.
-- Remove: `projectsMode` (and `ProjectSwitcher`), `askPlacement` (Ask always floats, see 08), and `showWorkflowFolders` (folders stay off).
-- Migrate stored prefs by ignoring the removed keys.
-- Expanded is the default. The collapsed rail is redesigned (Part B).
+**Floating chrome on the canvas**
+- **Tool island:** top-left at (16, 100), white, 1px `#e6e2d9`, radius 12, padding 5.
+  - At rest it is 48px wide (icons only). **On hover it widens to 176px**, showing names and keys: Select V, Move around H, Box select B, Connect C, Note N; a separator; then Agent, Command, Approval (add a step).
+  - Rows are 34px. The active tool is `#eef0fc` / `#2238a8` / 600.
+  - It replaces `StudioPalette.tsx`.
+- **Top-right:** **Versions** (`ti-history`, toggles the panel), **Try it** (test run), **Make live** (primary `#2f4bd6`). These replace Validate / Save / Publish: drafts autosave, "Make live" is today's publish.
+- **Versions panel:** 304 wide, radius 12, anchored at top-right below the buttons. A vertical list:
+  - "Your draft · now" (amber dot) with a change summary
+  - "v3 LIVE" (green dot + `#d9f0de` "LIVE" tag) with who and when and the run count
+  - older versions (hollow dots)
 
-**11 · Run header.**
-- Row 1: breadcrumb "{project} › Runs".
-- Row 2: the title (22px/700), a state chip, and **one primary action chosen by run state** on the right, plus a ⋯ menu for everything else:
-  - waiting → "Review plan" (or "Review diff")
-  - failed → "Retry step"
-  - running → "Pause"
-- Row 3: a labeled facts row (Workflow + revision link, Repository in mono, Started "{age} by {name}", Pinned digest in mono).
-- Show stream status only when it isn't live, e.g. "↻ reconnecting".
+**Box select → wrap (the key interaction)**
+1. With Box select on, drag a box around steps. The selection is drawn as **marching ants**: an SVG rect, 1.5px `#2f4bd6`, `stroke-dasharray: 6 5`, radius 14, fill `rgba(47,75,214,.035)`, animated with `stroke-dashoffset` 0 → −22 over 0.7s linear, infinite. A mono 10.5 `#2a43b8` label "3 steps selected" sits above it.
+2. A **wrap panel** floats beside the box (340 wide, radius 14, shadow `0 10px 30px rgba(30,29,26,.10)`). It contains:
+   - Header "WRAP 3 STEPS IN" with an ×.
+   - A **segmented control** with two tabs: **Repeat until** `ti-repeat` | **Side by side** `ti-columns`. Track `#f3f1ec`; the active tab is white with a `#cfc9bd` border.
+   - **Repeat until** tab:
+     - "How do we know it's done?" with three choices, each with an icon:
+       - A judge says the goal is met (`ti-gavel`)
+       - A command passes (`ti-terminal-2`)
+       - The output contains… (`ti-text-scan-2`)
+     - The selected choice is `#f6f7fe` with a `#2f4bd6` border.
+     - A field that changes with the choice: "The goal" (plain text) / "Command" (mono) / "Look for" (mono).
+     - "Give up after [− 3 +] rounds".
+     - **Wrap** button.
+   - **Side by side** tab: one explanatory sentence + **Wrap**.
+3. After Wrap, the steps sit in a **goal frame**: 1.5px `#2f4bd6`, radius 16, fill `rgba(47,75,214,.03)`.
+   - Header inside the frame, top-left: icon + "Repeat until a judge says:" (12/600 `#2238a8`), then the goal in quotes (13/18).
+   - Footer inside the frame: mono 10.5 `#2a43b8` "up to 3 rounds · then ask David".
 
-**12 · Copy pass.** Every empty, error and conflict string answers three questions: what happened, is my work safe, and what to do next. The rules:
-- No API, component, ADR or status-code names in visible text.
-- Name the person and the time when the data has them.
-- End every error with an action.
-- Add the rules to `docs/design/design-system.md`.
-- The four before → after rewrites in finding 12 are exact copy.
+**During a run** (see `Factory.dc.html` → `2h`):
+- The frame's outline uses the marching-ants animation while it works.
+- Nodes show state: done = `#d9f0de` tile + check; running = `#f3f9fd` background and `#1a6da6` border.
+- Each round's judge verdict stacks in a card beside the frame.
 
----
+### 6. Assistant ("Search or ask", ⌘K)
+- **Tap ⌘K** (or click the field) opens search/jump; typing a question and pressing ↵ asks it.
+- **Hold ⌘K for about 0.5s** to talk (speech to text); let go to send. The mic button does the same by click.
+- Answers land in a **Quick chat** panel docked on the right: 400 wide, full height under the top bar, left border, shadow `-12px 0 30px rgba(30,29,26,.06)`.
+  - **It stays open until closed**, so answers aren't lost on a stray click.
+  - Bottom-posting chat. User bubbles are `#f3f1ec`, radius 12 12 4 12; voice messages carry a `ti-microphone` icon.
+  - Assistant answers can include small live tables (agent · task · step strip).
+  - While listening, a dark capsule shows the transcript.
+  - Footer: reply field, mic, "Open as chat" (promotes it to a real chat).
+- This replaces the floating "Ask ⌘J" button and `AssistantPopover`.
 
-## Part B: collapsed rail (3a + 4a)
-
-**Width and contents.**
-- The rail is 52px wide: white background, 1px ink right border.
-- Top to bottom: the logo mark (26px), the expand button, Search, then the nav icons (Today, Catch up, Threads, Projects, Workflows, Agents), then the user avatar at the bottom.
-- Icon buttons are 34×34 with a 3px radius.
-- The active button has a 1px ink border and the blue grid-paper fill used by active sidebar rows (`repeating-linear-gradient` 4px grid in `#e4e8fa`).
-- On hover a button gets a `#efede7` fill and a `#cfc9bd` border.
-
-**Badges.**
-- 15×14 boxes, top-right of the icon, offset −4/−5px.
-- The background is the state tint, the text is the state ink, mono 9px/600, with a 1px white outline.
-
-**Hover.**
-- A dark label appears 8px to the right: `#1e1d1a` background, white text, Red Hat Text 12px/600, 24px tall.
-- It can carry a mono shortcut hint (`#cfcac0`) and has a 4px arrow pointing at the icon.
-
-**Click (projects, and any icon with children).**
-- A popover opens: white, 1px ink border, `2px 2px 0 #1e1d1a` shadow, 3px radius, 8px padding, about 196px wide.
-- A 10px rotated-square arrow sits on its left edge, pointing at the icon.
-- It has a mono uppercase header, then the project rows with state counts, with the active project's repos nested under it.
-- Esc or a click outside closes it. ↑/↓ and Enter work inside it.
-
-**Expanding to the full sidebar.**
-- The expand button under the logo, with the tooltip "Expand sidebar ⌘\".
-- ⌘\ toggles from anywhere.
-- Hovering the right edge shows a 5px `#dfe4fa` handle. Dragging it past about 120px snaps the sidebar open, and dragging it back snaps it closed.
-- Expanded state: a collapse button with ‹‹ arrows in the header.
-
-**Nav.** The full sidebar gains a **Catch up** row with a "{n} unseen" badge in accent ink `#2238a8`.
-
----
-
-## Part C: Catch up (new feature)
-
-### Concepts and data
-
-**Piece of work.** The assistant groups code into one of three shapes:
-
-- an **Issue** with its PR(s) and commits nested under it;
-- a **PR only** (no issue);
-- a **Push to main** (one or more commits with no PR).
-
-Each piece of work has a project, a resolution (`merged`, `branch ready`, `open`, `run failed`, `no code`), refs, and timestamps.
-
-**Tour (one per piece of work, shared).** Everyone on the project sees the same tour. It is rewritten as the work moves, with versions and new stops marked "ADDED {time}".
-
-A stop contains:
-- `title`
-- `narrative`: plain language, written by the assistant
-- `evidence`: some of a log excerpt, a diff hunk, before/after screenshots, or file refs
-- `kind`: `BUG · FIXED`, `UI CHANGE`, `YOUR CALL`, `MIGRATION`… (a model-chosen label)
-- `importance`: `must_know` | `worth_a_look` | `routine`
-- an optional `decision` (see below)
-
-Bug stories use the structure **found → cause → fixed → follow-up**. The model chooses the content from logs and the session.
-
-**Decision inside a stop (agent question).**
-- The model supplies the prompt text and 1–4 button labels, e.g. "Keep 24h" or "Change to 12h". A free-text reply is optional.
-- The user's choice is sent back to the agent **as plain text**. This is how catching up and unblocking meet in one place.
-- This is separate from workflow gates, which keep the fixed DecisionBar verbs (finding 04).
-
-**Seen state.**
-- Tracked per user, per piece of work, per tour version.
-- Viewing a stop marks it seen when you move on. "Mark all seen" exists.
-- No GitHub sync.
-- A piece that changes after you saw it comes back with an **UPDATED** label, and its tour shows only the new stops.
-
-**Catch-up tour (per user).** An opinionated summary of the per-piece tours you haven't seen, highest priority first. "See more" asks the assistant for up to 4 more stops from the rest.
-
-**Recap (per user, per visit).**
-- Written by the assistant: 2–3 sentences that say **what to look at first**.
-- Shows "written {time}" with a regenerate action.
-- Stays in the app; no email or Slack digest.
-
-**Window.**
-- The default is **unseen**: items leave the page as you see them.
-- Chips: `unseen · 6h · 24h · 2d · 7d`.
-- Projects can be multi-selected: checkbox chips with a color square per project.
-
-**Big backlog.** When the unseen pile is large, show one compact banner suggesting a narrower window, based on how often the user visits (daily → 24h, weekly → 7d).
-
-### Screens
-
-**Catch up page (8a)**, route `/catch-up`.
-- Header: "Catch up" (22px/600) and a mono subline "{n} unseen · oldest from {time} · {k} waiting on you on Today". The Today part links to `/`.
-- Filter row: project checkbox chips. Each is 28px tall with a 15px checkbox, an 8px project color square and the mono name. Selected chips get an ink border and the 2px offset shadow. Then a divider, then the window chips.
-- Big-backlog banner (when needed): one line, 38px, `#f6f7fe` background, `#dfe4fa` border. Copy: "**41 unseen over 4 days.** The tour covers the 6 that matter. Narrow to the last 24h?" Buttons: [Last 24h] and [Keep all].
-- Recap block, with the mono label "ASSISTANT RECAP · WRITTEN 14:00". On the right: primary **▶ Start the tour · {n} stops · {m} min** and the meta "built from {k} shared tours".
-- **Tour cards**, one per stop of your catch-up tour, in a row with flex 1 each:
-  - a 3px top border in the importance color;
-  - a number square, the project color square, the ref (issue/PR/commit icon and number), and minutes;
-  - the kind label, then the title (14.5px/600), then the why (12.5px);
-  - an evidence box 124px tall;
-  - "Start here ›".
-  - The first card is focused (ink border and offset shadow).
-  - A 150px dashed **See more** card ends the row.
-- **The rest**: one panel "THE REST · {n} UNSEEN", with "show seen" and "mark all seen". Rows are 46px. Each row has a checkbox, how the code landed (icon and label: Issue / PR only / Push to main), project and ref, title and one-line summary, a resolution chip, and "Tour ›". The UPDATED tag is accent ink on `#dfe4fa`.
-
-**Piece of work (8b)**, route `/catch-up/:workId` (or under the project).
-- Header: importance tag, kind, project, refs, the title, seen-by avatars, and the line "seen by {names} · you have not seen the {time} update".
-- Buttons: [Copy link] and primary [▶ Play tour · {n} stops].
-- Three columns:
-  - **left (260px):** the tour's stops;
-  - **center:** the current stop's narrative and evidence, with Back / Next;
-  - **right (260px):** tour history (versions with time and reason) and "In your catch-up tour as: stop {x} of {y}".
-
-**Tour player (7b)**, full screen with no sidebar.
-- Top bar: close ×, "Catch-up tour", the meta "stop {x} of {n} · about {m} min", and segmented progress (done = ink, current = accent, upcoming = `#e6e2d9`, last segment dashed for "see more"). On the right: Back and primary **Next stop ›**.
-- Left (260px): the stop list, then "See more", then the keyboard hint "← → move · S seen · ⌘J ask about this stop".
-- Center (max about 980px):
-  - the tags and refs line, then the title (24px/600), then the lead paragraph (15px);
-  - narrative steps as a 110px state label plus content: FOUND (failed tint), CAUSE (waiting tint), FIXED (done tint), FOLLOW-UP (queued tint);
-  - logs in a dark block: `#1e1d1a` background, `#e6e2d9` mono text, header `#3a3833`;
-  - diffs: + lines on `#eaf5ec`, − lines on `#fbeceb`.
-- Footer actions: Open the fix, Open {follow-up}, Ask about this, and on the right "Marked seen when you move on".
-- Ask (⌘J) opens with the current stop as context.
-
-### Importance colors (new tokens)
-
-Blue is used for importance so that amber (waiting on you) and red (failed) keep their meaning.
-
-| Level | Fill | Border | Tag |
-|---|---|---|---|
-| Must know | `#2f4bd6` | `#2f4bd6` | white text on `#2f4bd6` |
-| Worth a look | `#8fa0ea` | `#5b6fd6` | `#2238a8` on `#dfe4fa` |
-| Routine | `#ffffff` | `#9a958a` | `#5e5a52` on `#eeece6` |
-
-### Project colors (new)
-
-Each project stores a color, assigned from a fixed set that avoids the state hues. The mocks use payments `#6a4bc4`, web-console `#1f8077`, platform `#4a5a78`, and `#9a958a` for unselected or quiet projects. Show it as an 8px square with a 1px radius.
+### 7. Manage (gear at the bottom of the rail)
+- Left sub-nav (230px): Projects, Repositories, People & access, Runners, Agents & models, Secrets.
+- Content shown: **Runners** table (Name / Where / Status / Busy / Used by), using the existing status words and glyphs ("✓ online", "! draining", "⊘ offline").
+- Absorbs today's Settings, Operations, Agents (`/profiles`) and the project settings pages.
 
 ---
 
-## Design tokens (existing; read `ui/src/styles/tokens.css` first)
+## Design tokens
+Keep `ui/src/styles/tokens.css` (Red Hat Text / Red Hat Mono / Kaisei Opti for the mark only; all state sets). Changes for this redesign:
 
-| Role | Value |
+- **Page background is `#ffffff`.** `--color-paper #f8f7f3` is no longer the page background; use it only for small fills. The rail is `#faf9f6`.
+- **Lines:** `#e6e2d9` (default), `#f0ede6` (row dividers), `#cfcac0` (inputs, prompt box).
+- **Text:** ink `#1e1d1a`, ink-2 `#3a3833`, muted `#6b675e`, placeholder `#6e6a62`.
+- **Accent** stays royal `#2f4bd6`, with edge `#2238a8`, text `#2a43b8`, tint `#eef0fc`, wash `#f6f7fe`, ring `#dfe4fa`, mid `#8fa0e6`.
+- **States** are unchanged. Used here:
+  - running: `#d9eefa` / `#0f5e96` / `#1a6da6`, pale `#f3f9fd` / `#8cc8ec` / `#0f4c78`
+  - waiting: `#ffecc2` / `#7a4a00` / `#f0a93a`, pale `#fdf6e4` / `#e8cf94` / `#5c3d00`
+  - failed: `#fdd8d2` / `#b0281a` / `#c02a1a`, pale `#fbefec` / `#e5b2a8` / `#7f2215`
+  - done: `#d9f0de` / `#1f6b37`, pale `#f1f7f2` / `#b9d3bf`
+  - done progress segment: `#4a4740`
+- **Radii (new):** 6–8 for chips and inputs, 10 for cards and nodes, 12 for panels, 14 for the prompt box and wrap panel, 16 for the goal frame, 18 for modals, 999 for the pill, round buttons and starter pills.
+- **Shadows (new, soft):**
+  - pill `0 1px 3px rgba(30,29,26,.06)`
+  - prompt box `0 4px 18px rgba(30,29,26,.06)`
+  - popovers and panels `0 10px 30px rgba(30,29,26,.10)`
+  - modal `0 24px 60px rgba(30,29,26,.16)`
+  - The old hard `2px 2px 0` offset shadow is **not** used in the new shell or canvas.
+- **Type sizes:** h2 24/700; page title 16/700; section label mono 10.5/600 + .06em uppercase; body 13.5–14.5; small 12–12.5; mono meta 11.
+- **Icons:** Tabler, 14–19px, stroke 1.5 default.
+
+Copy rules from `docs/design/design-system.md` still apply:
+- Status is always glyph + word, never color alone (● running, ! waiting, × failed, ✓ done, ⊘ interrupted).
+- Plain, declarative sentences.
+- Never "something went wrong".
+
+## Mapping to the repo
+| New | Replaces / touches |
 |---|---|
-| Ink | `#1e1d1a` |
-| Paper (page) | `#f8f7f3` |
-| Surface | `#ffffff` |
-| Sunken / panel bar | `#efede7` |
-| Hairline | `#e6e2d9` |
-| Strong line | `#cfcac0` |
-| Button line | `#cfc9bd` |
-| Body 2 | `#3a3833` |
-| Muted | `#6b675e` |
-| Faint | `#6e6a62` |
-| Accent | `#2f4bd6` |
-| Accent border | `#2238a8` |
-| Accent shadow | `#1a2d8f` |
-| Link | `#2a43b8` |
-| Accent tints | `#e4e8fa`, `#dfe4fa`, `#eef0fc`, `#f6f7fe` |
-| Waiting | `#ffecc2` / `#7a4a00`, bar `#f0a93a` |
-| Failed | `#fdd8d2` / `#b0281a`, bar `#c02a1a`, button border `#e5a99c` |
-| Running | `#d9eefa` / `#0f5e96`, bar `#1a6da6` |
-| Queued | `#eeece6` / `#5e5a52` |
-| Done | `#d9f0de` / `#1f6b37` |
+| Project rail + top bar + pill | `components/Shell.tsx`, `components/Sidebar.tsx`, `components/ds/AppBar.tsx`, `lib/prefs.ts` (the `sidebarCollapsed` preference goes away) |
+| Home (all / project) | `pages/Home.tsx`, `pages/CatchUp.tsx`, `pages/Project.tsx`, `components/catchup/*` |
+| Chats | `pages/ProjectConversations.tsx`, `pages/Conversation.tsx`, `components/conversation/*` |
+| Factory index + New workflow | `pages/Workflows.tsx`, `pages/Workflow.tsx`, `components/workflows/*`, run lists from `pages/ProjectRuns*` |
+| Editor | `pages/Studio.tsx`, `components/studio/StudioCanvas.tsx`, `nodes.tsx`, `edges.tsx`, `StudioPalette.tsx`, `StudioHeader.tsx`, `StudioStatusBar.tsx`, `flowModel.ts` (layout direction LR, free positions persisted per node) |
+| Repeat until + goal | the `until` scope kind already exists (`communication-spec/03-pipeline-engine.md`). "A judge says the goal is met" needs a judge step (`model.chat` with a rubric) or a new condition kind. **Needs an ADR before backend work**; build the UI against the existing `until` condition first. |
+| Assistant quick chat | `components/assistant/*`, `components/CommandPalette.tsx` |
+| Manage | `pages/settings/*`, `pages/Operations.tsx`, `pages/Agents.tsx`, `pages/ProjectSettings.tsx` |
 
-- **Fonts:** Red Hat Text (UI), Red Hat Mono (machine text, chips, panel bars), Kaisei Opti 500 (logo "C" only).
-- **Radii:** 2px (chips, small squares), 3px (panels, rows, icon buttons), 4px (buttons).
-- **Shadows:** buttons and focused cards use a solid `2px 2px 0` offset in the border color (primary `#1a2d8f`, secondary `#cfc9bd`, danger `#e5a99c`, focus `#1e1d1a`). There are no blurred shadows.
-- **Panel bar:** mono 10px/600, uppercase, letter-spacing .04em, 4px 10px padding, `#efede7` background with a `#cfcac0` border. Waiting panels use the `#f0a93a` background.
+Routes (suggested):
+- `/` → Home for the current scope
+- `/chats`, `/chats/:id`
+- `/factory`, `/factory/:workflow`
+- `/manage/:section`
+- Project scope as a prefix: `/p/:projectId/...`; "All" has no prefix
 
-## Assets
+## State (prototype logic)
+- **Navigation:** `project` (`all` | id), `section` (`home` | `chats` | `factory` | `manage`), `fview` (`index` | `editor`).
+- **Chats:** `chat` (id | `new`), `suggestion` (shown), `runStarted`.
+- **Editor:** `tool`, `sel` (box selection active), `wrapTab` (`repeat` | `side`), `goal` (`judge` | `command` | `contains`), `looped`, `versions`, `island` (hover).
+- **Assistant and sheet:** `quick` (panel open), `listening`, `sheet` (New workflow).
 
-- **Icons** are 1.6px-stroke line icons on a 24px grid. Use the codebase's existing icon set; the inline SVGs in the mocks are stand-ins.
-- **Screenshots** in UI-change stops are placeholders. They need agents to capture before/after images.
-- **Data** in the mocks (people, issues, times, the 24h grace period, the 40s lock) is invented.
+## Still open (don't block on these; build the decided version)
+1. **The rail's look.** The user worries it reads as "VS Code". There's also the question of what it shows with only one project (maybe hide the rail and show the name in the top bar). Explorations: `Shell.dc.html` round 5 and later.
+2. **"All" tile.** A globe icon was confusing; it's text "All" for now.
+3. **Wrap menu.** "For each" wasn't clear to the user, so it's left out of the prototype. Side by side stays.
+4. **Project home layout.** 3n / 4j are closest; 4k and 4l were not liked. Showing presence on items (faces) is unsettled; leave it out for v1.
+5. **Factory index.** The prototype uses cards (3b). The assembly line (3c) was liked as an alternate view.
+6. **Quick chat.** Docked panel vs a drop-down under the search field.
 
-## Open decisions (ask before building)
-
-1. **Today layout.** Unblock as an inbox (3e) or compact rows with inline buttons (4b top). And should Today show a one-line Catch up teaser? Until decided, apply findings 03, 04 and 12 to the current Today page and add a "Catch up · {n} unseen" link.
-2. **Importance signals.** These defaults are proposed but not confirmed: auth/security, data migrations, public API changes, UI users will notice, new dependencies, tests weakened or skipped, a commit straight to main, a bug introduced by earlier work, a deviation from the approved plan.
-3. **Ranking scope.** The same for everyone on a project, or per person.
-4. **Ranked diff (4h)** as a second view of a piece of work. It was liked but not confirmed.
-
-## Files
-
-- `designs/Redesign Review.dc.html`: the 12 findings, with before/after and the decision on each.
-- `designs/Today Options.dc.html`: rail options (Turns 2–4) and Today explorations. Approved: 3a and 4a.
-- `designs/Catch Up.dc.html`: Catch up Turns 6–8. Approved: 8a, the compact banner, 8b, 7b, and decisions in tours.
-- `designs/Today (current).dc.html`: baseline rebuild of the current Today page.
-- `designs/support.js`: runtime needed to open the `.dc.html` files.
-- `TASKS.md`: ordered tasks for Claude Code, with acceptance checks.
+## Files in this bundle
+- `Prototype.dc.html`: the clickable prototype (source of truth)
+- `Factory.dc.html`, `Shell.dc.html`, `Projects.dc.html`, `Chats.dc.html`, `Morning.dc.html`: exploration boards (ids referenced above)
+- `support.js`: runtime for opening `.dc.html` files
