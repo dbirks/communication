@@ -23,7 +23,7 @@
  * the dialog is a 640px accessible modal: focus trapped, esc closes, focus
  * returns to the opener (the same contract as NewProfileDialog).
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../../api/client";
 import { useConversationEvents } from "../../api/events";
 import {
@@ -42,8 +42,9 @@ import { useAssignments, usePipelines, useRevision } from "../../api/pipelines";
 import { useArtifacts, useRepositories, useWorkspaces } from "../../api/queries";
 import { useCreateRun } from "../../api/runs";
 import type { RunCreateResponse } from "../../api/types";
-import { Button } from "../ds/Button";
 import { Field, Select, Textarea } from "../ds/Field";
+import { Sheet } from "../ds/Sheet";
+import { SoftButton } from "../ds/SoftButton";
 import { ProblemBanner, Spinner } from "../Feedback";
 import {
   InputFieldControl,
@@ -60,9 +61,6 @@ export interface HandToWorkflowDialogProps {
   conversation: { id: string; project_id: string; title: string };
   onStarted: (runId: string) => void;
 }
-
-const FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export default function HandToWorkflowDialog(props: HandToWorkflowDialogProps) {
   // Rendered only while open, so mounting is the opener holding focus and the
@@ -88,8 +86,6 @@ interface DialogBodyProps {
 }
 
 function DialogBody({ conversation, onClose, onStarted }: DialogBodyProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const openerRef = useRef<Element | null>(null);
   const projectId = conversation.project_id;
 
   const assignments = useAssignments(projectId);
@@ -200,45 +196,6 @@ function DialogBody({ conversation, onClose, onStarted }: DialogBodyProps) {
       ? CARRIES_BRANCH_COPY
       : NO_COMMITS_COPY;
 
-  // Focus trap + escape, the accessible-modal contract (the same pattern as
-  // NewProfileDialog).
-  useLayoutEffect(() => {
-    openerRef.current = document.activeElement;
-    const first = containerRef.current?.querySelector<HTMLElement>(FOCUSABLE);
-    first?.focus();
-    return () => {
-      const opener = openerRef.current;
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  useLayoutEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const container = containerRef.current;
-      if (!container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !container.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (created || inFlight.current || !activeOption || inputProblems) return;
@@ -277,267 +234,266 @@ function DialogBody({ conversation, onClose, onStarted }: DialogBodyProps) {
   const baseLines = created ? baseResultLines(created.base) : [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
-      <div
-        ref={containerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="handoff-title"
-        data-testid="handoff-dialog"
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-[640px] overflow-y-auto rounded-[3px] border border-line-strong bg-surface p-4 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
+    <Sheet
+      onClose={onClose}
+      closeOnBackdrop={false}
+      labelledBy="handoff-title"
+      testid="handoff-dialog"
+      widthClassName="w-[640px]"
+    >
+      <header className="space-y-0.5">
+        <h2 id="handoff-title" className="text-[16px] font-bold text-ink">
+          Hand to a workflow
+        </h2>
+        <p className="text-[12.5px] text-muted" data-testid="handoff-from">
+          from thread “{conversation.title}”
+        </p>
+      </header>
+
+      <form
+        onSubmit={(event) => void submit(event)}
+        data-testid="handoff-form"
+        className="mt-3 space-y-4"
       >
-        <header className="space-y-0.5">
-          <h2 id="handoff-title" className="text-[15px] font-bold text-ink">
-            Hand to a workflow
-          </h2>
-          <p className="text-[12.5px] text-muted" data-testid="handoff-from">
-            from thread “{conversation.title}”
-          </p>
-        </header>
+        {/* WORKFLOW — the project's enabled assignments, their pinned revision. */}
+        <Field id="handoff-workflow" label="Workflow">
+          {assignments.isPending ? (
+            <Spinner label="Loading workflows" />
+          ) : assignments.isError ? (
+            <ProblemBanner
+              error={assignments.error}
+              fallback="Workflows could not be loaded."
+              testid="handoff-workflows-problem"
+            />
+          ) : options.length === 0 ? (
+            <p className="text-[12.5px] text-muted" data-testid="handoff-no-workflows">
+              No enabled workflow assignment for this project yet — a run cannot be started from it.
+            </p>
+          ) : (
+            <Select
+              id="handoff-workflow"
+              data-testid="handoff-workflow-select"
+              value={activeOption?.id ?? ""}
+              onChange={(event) => setAssignmentId(event.target.value)}
+              disabled={created !== null}
+            >
+              {options.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
 
-        <form
-          onSubmit={(event) => void submit(event)}
-          data-testid="handoff-form"
-          className="mt-3 space-y-4"
-        >
-          {/* WORKFLOW — the project's enabled assignments, their pinned revision. */}
-          <Field id="handoff-workflow" label="Workflow">
-            {assignments.isPending ? (
-              <Spinner label="Loading workflows" />
-            ) : assignments.isError ? (
-              <ProblemBanner
-                error={assignments.error}
-                fallback="Workflows could not be loaded."
-                testid="handoff-workflows-problem"
-              />
-            ) : options.length === 0 ? (
-              <p className="text-[12.5px] text-muted" data-testid="handoff-no-workflows">
-                No enabled workflow assignment for this project yet — a run cannot be started from
-                it.
-              </p>
-            ) : (
-              <Select
-                id="handoff-workflow"
-                data-testid="handoff-workflow-select"
-                value={activeOption?.id ?? ""}
-                onChange={(event) => setAssignmentId(event.target.value)}
-                disabled={created !== null}
-              >
-                {options.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-
-          {/* RUN INPUTS — one control per declared `spec.inputs` entry of the
+        {/* RUN INPUTS — one control per declared `spec.inputs` entry of the
               pinned revision; a workflow with REQUIRED inputs 422s a create
               that seeds none of them. */}
-          {revision.isPending ? <Spinner label="Reading the revision's inputs" /> : null}
-          {revision.isError ? (
-            <ProblemBanner
-              error={revision.error}
-              fallback="The pinned revision's inputs could not be read."
-              testid="handoff-revision-problem"
-            />
-          ) : null}
-          {!revision.isPending && !revision.isError && fields === null ? (
-            <p className="text-[12.5px] text-muted" data-testid="handoff-no-inputs">
-              The pinned revision declares no <code>spec.inputs</code> — there is nothing to fill
-              in.
-            </p>
-          ) : null}
-          {fields !== null && fields.length > 0 ? (
-            <section className="space-y-2" data-testid="handoff-inputs">
-              <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-                Run inputs
-              </span>
-              {fields.map((field) => (
-                <InputFieldControl
-                  key={field.name}
-                  field={field}
-                  value={values[field.name]}
-                  repositories={(repositories.data?.items ?? []).map((repo) => repo.name)}
-                  repositoriesLoading={repositories.isPending}
-                  error={problems[field.name]}
-                  onChange={(value) => {
-                    if (value !== undefined && typeof value === "string")
-                      inputTouched.current.add(field.name);
-                    setValues((current) => ({ ...current, [field.name]: value }));
-                  }}
-                />
-              ))}
-              {prefillNote ? (
-                <p
-                  className="font-mono text-[10.5px] text-faint"
-                  data-testid="handoff-input-prefill-note"
-                >
-                  {prefillTarget?.name} was prefilled with the summary — edit either before you
-                  start.
-                </p>
-              ) : null}
-            </section>
-          ) : null}
-
-          {/* CARRIES OVER — every line is answered from real data. */}
-          <section
-            className="space-y-3 rounded-[3px] border border-line p-3"
-            data-testid="handoff-carries-over"
-          >
-            <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-              Carries over
-            </span>
-            <p className="font-mono text-[11.5px] text-ink" data-testid="handoff-branch-copy">
-              {branchCopy}
-            </p>
-            <Field
-              id="handoff-summary"
-              label="Summary (editable)"
-              hint={
-                prefilled ? (
-                  <span className="font-mono text-[10.5px] text-faint">
-                    Prefilled with the thread's last agent message — edit it before you start.
-                  </span>
-                ) : undefined
-              }
-            >
-              <Textarea
-                id="handoff-summary"
-                data-testid="handoff-summary"
-                rows={4}
-                value={summary}
-                onChange={(event) => {
-                  summaryTouched.current = true;
-                  setSummary(event.target.value);
-                }}
-                disabled={created !== null}
-              />
-            </Field>
-            {threadArtifacts ? (
-              <fieldset data-testid="handoff-artifacts" className="space-y-1.5">
-                <legend className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-                  Artifacts
-                </legend>
-                {threadArtifacts.length === 0 ? (
-                  <p className="text-[12px] text-muted" data-testid="handoff-artifacts-empty">
-                    No artifacts attached to this thread yet.
-                  </p>
-                ) : (
-                  threadArtifacts.map((artifact) => (
-                    <label
-                      key={artifact.id}
-                      className="flex items-center gap-2 text-[12.5px] text-ink"
-                    >
-                      <input
-                        type="checkbox"
-                        data-testid={`handoff-artifact-${artifact.id}`}
-                        checked={chosenArtifacts.has(artifact.id)}
-                        disabled={created !== null}
-                        onChange={(event) => {
-                          setChosenArtifacts((previous) => {
-                            const next = new Set(previous);
-                            if (event.target.checked) next.add(artifact.id);
-                            else next.delete(artifact.id);
-                            return next;
-                          });
-                        }}
-                      />
-                      <span className="font-mono">{artifact.name}</span>
-                    </label>
-                  ))
-                )}
-              </fieldset>
-            ) : null}
-            <p className="font-mono text-[11px] text-muted" data-testid="handoff-thread-note">
-              thread — stays open and links to the run.
-            </p>
-          </section>
-
-          <p className="font-mono text-[11.5px] text-muted" data-testid="handoff-fresh-sessions">
-            The run starts fresh agent sessions; the thread's transcript is not replayed.
+        {revision.isPending ? <Spinner label="Reading the revision's inputs" /> : null}
+        {revision.isError ? (
+          <ProblemBanner
+            error={revision.error}
+            fallback="The pinned revision's inputs could not be read."
+            testid="handoff-revision-problem"
+          />
+        ) : null}
+        {!revision.isPending && !revision.isError && fields === null ? (
+          <p className="text-[12.5px] text-muted" data-testid="handoff-no-inputs">
+            The pinned revision declares no <code>spec.inputs</code> — there is nothing to fill in.
           </p>
-
-          {submitError ? (
-            <div data-testid="handoff-problem" className="space-y-1">
-              <ProblemBanner
-                error={submitError}
-                fallback="The run could not be started."
-                testid="handoff-problem-banner"
+        ) : null}
+        {fields !== null && fields.length > 0 ? (
+          <section className="space-y-2" data-testid="handoff-inputs">
+            <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+              Run inputs
+            </span>
+            {fields.map((field) => (
+              <InputFieldControl
+                key={field.name}
+                field={field}
+                value={values[field.name]}
+                repositories={(repositories.data?.items ?? []).map((repo) => repo.name)}
+                repositoriesLoading={repositories.isPending}
+                error={problems[field.name]}
+                onChange={(value) => {
+                  if (value !== undefined && typeof value === "string")
+                    inputTouched.current.add(field.name);
+                  setValues((current) => ({ ...current, [field.name]: value }));
+                }}
               />
-              {findings.length > 0 ? (
-                <ul className="space-y-[2px] font-mono text-[11px] text-muted">
-                  {findings.map((finding, index) => (
-                    <li key={index} data-testid={`handoff-problem-finding-${index}`}>
-                      {typeof finding.instance_location === "string"
-                        ? `${finding.instance_location} `
-                        : ""}
-                      {typeof finding.code === "string" ? `[${finding.code}] ` : ""}
-                      {typeof finding.message === "string"
-                        ? finding.message
-                        : JSON.stringify(finding)}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
-
-          {created ? (
-            <div className="space-y-1" role="status" data-testid="handoff-started">
-              <p className="font-mono text-[12px] text-st-done-tag-fg">
-                ✓ Run started — queued from this thread.
-              </p>
-              {baseLines.length > 0 ? (
-                <ul className="space-y-[2px] font-mono text-[11.5px] text-ink">
-                  {baseLines.map((line, index) => (
-                    <li key={index} data-testid={`handoff-base-${index}`}>
-                      {line}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="font-mono text-[11.5px] text-muted">
-                  The create response did not report the per-repository base — the run detail's
-                  repo_snapshot is the durable record.
-                </p>
-              )}
-            </div>
-          ) : null}
-
-          <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              data-testid="handoff-cancel"
-            >
-              Cancel
-            </Button>
-            {created ? (
-              <Button type="button" variant="primary" onClick={onClose} data-testid="handoff-done">
-                Done
-              </Button>
-            ) : (
-              <Button
-                type="submit"
-                variant="primary"
-                disabled={
-                  busy ||
-                  activeOption === null ||
-                  inputProblems ||
-                  revision.isPending ||
-                  revision.isError
-                }
-                data-testid="handoff-submit"
+            ))}
+            {prefillNote ? (
+              <p
+                className="font-mono text-[10.5px] text-faint"
+                data-testid="handoff-input-prefill-note"
               >
-                {busy ? "Starting run…" : "Start run"}
-              </Button>
+                {prefillTarget?.name} was prefilled with the summary — edit either before you start.
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+
+        {/* CARRIES OVER — every line is answered from real data. */}
+        <section
+          className="space-y-3 rounded-[10px] border border-line p-3"
+          data-testid="handoff-carries-over"
+        >
+          <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+            Carries over
+          </span>
+          <p className="font-mono text-[11.5px] text-ink" data-testid="handoff-branch-copy">
+            {branchCopy}
+          </p>
+          <Field
+            id="handoff-summary"
+            label="Summary (editable)"
+            hint={
+              prefilled ? (
+                <span className="font-mono text-[10.5px] text-faint">
+                  Prefilled with the thread's last agent message — edit it before you start.
+                </span>
+              ) : undefined
+            }
+          >
+            <Textarea
+              id="handoff-summary"
+              data-testid="handoff-summary"
+              rows={4}
+              value={summary}
+              onChange={(event) => {
+                summaryTouched.current = true;
+                setSummary(event.target.value);
+              }}
+              disabled={created !== null}
+            />
+          </Field>
+          {threadArtifacts ? (
+            <fieldset data-testid="handoff-artifacts" className="space-y-1.5">
+              <legend className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                Artifacts
+              </legend>
+              {threadArtifacts.length === 0 ? (
+                <p className="text-[12px] text-muted" data-testid="handoff-artifacts-empty">
+                  No artifacts attached to this thread yet.
+                </p>
+              ) : (
+                threadArtifacts.map((artifact) => (
+                  <label
+                    key={artifact.id}
+                    className="flex items-center gap-2 text-[12.5px] text-ink"
+                  >
+                    <input
+                      type="checkbox"
+                      data-testid={`handoff-artifact-${artifact.id}`}
+                      checked={chosenArtifacts.has(artifact.id)}
+                      disabled={created !== null}
+                      onChange={(event) => {
+                        setChosenArtifacts((previous) => {
+                          const next = new Set(previous);
+                          if (event.target.checked) next.add(artifact.id);
+                          else next.delete(artifact.id);
+                          return next;
+                        });
+                      }}
+                    />
+                    <span className="font-mono">{artifact.name}</span>
+                  </label>
+                ))
+              )}
+            </fieldset>
+          ) : null}
+          <p className="font-mono text-[11px] text-muted" data-testid="handoff-thread-note">
+            thread — stays open and links to the run.
+          </p>
+        </section>
+
+        <p className="font-mono text-[11.5px] text-muted" data-testid="handoff-fresh-sessions">
+          The run starts fresh agent sessions; the thread's transcript is not replayed.
+        </p>
+
+        {submitError ? (
+          <div data-testid="handoff-problem" className="space-y-1">
+            <ProblemBanner
+              error={submitError}
+              fallback="The run could not be started."
+              testid="handoff-problem-banner"
+            />
+            {findings.length > 0 ? (
+              <ul className="space-y-[2px] font-mono text-[11px] text-muted">
+                {findings.map((finding, index) => (
+                  <li key={index} data-testid={`handoff-problem-finding-${index}`}>
+                    {typeof finding.instance_location === "string"
+                      ? `${finding.instance_location} `
+                      : ""}
+                    {typeof finding.code === "string" ? `[${finding.code}] ` : ""}
+                    {typeof finding.message === "string"
+                      ? finding.message
+                      : JSON.stringify(finding)}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+
+        {created ? (
+          <div className="space-y-1" role="status" data-testid="handoff-started">
+            <p className="font-mono text-[12px] text-st-done-tag-fg">
+              ✓ Run started — queued from this thread.
+            </p>
+            {baseLines.length > 0 ? (
+              <ul className="space-y-[2px] font-mono text-[11.5px] text-ink">
+                {baseLines.map((line, index) => (
+                  <li key={index} data-testid={`handoff-base-${index}`}>
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="font-mono text-[11.5px] text-muted">
+                The create response did not report the per-repository base — the run detail's
+                repo_snapshot is the durable record.
+              </p>
             )}
-          </footer>
-        </form>
-      </div>
-    </div>
+          </div>
+        ) : null}
+
+        <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
+          <SoftButton
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            data-testid="handoff-cancel"
+          >
+            Cancel
+          </SoftButton>
+          {created ? (
+            <SoftButton
+              type="button"
+              variant="primary"
+              onClick={onClose}
+              data-testid="handoff-done"
+            >
+              Done
+            </SoftButton>
+          ) : (
+            <SoftButton
+              type="submit"
+              variant="primary"
+              disabled={
+                busy ||
+                activeOption === null ||
+                inputProblems ||
+                revision.isPending ||
+                revision.isError
+              }
+              data-testid="handoff-submit"
+            >
+              {busy ? "Starting run…" : "Start run"}
+            </SoftButton>
+          )}
+        </footer>
+      </form>
+    </Sheet>
   );
 }

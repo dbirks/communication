@@ -26,14 +26,23 @@
 // HOW SIGN-IN IS PROVED AT EVERY WIDTH: `GET /api/v1/me` through the page's own
 // request context (which shares the browser's cookie jar) returns 200 with the
 // expected `display_name`/`email`, and the URL is still the path that was asked
-// for rather than an `/auth/…` redirect. The sidebar-footer name
-// (`user-badge`) is NOT that proof at phone width: the badge lives in the
-// sidebar footer, and below 768px (finding 07 — `Shell.PHONE_MAX_WIDTH_PX`, the
-// width the phone frame stops owning) the sidebar is the drawer behind the
-// phone top strip's menu button, so a hidden badge there means "narrow screen",
-// not "signed out". The badge is therefore only asserted at 768px and up, where
-// the sidebar always mounts — the forced rail (768–1023px) carries the same
-// footer, so the badge is visible there too.
+// for rather than an `/auth/…` redirect. The account name (`user-badge`) is NOT
+// that proof: it is chrome, and where it stands changed with the redesign —
+// from 768px up the rail's account tile (`rail-account`) carries the
+// `UserMenu` trigger with the name in it, and below 768px no rail mounts at all
+// and the identity rides the scope sheet's account row. A missing badge on a
+// phone therefore means "narrow screen", never "signed out"; the tile is
+// asserted only where the redesign mounts it, and only as the name's carrier
+// (the 38px tile deliberately clips the name to the avatar).
+//
+// THE SCREENS ARE THE REDESIGNED ONES (docs/design/redesign/CONTRACT.md
+// "Routes and scope"): `/`, `/manage/projects`, `/p/:id`, `/p/:id/factory`,
+// `/chats`, `/runs/:id`, `/factory`, `/factory/:id`, `/manage/agents`,
+// `/manage/runners`, `/chats/:id`. The old destinations the redesign folded away
+// (`/projects`, `/workflows`, `/profiles`, `/settings/operations`, the project's
+// Runs/Threads tabs, `/threads/:id`) are proven to REDIRECT in
+// shell-p1-shell.spec.ts; measuring a redirect at two widths would measure the
+// same page twice.
 //
 // ONE TEST PER SCREEN × VIEWPORT, no serial mode and no shared page: a failing
 // screen reports itself and stops nothing, so the run says which screens are
@@ -60,7 +69,7 @@ import {
 } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { expectNoLegacyAppBar, gotoApp, openProjectBySlug, shot, signIn } from "./helpers.js";
-import { apiCreateConversation, apiCsrf, apiProfileId } from "./shell-helpers.js";
+import { apiBoardRuns, apiCreateConversation, apiCsrf, apiProfileId } from "./shell-helpers.js";
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -83,10 +92,9 @@ const TEST_TIMEOUT_MS = Number(
 );
 
 /** The Tailwind `md:` width that is also the shell's phone cut
- * (`Shell.PHONE_MAX_WIDTH_PX = 767.98`, finding 07): from here up the sidebar
- * column mounts — the forced rail to 1023px, the saved column above it — and
- * its footer carries the signed-in name either way. Below it the column is the
- * unmounted drawer. */
+ * (`ui/src/components/Shell.tsx`, CONTRACT "Shell / Phone"): from here up the
+ * 64px rail mounts and its account tile carries the signed-in name; below it
+ * the rail does not mount and the identity is one tap inside the scope sheet. */
 const BADGE_MIN_WIDTH = 768;
 
 const VIEWPORTS = [
@@ -103,8 +111,8 @@ type Viewer = "alice" | "admin";
 interface Lab {
   projectPath: string; // /p/{m4-exit id}
   runPath: string; // /runs/{run id}
-  pipelinePath: string; // /workflows/{pipeline id}
-  conversationPath: string; // /threads/{conversation id}
+  pipelinePath: string; // /factory/{pipeline id}
+  conversationPath: string; // /chats/{conversation id}
 }
 
 interface Screen {
@@ -131,35 +139,40 @@ const screens: Screen[] = [
     label: "/",
     viewer: "alice",
     path: () => "/",
-    anchor: "home-page",
-    // Finding 03 retired /inbox and /board as destinations; Today (/) is the
-    // landing screen the shell opens on.
-    why: "the landing screen (Today — was /inbox)",
+    anchor: "home-all",
+    // Home (All projects) is the landing screen the rail's first tile opens on;
+    // it holds the greeting, the ask prompt, Since you left, NEEDS YOU, RUNNING
+    // and FACTORY HEALTH in one column that stacks on a phone.
+    why: "the landing screen: the prompt, the since-you-left list and the three right-column blocks",
   },
   {
-    label: "/projects",
+    label: "/manage/projects",
     viewer: "alice",
-    path: () => "/projects",
-    anchor: "projects-heading",
-    why: "the project list",
+    path: () => "/manage/projects",
+    anchor: "manage-projects",
+    // The old `/projects` list is this table (the redirect is proven in p1),
+    // and a table is where a narrow screen used to break.
+    why: "the project table, with each row's repository and people links",
   },
   {
-    label: "project overview",
+    label: "project home",
     viewer: "alice",
     path: (lab) => lab.projectPath,
-    anchor: "project-name",
-    why: "design 1b: header tabs, the callouts that ask something of you, running work, recent threads, repos and workflows",
+    anchor: "project-home",
+    why: "the scoped landing page: the ask prompt, happening-now, since-you-left, the repository list and the workflows here",
   },
   {
-    label: "runs list",
+    label: "project factory",
     viewer: "alice",
-    path: (lab) => `${lab.projectPath}/runs`,
-    anchor: "project-runs",
-    // Design 1b (project-tabs-2 pass 2): the row's second line is now
-    // `repository · elapsed` — the pinned digest moved to the run's own page, so
-    // no hex string stands where a name should be. The row is still the screen
-    // that proves a mono machine line fits 390px.
-    why: "one row per run, with its repository and elapsed time",
+    path: (lab) => `${lab.projectPath}/factory`,
+    anchor: "factory-index",
+    // The project's Runs tab is gone as a page: `/p/:id/runs` answers with this
+    // floor (CONTRACT "What happens to the old app"), and the run rows
+    // themselves now stand on Home's RUNNING list (proven in
+    // shell-p2-home-board.spec.ts). The floor is still the wide project grid —
+    // the project's workflow cards over the org library — that must become one
+    // column at 390px.
+    why: "the screen the project's runs/workflows tab answers with, at 390px",
   },
   {
     label: "run page",
@@ -169,39 +182,53 @@ const screens: Screen[] = [
     why: "the screen QA found overflowing at 390px (e609b00), now the graph-first Run Workbench",
   },
   {
-    label: "/workflows",
-    viewer: "admin",
-    path: () => "/workflows",
-    anchor: "library-page",
-    why: "the org pipeline library",
+    label: "/chats",
+    viewer: "alice",
+    path: () => "/chats",
+    anchor: "chats",
+    // The redesigned two-pane screen: the thread list and the New chat prompt
+    // pane beside it — the pair that has to become one column at 390px.
+    why: "the chats list and the New chat pane, side by side at desktop and stacked on a phone",
   },
   {
-    label: "pipeline page",
+    label: "/factory",
+    viewer: "admin",
+    path: () => "/factory",
+    anchor: "factory-index",
+    why: "the org Factory floor: every workflow card, its state and its ⋯ menu",
+  },
+  {
+    label: "workflow editor",
     viewer: "admin",
     path: (lab) => lab.pipelinePath,
-    anchor: "pipeline-page",
-    why: "revisions, drafts and the definition graph",
+    anchor: "studio-page",
+    // The old pipeline page (overview / YAML / used in / history) is the editor
+    // now, with those three as panels behind its "…" menu (CONTRACT table).
+    why: "the canvas editor: breadcrumb, tool island, zoom controls and the top-right buttons",
   },
   {
-    label: "/profiles",
+    label: "/manage/agents",
     viewer: "admin",
-    path: () => "/profiles",
-    anchor: "agents-page",
-    why: "the agent profile table",
+    path: () => "/manage/agents",
+    anchor: "manage-agents",
+    // `/profiles` and Settings → Assistant / Agent accounts all land here.
+    why: "the harness account strip and the agent profile table",
   },
   {
-    label: "/settings/operations",
+    label: "/manage/runners",
     viewer: "admin",
-    path: () => "/settings/operations",
+    path: () => "/manage/runners",
     anchor: "ops-resource-limits",
-    why: "scheduler and worker tables",
+    // `/settings/operations` and `/ops` land here: the runner table, the worker
+    // table, the scheduler strip and the resource limits.
+    why: "runner, worker and scheduler tables",
   },
   {
-    label: "conversation page",
+    label: "chat thread",
     viewer: "alice",
     path: (lab) => lab.conversationPath,
-    anchor: "conversation-title",
-    why: "transcript, composer and session meta",
+    anchor: "chat-thread",
+    why: "transcript, tool rows, composer and session meta",
   },
 ];
 
@@ -336,37 +363,61 @@ async function checkScreen(
 
   const where = `${screen.viewer}@${viewport.name} ${path}`;
   // Width-independent: the session is live and the router did not bounce to
-  // /auth/… — the failure the old badge-based check reported for a page that
+  // /login — the failure the old badge-based check reported for a page that
   // was signed in and merely too narrow to show the name.
   await expectSignedIn(page, screen.viewer, where);
   expect(new URL(page.url()).pathname, `${where}: landed somewhere else`).toBe(path);
-  // The old top app bar's `aria-label="Primary"` header/nav is gone — Sidebar
-  // v3 replaced it (regression gate for the app-shell redesign).
+  // The old top app bar's `aria-label="Primary"` header/nav is gone — the rail
+  // and top bar replaced it (regression gate for the app-shell redesign).
   await expectNoLegacyAppBar(page);
+  // The shell's own frame, at both widths: the top bar always, the rail only
+  // from 768px up (CONTRACT "Shell / Phone": below it the rail does not mount
+  // and the scope opens as a sheet).
+  await expect(page.getByTestId("top-bar"), `${where}: no top bar`).toBeVisible({
+    timeout: 30_000,
+  });
   if (viewport.width >= BADGE_MIN_WIDTH) {
+    const account = page.getByTestId("rail-account");
+    await expect(account, `${where}: the rail's account tile is missing`).toBeVisible();
     await expect(
-      page.getByTestId("user-badge"),
-      `${where}: the sidebar footer hides the signed-in name at a width that shows it`,
-    ).toBeVisible({ timeout: 30_000 });
+      account.getByTestId("user-badge"),
+      `${where}: the account tile does not carry the signed-in name`,
+    ).toHaveText(screen.viewer, { timeout: 30_000 });
+  } else {
+    await expect(
+      page.getByTestId("rail-account"),
+      `${where}: the phone must not mount the rail's account tile`,
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId("scope-open"),
+      `${where}: the phone bar has no scope button to reach the account row`,
+    ).toBeVisible();
   }
   await expect(page.getByTestId(screen.anchor), `${where}: never rendered`).toBeVisible({
     timeout: 30_000,
   });
-  // Finding 07: `<main>` no longer caps, pads or decides anything — every
-  // routed page renders through `ds/Page`, which stamps its root with
-  // `data-page-layout="reading|wide|canvas"`. A screen without that root is a
-  // page the shell is still dressing by hand (the class of bug that made title
-  // left edges and body widths move between routes), so this is asserted for
-  // every screen at every width, not just the ones with a band.
-  const pageRoot = page.locator("main [data-page-layout]").first();
-  await expect(pageRoot, `${where}: no <Page> root inside <main>`).toBeVisible({
+  // CONTRACT "Shell": the content region is one `min-h-0 flex-1 overflow-auto`
+  // box and every page scrolls inside it. So the screen's own anchor must be a
+  // descendant of `<main>` — a page whose body renders outside the content
+  // region (in the bar, or over it) is the class of bug that made titles and
+  // widths move between routes, and it is what this arm measures.
+  const anchorInMain = page.locator("main").getByTestId(screen.anchor).first();
+  await expect(anchorInMain, `${where}: ${screen.anchor} is not inside <main>`).toBeVisible({
     timeout: 30_000,
   });
-  const declaredLayout = await pageRoot.getAttribute("data-page-layout");
-  expect(
-    ["reading", "wide", "canvas"],
-    `${where}: data-page-layout=${JSON.stringify(declaredLayout)} is not one of the three layouts`,
-  ).toContain(declaredLayout);
+  // The pages the redesign kept as they were still declare their width through
+  // `ds/Page` (`data-page-layout="reading|wide|canvas"`); the redesigned pages
+  // own their layout instead and stamp a plain root. Where the attribute is
+  // present it must still be one of the three — a kept page that stopped
+  // declaring would be sized by the shell again.
+  const pageRoot = page.locator("main [data-page-layout]").first();
+  if (await pageRoot.count()) {
+    const declaredLayout = await pageRoot.getAttribute("data-page-layout");
+    expect(
+      ["reading", "wide", "canvas"],
+      `${where}: data-page-layout=${JSON.stringify(declaredLayout)} is not one of the three layouts`,
+    ).toContain(declaredLayout);
+  }
   // A page that draws the shared band has its title at the band's own left
   // edge — the finding-07 invariant, measured on the live page rather than
   // assumed from a stylesheet: the band and the page's body column start
@@ -461,38 +512,36 @@ async function discoverLab(browser: Browser, request: APIRequestContext): Promis
     lab.projectPath = await openProjectBySlug(alice, PROJECT_SLUG);
     expect(lab.projectPath).toMatch(/^\/p\/[0-9a-f-]{36}$/);
 
-    // One run, named by the runs list's own row id.
-    await gotoApp(alice, `${lab.projectPath}/runs`);
-    await expect(alice.getByTestId("project-runs")).toBeVisible({ timeout: 30_000 });
-    const row = alice.locator('[data-testid^="run-row-"]').first();
-    await expect(row, "the lab's runs list has no run row").toBeVisible({
-      timeout: LOADED_TIMEOUT_MS,
+    // One run of this project. The project's Runs tab is gone as a page —
+    // `/p/:id/runs` answers with the project's Factory floor (CONTRACT "What
+    // happens to the old app") — so the run's id comes from the same
+    // cross-project runs read the app itself lists, scoped to this project, and
+    // the workbench is opened by the deep link a run card uses.
+    const projectRuns = await apiBoardRuns(alice.request, {
+      projectId: lab.projectPath.split("/").pop(),
     });
-    const testid = await row.getAttribute("data-testid");
-    const runId = (testid ?? "").slice("run-row-".length);
-    expect(runId).toMatch(/^[0-9a-f-]{36}$/);
-    // Route contract C1: the workbench deep link is the project-less
+    expect(projectRuns.length, `the ${PROJECT_SLUG} project lists no run`).toBeGreaterThan(0);
+    // Route contract: the workbench deep link is the project-less
     // `/runs/:runId` (the old `/projects/:id/runs/:runId` URL redirects).
-    lab.runPath = `/runs/${runId}`;
+    lab.runPath = `/runs/${projectRuns[0].id}`;
 
-    // One pipeline, opened from the workflows list by clicking its row —
-    // the new /workflows row (WorkflowRow) exposes the pipeline link to
-    // `/workflows/:id`, not the old `pipeline-name-*` button.
-    await gotoApp(admin, "/workflows");
-    await expect(admin.getByTestId("library-page")).toBeVisible({ timeout: 30_000 });
-    const wfRow = admin.getByTestId("workflows-list").locator('a[href^="/workflows/"]').first();
-    await expect(wfRow, "the lab's workflows list has no pipeline row").toBeVisible({
+    // One workflow, opened from the org Factory floor by clicking its card's
+    // link — the card is the redesign's row, and it links the editor.
+    await gotoApp(admin, "/factory");
+    await expect(admin.getByTestId("factory-index")).toBeVisible({ timeout: 30_000 });
+    const wfRow = admin.locator('[data-testid^="workflow-card-link-"]').first();
+    await expect(wfRow, "the lab's Factory floor has no workflow card").toBeVisible({
       timeout: LOADED_TIMEOUT_MS,
     });
     await wfRow.click();
-    await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}/, { timeout: 30_000 });
+    await admin.waitForURL(/\/factory\/[0-9a-f-]{36}/, { timeout: 30_000 });
     lab.pipelinePath = new URL(admin.url()).pathname;
-    expect(lab.pipelinePath).toMatch(/^\/workflows\/[0-9a-f-]{36}$/);
+    expect(lab.pipelinePath).toMatch(/^\/factory\/[0-9a-f-]{36}$/);
 
     // One conversation, or the product's own create-with-no-prompt.
     lab.conversationPath = await firstConversationPath(alice, lab.projectPath);
-    // Route contract C1: the standalone thread page is `/threads/:id`.
-    expect(lab.conversationPath).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
+    // Route contract: the standalone thread page is `/chats/:id`.
+    expect(lab.conversationPath).toMatch(/^\/chats\/[0-9a-f-]{36}$/);
   } finally {
     for (const page of [alice, admin]) {
       await page
@@ -660,17 +709,16 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
     profileId,
     title,
   );
-  // Design 1b: the overview shows three recent threads and a `Threads` tab; the
-  // list itself — every row, with its search and filters — is the tab's page,
-  // and since the project-tabs-2 review that page is the shared 1g pane.
-  await gotoApp(page, `${projectPath.replace(/\/+$/, "")}/threads`);
-  const row = page.getByTestId(`thread-row-${conversationId}`);
-  await expect(row, `the created thread "${title}" must list its own row`).toBeVisible({
+  // The redesigned list is one page for every scope (`/chats`), and it keys its
+  // rows by the conversation id: `chat-row-<id>`.
+  await gotoApp(page, "/chats");
+  const row = page.getByTestId(`chat-row-${conversationId}`);
+  await expect(row, `the created chat "${title}" must list its own row`).toBeVisible({
     timeout: LOADED_TIMEOUT_MS,
   });
   await row.click();
-  // The row's anchor is the standalone thread page (route contract C1).
-  await page.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
+  // The row's anchor is the standalone thread page (route contract).
+  await page.waitForURL(/\/chats\/[0-9a-f-]{36}/, { timeout: 30_000 });
   return new URL(page.url()).pathname;
 }
 

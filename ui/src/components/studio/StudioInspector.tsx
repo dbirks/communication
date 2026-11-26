@@ -68,7 +68,7 @@ import {
 } from "./fields";
 import { readRunInputs, runInputNameProblem, writeRunInputs, type RunInputRow } from "./runInputs";
 import { Field, Input } from "../ds/Field";
-import { Button } from "../ds/Button";
+import { SoftButton } from "../ds/SoftButton";
 import { routes } from "../../lib/routes";
 import { KindChip } from "../m4/KindChip";
 
@@ -325,7 +325,7 @@ function RunInputsEditor({
         return (
           <div
             key={line}
-            className="space-y-[5px] rounded-[3px] border border-line bg-paper p-[8px]"
+            className="space-y-[5px] rounded-[8px] border border-line bg-paper p-[8px]"
             data-testid={line}
           >
             <TextField
@@ -372,7 +372,7 @@ function RunInputsEditor({
                 />
                 required
               </label>
-              <Button
+              <SoftButton
                 variant="ghost"
                 className="shrink-0"
                 disabled={readOnly}
@@ -380,7 +380,7 @@ function RunInputsEditor({
                 onClick={() => write(rows.filter((_, i) => i !== index))}
               >
                 Remove
-              </Button>
+              </SoftButton>
             </div>
             <p className="font-mono text-[10.5px] text-faint" data-testid={`${line}-takes`}>
               {`a run gets ${declared.get(row.name) ?? "a value"}`}
@@ -396,7 +396,7 @@ function RunInputsEditor({
           </div>
         );
       })}
-      <Button
+      <SoftButton
         variant="secondaryPlain"
         disabled={readOnly}
         data-testid="insp-pipeline-inputs-add"
@@ -405,7 +405,7 @@ function RunInputsEditor({
         }
       >
         Add input
-      </Button>
+      </SoftButton>
     </div>
   );
 }
@@ -598,7 +598,7 @@ function ProfileSelect({
     >
       <select
         id="agent-profile"
-        className="w-full rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[12.5px] text-ink focus-visible:border-ink focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
+        className="w-full rounded-[8px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[12.5px] text-ink focus-visible:border-ink focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
         disabled={readOnly}
         value={shown}
         data-testid="insp-profile"
@@ -709,7 +709,7 @@ function SaveAsStep({
       </label>
       <button
         type="button"
-        className="rounded-[3px] border border-line-strong bg-paper px-[10px] py-1 font-mono text-[12px] text-ink hover:border-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
+        className="rounded-[8px] border border-line-strong bg-paper px-[10px] py-1 font-mono text-[12px] text-ink hover:border-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
         disabled={!armed || busy || readOnly}
         onClick={save}
         data-testid="insp-save-step-button"
@@ -953,7 +953,7 @@ export function StudioInspector({
 
   if (doc === null) {
     return (
-      <div className="rounded-[3px] border border-line bg-paper p-[8px]" data-testid="insp-invalid">
+      <div className="rounded-[8px] border border-line bg-paper p-[8px]" data-testid="insp-invalid">
         <p className="font-mono text-[11px] text-faint">
           YAML has errors — the inspector is paused. Fix the YAML to keep editing fields.
         </p>
@@ -969,7 +969,7 @@ export function StudioInspector({
   const nodeObj = nodeObjectOf(doc, node.pointer);
   if (nodeObj === null) {
     return (
-      <div className="rounded-[3px] border border-line bg-paper p-[8px]">
+      <div className="rounded-[8px] border border-line bg-paper p-[8px]">
         <p className="font-mono text-[11px] text-faint" data-testid="insp-notfound">
           step {nodeId} is not in the parsed document — the canvas and the YAML disagree
         </p>
@@ -1261,14 +1261,14 @@ export function StudioInspector({
               {prevId ? `${kindWord(kind)} · after ${prevId}` : kindWord(kind)}
             </div>
           </div>
-          <Button
+          <SoftButton
             variant="danger"
             compact
             onClick={() => onDelete?.(nodeId)}
             data-testid="insp-delete"
           >
             Delete
-          </Button>
+          </SoftButton>
         </div>
         {/* The e2e suite and screen readers read the kind word from the chip
             — keep it in the DOM, visually superseded by the icon above. */}

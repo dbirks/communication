@@ -103,7 +103,7 @@ export function sandboxChip(args: {
     return {
       state: "verified",
       glyph: "✓",
-      text: "REQUIRED · VERIFIED",
+      text: "sandbox required · verified",
       title:
         (evidence ? `Evidence: ${evidence}. ` : "") +
         "A live worker reports required, verified sandbox enforcement and a recorded probe shows nono required.",
@@ -112,7 +112,7 @@ export function sandboxChip(args: {
   return {
     state: "not-verified",
     glyph: "!",
-    text: "NOT VERIFIED",
+    text: "not verified",
     title: workerHalf
       ? "A worker reports verified enforcement, but no recorded probe covers this launcher's nono requirement."
       : "No live worker reports verified required-enforcement, so this profile has no verified sandbox here.",

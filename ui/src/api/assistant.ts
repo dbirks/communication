@@ -697,22 +697,58 @@ export function mapAssistantMessageList(
 /**
  * The page context a turn runs in (ADR-0050 Decision 6): the route, the
  * project when the route carries one, and the entity when the route is about
- * one — a run workbench (`/runs/:runId`) or a draft (`/workflows/:id/drafts/:draftId`).
- * Kinds outside the ADR's list (pipeline, draft, run, node_template, profile)
- * contribute nothing rather than guessing.
+ * one — a run workbench (`/runs/:runId`), an open draft (`/factory/:id?draft=:draftId`
+ * or legacy `/workflows/:id/drafts/:draftId`), a workflow (`/factory/:id`), a
+ * chat (`/chats/:id`), or an agent profile (`/manage/agents/:id`).
  */
 export function assistantContextOf(pathname: string): AssistantMessageContext {
-  const context: AssistantMessageContext = { route: pathname };
-  const project = /^\/p\/([^/?#]+)/.exec(pathname);
+  const withoutHash = pathname.split("#")[0];
+  const qIdx = withoutHash.indexOf("?");
+  const path = qIdx === -1 ? withoutHash : withoutHash.slice(0, qIdx);
+  const search =
+    qIdx === -1 ? new URLSearchParams() : new URLSearchParams(withoutHash.slice(qIdx + 1));
+
+  const context: AssistantMessageContext = { route: withoutHash };
+  const project = /^\/p\/([^/]+)/.exec(path);
   if (project && project[1].length > 0) context.project_id = decodeURIComponent(project[1]);
-  const run = /^\/runs\/([^/?#]+)/.exec(pathname);
+
+  const run = /^\/runs\/([^/]+)/.exec(path);
   if (run && run[1].length > 0) {
     context.entity = { kind: "run", id: decodeURIComponent(run[1]) };
     return context;
   }
-  const draft = /^\/workflows\/[^/?#]+\/drafts\/([^/?#]+)/.exec(pathname);
-  if (draft && draft[1].length > 0) {
-    context.entity = { kind: "draft", id: decodeURIComponent(draft[1]) };
+
+  const legacyDraft = /^\/(?:workflows|library)\/[^/]+\/drafts\/([^/]+)/.exec(path);
+  if (legacyDraft && legacyDraft[1].length > 0) {
+    context.entity = { kind: "draft", id: decodeURIComponent(legacyDraft[1]) };
+    return context;
+  }
+
+  const factory = /^\/(?:p\/[^/]+\/)?factory\/([^/]+)/.exec(path);
+  if (factory && factory[1].length > 0) {
+    const draftParam = search.get("draft")?.trim();
+    if (draftParam) {
+      context.entity = { kind: "draft", id: draftParam };
+      return context;
+    }
+    const runParam = search.get("run")?.trim();
+    if (runParam) {
+      context.entity = { kind: "run", id: runParam };
+      return context;
+    }
+    context.entity = { kind: "pipeline", id: decodeURIComponent(factory[1]) };
+    return context;
+  }
+
+  const chat = /^\/(?:p\/[^/]+\/)?chats\/([^/]+)/.exec(path);
+  if (chat && chat[1].length > 0 && chat[1] !== "new") {
+    context.entity = { kind: "conversation", id: decodeURIComponent(chat[1]) };
+    return context;
+  }
+
+  const agent = /^\/manage\/agents\/([^/]+)/.exec(path);
+  if (agent && agent[1].length > 0) {
+    context.entity = { kind: "profile", id: decodeURIComponent(agent[1]) };
   }
   return context;
 }

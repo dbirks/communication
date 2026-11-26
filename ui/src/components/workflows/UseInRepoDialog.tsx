@@ -16,7 +16,7 @@
  * Dialog chrome follows `NewWorkflowDialog` (1c): 520px, ink border, hard
  * shadow, `role="dialog"`, Escape closes, focus returns to the opener.
  */
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch } from "../../api/client";
@@ -25,13 +25,11 @@ import { useCreateAssignment, useRevision } from "../../api/pipelines";
 import type { Assignment, AssignmentList, Project } from "../../api/types";
 import { routes } from "../../lib/routes";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
-import { Button } from "../ds/Button";
 import { Field, Input, Select } from "../ds/Field";
+import { Sheet } from "../ds/Sheet";
+import { SoftButton } from "../ds/SoftButton";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import type { UsedInRevision } from "./UsedIn";
-
-const FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export interface UseInRepoDialogProps {
   open: boolean;
@@ -99,33 +97,12 @@ function DialogBody({
   initialProjectId,
   onAssigned,
 }: UseInRepoDialogProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const openerRef = useRef<Element | null>(null);
   const [projectId, setProjectId] = useState(initialProjectId ?? "");
   const [repoId, setRepoId] = useState("");
   /** `true` once the reader picks "whole project" (ADR-0060 null). */
   const [wholeProject, setWholeProject] = useState(false);
   const [maxConcurrentRuns, setMaxConcurrentRuns] = useState(1);
   const [assigned, setAssigned] = useState<{ project: Project; repo: string } | null>(null);
-
-  useEffect(() => {
-    openerRef.current = document.activeElement;
-    containerRef.current?.querySelector<HTMLElement>("input, button, select")?.focus();
-    return () => {
-      const opener = openerRef.current;
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   const projects = useProjects();
   const maintainerProjects = useMemo(
@@ -453,10 +430,10 @@ function DialogBody({
             button), the primary verb last, both pushed to the right edge. */}
         {!nothingToAssign ? (
           <div className="flex justify-end gap-[8px] border-t border-line pt-[10px]">
-            <Button variant="secondary" compact data-testid="assign-cancel" onClick={onClose}>
+            <SoftButton variant="secondary" compact data-testid="assign-cancel" onClick={onClose}>
               Cancel
-            </Button>
-            <Button
+            </SoftButton>
+            <SoftButton
               type="submit"
               variant="primary"
               compact
@@ -464,7 +441,7 @@ function DialogBody({
               data-testid="assign-confirm"
             >
               {create.isPending ? "Using…" : "Confirm"}
-            </Button>
+            </SoftButton>
           </div>
         ) : null}
         {resolvedRevision.isPending && projectId && newestPublished ? (
@@ -495,59 +472,35 @@ function Chrome({
   title: string;
   children: React.ReactNode;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const container = containerRef.current;
-      if (!container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !container.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
-      <div
-        ref={containerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        className="flex max-h-[calc(100vh-8rem)] w-[520px] max-w-full flex-col gap-[14px] overflow-auto rounded-[4px] border border-ink bg-surface p-[16px] shadow-(--shadow-raised)"
-        data-testid="use-in-repo-dialog"
-      >
-        <div className="flex items-baseline justify-between gap-2">
-          <span
-            id={headingId}
-            role="heading"
-            aria-level={2}
-            className="min-w-0 text-[13px] font-bold [overflow-wrap:anywhere]"
-            data-testid="use-in-repo-title"
-          >
-            {title}
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="shrink-0 font-mono text-[10px] text-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          >
-            esc
-          </button>
-        </div>
-        {children}
+    <Sheet
+      onClose={onClose}
+      closeOnBackdrop={false}
+      labelledBy={headingId}
+      testid="use-in-repo-dialog"
+      widthClassName="w-[520px]"
+      panelClassName="flex flex-col gap-[14px] p-[24px] max-md:p-[16px]"
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span
+          id={headingId}
+          role="heading"
+          aria-level={2}
+          className="min-w-0 text-[15px] font-bold [overflow-wrap:anywhere]"
+          data-testid="use-in-repo-title"
+        >
+          {title}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="shrink-0 font-mono text-[10px] text-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        >
+          esc
+        </button>
       </div>
-    </div>
+      {children}
+    </Sheet>
   );
 }

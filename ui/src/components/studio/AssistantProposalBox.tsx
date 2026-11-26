@@ -27,7 +27,7 @@ import {
 } from "../../api/draftProposals";
 import { applyProposal, type ProposalOp } from "../../lib/pipeline/proposalOps";
 import { useAskOpen } from "../assistant/askControl";
-import { Button } from "../ds/Button";
+import { SoftButton } from "../ds/SoftButton";
 import { Textarea } from "../ds/Field";
 
 /** One preview payload: what changed and which nodes to highlight. */
@@ -128,7 +128,7 @@ export function AssistantProposalBox({
           ? // Design 1g: the studio's assistant row is a pinned bottom strip
             // of the inspector column — a top border, no box.
             "overflow-hidden border-t border-line bg-surface"
-          : "overflow-hidden rounded-[3px] border border-line bg-surface"
+          : "overflow-hidden rounded-[10px] border border-line bg-surface"
       }
     >
       {footer && !open ? (
@@ -169,20 +169,20 @@ export function AssistantProposalBox({
                   </p>
                   {previewSummary && <p className="text-faint">{previewSummary}</p>}
                   <div className="flex gap-2">
-                    <Button
+                    <SoftButton
                       variant="primary"
                       data-testid="assistant-proposal-apply"
                       onClick={onApply}
                     >
                       Apply
-                    </Button>
-                    <Button
+                    </SoftButton>
+                    <SoftButton
                       variant="secondary"
                       data-testid="assistant-proposal-discard"
                       onClick={onDiscard}
                     >
                       Discard
-                    </Button>
+                    </SoftButton>
                   </div>
                 </>
               ) : (
@@ -210,7 +210,7 @@ export function AssistantProposalBox({
                       </p>
                     )}
                     <div>
-                      <Button
+                      <SoftButton
                         variant="primary"
                         compact
                         type="submit"
@@ -218,7 +218,7 @@ export function AssistantProposalBox({
                         disabled={!canSubmit}
                       >
                         {submitting ? "Thinking…" : "Propose"}
-                      </Button>
+                      </SoftButton>
                     </div>
                   </form>
                 </>

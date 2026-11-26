@@ -47,7 +47,7 @@ function expectedChip(
   const probeHalf = launcher.capabilities.some(
     (c) => c.capability === "nono_required" && c.result === "observed",
   );
-  return workerHalf && probeHalf ? "REQUIRED · VERIFIED" : "NOT VERIFIED";
+  return workerHalf && probeHalf ? "sandbox required · verified" : "not verified";
 }
 
 /** Harness label as Manage → Agents → ProfilesTable renders it. */

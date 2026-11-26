@@ -111,7 +111,7 @@ export default function ProjectRail({ testid = "project-rail" }: ProjectRailProp
         aria-label="Communication"
         draggable={false}
         data-testid="brand-home"
-        className={`mb-[6px] flex shrink-0 select-none items-center text-ink ${FOCUS_RING} rounded-[3px]`}
+        className={`mb-[6px] flex shrink-0 select-none items-center text-ink ${FOCUS_RING} rounded-[8px]`}
       >
         <Mark size={26} />
       </Link>

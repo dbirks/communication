@@ -220,7 +220,7 @@ var toolRegistry = func() map[string]tool {
 		},
 		func(_ *turn, args map[string]any, _ []map[string]any) []Link {
 			id := args["pipeline_id"].(string)
-			return []Link{{Label: "Open pipeline " + short(id), Href: "/workflows/" + id}}
+			return []Link{{Label: "Open pipeline " + short(id), Href: "/factory/" + id}}
 		})
 
 	// thread.list is the deployed exercise's finding F-2
@@ -231,7 +231,7 @@ var toolRegistry = func() map[string]tool {
 	// conversation list, ADR-0047), so the answer and the page cannot disagree,
 	// and the rows are projected onto the handful of fields a thread answer is
 	// written from. Announced only over a store that answers ThreadListReader.
-	addEx("thread.list", "The caller's agent threads (one-off threads with an agent like Pi, Claude Code or Codex), newest first. Use for 'what did <agent> do', 'what threads are running'. Optional project_id keeps one project, optional since (an RFC 3339 timestamp or a window key: 15m|1h|6h|24h|2d|7d) keeps the recent ones, optional launcher (pi|claude|codex — the launcher an agent profile runs on) keeps one agent's. Each row: id, title, project, agent_profile, launcher, status (running|queued|interrupted|idle|completed), updated_at and its link under /threads/. At most 30 threads.",
+	addEx("thread.list", "The caller's agent threads (one-off threads with an agent like Pi, Claude Code or Codex), newest first. Use for 'what did <agent> do', 'what threads are running'. Optional project_id keeps one project, optional since (an RFC 3339 timestamp or a window key: 15m|1h|6h|24h|2d|7d) keeps the recent ones, optional launcher (pi|claude|codex — the launcher an agent profile runs on) keeps one agent's. Each row: id, title, project, agent_profile, launcher, status (running|queued|interrupted|idle|completed), updated_at and its link under /chats/. At most 30 threads.",
 		map[string]any{
 			"project_id": stringArg("optional project id from project.list; empty reads across the caller's projects"),
 			"since":      stringArg("optional: an RFC 3339 timestamp or one of 15m|1h|6h|24h|2d|7d"),
@@ -890,7 +890,7 @@ func threadLink(id string) string {
 	if id == "" {
 		return ""
 	}
-	return "/threads/" + id
+	return "/chats/" + id
 }
 
 // listThreads answers thread.list. The read is the /threads page's own

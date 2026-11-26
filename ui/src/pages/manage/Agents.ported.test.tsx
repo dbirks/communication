@@ -189,12 +189,12 @@ describe("/manage/agents — the profiles table", () => {
     const claudeRow = await screen.findByTestId(`agent-row-${pinned.id}`);
     // Both halves evidenced (verified worker + observed nono probe): green.
     expect(within(claudeRow).getByTestId(`profile-chip-${pinned.id}`).textContent).toBe(
-      "✓ REQUIRED · VERIFIED",
+      "✓ sandbox required · verified",
     );
     const codexRow = await screen.findByTestId(`agent-row-${codexProfile.id}`);
     // Codex has a verified worker but no nono probe: amber, never green.
     expect(within(codexRow).getByTestId(`profile-chip-${codexProfile.id}`).textContent).toBe(
-      "! NOT VERIFIED",
+      "! not verified",
     );
 
     // The sheet is the redesign's detail: the row's name opens it, and the

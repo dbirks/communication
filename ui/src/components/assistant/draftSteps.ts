@@ -33,16 +33,24 @@ export const OPEN_DRAFT_LINK_LABEL = "Open draft";
  * still redirects to it). The match is on the TARGET, never on the link's
  * label — recognition by wording is what round 13 lost.
  */
-const DRAFT_ROUTE = /^\/(?:workflows|library)\/[^/?#]+\/drafts\/([^/?#]+)/;
+const LEGACY_DRAFT_ROUTE = /^\/(?:workflows|library)\/[^/?#]+\/drafts\/([^/?#]+)/;
+const FACTORY_DRAFT_PATH = /^\/(?:p\/[^/?#]+\/)?factory\/[^/?#]+$/;
 
 /**
- * The draft id a route names (`/workflows/:id/drafts/:draftId`), or `null`
- * when the route names no draft — no such segment at all (the workflow page
- * itself, an older transcript's link), or a segment that decodes to nothing.
+ * The draft id a route names (`/factory/:id?draft=:draftId`,
+ * `/p/:p/factory/:id?draft=:draftId`, or legacy `/workflows/:id/drafts/:draftId`),
+ * or `null` when the route names no draft.
  */
 export function draftRouteOf(route: string): string | null {
-  const match = DRAFT_ROUTE.exec(route);
-  return match !== null && match[1].length > 0 ? decodeURIComponent(match[1]) : null;
+  const legacy = LEGACY_DRAFT_ROUTE.exec(route);
+  if (legacy !== null && legacy[1].length > 0) return decodeURIComponent(legacy[1]);
+  const withoutHash = route.split("#")[0];
+  const qIdx = withoutHash.indexOf("?");
+  if (qIdx === -1) return null;
+  const path = withoutHash.slice(0, qIdx);
+  if (!FACTORY_DRAFT_PATH.test(path)) return null;
+  const draft = new URLSearchParams(withoutHash.slice(qIdx + 1)).get("draft")?.trim();
+  return draft && draft.length > 0 ? draft : null;
 }
 
 /**
@@ -55,7 +63,7 @@ export function draftRouteOf(route: string): string | null {
  */
 export function isDraftLink(link: { label: string; route: string }): boolean {
   return (
-    DRAFT_ROUTE.test(link.route) ||
+    draftRouteOf(link.route) !== null ||
     link.label.trim().toLowerCase() === OPEN_DRAFT_LINK_LABEL.toLowerCase()
   );
 }
@@ -98,17 +106,26 @@ function humanizeSegment(word: string): string {
  * plus a short id; anything else humanises its first segment.
  */
 export function humanRouteLabel(route: string): string {
-  if (DRAFT_ROUTE.test(route)) return OPEN_DRAFT_LINK_LABEL;
-  const parts = route.split("/").filter((part) => part.length > 0);
+  if (draftRouteOf(route) !== null) return OPEN_DRAFT_LINK_LABEL;
+  const [pathOnly] = route.split(/[?#]/);
+  const parts = pathOnly.split("/").filter((part) => part.length > 0);
   if (parts.length === 0) return "Home";
-  const [head, second = ""] = parts;
+  const [head, second = "", third = ""] = parts;
   const withId = (word: string, id: string): string =>
     id.length > 0 ? `${word} ${shortId(decodeURIComponent(id))}` : `${word} page`;
   switch (head) {
+    case "factory":
+      return second.length > 0 ? withId("Factory", second) : "Factory";
+    case "chats":
+      return second.length > 0 ? withId("Chat", second) : "Chats";
+    case "manage":
+      return second.length > 0 ? `Manage · ${humanizeSegment(second)}` : "Manage";
     case "workflows":
     case "library":
       return withId("Workflow", second);
     case "p":
+      if (third === "factory") return parts[3] ? withId("Factory", parts[3]) : "Factory";
+      if (third === "chats") return parts[3] ? withId("Chat", parts[3]) : "Chats";
       return withId("Project", second);
     case "runs":
       return withId("Run", second);
@@ -125,10 +142,11 @@ export function humanRouteLabel(route: string): string {
     case "settings":
       return second.length > 0 ? `Settings · ${humanizeSegment(second)}` : "Settings";
     /* Finding 03: Inbox and Board left the nav — `/inbox` and `/board` only
-       redirect to Today, so the chip names where the reader actually lands. */
+       redirect to Home, so the chip names where the reader actually lands. */
     case "inbox":
     case "board":
-      return "Today";
+    case "catch-up":
+      return "Home";
     case "login":
       return "Sign in";
   }

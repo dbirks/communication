@@ -38,7 +38,7 @@
  * `agents-new-launcher-select`, `agents-new-submit`, `agents-new-problem`)
  * travel into this dialog so the existing suites keep finding them.
  */
-import { useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   queryKeys,
@@ -53,8 +53,9 @@ import { ENFORCEMENT_COPY } from "../../api/sandbox";
 import type { AgentProfile, SystemSandbox } from "../../api/types";
 import { hasVerifiedWorker, launcherEntry, sandboxChip, type Launcher } from "../../lib/profiles";
 import { Alert } from "../ds/Alert";
-import { Button } from "../ds/Button";
 import { Field, Input, Select } from "../ds/Field";
+import { Sheet } from "../ds/Sheet";
+import { SoftButton } from "../ds/SoftButton";
 import { FormError, Spinner } from "../Feedback";
 
 export interface NewProfileDialogProps {
@@ -63,9 +64,6 @@ export interface NewProfileDialogProps {
   onCreated: (profile: { id: string; name: string; launcher_id: string }) => void;
   forStep?: string;
 }
-
-const FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface CoreAgent {
   id: string;
@@ -182,8 +180,6 @@ function DialogBody({
   onCreated: (profile: { id: string; name: string; launcher_id: string }) => void;
   forStep?: string;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const openerRef = useRef<Element | null>(null);
   const queryClient = useQueryClient();
 
   const profiles = useAgentProfiles();
@@ -241,45 +237,6 @@ function DialogBody({
   // clear. The digest alone, or a half pin, is refused by the backend.
   const apmPinComplete = apmRefFilled && apmTargetFilled;
   const apmPartial = !apmPinComplete && (apmRefFilled || apmTargetFilled || apmDigestFilled);
-
-  // Focus trap + escape, the accessible-modal contract (see
-  // NewConversationDialog for the same pattern).
-  useLayoutEffect(() => {
-    openerRef.current = document.activeElement;
-    const first = containerRef.current?.querySelector<HTMLElement>(FOCUSABLE);
-    first?.focus();
-    return () => {
-      const opener = openerRef.current;
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  useLayoutEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const container = containerRef.current;
-      if (!container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !container.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   const secret = (secrets.data?.secrets ?? []).find((entry) => entry.id === secretId) ?? null;
 
@@ -372,9 +329,9 @@ function DialogBody({
             ? "no launcher entry for this id — creating a profile for it would fail at launch"
             : undefined
         }
-        className={`flex items-start gap-[8px] rounded-[3px] border p-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent ${
+        className={`flex items-start gap-[8px] rounded-[10px] border p-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent ${
           info.registered ? "cursor-pointer" : "cursor-not-allowed opacity-70"
-        } ${selected ? "border-ink" : "border-line-strong"}`}
+        } ${selected ? "border-accent bg-accent-wash" : "border-line"}`}
       >
         <input
           type="radio"
@@ -387,7 +344,7 @@ function DialogBody({
         />
         <span
           aria-hidden="true"
-          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[3px] border border-line-strong bg-fill font-mono text-[11px] font-bold"
+          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[8px] border border-line bg-fill font-mono text-[11px] font-bold"
         >
           {agent.tile}
         </span>
@@ -418,73 +375,72 @@ function DialogBody({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
-      <div
-        ref={containerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="new-profile-dialog-title"
-        data-testid="new-profile-dialog"
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-[720px] overflow-y-auto rounded-[3px] border border-line-strong bg-surface p-4 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
-      >
-        <header className="space-y-0.5">
-          <h2 id="new-profile-dialog-title" className="text-[15px] font-bold text-ink">
-            New agent profile
-          </h2>
-          {forStep ? (
-            <p data-testid="new-profile-step" className="text-[12.5px] text-muted">
-              for step <span className="font-mono">{forStep}</span>
-            </p>
-          ) : null}
-        </header>
+    <Sheet
+      onClose={onClose}
+      closeOnBackdrop={false}
+      labelledBy="new-profile-dialog-title"
+      testid="new-profile-dialog"
+      widthClassName="w-[720px]"
+    >
+      <header className="space-y-0.5">
+        <h2 id="new-profile-dialog-title" className="text-[16px] font-bold text-ink">
+          New agent profile
+        </h2>
+        {forStep ? (
+          <p data-testid="new-profile-step" className="text-[12.5px] text-muted">
+            for step <span className="font-mono">{forStep}</span>
+          </p>
+        ) : null}
+      </header>
 
-        <form
-          onSubmit={(event) => void submit(event)}
-          data-testid="agents-new-form"
-          className="mt-3 space-y-4"
-        >
-          {/* AGENT — five cards, readiness from recorded evidence only. */}
-          <section className="space-y-1.5">
-            {sectionLabel("Agent", "new-profile-agent-label")}
-            <div role="radiogroup" aria-label="Agent" className="grid gap-2 sm:grid-cols-2">
-              {CORE_AGENTS.map(card)}
-              <label
-                data-testid="new-profile-card-other"
-                className={`flex items-start gap-[8px] rounded-[3px] border p-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent sm:col-span-2 ${
-                  otherInfo.registered ? "cursor-pointer" : "cursor-not-allowed opacity-70"
-                } ${otherSelected ? "border-ink" : "border-line-strong"}`}
+      <form
+        onSubmit={(event) => void submit(event)}
+        data-testid="agents-new-form"
+        className="mt-3 space-y-4"
+      >
+        {/* AGENT — five cards, readiness from recorded evidence only. */}
+        <section className="space-y-1.5">
+          {sectionLabel("Agent", "new-profile-agent-label")}
+          <div role="radiogroup" aria-label="Agent" className="grid gap-2 sm:grid-cols-2">
+            {CORE_AGENTS.map(card)}
+            <label
+              data-testid="new-profile-card-other"
+              className={`flex items-start gap-[8px] rounded-[10px] border p-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent sm:col-span-2 ${
+                otherInfo.registered ? "cursor-pointer" : "cursor-not-allowed opacity-70"
+              } ${otherSelected ? "border-accent bg-accent-wash" : "border-line"}`}
+            >
+              <input
+                type="radio"
+                name="new-profile-agent"
+                value={OTHER}
+                checked={otherSelected}
+                disabled={!otherInfo.registered}
+                onChange={() => setAgentId(OTHER)}
+                className="mt-[7px] h-3.5 w-3.5 shrink-0"
+              />
+              <span
+                aria-hidden="true"
+                className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[8px] border border-line bg-fill font-mono text-[15px] font-bold"
               >
-                <input
-                  type="radio"
-                  name="new-profile-agent"
-                  value={OTHER}
-                  checked={otherSelected}
-                  disabled={!otherInfo.registered}
-                  onChange={() => setAgentId(OTHER)}
-                  className="mt-[7px] h-3.5 w-3.5 shrink-0"
-                />
-                <span
-                  aria-hidden="true"
-                  className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[3px] border border-line-strong bg-fill font-mono text-[15px] font-bold"
-                >
-                  +
+                +
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold text-ink">Other ACP agent</span>
+                <span className="block font-mono text-[10.5px] text-muted">
+                  any registered launcher
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-semibold text-ink">Other ACP agent</span>
-                  <span className="block font-mono text-[10.5px] text-muted">
-                    any registered launcher
-                  </span>
-                  <span className={`block font-mono text-[11px] ${toneClass[otherInfo.tone]}`}>
-                    {otherInfo.text}
-                  </span>
+                <span className={`block font-mono text-[11px] ${toneClass[otherInfo.tone]}`}>
+                  {otherInfo.text}
                 </span>
+              </span>
+              <span className="w-[180px] max-w-full shrink-0 self-center">
                 <Select
                   id="agents-new-launcher"
                   aria-label="Other launcher"
                   value={effectiveOther}
                   onChange={(event) => setOtherId(event.target.value)}
                   disabled={!otherInfo.registered}
-                  className="w-auto self-center font-mono text-[11.5px]"
+                  className="font-mono text-[11.5px]"
                   data-testid="agents-new-launcher-select"
                 >
                   {otherOptions.length === 0 ? (
@@ -497,186 +453,186 @@ function DialogBody({
                     ))
                   )}
                 </Select>
-              </label>
-            </div>
-          </section>
+              </span>
+            </label>
+          </div>
+        </section>
 
-          {/* ACCOUNT — a project secret by slug; the value is never shown. */}
-          <section className="space-y-1.5">
-            {sectionLabel("Account", "new-profile-account-label")}
-            {projects.isPending ? <Spinner label="Loading your projects" /> : null}
-            {projects.isError ? (
-              <p className="font-mono text-[11px] text-st-waiting-tag-fg">
-                ! your projects could not be read — no account can be chosen yet
-              </p>
-            ) : projectItems.length === 0 ? (
-              <p className="text-[12px] text-muted">
-                No account — you are a member of no project yet.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {projectItems.length > 1 ? (
-                  <Select
-                    id="new-profile-project"
-                    aria-label="Project"
-                    value={projectId}
-                    onChange={(event) => {
-                      setProjectChoice(event.target.value);
-                      setSecretId("");
-                    }}
-                    className="w-auto font-mono text-[12px]"
-                    data-testid="new-profile-project-select"
-                  >
-                    {projectItems.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
+        {/* ACCOUNT — a project secret by slug; the value is never shown. */}
+        <section className="space-y-1.5">
+          {sectionLabel("Account", "new-profile-account-label")}
+          {projects.isPending ? <Spinner label="Loading your projects" /> : null}
+          {projects.isError ? (
+            <p className="font-mono text-[11px] text-st-waiting-tag-fg">
+              ! your projects could not be read — no account can be chosen yet
+            </p>
+          ) : projectItems.length === 0 ? (
+            <p className="text-[12px] text-muted">
+              No account — you are a member of no project yet.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {projectItems.length > 1 ? (
+                <Select
+                  id="new-profile-project"
+                  aria-label="Project"
+                  value={projectId}
+                  onChange={(event) => {
+                    setProjectChoice(event.target.value);
+                    setSecretId("");
+                  }}
+                  className="w-auto font-mono text-[12px]"
+                  data-testid="new-profile-project-select"
+                >
+                  {projectItems.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </Select>
+              ) : null}
+              {secrets.isPending && projectId !== "" ? (
+                <Spinner label="Loading project secrets" />
+              ) : secrets.isError ? (
+                <p className="font-mono text-[11px] text-st-waiting-tag-fg">
+                  ! the project's secrets could not be read
+                </p>
+              ) : (
+                <Select
+                  id="new-profile-secret"
+                  aria-label="Account secret"
+                  value={secretId}
+                  onChange={(event) => setSecretId(event.target.value)}
+                  className="w-auto font-mono text-[12px]"
+                  data-testid="new-profile-secret-select"
+                >
+                  <option value="">No account</option>
+                  {(secrets.data?.secrets ?? [])
+                    .filter((entry) => entry.revoked_at == null)
+                    .map((entry) => (
+                      <option key={entry.id} value={entry.id}>
+                        {entry.slug}
                       </option>
                     ))}
-                  </Select>
-                ) : null}
-                {secrets.isPending && projectId !== "" ? (
-                  <Spinner label="Loading project secrets" />
-                ) : secrets.isError ? (
-                  <p className="font-mono text-[11px] text-st-waiting-tag-fg">
-                    ! the project's secrets could not be read
-                  </p>
-                ) : (
-                  <Select
-                    id="new-profile-secret"
-                    aria-label="Account secret"
-                    value={secretId}
-                    onChange={(event) => setSecretId(event.target.value)}
-                    className="w-auto font-mono text-[12px]"
-                    data-testid="new-profile-secret-select"
-                  >
-                    <option value="">No account</option>
-                    {(secrets.data?.secrets ?? [])
-                      .filter((entry) => entry.revoked_at == null)
-                      .map((entry) => (
-                        <option key={entry.id} value={entry.id}>
-                          {entry.slug}
-                        </option>
-                      ))}
-                  </Select>
-                )}
-                <p className="text-[11.5px] text-muted">
-                  value never shown · granting adds the secret's allowlist entry after create
-                </p>
-                <p className="text-[11.5px] text-muted">
-                  A GitHub token here lets the agent push and open PRs.
-                </p>
-              </div>
-            )}
-          </section>
+                </Select>
+              )}
+              <p className="text-[11.5px] text-muted">
+                value never shown · granting adds the secret's allowlist entry after create
+              </p>
+              <p className="text-[11.5px] text-muted">
+                A GitHub token here lets the agent push and open PRs.
+              </p>
+            </div>
+          )}
+        </section>
 
-          {/* NAME */}
-          <section className="space-y-1.5">
-            <Field
+        {/* NAME */}
+        <section className="space-y-1.5">
+          <Field
+            id="agents-new-name"
+            label="Name"
+            hint={`suggested from agent${forStep ? " + step" : ""}; unique in the organization`}
+            className="max-w-[24rem]"
+          >
+            <Input
               id="agents-new-name"
-              label="Name"
-              hint={`suggested from agent${forStep ? " + step" : ""}; unique in the organization`}
-              className="max-w-[24rem]"
-            >
+              value={nameValue}
+              onChange={(event) => {
+                setNameTouched(true);
+                setName(event.target.value);
+              }}
+              data-testid="agents-new-name-input"
+            />
+          </Field>
+        </section>
+
+        {/* SKILLS · OPTIONAL APM PACKAGE */}
+        <section className="space-y-1.5">
+          {sectionLabel("Skills · optional APM package", "new-profile-apm-label")}
+          <div className="flex flex-wrap items-end gap-2">
+            <Field id="new-profile-apm-ref" label="ref" className="w-[16rem] flex-1">
               <Input
-                id="agents-new-name"
-                value={nameValue}
-                onChange={(event) => {
-                  setNameTouched(true);
-                  setName(event.target.value);
-                }}
-                data-testid="agents-new-name-input"
+                id="new-profile-apm-ref"
+                value={apmRef}
+                onChange={(event) => setApmRef(event.target.value)}
+                placeholder="mattpocock/skills#v1.3.1"
+                className="font-mono text-[12px]"
+                data-testid="new-profile-apm-ref"
               />
             </Field>
-          </section>
-
-          {/* SKILLS · OPTIONAL APM PACKAGE */}
-          <section className="space-y-1.5">
-            {sectionLabel("Skills · optional APM package", "new-profile-apm-label")}
-            <div className="flex flex-wrap items-end gap-2">
-              <Field id="new-profile-apm-ref" label="ref" className="w-[16rem] flex-1">
-                <Input
-                  id="new-profile-apm-ref"
-                  value={apmRef}
-                  onChange={(event) => setApmRef(event.target.value)}
-                  placeholder="mattpocock/skills#v1.3.1"
-                  className="font-mono text-[12px]"
-                  data-testid="new-profile-apm-ref"
-                />
-              </Field>
-              <Field id="new-profile-apm-target" label="target" className="w-[8rem]">
-                <Select
-                  id="new-profile-apm-target"
-                  value={apmTarget}
-                  onChange={(event) => setApmTarget(event.target.value)}
-                  className="font-mono text-[12px]"
-                  data-testid="new-profile-apm-target"
-                >
-                  <option value="">—</option>
-                  <option value="claude">claude</option>
-                  <option value="codex">codex</option>
-                </Select>
-              </Field>
-              <Field id="new-profile-apm-digest" label="lock digest" className="w-[18rem] flex-1">
-                <Input
-                  id="new-profile-apm-digest"
-                  value={apmDigest}
-                  onChange={(event) => setApmDigest(event.target.value)}
-                  placeholder="sha256:…"
-                  className="font-mono text-[12px]"
-                  data-testid="new-profile-apm-digest"
-                />
-              </Field>
-            </div>
-            {apmRefFilled && apmTargetFilled && !apmDigestFilled ? (
-              <p className="font-mono text-[11px] text-muted" data-testid="new-profile-lock">
-                · unlocked pin — Lock it from the profile page to record the lock digest
-              </p>
-            ) : null}
-            {apmPartial ? (
-              <p className="font-mono text-[11px] text-st-waiting-tag-fg" role="alert">
-                ! a pin needs the ref and target (the digest is optional) — fill both or leave all
-                empty
-              </p>
-            ) : null}
-          </section>
-
-          {/* Defaults — only claims that hold for profiles today. */}
-          <Alert state="done" barTone="pale" testid="new-profile-defaults">
-            <span className="font-mono text-[12px]" data-testid="new-profile-defaults-line">
-              {neverAsks
-                ? "autonomous · sandbox: required"
-                : `permission ask · sandbox: ${sandboxWord(sandbox.data ?? null)}`}
-            </span>
-          </Alert>
-          {neverAsks ? (
-            <p className="text-[12px] text-muted" data-testid="new-profile-autonomous">
-              {neverAsksName} never asks before acting, so it runs as "autonomous within the
-              sandbox": nono is the boundary.
+            <Field id="new-profile-apm-target" label="target" className="w-[8rem]">
+              <Select
+                id="new-profile-apm-target"
+                value={apmTarget}
+                onChange={(event) => setApmTarget(event.target.value)}
+                className="font-mono text-[12px]"
+                data-testid="new-profile-apm-target"
+              >
+                <option value="">—</option>
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+              </Select>
+            </Field>
+            <Field id="new-profile-apm-digest" label="lock digest" className="w-[18rem] flex-1">
+              <Input
+                id="new-profile-apm-digest"
+                value={apmDigest}
+                onChange={(event) => setApmDigest(event.target.value)}
+                placeholder="sha256:…"
+                className="font-mono text-[12px]"
+                data-testid="new-profile-apm-digest"
+              />
+            </Field>
+          </div>
+          {apmRefFilled && apmTargetFilled && !apmDigestFilled ? (
+            <p className="font-mono text-[11px] text-muted" data-testid="new-profile-lock">
+              · unlocked pin — Lock it from the profile page to record the lock digest
             </p>
           ) : null}
+          {apmPartial ? (
+            <p className="font-mono text-[11px] text-st-waiting-tag-fg" role="alert">
+              ! a pin needs the ref and target (the digest is optional) — fill both or leave all
+              empty
+            </p>
+          ) : null}
+        </section>
 
-          {submitError ? <FormError error={submitError} testid="agents-new-problem" /> : null}
+        {/* Defaults — only claims that hold for profiles today. */}
+        <Alert state="done" barTone="pale" testid="new-profile-defaults">
+          <span className="font-mono text-[12px]" data-testid="new-profile-defaults-line">
+            {neverAsks
+              ? "autonomous · sandbox: required"
+              : `permission ask · sandbox: ${sandboxWord(sandbox.data ?? null)}`}
+          </span>
+        </Alert>
+        {neverAsks ? (
+          <p className="text-[12px] text-muted" data-testid="new-profile-autonomous">
+            {neverAsksName} never asks before acting, so it runs as "autonomous within the sandbox":
+            nono is the boundary.
+          </p>
+        ) : null}
 
-          <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              data-testid="new-profile-cancel"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={!canSubmit}
-              data-testid="agents-new-submit"
-            >
-              {busy ? "Creating…" : forStep ? `Create and use in ${forStep}` : "Create profile"}
-            </Button>
-          </footer>
-        </form>
-      </div>
-    </div>
+        {submitError ? <FormError error={submitError} testid="agents-new-problem" /> : null}
+
+        <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
+          <SoftButton
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            data-testid="new-profile-cancel"
+          >
+            Cancel
+          </SoftButton>
+          <SoftButton
+            type="submit"
+            variant="primary"
+            disabled={!canSubmit}
+            data-testid="agents-new-submit"
+          >
+            {busy ? "Creating…" : forStep ? `Create and use in ${forStep}` : "Create profile"}
+          </SoftButton>
+        </footer>
+      </form>
+    </Sheet>
   );
 }

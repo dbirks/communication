@@ -21,7 +21,7 @@ import {
 } from "../../../api/agentAccounts";
 import { ApiError, problemOf } from "../../../api/client";
 import { Alert } from "../../../components/ds/Alert";
-import { Button } from "../../../components/ds/Button";
+import { SoftButton } from "../../../components/ds/SoftButton";
 import AgentLoginDialog, {
   type AgentLoginDialogTarget,
 } from "../../../components/settings/AgentLoginDialog";
@@ -63,12 +63,10 @@ export default function AccountsStrip() {
 
   const items = accounts.data?.items ?? [];
   const harnesses = [
-    ...HARNESS_ORDER.filter((harness) => items.some((item) => item.launcher === harness)),
+    ...HARNESS_ORDER,
     ...Array.from(new Set(items.map((item) => item.launcher)))
       .filter((harness) => !(HARNESS_ORDER as readonly string[]).includes(harness))
       .sort(),
-    // Harnesses with no items yet still render: the strip is a fixed trio.
-    ...HARNESS_ORDER.filter((harness) => !items.some((item) => item.launcher === harness)),
   ];
 
   return (
@@ -224,19 +222,23 @@ function HarnessRow({
         )}
       </span>
       <span className="flex shrink-0 items-center gap-2">
-        {items.map((item) => (
-          <Button
-            key={`${item.launcher}/${item.worker_id}`}
-            variant={
-              item.login !== null && isAgentLoginActive(item.login.status) ? "primary" : "secondary"
-            }
-            data-testid="agent-account-signin"
-            onClick={() => onSignIn(item)}
-            disabled={busy}
-          >
-            {buttonLabel(item)}
-          </Button>
-        ))}
+        {items.map((item) => {
+          const needsAccent =
+            item.state === "signed_out" ||
+            (item.login !== null && isAgentLoginActive(item.login.status));
+          return (
+            <SoftButton
+              key={`${item.launcher}/${item.worker_id}`}
+              size="sm"
+              variant={needsAccent ? "primary" : "secondary"}
+              data-testid="agent-account-signin"
+              onClick={() => onSignIn(item)}
+              disabled={busy}
+            >
+              {buttonLabel(item)}
+            </SoftButton>
+          );
+        })}
       </span>
     </li>
   );

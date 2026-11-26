@@ -96,7 +96,7 @@ describe("sandboxChip", () => {
       sandbox: verifiedSandbox,
     });
     expect(green.state).toBe("verified");
-    expect(green.text).toBe("REQUIRED · VERIFIED");
+    expect(green.text).toBe("sandbox required · verified");
     expect(green.glyph).toBe("✓");
   });
 
@@ -111,7 +111,7 @@ describe("sandboxChip", () => {
       },
     });
     expect(chip.state).toBe("not-verified");
-    expect(chip.text).toBe("NOT VERIFIED");
+    expect(chip.text).toBe("not verified");
   });
 
   it("stays amber when the probe half is missing", () => {

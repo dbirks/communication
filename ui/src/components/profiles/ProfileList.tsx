@@ -27,7 +27,7 @@ const CHIP_CLASS: Record<SandboxChip["state"], string> = {
 export function Chip({ chip, testid }: { chip: SandboxChip; testid?: string }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1.5 font-mono text-[10px] leading-[1.5] ${CHIP_CLASS[chip.state]}`}
+      className={`inline-flex shrink-0 items-center gap-1 rounded-[6px] px-1.5 font-mono text-[10px] leading-[1.5] ${CHIP_CLASS[chip.state]}`}
       title={chip.title}
       data-testid={testid}
       role="status"

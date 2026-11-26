@@ -264,18 +264,18 @@ func setupLink(r *ConversationRunner, name string, args map[string]string, paylo
 	var link Link
 	switch name {
 	case "credential.list":
-		link = Link{Label: "Open Settings", Href: "/settings/layout"}
+		link = Link{Label: "Open Secrets", Href: "/manage/secrets"}
 	case "profile.list":
-		link = Link{Label: "Open Agents", Href: "/profiles"}
+		link = Link{Label: "Open Agents", Href: "/manage/agents"}
 	case "workflow.list":
-		link = Link{Label: "Open Workflows", Href: "/workflows"}
+		link = Link{Label: "Open Factory", Href: "/factory"}
 	case "workflow.inspect":
 		if id := strings.TrimSpace(args["pipeline_id"]); id != "" {
-			link = Link{Label: "Open workflow " + short(id), Href: "/workflows/" + id}
+			link = Link{Label: "Open workflow " + short(id), Href: "/factory/" + id}
 		}
 	case "schedule.list":
 		if pid := strings.TrimSpace(args["project_id"]); pid != "" {
-			link = Link{Label: "Open project workflows", Href: "/p/" + pid + "/workflows"}
+			link = Link{Label: "Open project Factory", Href: "/p/" + pid + "/factory"}
 		}
 	default:
 		return Link{}, false

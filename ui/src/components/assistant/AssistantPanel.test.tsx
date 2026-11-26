@@ -254,7 +254,7 @@ describe("AssistantPanel (popover)", () => {
     // The composer's send names what came with the ask (CONTRACT §2/§4).
     expect(onSend).toHaveBeenCalledWith("add a reviewer", {
       spoken: false,
-      context: { route: "/", page: { label: "Today" } },
+      context: { route: "/", page: { label: "Home" } },
     });
     expect((input as HTMLInputElement).value).toBe("");
     expect((screen.getByTestId("assistant-send") as HTMLButtonElement).disabled).toBe(true);

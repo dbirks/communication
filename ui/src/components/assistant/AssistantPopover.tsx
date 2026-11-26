@@ -104,7 +104,7 @@ import type {
   AssistantMessageContext,
   TrustLevel,
 } from "./types";
-import { pageContextFor, pageContextPayload, readPageContextOn } from "./pageContext";
+import { pageContextFor, pageContextPayload, pageLabelOf, readPageContextOn } from "./pageContext";
 
 /**
  * The PREFIX every threads read lives under (`assistantQueryKeys.conversations`
@@ -266,13 +266,23 @@ function pageLabelRouteOf(pathname: string): { label: string; route: string } {
 /** The composer chip label: the page section, or the entity when the page is
  * about one (`run <short id>`, `draft <short id>` — the shots' wording). */
 function contextLabelOf(pathname: string): string {
-  const run = /^\/runs\/([^/?#]+)/.exec(pathname);
+  const withoutHash = pathname.split("#")[0];
+  const qIdx = withoutHash.indexOf("?");
+  const path = qIdx === -1 ? withoutHash : withoutHash.slice(0, qIdx);
+  const search =
+    qIdx === -1 ? new URLSearchParams() : new URLSearchParams(withoutHash.slice(qIdx + 1));
+
+  const run = /^\/runs\/([^/]+)/.exec(path);
   if (run) return `run ${shortId(decodeURIComponent(run[1]))}`;
-  const draft = /^\/workflows\/[^/?#]+\/drafts\/([^/?#]+)/.exec(pathname);
-  if (draft) return `draft ${shortId(decodeURIComponent(draft[1]))}`;
-  const project = /^\/p\/[^/?#]+\/?([^/?#]*)/.exec(pathname);
-  if (project) return project[1] || "projects";
-  return sectionOf(pathname);
+  const legacyDraft = /^\/(?:workflows|library)\/[^/]+\/drafts\/([^/]+)/.exec(path);
+  if (legacyDraft) return `draft ${shortId(decodeURIComponent(legacyDraft[1]))}`;
+  if (/^\/(?:p\/[^/]+\/)?factory\/[^/]+$/.test(path)) {
+    const draftParam = search.get("draft")?.trim();
+    if (draftParam) return `draft ${shortId(draftParam)}`;
+    const runParam = search.get("run")?.trim();
+    if (runParam) return `run ${shortId(runParam)}`;
+  }
+  return pageLabelOf(pathname) || sectionOf(path);
 }
 
 /**
@@ -612,7 +622,8 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * route is what the page context (and the header's chip) names, exactly as
    * the full page's "Looking at" column shows it.
    */
-  const askRoute = pageReturnRoute ?? location.pathname;
+  const currentRoute = `${location.pathname}${location.search}`;
+  const askRoute = pageReturnRoute ?? currentRoute;
 
   /** Issue #63: drop failed optimistic rows from an earlier attempt — they
    * are not server rows (a failed turn stores nothing), and a fresh
@@ -654,7 +665,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       // names the route alone, exactly as it always did. On the full page the
       // route the composer read is `/assistant`; the context the person means
       // is the page the ask came from, so that route is what travels.
-      const pageRoute = mode === "page" ? askRoute : location.pathname;
+      const pageRoute = mode === "page" ? askRoute : `${location.pathname}${location.search}`;
       let context: AssistantMessageContext | undefined =
         options === undefined
           ? assistantContextOf(pageRoute)
@@ -745,6 +756,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       mode,
       post,
       location.pathname,
+      location.search,
       performNavigation,
       retireFailedAsks,
     ],
@@ -804,10 +816,12 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       navigate(pageReturnRoute ?? "/");
       return;
     }
-    if (location.pathname !== ASSISTANT_PAGE_ROUTE) setPageReturnRoute(location.pathname);
+    if (location.pathname !== ASSISTANT_PAGE_ROUTE) {
+      setPageReturnRoute(`${location.pathname}${location.search}`);
+    }
     navigate(ASSISTANT_PAGE_ROUTE);
     setMode("page");
-  }, [location.pathname, mode, navigate, pageReturnRoute]);
+  }, [location.pathname, location.search, mode, navigate, pageReturnRoute]);
 
   // ⌘J is Ask (finding 08, which supersedes ADR-0050's ⌘K toggle: ⌘K belongs to
   // the jump palette and nothing opens the assistant from it). The listener runs

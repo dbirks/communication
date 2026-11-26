@@ -74,7 +74,7 @@ export default function ProfilesTable({ profiles, launchers, sandbox }: Profiles
                   <Link
                     to={routes.manage("agents", profile.id)}
                     data-testid={`agent-name-${profile.id}`}
-                    className="font-semibold text-ink underline underline-offset-2 hover:text-accent-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    className="font-semibold text-ink no-underline underline-offset-2 hover:text-accent-text hover:underline focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                   >
                     {profile.name}
                   </Link>

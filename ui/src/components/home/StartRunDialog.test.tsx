@@ -82,4 +82,92 @@ describe("StartRunDialog", () => {
     fireEvent.click(screen.getByTestId("new-run-cancel"));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2));
   });
+
+  it("keeps the chosen workflow across typed and freeform revisions and gives the wrapper fixed dimensions", async () => {
+    const TYPED_REV_ID = "01987b21-1111-7000-8000-abcdef012345";
+    const FREEFORM_REV_ID = "01987b21-2222-7000-8000-abcdef012345";
+    const TYPED_ASSIGN_ID = "01987b22-1111-7000-8000-abcdef012345";
+    const FREEFORM_ASSIGN_ID = "01987b22-2222-7000-8000-abcdef012345";
+
+    const routes: RouteStub[] = [
+      { path: "/api/v1/projects", body: projectList },
+      {
+        path: `/api/v1/projects/${wireProjectId}/assignments`,
+        body: {
+          assignments: [
+            {
+              ...wireAssignmentList.assignments[0],
+              id: TYPED_ASSIGN_ID,
+              pipeline_id: wirePipelineList.pipelines[0].id,
+              pinned_revision_id: TYPED_REV_ID,
+            },
+            {
+              ...wireAssignmentList.assignments[0],
+              id: FREEFORM_ASSIGN_ID,
+              pipeline_id: wirePipelineList.pipelines[1].id,
+              pinned_revision_id: FREEFORM_REV_ID,
+            },
+          ],
+        },
+      },
+      { path: "/api/v1/pipelines", body: wirePipelineList },
+      { path: `/api/v1/projects/${wireProjectId}/repos`, body: { items: [] } },
+      {
+        path: `/api/v1/revisions/${TYPED_REV_ID}`,
+        body: {
+          ...wireRevision,
+          id: TYPED_REV_ID,
+          input_specs: [{ name: "topic", type: "text", label: "Topic", required: true }],
+          canonical_document: {
+            kind: "Pipeline",
+            spec: {
+              inputs: { type: "object", properties: { topic: { type: "string" } } },
+              nodes: [{ id: "step1", kind: "agent.acp" }],
+            },
+          },
+        },
+      },
+      {
+        path: `/api/v1/revisions/${FREEFORM_REV_ID}`,
+        body: {
+          ...wireRevision,
+          id: FREEFORM_REV_ID,
+          canonical_document: {
+            kind: "Pipeline",
+            spec: {
+              inputs: { type: "object", properties: { notes: { type: "string" } } },
+              nodes: [{ id: "step1", kind: "agent.acp" }],
+            },
+          },
+        },
+      },
+    ];
+
+    render(<StartRunDialog onClose={() => {}} />, { wrapper: harness(routes) });
+    const wrapper = screen.getByTestId("home-start-run-dialog");
+    expect(wrapper.className).toContain("fixed");
+    expect(wrapper.className).toContain("inset-0");
+
+    // Starts on the typed workflow (first assignment).
+    const typedSelect = (await screen.findByTestId(
+      "new-run-assignment",
+      {},
+      { timeout: 400 },
+    )) as HTMLSelectElement;
+    expect(typedSelect.value).toBe(TYPED_ASSIGN_ID);
+    expect(await screen.findByTestId("new-run-input-topic", {}, { timeout: 400 })).toBeTruthy();
+
+    // Switch to the freeform workflow: selection stays on FREEFORM_ASSIGN_ID and does not reset!
+    fireEvent.change(typedSelect, { target: { value: FREEFORM_ASSIGN_ID } });
+    expect(await screen.findByTestId("new-run-input-notes", {}, { timeout: 400 })).toBeTruthy();
+    const freeformSelect = screen.getByTestId("new-run-assignment") as HTMLSelectElement;
+    expect(freeformSelect.value).toBe(FREEFORM_ASSIGN_ID);
+
+    // Switch back to typed: selection stays on TYPED_ASSIGN_ID.
+    fireEvent.change(freeformSelect, { target: { value: TYPED_ASSIGN_ID } });
+    expect(await screen.findByTestId("new-run-input-topic", {}, { timeout: 400 })).toBeTruthy();
+    expect((screen.getByTestId("new-run-assignment") as HTMLSelectElement).value).toBe(
+      TYPED_ASSIGN_ID,
+    );
+  });
 });

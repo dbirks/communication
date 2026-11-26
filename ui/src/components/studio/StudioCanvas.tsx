@@ -2364,7 +2364,7 @@ function CanvasInner({
               : "always top to bottom · lines leave the bottom and enter the top"}
         </span>
         <div
-          className="flex shrink-0 self-end overflow-hidden rounded-[3px] border border-line-strong bg-surface max-[560px]:self-auto"
+          className="flex shrink-0 self-end overflow-hidden rounded-[8px] border border-line bg-surface shadow-[var(--shadow-pill)] max-[560px]:self-auto"
           data-testid="canvas-controls"
         >
           <button

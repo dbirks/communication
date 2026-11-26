@@ -16,7 +16,6 @@ import AssistantPopover, {
 } from "./AssistantPopover";
 import { openAsk } from "./askControl";
 import AssistantPage from "../../pages/AssistantPage";
-import { sectionOf } from "../Shell";
 
 const CONV = "conv-1";
 /** m5-assistant.spec.ts's verbatim ask (the e2e replica below posts it). */
@@ -1462,8 +1461,8 @@ describe("a mount that names its own ask context (T16)", () => {
     act(() => openAsk());
     await screen.findByTestId("quick-chat");
     expect(stub.posted).toHaveLength(0);
-    // With nothing named, the chip stays what it always was: the page section.
-    expect(screen.getByTestId("assistant-context-chip").textContent).toBe(sectionOf("/"));
+    // With nothing named, the chip stays what it always was: the page label.
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("Home");
   });
 });
 
@@ -1492,7 +1491,7 @@ describe("the typed composer ask still posts (m5 ask path)", () => {
     // route. Everything else about the POST is the m5 e2e's expectation.
     expect(JSON.parse(stub.posted[0].body)).toEqual({
       text: QUESTION,
-      context: { route: "/", page: { label: "Today" } },
+      context: { route: "/", page: { label: "Home" } },
     });
   });
 });
@@ -1504,16 +1503,16 @@ describe("the header names Quick chat (walk-through finding 2)", () => {
     act(() => openAssistantPopover());
     await screen.findByTestId("quick-chat");
     expect(screen.getByTestId("assistant-panel-header").textContent).toContain("Quick chat");
-    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("home");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("Home");
   });
 
-  it("a fresh thread keeps Quick chat in the header and home on the context chip", async () => {
+  it("a fresh thread keeps Quick chat in the header and Home on the context chip", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
     act(() => openAssistantPopover());
     await screen.findByTestId("quick-chat");
     clickNewThread();
     expect(screen.getByTestId("assistant-panel-header").textContent).toContain("Quick chat");
-    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("home");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("Home");
   });
 });

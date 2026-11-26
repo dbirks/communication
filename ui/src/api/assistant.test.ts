@@ -262,6 +262,44 @@ describe("assistantContextOf", () => {
       project_id: undefined,
       entity: { kind: "draft", id: "draft-2" },
     });
+    expect(assistantContextOf("/factory/pl-1?draft=draft-2")).toEqual({
+      route: "/factory/pl-1?draft=draft-2",
+      entity: { kind: "draft", id: "draft-2" },
+    });
+    expect(assistantContextOf("/p/proj-1/factory/pl-1?draft=draft-2")).toEqual({
+      route: "/p/proj-1/factory/pl-1?draft=draft-2",
+      project_id: "proj-1",
+      entity: { kind: "draft", id: "draft-2" },
+    });
+    expect(assistantContextOf("/factory/pl-1?run=run-3")).toEqual({
+      route: "/factory/pl-1?run=run-3",
+      entity: { kind: "run", id: "run-3" },
+    });
+    expect(assistantContextOf("/factory/pl-1")).toEqual({
+      route: "/factory/pl-1",
+      entity: { kind: "pipeline", id: "pl-1" },
+    });
+    expect(assistantContextOf("/chats/chat-1")).toEqual({
+      route: "/chats/chat-1",
+      entity: { kind: "conversation", id: "chat-1" },
+    });
+    expect(assistantContextOf("/p/proj-1/chats/chat-1")).toEqual({
+      route: "/p/proj-1/chats/chat-1",
+      project_id: "proj-1",
+      entity: { kind: "conversation", id: "chat-1" },
+    });
+    expect(assistantContextOf("/chats/new")).toEqual({ route: "/chats/new" });
+    expect(assistantContextOf("/manage/agents/ag-1")).toEqual({
+      route: "/manage/agents/ag-1",
+      entity: { kind: "profile", id: "ag-1" },
+    });
+    expect(assistantContextOf("/manage/projects/proj-1")).toEqual({
+      route: "/manage/projects/proj-1",
+    });
+    expect(assistantContextOf("/p/proj-1")).toEqual({
+      route: "/p/proj-1",
+      project_id: "proj-1",
+    });
   });
 });
 

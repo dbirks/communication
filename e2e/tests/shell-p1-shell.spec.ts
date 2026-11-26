@@ -104,21 +104,37 @@ async function hrefOf(target: Locator): Promise<string> {
 }
 
 /** The shell frame in pixels: the rail's box, the bar's box and the content
- * region's top-left corner — the three numbers CONTRACT "Shell" fixes. */
-async function measureFrame(page: Page): Promise<{
-  rail: { x: number; y: number; width: number; height: number };
-  bar: { x: number; y: number; width: number; height: number };
-  content: { x: number; y: number };
-}> {
-  const box = async (target: Locator) => {
-    const b = await target.boundingBox();
-    if (!b) throw new Error(`${await target.getAttribute("data-testid")} is not laid out`);
+ * region's top-left corner — the three numbers CONTRACT "Shell" fixes. The rail
+ * is optional because the phone mounts none, and every box is bounded so a
+ * missing element is an error rather than a wait. */
+interface FrameBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+async function measureFrame(
+  page: Page,
+  opts: { rail?: boolean } = {},
+): Promise<{ rail: FrameBox | null; bar: FrameBox; content: FrameBox }> {
+  const box = async (target: Locator, name: string): Promise<FrameBox> => {
+    const b = await target.boundingBox({ timeout: 10_000 });
+    if (!b) throw new Error(`${name} is not laid out on ${page.url()}`);
     return { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: b.height };
   };
-  const rail = await box(page.getByTestId("project-rail"));
-  const bar = await box(page.getByTestId("top-bar"));
-  const content = await box(page.locator("main").first());
-  return { rail, bar, content: { x: content.x, y: content.y } };
+  const rail =
+    opts.rail === false ? null : await box(page.getByTestId("project-rail"), "project-rail");
+  const bar = await box(page.getByTestId("top-bar"), "top-bar");
+  const content = await box(page.locator("main").first(), "<main>");
+  return { rail, bar, content };
+}
+
+/** The rail's width, with the phone (no rail) reported as the failure it is. */
+function railWidth(frame: { rail: FrameBox | null }): number {
+  if (!frame.rail)
+    throw new Error("the rail did not mount — measureFrame was asked for a phone frame");
+  return frame.rail.width;
 }
 
 test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask doors", () => {
@@ -156,7 +172,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       "project-switcher",
       "ask-fab",
     ]) {
-      await expect(page.locator(`[data-testid^="${gone}"]`), `${gone} is gone with the sidebar`).toHaveCount(0);
+      await expect(
+        page.locator(`[data-testid^="${gone}"]`),
+        `${gone} is gone with the sidebar`,
+      ).toHaveCount(0);
     }
 
     // The pill: the three daily places, at the unscoped (All) routes.
@@ -180,9 +199,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     expect(await hrefOf(page.getByTestId("rail-manage"))).toBe("/manage/projects");
     await expect(page.getByTestId("rail-account").getByTestId("user-menu")).toBeVisible();
     await expect(page.getByTestId("rail-account").getByTestId("user-badge")).toBeVisible();
-    await expect(page.getByTestId("scope-open"), "the scope trigger is the phone's door").toHaveCount(
-      0,
-    );
+    await expect(
+      page.getByTestId("scope-open"),
+      "the scope trigger is the phone's door",
+    ).toHaveCount(0);
 
     // In a project the pill carries the scope, and the rail's tiles keep the
     // SECTION while they change the project (CONTRACT "Shell").
@@ -193,6 +213,22 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     expect(await hrefOf(page.getByTestId("pill-factory"))).toBe(`/p/${project.id}/factory`);
     expect(await hrefOf(page.getByTestId("rail-tile-all"))).toBe("/chats");
     await expect(page.getByTestId("top-bar-scope-name")).toHaveText(project.name);
+
+    // Manage is the one home for the administrative destinations, and the rail's
+    // ⚙ tile is its door: the nav lists the six sections CONTRACT names, in
+    // CONTRACT's order (`/manage` with no section is Projects).
+    await gotoApp(page, "/manage");
+    const nav = page.getByTestId("manage-nav").first();
+    await expect(nav).toBeVisible();
+    expect(await hrefOf(nav.locator("[data-testid=manage-nav-projects]"))).toBe("/manage/projects");
+    const navOrder = await nav
+      .locator("[data-testid^=manage-nav-]")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => (node.getAttribute("data-testid") ?? "").replace("manage-nav-", "")),
+      );
+    expect(navOrder, "Manage's nav lists the sections in the order CONTRACT names them").toEqual([
+      ...MANAGE_SECTIONS,
+    ]);
 
     await gotoApp(page, "/");
     await checkShellScreen(page, "home with the rail", undefined);
@@ -209,12 +245,12 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await signIn(page, "admin");
     const project = (await apiProjects(page.request))[0];
     expect(project, "the lab seeds at least one project").toBeTruthy();
-    const pipelines = await page
-      .request.get(`${BASE_URL}/api/v1/pipelines`)
+    const pipelines = await page.request
+      .get(`${BASE_URL}/api/v1/pipelines`)
       .then((r) => r.json())
       .then((b: { pipelines?: { id: string }[] }) => b.pipelines ?? []);
-    const conversations = await page
-      .request.get(`${BASE_URL}/api/v1/conversations?limit=50`)
+    const conversations = await page.request
+      .get(`${BASE_URL}/api/v1/conversations?limit=50`)
       .then((r) => r.json())
       .then((b: { items?: { id: string }[] }) => b.items ?? []);
 
@@ -297,8 +333,8 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
         .toBe(row.canonical);
     }
     // The workbench permalink keeps the ADR-0043 view state byte-for-byte.
-    const runs = await page
-      .request.get(`${BASE_URL}/api/v1/runs?limit=5`)
+    const runs = await page.request
+      .get(`${BASE_URL}/api/v1/runs?limit=5`)
       .then((r) => r.json())
       .then((b: { runs?: { id: string; project_id: string }[] }) => b.runs ?? []);
     if (runs.length > 0) {
@@ -342,7 +378,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       await expect(lanes).toHaveAttribute("aria-pressed", "false");
     }
     const beforeDoc = await apiPreferences(page.request);
-    expect(beforeDoc.layout.projects_mode, "the wire still carries the retired layout keys").toBeTruthy();
+    expect(
+      beforeDoc.layout.projects_mode,
+      "the wire still carries the retired layout keys",
+    ).toBeTruthy();
 
     const patch = page.waitForRequest(
       (req) => req.url().includes("/api/v1/me/preferences") && req.method() === "PATCH",
@@ -445,7 +484,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       // the rail (the redesign's project list) does.
       await gotoApp(page, "/");
       await expect(page.getByTestId("home-all")).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByTestId("project-rail"), "an old projects_mode does not eat the rail").toBeVisible();
+      await expect(
+        page.getByTestId("project-rail"),
+        "an old projects_mode does not eat the rail",
+      ).toBeVisible();
       await expect(page.getByTestId("top-bar")).toBeVisible();
       await expect(page.getByTestId("project-switcher")).toHaveCount(0);
       // `ask_placement: "sidebar"` is gone: there is no floating Ask any more,
@@ -525,7 +567,6 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     // The FIRST ⌘K opens Search (the palette engine is unchanged; the field in
     // the bar is its door), and Quick chat never answers ⌘K.
     await pressChord(page, "k", async () => (await page.getByTestId("palette-input").count()) > 0);
-    await expect(page.getByTestId("palette-root")).toBeVisible();
     await expect(page.getByTestId("palette-input")).toBeVisible();
     await expect(page.getByTestId("quick-chat")).toHaveCount(0);
     await evidence(
@@ -584,10 +625,28 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       ).toBeVisible({ timeout: 30_000 });
       await pressChord(page, "j", async () => (await page.getByTestId("quick-chat").count()) > 0);
       await expect(page.getByTestId("quick-chat"), `⌘J opens Ask from ${route}`).toBeVisible();
-      await page.keyboard.press("Escape");
-      await expect(page.getByTestId("quick-chat")).toBeHidden();
+      // Quick chat is a surface you keep: an outside click and a page change
+      // never close it (its own unit contract), so ⌘J — the same chord, which
+      // toggles — is the keyboard door out on a page like /chats, where the
+      // page's own prompt takes the caret back the moment the panel opens.
+      await page.getByTestId("top-bar-context").click();
+      await expect(
+        page.getByTestId("quick-chat"),
+        `an outside click keeps Ask open on ${route}`,
+      ).toBeVisible();
+      await pressChord(page, "j", async () => (await page.getByTestId("quick-chat").count()) === 0);
+      await expect(page.getByTestId("quick-chat"), `⌘J closes Ask again on ${route}`).toBeHidden();
       await page.getByTestId("top-bar-mic").click();
       await expect(page.getByTestId("quick-chat"), `the mic opens Ask from ${route}`).toBeVisible();
+      // With the caret inside the panel, Escape is the other way out.
+      await page.getByTestId("assistant-composer-input").click();
+      await page.keyboard.press("Escape");
+      await expect(
+        page.getByTestId("quick-chat"),
+        `Escape closes Ask from ${route} once the caret is inside`,
+      ).toBeHidden();
+      await page.getByTestId("top-bar-mic").click();
+      await expect(page.getByTestId("quick-chat")).toBeVisible();
       await page.getByTestId("quick-chat-close").click();
       await expect(page.getByTestId("quick-chat")).toBeHidden();
     }
@@ -595,7 +654,7 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await evidence(
       page,
       "shell-p1-ask-two-pages",
-      "⌘J (Meta/Ctrl+j in this lab) and the mic open and close Quick chat from /chats and Manage as well as Home — the shell owns the surface, so a page change never loses it",
+      "⌘J opens and closes Quick chat from /chats and /manage as well as Home (the shell owns the surface, and a page's own autofocus cannot trap it), an outside click keeps it, the mic opens it, and Escape closes it with the caret inside — no floating button anywhere",
     );
   });
 
@@ -604,9 +663,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await gotoApp(page, "/factory");
     await expect(page.getByTestId("project-rail")).toBeVisible();
     await expect(page.getByTestId("top-bar")).toBeVisible();
-    await expect(page.getByTestId("scope-open"), "the 36px scope button is the phone's").toHaveCount(
-      0,
-    );
+    await expect(
+      page.getByTestId("scope-open"),
+      "the 36px scope button is the phone's",
+    ).toHaveCount(0);
     await expect(page.getByTestId("scope-sheet")).toHaveCount(0);
     await expect(page.getByTestId("scope-backdrop")).toHaveCount(0);
     await noSidewaysScrollInShell(page);
@@ -629,9 +689,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await expect(page.getByTestId("project-rail")).toBeVisible();
     await expect(page.getByTestId("scope-open"), "a tablet window is not a phone").toHaveCount(0);
     await expect(page.getByTestId("scope-sheet")).toHaveCount(0);
-    await expect(page.getByTestId("top-bar-phone-slot"), "the phone strip is phone-only").toHaveCount(
-      0,
-    );
+    await expect(
+      page.getByTestId("top-bar-phone-slot"),
+      "the phone strip is phone-only",
+    ).toHaveCount(0);
     // The pill keeps its WORDS at a tablet width (they are sr-only on a phone).
     await expect(page.getByTestId("pill-chats")).toContainText("Chats");
     const narrow = await measureFrame(page);
@@ -641,15 +702,16 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await expect(page.getByTestId("project-rail")).toBeVisible();
     const back = await measureFrame(page);
     for (const [name, a, b] of [
-      ["rail width", wide.rail.width, narrow.rail.width],
-      ["rail width after widening", wide.rail.width, back.rail.width],
+      ["rail width", railWidth(wide), railWidth(narrow)],
+      ["rail width after widening", railWidth(wide), railWidth(back)],
       ["bar height", wide.bar.height, back.bar.height],
       ["content top-left x", wide.content.x, back.content.x],
       ["content top-left y", wide.content.y, back.content.y],
     ] as const) {
-      expect(Math.abs(a - b), `900px and 1500px agree on ${name} (${a} vs ${b})`).toBeLessThanOrEqual(
-        1,
-      );
+      expect(
+        Math.abs(a - b),
+        `900px and 1500px agree on ${name} (${a} vs ${b})`,
+      ).toBeLessThanOrEqual(1);
     }
     const storedAfter = (await apiPreferences(page.request)).layout.expanded;
     expect(
@@ -677,12 +739,16 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await page.setViewportSize({ width: 767, height: 900 });
     await gotoApp(page, "/factory");
     const strip = watchPageErrors(page);
-    const phone = await measureFrame(page);
-    await expect(page.getByTestId("project-rail"), "767 is a phone: the rail does not mount").toHaveCount(
-      0,
-    );
+    const phone = await measureFrame(page, { rail: false });
+    await expect(
+      page.getByTestId("project-rail"),
+      "767 is a phone: the rail does not mount",
+    ).toHaveCount(0);
     await expect(page.getByTestId("scope-open"), "767 opens the scope sheet").toBeVisible();
-    await expect(page.getByTestId("top-bar-phone-slot"), "the phone bar owns its slot").toBeVisible();
+    await expect(
+      page.getByTestId("top-bar-phone-slot"),
+      "the phone's claimed-left strip mounts hidden until a page claims it",
+    ).toBeHidden();
     await expect(page.getByTestId("scope-sheet"), "a closed sheet is unmounted").toHaveCount(0);
     await page.getByTestId("scope-open").click();
     await expect(page.getByTestId("scope-sheet")).toBeVisible();
@@ -692,6 +758,23 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? ""))
       .toBe("scope-open");
     expect(phone.bar.height, "the phone bar is the 52px bar").toBeLessThanOrEqual(53);
+    // The phone's second bar row is the editor's claim on the left region
+    // (CONTRACT "Shell": a page replaces the scope name with `<TopBarLeft>`).
+    const pipelines = await page.request
+      .get(`${BASE_URL}/api/v1/pipelines`)
+      .then((r) => r.json())
+      .then((b: { pipelines?: { id: string }[] }) => b.pipelines ?? []);
+    if (pipelines.length > 0) {
+      await gotoApp(page, `/factory/${pipelines[0].id}`);
+      await expect(
+        page.getByTestId("top-bar-phone-slot"),
+        "the editor claims the phone strip",
+      ).toBeVisible({
+        timeout: 30_000,
+      });
+      await gotoApp(page, "/factory");
+      await expect(page.getByTestId("top-bar-phone-slot")).toBeHidden();
+    }
 
     await page.setViewportSize({ width: 768, height: 900 });
     await expect(page.getByTestId("project-rail"), "768 is not a phone").toBeVisible();
@@ -725,10 +808,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await expect(page.getByTestId("rail-tile-all")).toHaveAttribute("aria-label", "All projects");
     for (const project of projects.slice(0, 6)) {
       const tile = page.getByTestId(`rail-tile-${project.id}`);
-      await expect(tile, `the tile for "${project.name}" carries its name as the hover label`).toHaveAttribute(
-        "title",
-        project.name,
-      );
+      await expect(
+        tile,
+        `the tile for "${project.name}" carries its name as the hover label`,
+      ).toHaveAttribute("title", project.name);
       await expect(tile).toHaveAttribute("aria-label", project.name);
     }
     await expect(page.getByTestId("rail-manage")).toHaveAttribute("aria-label", "Manage");
@@ -760,7 +843,9 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       `every rail tile carries its project's name as title + aria-label (All projects, ${projects
         .slice(0, 6)
         .map((p) => p.name)
-        .join(", ")}), the tiles print only their initials in the 64px rail, and the retired ⌘\\ chord at 1500px and 900px opens nothing and PATCHes nothing`,
+        .join(
+          ", ",
+        )}), the tiles print only their initials in the 64px rail, and the retired ⌘\\ chord at 1500px and 900px opens nothing and PATCHes nothing`,
     );
   });
 
@@ -783,7 +868,7 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       const frame = await measureFrame(page);
       measured.push({
         route,
-        rail: frame.rail.width,
+        rail: railWidth(frame),
         bar: frame.bar.height,
         x: frame.content.x,
         y: frame.content.y,
@@ -807,14 +892,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
         ).toBeLessThanOrEqual(1);
       }
     }
-    expect(
-      first.rail,
-      `the rail is the 64px column CONTRACT draws (measured ${first.rail})`,
-    ).toBe(64);
-    expect(
-      first.bar,
-      `the bar is the 60px band CONTRACT draws (measured ${first.bar})`,
-    ).toBe(60);
+    expect(first.rail, `the rail is the 64px column CONTRACT draws (measured ${first.rail})`).toBe(
+      64,
+    );
+    expect(first.bar, `the bar is the 60px band CONTRACT draws (measured ${first.bar})`).toBe(60);
     await checkShellScreen(page, "the five routes measured at 1440x900", stopWatching);
     await evidence(
       page,
@@ -849,12 +930,24 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
     await expect
       .poll(() => caretOn(page), { message: "the caret lands inside the sheet" })
       .toBe("[scope-sheet]");
-    // Tab to the project's row: the sheet's rows are real links in DOM order.
+    // Escape closes it and hands the caret back to the button it came from.
+    await page.keyboard.press("Escape");
+    await expect(sheet, "Escape closes the sheet").toBeHidden();
+    await expect
+      .poll(() => caretOn(page), { message: "Escape hands the caret back to scope-open" })
+      .toBe("[scope-open]");
+    // Re-open on Enter and walk: the sheet's rows are real links in DOM order
+    // (a row is `scope-row-<projectId>`; the all-scope row is `scope-row-all`).
+    await page.keyboard.press("Enter");
+    await expect(sheet, "Enter opens the sheet again").toBeVisible();
+    await expect
+      .poll(() => caretOn(page), { message: "the caret lands inside the reopened sheet" })
+      .toBe("[scope-sheet]");
     let hops = 0;
-    const targetHref = `a[href="/p/${project.id}"]`;
+    const targetRow = `[scope-row-${project.id}]`;
     for (;;) {
       const active = await caretOn(page);
-      if (active === targetHref) break;
+      if (active === targetRow) break;
       expect(
         hops++ < 12,
         `the caret reached "${project.name}" within the sheet's rows (stopped on [${active}], ${hops} presses in)`,
@@ -867,14 +960,6 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       `Enter activates the focused row — the sheet's "${project.name}" row must open /p/${project.id}`,
     ).toHaveURL(new URL(`/p/${project.id}`, BASE_URL).href, { timeout: 15_000 });
     await expect(sheet, "choosing a row also closes the sheet").toBeHidden();
-    // Re-open and Escape: the caret goes home to the button that opened it.
-    await page.getByTestId("scope-open").click();
-    await expect(sheet).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(sheet).toBeHidden();
-    await expect
-      .poll(() => caretOn(page), { message: "Escape hands the caret back to scope-open" })
-      .toBe("[scope-open]");
     stopWatching();
     await evidence(
       page,
@@ -901,9 +986,10 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
       );
       await page.keyboard.press("Escape");
       await expect(sheet).toBeHidden();
-      await expect(page.getByTestId("scope-backdrop"), "the sheet took its backdrop with it").toHaveCount(
-        0,
-      );
+      await expect(
+        page.getByTestId("scope-backdrop"),
+        "the sheet took its backdrop with it",
+      ).toHaveCount(0);
       // The other two doors out: the trigger again, then the backdrop.
       await page.getByTestId("scope-open").click();
       await expect(sheet).toBeVisible();
@@ -924,7 +1010,9 @@ test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask do
   // gh-3: a signed-out visitor sees the sign-in screen alone — no shell chrome
   // of any kind — for `/` and every deep link, at desktop and phone width; the
   // deep link rides along as `return_to` so a sign-in lands back on the page.
-  test("signed-out visitors see only the sign-in screen — no rail, no top bar", async ({ page }) => {
+  test("signed-out visitors see only the sign-in screen — no rail, no top bar", async ({
+    page,
+  }) => {
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 800 });
       for (const path of ["/", "/factory"]) {

@@ -19,7 +19,7 @@ export interface VerdictStackProps {
 const VERDICT_META: Record<RoundVerdict, { label: string; className: string }> = {
   met: {
     label: "✓ goal met",
-    className: "rounded-[4px] bg-st-done-tag px-[6px] py-[1px] text-st-done-tag-fg",
+    className: "rounded-[6px] bg-st-done-tag px-[6px] py-[1px] text-st-done-tag-fg",
   },
   not_yet: {
     label: "× not yet",
@@ -27,7 +27,7 @@ const VERDICT_META: Record<RoundVerdict, { label: string; className: string }> =
   },
   running: {
     label: "● judging",
-    className: "rounded-[4px] bg-st-running-tag px-[6px] py-[1px] text-st-running-tag-fg",
+    className: "rounded-[6px] bg-st-running-tag px-[6px] py-[1px] text-st-running-tag-fg",
   },
 };
 

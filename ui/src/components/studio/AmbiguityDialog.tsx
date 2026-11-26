@@ -5,7 +5,8 @@
  * verbatim from the graph model; "Insert anyway" re-runs the op with
  * `acceptAmbiguity` and keeps the target's guard and bindings as-is.
  */
-import { Button } from "../ds/Button";
+import { Sheet } from "../ds/Sheet";
+import { SoftButton } from "../ds/SoftButton";
 
 export interface AmbiguityDialogProps {
   /** The one-line context, e.g. `Insert a step between plan and approve`. */
@@ -23,49 +24,53 @@ export function AmbiguityDialog({
   onCancel,
 }: AmbiguityDialogProps) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4"
-      role="presentation"
+    <Sheet
+      role="alertdialog"
+      ariaLabel={title}
+      onClose={onCancel}
+      closeOnBackdrop={false}
+      manageFocus={false}
+      trapFocus={false}
+      testid="studio-ambiguity-dialog"
+      widthClassName="w-[26rem]"
+      panelClassName="p-[20px] max-md:p-[16px]"
     >
-      <div
-        role="alertdialog"
-        aria-label={title}
-        className="w-[26rem] max-w-full rounded-[4px] border border-line bg-surface p-4 shadow-lg"
-        data-testid="studio-ambiguity-dialog"
-      >
-        <p className="text-[13px] font-bold" data-testid="studio-ambiguity-title">
-          {title}
-        </p>
-        <ul className="mt-2 space-y-[4px]" data-testid="studio-ambiguity-reasons">
-          {reasons.map((reason, index) => (
-            <li
-              key={index}
-              className="font-mono text-[11px] text-muted"
-              data-testid={`studio-ambiguity-reason-${index}`}
-            >
-              {reason}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-2 text-[12px] text-muted">
-          Insert and keep the target&apos;s condition and bindings as-is — it loses its direct
-          dependency on the step you are inserting after, so nothing is rewired silently — or
-          cancel.
-        </p>
-        <div className="mt-3 flex justify-end gap-[8px]">
-          <Button variant="ghost" compact data-testid="studio-ambiguity-cancel" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            compact
-            data-testid="studio-ambiguity-insert"
-            onClick={onInsertAnyway}
+      <p className="text-[14px] font-bold" data-testid="studio-ambiguity-title">
+        {title}
+      </p>
+      <ul className="mt-2 space-y-[4px]" data-testid="studio-ambiguity-reasons">
+        {reasons.map((reason, index) => (
+          <li
+            key={index}
+            className="font-mono text-[11px] text-muted"
+            data-testid={`studio-ambiguity-reason-${index}`}
           >
-            Insert and keep as-is
-          </Button>
-        </div>
+            {reason}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-[12px] text-muted">
+        Insert and keep the target&apos;s condition and bindings as-is — it loses its direct
+        dependency on the step you are inserting after, so nothing is rewired silently — or cancel.
+      </p>
+      <div className="mt-3 flex justify-end gap-[8px]">
+        <SoftButton
+          variant="ghost"
+          compact
+          data-testid="studio-ambiguity-cancel"
+          onClick={onCancel}
+        >
+          Cancel
+        </SoftButton>
+        <SoftButton
+          variant="primary"
+          compact
+          data-testid="studio-ambiguity-insert"
+          onClick={onInsertAnyway}
+        >
+          Insert and keep as-is
+        </SoftButton>
       </div>
-    </div>
+    </Sheet>
   );
 }

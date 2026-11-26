@@ -149,7 +149,7 @@ export function NodeMenu({
             "flex shrink-0 flex-nowrap items-center gap-[6px] border-t border-line bg-surface p-[3px] outline-none"
           : /* One row (`compact`) or the 1g two-row menu; the same ink border +
              hard shadow either way, so the menu still reads as the step's. */
-            `absolute z-20 flex flex-nowrap gap-[6px] rounded border border-ink bg-surface p-[3px] shadow-[2px_2px_0_var(--color-ink)] outline-none ${
+            `absolute z-20 flex flex-nowrap gap-[6px] rounded-[10px] border border-line bg-surface p-[4px] shadow-[var(--shadow-pop)] outline-none ${
               compact ? "flex-row" : "flex-col gap-[2px]"
             }`
       }
@@ -172,10 +172,10 @@ export function NodeMenu({
           onClick={onItemClick(index)}
           className={
             item.id === "delete"
-              ? `whitespace-nowrap rounded-[3px] bg-st-failed-pale-body px-[8px] py-[3px] text-left text-[12.5px] text-st-failed-strong hover:bg-st-failed-pale-bar ${
+              ? `whitespace-nowrap rounded-[6px] bg-st-failed-pale-body px-[8px] py-[3px] text-left text-[12.5px] text-st-failed-strong hover:bg-st-failed-pale-bar ${
                   docked || compact ? "min-h-[44px] shrink-0" : ""
                 }`
-              : `whitespace-nowrap rounded-[3px] bg-surface px-[8px] py-[3px] text-left text-[12.5px] text-ink hover:bg-fill ${
+              : `whitespace-nowrap rounded-[6px] bg-surface px-[8px] py-[3px] text-left text-[12.5px] text-ink hover:bg-fill ${
                   docked || compact ? "min-h-[44px] shrink-0" : ""
                 }`
           }

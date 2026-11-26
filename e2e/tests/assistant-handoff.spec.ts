@@ -406,7 +406,7 @@ test.describe("Assistant handoff A8 — lab acceptance", () => {
       const menu = alice.getByTestId("assistant-context-menu");
       await expect(menu).toBeVisible();
       expect(await insideTestid(alice, "assistant-context-menu", "quick-chat")).toBe(false);
-      await expect(menu).toContainText("Today");
+      await expect(menu).toContainText("Home");
       await shot(alice, "asst-02-context-menu");
       await alice.keyboard.press("Escape");
       await expect(menu).toBeHidden();

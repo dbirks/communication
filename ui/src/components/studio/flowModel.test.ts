@@ -592,5 +592,11 @@ spec:
     expect(trig?.type).toBe("trigger");
     expect(trig?.data.triggerSubline).toBe("On every pull request");
     expect(flow.edges.some((e) => e.id === "__trigger__->loop")).toBe(true);
+
+    // GoalFrame reserves >= 64px below its lowest child card so the terminal
+    // "+" button (10px stub + 22px circle) and an 8px gap sit above the footer.
+    const judge = flow.nodes.find((n) => n.id === "loop/judge")!;
+    const childBottomRel = judge.position.y + (judge.height ?? 0);
+    expect((loopNode?.height ?? 0) - childBottomRel).toBeGreaterThanOrEqual(64);
   });
 });

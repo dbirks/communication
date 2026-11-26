@@ -139,6 +139,12 @@ describe("ChatList", () => {
 
     const statusC = screen.getByTestId("chat-row-status-chat-c");
     expect(statusC.textContent).toBe("! you");
+
+    cleanup();
+    renderChatList({ scope: null, items: [chatA, chatC] });
+    await screen.findByTestId("chat-row-chat-c");
+    expect(screen.getByTestId("chat-row-status-chat-a").textContent).toBe("● run");
+    expect(screen.queryByTestId("chat-row-status-chat-c")).toBeNull();
   });
 
   it("marks the selected row with aria-current='page' and accent-wash background", async () => {

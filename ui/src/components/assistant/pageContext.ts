@@ -35,16 +35,26 @@ export interface PageContextAttached {
   project?: string;
 }
 
-/** The nav sections keyed by first route segment, in the design's wording. */
+/** The nav sections keyed by first route segment, in the redesign's wording. */
 const SECTION_LABELS: Record<string, string> = {
-  "": "Today",
-  catchup: "Catch up",
-  threads: "Threads",
-  workflows: "Workflows",
-  profiles: "Agents",
-  projects: "Projects",
-  settings: "Settings",
-  library: "Workflows",
+  "": "Home",
+  catchup: "Home",
+  "catch-up": "Home",
+  inbox: "Home",
+  board: "Home",
+  threads: "Chats",
+  chats: "Chats",
+  conversations: "Chats",
+  workflows: "Factory",
+  library: "Factory",
+  factory: "Factory",
+  runs: "Factory",
+  profiles: "Manage",
+  projects: "Manage",
+  settings: "Manage",
+  members: "Manage",
+  ops: "Manage",
+  manage: "Manage",
   approvals: "Approvals",
   artifacts: "Artifacts",
 };
@@ -55,26 +65,43 @@ function titleize(value: string): string {
 }
 
 /**
- * The page label for a route (the wording the composer chip carried, in the
- * handoff's capitalisation): Today, Catch up, `Run 9c1e`, `Draft 01K1`, the
- * project slug on a project page, else the section name.
+ * The page label for a route: Home, Chats, Factory, Manage, `Run 9c1e`,
+ * `Draft 01K1`, or the section name.
  */
 export function pageLabelOf(pathname: string): string {
-  const run = /^\/runs\/([^/?#]+)/.exec(pathname);
+  const withoutHash = pathname.split("#")[0];
+  const qIdx = withoutHash.indexOf("?");
+  const path = qIdx === -1 ? withoutHash : withoutHash.slice(0, qIdx);
+  const search =
+    qIdx === -1 ? new URLSearchParams() : new URLSearchParams(withoutHash.slice(qIdx + 1));
+
+  const run = /^\/runs\/([^/]+)/.exec(path);
   if (run) return `Run ${shortId(decodeURIComponent(run[1]))}`;
-  const draft = /^\/workflows\/[^/?#]+\/drafts\/([^/?#]+)/.exec(pathname);
-  if (draft) return `Draft ${shortId(decodeURIComponent(draft[1]))}`;
-  const step = /^\/workflows\/steps\/([^/?#]+)/.exec(pathname);
+
+  const legacyDraft = /^\/(?:workflows|library)\/[^/]+\/drafts\/([^/]+)/.exec(path);
+  if (legacyDraft) return `Draft ${shortId(decodeURIComponent(legacyDraft[1]))}`;
+
+  if (/^\/(?:p\/[^/]+\/)?factory\/[^/]+$/.test(path)) {
+    const draftParam = search.get("draft")?.trim();
+    if (draftParam) return `Draft ${shortId(draftParam)}`;
+    const runParam = search.get("run")?.trim();
+    if (runParam) return `Run ${shortId(runParam)}`;
+    return "Factory";
+  }
+
+  const step = /^\/workflows\/steps\/([^/]+)/.exec(path);
   if (step) return `Step ${shortId(decodeURIComponent(step[1]))}`;
-  const workflow = /^\/workflows\/([^/?#]+)/.exec(pathname);
-  if (workflow) return `Workflow ${decodeURIComponent(workflow[1])}`;
-  const project = /^\/p\/([^/?#]+)/.exec(pathname);
-  if (project) return decodeURIComponent(project[1]) || "Projects";
-  const profile = /^\/profiles\/([^/?#]+)/.exec(pathname);
-  if (profile) return `Agent ${shortId(decodeURIComponent(profile[1]))}`;
-  if (pathname.startsWith("/catch-up")) return "Catch up";
-  const first = pathname.split("/")[1] ?? "";
-  return titleize(SECTION_LABELS[first] ?? first ?? "");
+
+  const scoped = /^\/p\/([^/]+)\/?(.*)$/.exec(path);
+  if (scoped) {
+    const sub = scoped[2]?.split("/")[0] ?? "";
+    if (sub === "") return "Home";
+    return SECTION_LABELS[sub] ?? titleize(decodeURIComponent(sub));
+  }
+
+  if (path.startsWith("/catch-up")) return "Home";
+  const first = path.split("/")[1] ?? "";
+  return SECTION_LABELS[first] ?? titleize(first);
 }
 
 /** Everything the composer can say about the page at `pathname`. */
@@ -103,7 +130,9 @@ function subscribeLocation(onChange: () => void): () => void {
 }
 
 function getPathname(): string {
-  return typeof window === "undefined" ? "/" : window.location.pathname;
+  return typeof window === "undefined"
+    ? "/"
+    : `${window.location.pathname}${window.location.search}`;
 }
 
 /** `usePageContext()` — the page context for the current location. */

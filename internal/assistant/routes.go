@@ -131,14 +131,14 @@ var staticPalettePages = []struct {
 	secondary string
 	to        string
 }{
-	{"Today", "page · home · overview · dashboard · inbox · board · attention · approvals · decisions", "/"},
-	{"Catch up", "page · what agents did · unseen work · tours", "/catch-up"},
-	{"Threads", "page · one-off threads · conversations", "/threads"},
-	{"Workflows", "page · pipelines · workflow library", "/workflows"},
-	{"Steps", "page · node templates · saved steps", "/workflows/steps"},
-	{"Agents", "page · agent profiles · profiles", "/profiles"},
-	{"Operations", "page · ops · workers · replicas", "/ops"},
-	{"Settings", "page · preferences · trust level · layout", "/settings/layout"},
+	{"Home", "page · today · catch up · overview · dashboard · inbox · board · attention · approvals · decisions · what agents did · unseen work · tours", "/"},
+	{"Chats", "page · threads · one-off threads · conversations", "/chats"},
+	{"Factory", "page · workflows · pipelines · workflow library", "/factory"},
+	{"Steps", "page · node templates · saved steps", "/manage/agents?tab=steps"},
+	{"Agents", "page · agent profiles · profiles · models · skills", "/manage/agents"},
+	{"Runners", "page · operations · ops · workers · replicas", "/manage/runners"},
+	{"Assistant", "page · settings · preferences · trust level", "/manage/agents?tab=assistant"},
+	{"Projects", "page · manage · projects", "/manage/projects"},
 }
 
 // paletteSearch is the palette's own read fan: the app-shell's own pages, the
@@ -201,14 +201,18 @@ func (t *turn) paletteSearch(needle string) (json.RawMessage, error) {
 		return nil, err
 	}
 	for _, p := range rows(pipelines) {
-		add(p, "/workflows/"+field(p, "id"))
+		add(p, "/factory/"+field(p, "id"))
 	}
 	profiles, err := t.b.store.ListAgentProfiles(t.ctx, t.caller)
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range rows(profiles) {
-		add(p, "/profiles")
+		if id := field(p, "id"); id != "" {
+			add(p, "/manage/agents/"+id)
+		} else {
+			add(p, "/manage/agents")
+		}
 	}
 	for _, p := range rows(projects) {
 		pid := field(p, "id")

@@ -328,9 +328,13 @@ test.describe("M5 inbox attention: a pending prompt reaches another member's bro
               message: "a permission affordance appeared on a launcher that never asks (ADR-0069)",
             })
             .toBe(0);
-          // The row wears the conversation's own status word, and names the
-          // conversation the wire carries it under.
-          await expect(row).toContainText(/active|idle/i);
+          // The row shows the "● run" marker while a turn runs and no status
+          // once idle (never "! you"), alongside the conversation title.
+          const statusBadge = row.getByTestId(`chat-row-status-${conversationId}`);
+          if ((await statusBadge.count()) > 0) {
+            await expect(statusBadge).toHaveText("● run");
+          }
+          await expect(row).not.toContainText("! you");
           await expect(row).toContainText(TITLE);
           expect(bob.url()).toContain("/chats");
           expect(await markerSurvived(bob)).toBe(true);

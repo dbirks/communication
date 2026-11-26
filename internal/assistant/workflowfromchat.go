@@ -246,13 +246,12 @@ func (r *ConversationRunner) execWorkflowCreateDraft(ctx context.Context, c Call
 			payload: json.RawMessage(`{"error":"unavailable","detail":"the draft service did not name the created draft"}`)}
 	}
 	summary := "Saved library draft " + fallback(res.Slug, args.slug) + " (" + short(res.DraftID) + ")"
-	// The link points at the DRAFT's own page, not the workflow page: the
-	// `/workflows/{id}/drafts/{draftId}` target is how the transcript
-	// recognises the saved draft (rcn-review13-2f) — a bare
-	// `/workflows/{id}` href names the workflow, not the saved draft, and
-	// the app's draft step list cannot read a draft id off it. Both
-	// segments are uuids, so the route allowlist always matches.
-	link := Link{Label: "Open draft", Href: "/workflows/" + res.PipelineID + "/drafts/" + res.DraftID}
+	// The link points at the DRAFT's own page, not the bare workflow page: the
+	// `/factory/{id}?draft={draftId}` target is how the transcript
+	// recognises the saved draft — a bare `/factory/{id}` href names the
+	// workflow, not the saved draft, and the app's draft step list cannot read
+	// a draft id off it.
+	link := Link{Label: "Open draft", Href: "/factory/" + res.PipelineID + "?draft=" + res.DraftID}
 	payload, _ := json.Marshal(map[string]any{
 		"status":      "created",
 		"pipeline_id": res.PipelineID,

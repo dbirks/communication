@@ -367,7 +367,7 @@ func TestThreadListLinksOpenTheThreadPage(t *testing.T) {
 	if len(tr.links) != 1 {
 		t.Fatalf("links = %+v, want the one thread page", tr.links)
 	}
-	if got, want := tr.links[0].Href, "/threads/t-1"; got != want {
+	if got, want := tr.links[0].Href, "/chats/t-1"; got != want {
 		t.Fatalf("link = %q, want %q", got, want)
 	}
 	if !strings.Contains(tr.links[0].Label, "Fix the flaky test") {
@@ -378,7 +378,7 @@ func TestThreadListLinksOpenTheThreadPage(t *testing.T) {
 	if err := json.Unmarshal(tr.results[0].payload, &payload); err != nil {
 		t.Fatalf("payload is not a row array: %s", tr.results[0].payload)
 	}
-	if len(payload) != 1 || field(payload[0], "link") != "/threads/t-1" {
+	if len(payload) != 1 || field(payload[0], "link") != "/chats/t-1" {
 		t.Fatalf("the row carries no link: %s", tr.results[0].payload)
 	}
 }

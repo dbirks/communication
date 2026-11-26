@@ -294,8 +294,8 @@ func TestWorkflowCreateDraftValidatesSavesAndLinks(t *testing.T) {
 	// TARGET is the draft's own page — the app recognises the saved draft
 	// by this route, not by the label (rcn-review13-2f).
 	if len(res.Answer.Links) != 1 || res.Answer.Links[0].Label != "Open draft" ||
-		res.Answer.Links[0].Href != "/workflows/pl-9/drafts/d-9" {
-		t.Fatalf("links = %+v, want the Open draft link to /workflows/pl-9/drafts/d-9", res.Answer.Links)
+		res.Answer.Links[0].Href != "/factory/pl-9?draft=d-9" {
+		t.Fatalf("links = %+v, want the Open draft link to /factory/pl-9?draft=d-9", res.Answer.Links)
 	}
 	// The payload tells the model the truth: created, NOT published.
 	raw, ok := lastToolPayload(t, model, "workflow.create_draft")
@@ -512,7 +512,7 @@ func TestWorkflowDraftFlowSavesTheDraftBeforeTheFirstQuestion(t *testing.T) {
 	// door is already open while the card is on screen: label stable, target
 	// the draft's own page.
 	if len(first.Answer.Links) != 1 || first.Answer.Links[0].Label != "Open draft" ||
-		first.Answer.Links[0].Href != "/workflows/pl-9/drafts/d-9" {
+		first.Answer.Links[0].Href != "/factory/pl-9?draft=d-9" {
 		t.Fatalf("links = %+v, want the Open draft link on the question's answer", first.Answer.Links)
 	}
 }

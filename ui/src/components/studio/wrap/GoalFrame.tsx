@@ -93,7 +93,7 @@ export function GoalFrame({
 
       <div
         data-testid="goal-frame-footer"
-        className="relative z-1 px-[14px] py-[10px] font-mono text-[10.5px] text-accent-text"
+        className="pointer-events-none relative z-1 px-[14px] pt-[8px] pb-[10px] font-mono text-[10.5px] leading-[14px] text-accent-text"
       >
         up to {goal.maxRounds} {roundWord} · {tail}
       </div>

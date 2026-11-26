@@ -208,6 +208,53 @@ describe("AccountsStrip", () => {
     expect(screen.getByTestId("agent-account-signin").textContent).toBe("Sign in again");
   });
 
+  it("renders three rows in the order Claude, Codex, Antigravity even when items omit Claude", () => {
+    mocks.accounts.mockReturnValue({
+      data: {
+        items: [
+          accountFixture({ launcher: "antigravity", state: "unknown" }),
+          accountFixture({ launcher: "codex", state: "signed_out" }),
+        ],
+      },
+      isPending: false,
+      error: null,
+    });
+    mount();
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain("Claude");
+    expect(rows[1].textContent).toContain("Codex");
+    expect(rows[2].textContent).toContain("Antigravity");
+  });
+
+  it("uses the soft button with primary accent fill for needs sign-in and white secondary when signed in", () => {
+    mocks.accounts.mockReturnValue({
+      data: {
+        items: [
+          accountFixture({ launcher: "codex", state: "signed_out" }),
+          accountFixture({
+            launcher: "antigravity",
+            state: "signed_in",
+            account_label: "ada@example.com",
+          }),
+        ],
+      },
+      isPending: false,
+      error: null,
+    });
+    mount();
+    const buttons = screen.getAllByTestId("agent-account-signin");
+    expect(buttons[0].className).toContain("h-[30px]");
+    expect(buttons[0].className).toContain("rounded-[8px]");
+    expect(buttons[0].className).toContain("bg-accent");
+    expect(buttons[0].className).not.toContain("ds-btn");
+
+    expect(buttons[1].className).toContain("h-[30px]");
+    expect(buttons[1].className).toContain("rounded-[8px]");
+    expect(buttons[1].className).toContain("bg-surface");
+    expect(buttons[1].className).toContain("border-line");
+  });
+
   it("never fires the accounts read for a non-admin and shows the sentence", () => {
     mocks.me = { data: { is_org_admin: false }, isPending: false };
     mount();

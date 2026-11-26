@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -192,27 +193,58 @@ func (UndoNotWired) UndoChange(ctx context.Context, c Caller, changeID string, p
 	return errors.New("assistant: no change kind has its inverse op wired yet")
 }
 
+var allowedRouteQueryKeys = map[string]bool{
+	"draft":   true,
+	"run":     true,
+	"panel":   true,
+	"tab":     true,
+	"item":    true,
+	"project": true,
+	"new":     true,
+}
+
+var queryValRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 // CleanRoute validates a client-supplied same-origin app route against the
 // route allowlist (the links' rule) and returns its clean form, or "" when
 // it is not a known app route. ADR-0050 decision 6: the page-context route
 // is client-asserted, so off-allowlist context is dropped, not forwarded.
 func CleanRoute(route string) string {
 	route = strings.TrimSpace(route)
-	if route == "" || strings.ContainsAny(route, "?#\\@") {
+	if route == "" || strings.ContainsAny(route, "#\\@") {
 		return ""
 	}
-	if !strings.HasPrefix(route, "/") || strings.HasPrefix(route, "//") {
+	rawPath, rawQuery, hasQuery := strings.Cut(route, "?")
+	if hasQuery && (rawQuery == "" || strings.Contains(rawQuery, "?")) {
+		return ""
+	}
+	if !strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "//") {
 		return ""
 	}
 	if u, err := url.Parse(route); err != nil || u.Host != "" || u.Scheme != "" {
 		return ""
 	}
+	matched := false
 	for _, r := range allowedRoutes {
-		if r.MatchString(route) {
-			return path.Clean(route)
+		if r.MatchString(rawPath) {
+			matched = true
+			break
 		}
 	}
-	return ""
+	if !matched {
+		return ""
+	}
+	cleanPath := path.Clean(rawPath)
+	if !hasQuery {
+		return cleanPath
+	}
+	for _, pair := range strings.Split(rawQuery, "&") {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok || !allowedRouteQueryKeys[k] || !queryValRe.MatchString(v) {
+			return ""
+		}
+	}
+	return cleanPath + "?" + rawQuery
 }
 
 // allowedHref keeps the v1 behaviour exactly (Broker links, palette

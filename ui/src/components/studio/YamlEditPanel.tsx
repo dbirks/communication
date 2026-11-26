@@ -3,7 +3,7 @@
  * wired to Studio's shared `useStudioDraft` state (autosave, conflict
  * handling, lastGood canvas fallback) and draft validation (`POST /drafts/{id}/validate`).
  */
-import { Button } from "../ds/Button";
+import { SoftButton } from "../ds/SoftButton";
 import { StatusChip } from "../ds/Row";
 import { DRAFT_STATE, VALIDATION_SOURCE_STATE, stateOf } from "../ds/states";
 import { ProblemBanner } from "../Feedback";
@@ -60,7 +60,7 @@ export function YamlEditPanel({
             unsaved changes
           </span>
         ) : null}
-        <Button
+        <SoftButton
           variant="secondary"
           compact
           disabled={busy || parseError !== null}
@@ -69,7 +69,7 @@ export function YamlEditPanel({
           className="ml-auto"
         >
           {validating ? "Validating…" : dirty ? "Validate (saves first)" : "Validate"}
-        </Button>
+        </SoftButton>
       </div>
 
       <textarea
@@ -122,14 +122,14 @@ export function YamlEditPanel({
                 ) : null}
               </div>
               {issue.instance_location !== null ? (
-                <Button
+                <SoftButton
                   variant="ghost"
                   compact
                   data-testid={`studio-yaml-goto-node-${index}`}
                   onClick={() => onGoToNode(issue.instance_location)}
                 >
                   go to node
-                </Button>
+                </SoftButton>
               ) : null}
             </li>
           ))}

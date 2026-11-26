@@ -67,7 +67,7 @@ import { shortId } from "../lib/format";
 import { routes } from "../lib/routes";
 import { useScope } from "../lib/scope";
 import { RUN_STATE, STATES, stateOf } from "../components/ds/states";
-import { Button } from "../components/ds/Button";
+import { SoftButton } from "../components/ds/SoftButton";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
 import { TopBarLeft, TOP_BAR_LEFT_SLOT_ID } from "../components/shell/TopBarSlot";
@@ -1300,22 +1300,22 @@ export function StudioPage() {
           <span className="font-mono text-[11px] text-st-waiting-pale-fg">
             unsaved changes — leaving the studio discards the local edit the server never saw
           </span>
-          <Button
+          <SoftButton
             variant="secondary"
             compact
             data-testid="studio-leave-discard"
             onClick={studio.guard.proceed}
           >
             Discard and leave
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="ghost"
             compact
             data-testid="studio-leave-stay"
             onClick={studio.guard.cancel}
           >
             Stay
-          </Button>
+          </SoftButton>
         </div>
       ) : null}
       {studio.conflict !== null ? (
@@ -1327,22 +1327,22 @@ export function StudioPage() {
             stale draft: the server is at v{studio.conflict.currentVersion}, your save targeted v
             {studio.savedVersion}
           </span>
-          <Button
+          <SoftButton
             variant="secondary"
             compact
             data-testid="studio-conflict-reload"
             onClick={studio.reloadTheirs}
           >
             Reload theirs
-          </Button>
-          <Button
+          </SoftButton>
+          <SoftButton
             variant="secondary"
             compact
             data-testid="studio-conflict-overwrite"
             onClick={() => void studio.overwrite()}
           >
             Keep mine and overwrite
-          </Button>
+          </SoftButton>
         </div>
       ) : null}
       {studio.saveError ? (
@@ -1750,14 +1750,14 @@ export function StudioPage() {
                           <span className="text-ink">{issue.code}</span> · {issue.message}
                         </span>
                         {issue.instance_location !== null ? (
-                          <Button
+                          <SoftButton
                             variant="ghost"
                             compact
                             data-testid={`studio-goto-node-${index}`}
                             onClick={() => goToNode(issue.instance_location)}
                           >
                             go to node
-                          </Button>
+                          </SoftButton>
                         ) : null}
                       </li>
                     ))}

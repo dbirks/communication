@@ -39,7 +39,7 @@ import { NO_BRANCH_YET, threadBranch } from "../conversation/threadBranch";
 import { useConversationSession } from "../conversation/useConversationSession";
 import { conversationRunHref, instanceLeaf } from "../Conversations";
 import { Alert } from "../ds/Alert";
-import { Button } from "../ds/Button";
+import { SoftButton } from "../ds/SoftButton";
 import { TurnSandboxPanel } from "../Sandbox";
 import { WorkspaceWidget } from "../Workspaces";
 import HandToWorkflowDialog from "../threads/HandToWorkflowDialog";
@@ -528,7 +528,7 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
             <h3 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
               Next
             </h3>
-            <Button
+            <SoftButton
               variant="primary"
               onClick={() => {
                 setDetailsOpen(false);
@@ -537,10 +537,10 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
               data-testid="hand-to-workflow"
             >
               Hand to a workflow…
-            </Button>
+            </SoftButton>
             {session.isController ? (
               <div className="space-y-2" data-testid="thread-draft-pr">
-                <Button
+                <SoftButton
                   variant="secondary"
                   onClick={() => {
                     setDraftPrConfirm(true);
@@ -550,7 +550,7 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
                   data-testid="thread-draft-pr-open"
                 >
                   Open a draft PR from this branch
-                </Button>
+                </SoftButton>
                 {draftPrConfirm ? (
                   <div
                     className="space-y-2 rounded-[8px] border border-line p-3"
@@ -561,16 +561,16 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
                       token on its profile.
                     </p>
                     <div className="flex items-center justify-end gap-2">
-                      <Button variant="secondary" onClick={() => setDraftPrConfirm(false)}>
+                      <SoftButton variant="secondary" onClick={() => setDraftPrConfirm(false)}>
                         Cancel
-                      </Button>
-                      <Button
+                      </SoftButton>
+                      <SoftButton
                         variant="primary"
                         onClick={sendDraftPrPrompt}
                         disabled={session.sendMessage.isPending}
                       >
                         {session.sendMessage.isPending ? "Sending…" : "Send"}
-                      </Button>
+                      </SoftButton>
                     </div>
                   </div>
                 ) : null}

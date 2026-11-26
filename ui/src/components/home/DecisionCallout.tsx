@@ -23,8 +23,7 @@
  */
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
-import { Panel } from "../ds/Panel";
-import { Button } from "../ds/Button";
+import { SoftButton, softButtonClassName } from "../ds/SoftButton";
 import DecisionBar from "../ds/DecisionBar";
 import type { DecisionConflict } from "../ds/DecisionBar";
 import type { Approval } from "../../api/types";
@@ -94,13 +93,18 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
   const shown = expanded ? pending : pending.slice(0, CALLOUT_PREVIEW);
   const rest = pending.length - shown.length;
   return (
-    <Panel
-      title="NEEDS YOUR DECISION"
-      state="waiting"
-      headingId="home-callouts-heading"
-      headingLevel={2}
-      meta={approvals.length > 1 ? String(approvals.length) : undefined}
+    <section
+      aria-labelledby="home-callouts-heading"
+      className="overflow-hidden rounded-[12px] border border-st-waiting-pale-edge bg-st-waiting-pale-body"
     >
+      <div className="flex items-center gap-2 border-b border-st-waiting-pale-edge px-[12px] py-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-st-waiting-pale-fg">
+        <h2 id="home-callouts-heading" className="min-w-0 truncate">
+          ! NEEDS YOUR DECISION
+        </h2>
+        {approvals.length > 1 ? (
+          <span className="ml-auto shrink-0 font-normal">{String(approvals.length)}</span>
+        ) : null}
+      </div>
       <div data-testid="home-callouts">
         {/* Lost rows ride above the live list: they are the news the person
             has not dismissed, and the pending query no longer carries them. */}
@@ -118,18 +122,18 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
         ))}
       </div>
       {rest > 0 ? (
-        <p className="border-t border-line px-[10px] py-[6px] text-right">
-          <Button
+        <p className="border-t border-st-waiting-pale-edge px-[12px] py-[8px] text-right">
+          <SoftButton
             variant="secondary"
             compact
             data-testid="home-show-more"
             onClick={() => setExpanded(true)}
           >
             Show {rest} more
-          </Button>
+          </SoftButton>
         </p>
       ) : null}
-    </Panel>
+    </section>
   );
 }
 
@@ -193,7 +197,7 @@ function CalloutRow({
       <div className="mt-[8px] flex flex-wrap items-center gap-2">
         <Link
           to={routes.approval(approval.id)}
-          className="ds-btn ds-btn--secondary ds-btn--compact inline-flex h-[26px] items-center rounded-[4px] px-3"
+          className={softButtonClassName({ variant: "secondary", compact: true })}
           data-testid={`home-read-plan-${testidOf(approval.id)}`}
         >
           Read plan
@@ -209,14 +213,14 @@ function CalloutRow({
           }
         />
         {conflict !== null && onDismiss ? (
-          <Button
+          <SoftButton
             variant="secondary"
             compact
             data-testid={`home-callout-dismiss-${testidOf(approval.id)}`}
             onClick={onDismiss}
           >
             Dismiss
-          </Button>
+          </SoftButton>
         ) : null}
       </div>
     </div>

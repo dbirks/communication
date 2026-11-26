@@ -104,7 +104,7 @@ export function StudioPalette({
       aria-label={`${item.label} (${item.kind})${item.runnable ? "" : " — not runnable yet"}`}
       data-testid={`palette-item-${item.kind}`}
       className={[
-        "flex h-[32px] items-center gap-[8px] rounded-[3px] border px-[8px] text-left",
+        "flex h-[32px] items-center gap-[8px] rounded-[8px] border px-[8px] text-left",
         item.runnable
           ? "cursor-grab border-transparent hover:border-ink hover:bg-accent-wash"
           : "border-transparent cursor-not-allowed opacity-60",
@@ -149,7 +149,7 @@ export function StudioPalette({
           aria-label="Search steps"
           data-testid="palette-search"
           onChange={(e) => setQuery(e.target.value)}
-          className="h-[28px] w-full rounded-[3px] border border-line-strong bg-surface px-[10px] font-mono text-[12px] text-ink placeholder:text-muted focus-visible:border-ink focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
+          className="h-[28px] w-full rounded-[8px] border border-line-strong bg-surface px-[10px] font-mono text-[12px] text-ink placeholder:text-muted focus-visible:border-ink focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
         />
       </div>
       {groups(filteredItems).map((group) => (

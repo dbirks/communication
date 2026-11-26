@@ -585,7 +585,12 @@ func TestAllowedHrefDropsLinksOutsideTheAppRoutes(t *testing.T) {
 		"/library", "/library/01PIPELINE", "/library/01PIPELINE/drafts/01D", "/agents", "/agents/01AG",
 		"/projects/01P", "/projects/01P/artifacts", "/projects/01P/runs", "/projects/01P/runs/01R",
 		"/projects/01P/pipelines", "/projects/01P/settings",
-		"/projects/01P/conversations", "/projects/01P/conversations/01C"}
+		"/projects/01P/conversations", "/projects/01P/conversations/01C",
+		"/chats", "/chats/01C", "/p/01P/chats", "/p/01P/chats/01C",
+		"/factory", "/factory/01PIPELINE", "/factory/01PIPELINE?draft=01D",
+		"/p/01P/factory", "/p/01P/factory/01PIPELINE", "/p/01P/factory/01PIPELINE?draft=01D",
+		"/manage", "/manage/agents", "/manage/agents/01AG", "/manage/agents?tab=steps",
+		"/manage/projects", "/manage/projects/01P", "/manage/runners"}
 	for _, href := range good {
 		if _, ok := b.allowedHref(href); !ok {
 			t.Errorf("allowed route rejected: %q", href)
@@ -642,7 +647,7 @@ func TestPaletteSearchReadsTheCallersOwnIndex(t *testing.T) {
 	if len(answer.ToolCalls) != 1 || !answer.ToolCalls[0].OK {
 		t.Fatalf("tool_calls = %+v", answer.ToolCalls)
 	}
-	if len(answer.Links) != 1 || answer.Links[0].Href != "/workflows/01PIPE" {
+	if len(answer.Links) != 1 || answer.Links[0].Href != "/factory/01PIPE" {
 		t.Fatalf("links = %+v, want the one app route the hit justified", answer.Links)
 	}
 	envelope := ""
@@ -675,21 +680,25 @@ func TestPaletteSearchKnowsTheAppShellPages(t *testing.T) {
 		{"board", "/"},
 		{"approvals", "/"},
 		{"decisions", "/"},
-		{"threads", "/threads"},
-		{"conversations", "/threads"},
-		{"workflows", "/workflows"},
-		{"pipelines", "/workflows"},
-		{"steps", "/workflows/steps"},
-		{"node templates", "/workflows/steps"},
-		{"saved steps", "/workflows/steps"},
-		{"profiles", "/profiles"},
-		{"agents", "/profiles"},
-		{"operations", "/ops"},
-		{"ops", "/ops"},
-		{"workers", "/ops"},
-		{"settings", "/settings/layout"},
-		{"preferences", "/settings/layout"},
-		{"trust level", "/settings/layout"},
+		{"threads", "/chats"},
+		{"conversations", "/chats"},
+		{"chats", "/chats"},
+		{"workflows", "/factory"},
+		{"pipelines", "/factory"},
+		{"factory", "/factory"},
+		{"steps", "/manage/agents?tab=steps"},
+		{"node templates", "/manage/agents?tab=steps"},
+		{"saved steps", "/manage/agents?tab=steps"},
+		{"profiles", "/manage/agents"},
+		{"agents", "/manage/agents"},
+		{"operations", "/manage/runners"},
+		{"ops", "/manage/runners"},
+		{"workers", "/manage/runners"},
+		{"runners", "/manage/runners"},
+		{"settings", "/manage/agents?tab=assistant"},
+		{"preferences", "/manage/agents?tab=assistant"},
+		{"trust level", "/manage/agents?tab=assistant"},
+		{"projects", "/manage/projects"},
 		{"home", "/"},
 		{"today", "/"},
 	}

@@ -82,6 +82,9 @@ describe("ProfilesTable", () => {
     }
     const nameLink = screen.getByTestId("agent-name-p-1");
     expect(nameLink.getAttribute("href")).toBe("/manage/agents/p-1");
+    expect(nameLink.className).toContain("font-semibold");
+    expect(nameLink.className).toContain("no-underline");
+    expect(nameLink.className).toContain("hover:underline");
     expect(screen.getByTestId("agent-name-p-2").getAttribute("href")).toBe("/manage/agents/p-2");
   });
 
@@ -102,7 +105,9 @@ describe("ProfilesTable", () => {
     ]);
     // Harness cell: label + chip (both halves evidenced for claude here).
     expect(screen.getByTestId("agent-row-p-1").textContent).toContain("Claude");
-    expect(screen.getByTestId("profile-chip-p-1").textContent).toContain("REQUIRED · VERIFIED");
+    const chip = screen.getByTestId("profile-chip-p-1");
+    expect(chip.textContent).toContain("sandbox required · verified");
+    expect(chip.className).toContain("rounded-[6px]");
     // Model: pinned model, or "default" when the profile pins none.
     expect(screen.getByTestId("agent-row-p-1").textContent).toContain("claude-opus-4");
     expect(screen.getByTestId("agent-row-p-2").textContent).toContain("default");

@@ -20,7 +20,7 @@
  * row goes back to "Continue sign-in", and reopening returns to the same
  * attempt. Only the explicit Cancel button posts the cancellation.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   isAgentLoginActive,
   useAgentLogin,
@@ -32,8 +32,9 @@ import {
 } from "../../api/agentAccounts";
 import { ApiError } from "../../api/client";
 import { Alert } from "../ds/Alert";
-import { Button } from "../ds/Button";
 import { Input } from "../ds/Field";
+import { Sheet } from "../ds/Sheet";
+import { SoftButton } from "../ds/SoftButton";
 
 /** Which attempt the dialog shows, and the row it came from (the retry posts
  * to the same launcher and worker — the credential volume is theirs). */
@@ -60,8 +61,6 @@ export const AGENT_SIGNIN_NAME: Record<AgentLauncher, string> = {
 };
 
 const TITLE_ID = "agent-login-dialog-title";
-const FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /** The URL as a person reads it: the host and path, without the scheme. */
 function urlWithoutScheme(url: string): string {
@@ -76,46 +75,6 @@ export default function AgentLoginDialog({ target, onClose }: AgentLoginDialogPr
   const login = useAgentLogin(loginId);
   const cancel = useCancelAgentLogin();
   const start = useStartAgentLogin();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const openerRef = useRef<Element | null>(null);
-
-  useLayoutEffect(() => {
-    openerRef.current = document.activeElement;
-    const first = containerRef.current?.querySelector<HTMLElement>(FOCUSABLE);
-    first?.focus();
-    return () => {
-      const opener = openerRef.current;
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  // Escape closes WITHOUT cancelling; the worker keeps waiting on its side.
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const container = containerRef.current;
-      if (!container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !container.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   const retry = () => {
     start.mutate(
@@ -125,57 +84,48 @@ export default function AgentLoginDialog({ target, onClose }: AgentLoginDialogPr
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4"
-      onClick={(event) => {
-        // Backdrop only: a click inside the card never closes it.
-        if (event.target === event.currentTarget) onClose();
-      }}
+    <Sheet
+      onClose={onClose}
+      labelledBy={TITLE_ID}
+      testid="agent-login-dialog"
+      widthClassName="w-[440px]"
+      panelClassName="mt-[8vh] p-[24px] max-md:mt-0 max-md:p-[16px]"
     >
-      <div
-        ref={containerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={TITLE_ID}
-        data-testid="agent-login-dialog"
-        className="mt-[8vh] w-full max-w-[440px] rounded-[3px] border border-line-strong bg-surface p-4 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
-      >
-        <h2 id={TITLE_ID} className="text-[15px] font-bold">
-          Sign in to {AGENT_SIGNIN_NAME[target.launcher] ?? target.launcher}
-        </h2>
-        <p className="mt-1 font-mono text-[11px] text-muted">on {target.workerName}</p>
+      <h2 id={TITLE_ID} className="text-[16px] font-bold">
+        Sign in to {AGENT_SIGNIN_NAME[target.launcher] ?? target.launcher}
+      </h2>
+      <p className="mt-1 font-mono text-[11px] text-muted">on {target.workerName}</p>
 
-        {login.isPending ? (
-          <p
-            className="mt-3 text-[12.5px] text-muted"
-            data-testid="agent-login-loading"
-            role="status"
-          >
-            Loading…
-          </p>
-        ) : login.error ? (
-          <Alert
-            className="mt-3"
-            state="failed"
-            label="COULDN'T LOAD"
-            testid="agent-login-error"
-            role="alert"
-          >
-            Couldn&apos;t load this sign-in.
-          </Alert>
-        ) : (
-          <LoginBody
-            login={login.data}
-            workerName={target.workerName}
-            onCancel={() => cancel.mutate(loginId)}
-            cancelBusy={cancel.isPending}
-            onRetry={retry}
-            retryBusy={start.isPending}
-            onClose={onClose}
-          />
-        )}
-      </div>
-    </div>
+      {login.isPending ? (
+        <p
+          className="mt-3 text-[12.5px] text-muted"
+          data-testid="agent-login-loading"
+          role="status"
+        >
+          Loading…
+        </p>
+      ) : login.error ? (
+        <Alert
+          className="mt-3"
+          state="failed"
+          label="COULDN'T LOAD"
+          testid="agent-login-error"
+          role="alert"
+        >
+          Couldn&apos;t load this sign-in.
+        </Alert>
+      ) : (
+        <LoginBody
+          login={login.data}
+          workerName={target.workerName}
+          onCancel={() => cancel.mutate(loginId)}
+          cancelBusy={cancel.isPending}
+          onRetry={retry}
+          retryBusy={start.isPending}
+          onClose={onClose}
+        />
+      )}
+    </Sheet>
   );
 }
 
@@ -208,14 +158,14 @@ function LoginBody({
       )}
       {active ? (
         <div className="border-t border-line pt-3">
-          <Button
+          <SoftButton
             variant="secondary"
             data-testid="agent-login-cancel"
             onClick={onCancel}
             disabled={cancelBusy}
           >
             {cancelBusy ? "Cancelling…" : "Cancel sign-in"}
-          </Button>
+          </SoftButton>
         </div>
       ) : null}
     </div>
@@ -322,9 +272,9 @@ function CodeCard({ code }: { code: string }) {
         >
           {code}
         </span>
-        <Button variant="secondary" data-testid="agent-login-copy" onClick={copy}>
+        <SoftButton variant="secondary" data-testid="agent-login-copy" onClick={copy}>
           {copied ? "Copied" : "Copy"}
-        </Button>
+        </SoftButton>
       </div>
     </section>
   );
@@ -396,14 +346,14 @@ function PasteBackLogin({ login }: { login: AgentLogin }) {
             spellCheck={false}
             aria-invalid={rejected || undefined}
           />
-          <Button
+          <SoftButton
             variant="primary"
             data-testid="agent-login-submit"
             onClick={onSubmit}
             disabled={trimmed === "" || submit.isPending}
           >
             {submit.isPending ? "Submitting…" : "Submit"}
-          </Button>
+          </SoftButton>
         </div>
         {rejected ? (
           <p
@@ -450,9 +400,9 @@ function TerminalBody({
           <p className="text-[12.5px] text-st-done-tag-fg" data-testid="agent-login-status">
             {login.account_label ? `Signed in as ${login.account_label}.` : "Signed in."}
           </p>
-          <Button variant="primary" data-testid="agent-login-done" onClick={onClose}>
+          <SoftButton variant="primary" data-testid="agent-login-done" onClick={onClose}>
             Done
-          </Button>
+          </SoftButton>
         </>
       );
     case "failed":
@@ -463,14 +413,14 @@ function TerminalBody({
               {login.error ?? "The worker didn't say why."}
             </span>
           </Alert>
-          <Button
+          <SoftButton
             variant="primary"
             data-testid="agent-login-retry"
             onClick={onRetry}
             disabled={retryBusy}
           >
             {retryBusy ? "Starting…" : "Try again"}
-          </Button>
+          </SoftButton>
         </>
       );
     case "expired":
@@ -479,14 +429,14 @@ function TerminalBody({
           <p className="text-[12.5px] text-muted" data-testid="agent-login-status">
             The sign-in timed out after 15 minutes.
           </p>
-          <Button
+          <SoftButton
             variant="primary"
             data-testid="agent-login-retry"
             onClick={onRetry}
             disabled={retryBusy}
           >
             {retryBusy ? "Starting…" : "Try again"}
-          </Button>
+          </SoftButton>
         </>
       );
     default:
@@ -495,9 +445,9 @@ function TerminalBody({
           <p className="text-[12.5px] text-muted" data-testid="agent-login-status">
             Sign-in cancelled.
           </p>
-          <Button variant="secondary" data-testid="agent-login-close" onClick={onClose}>
+          <SoftButton variant="secondary" data-testid="agent-login-close" onClick={onClose}>
             Close
-          </Button>
+          </SoftButton>
         </>
       );
   }

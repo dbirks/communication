@@ -272,7 +272,7 @@ describe("the page-context button and menu (handoff §3)", () => {
     renderComposer();
     const button = screen.getByTestId("assistant-context-button");
     expect(button.getAttribute("aria-expanded")).toBe("false");
-    expect(button.getAttribute("title")).toBe("Page context: Today");
+    expect(button.getAttribute("title")).toBe("Page context: Home");
     // Closed: the design's quiet line border.
     expect(button.className).toContain("border-line");
     fireEvent.click(button);
@@ -282,7 +282,7 @@ describe("the page-context button and menu (handoff §3)", () => {
     // carries the INK border, whatever the on/off fill underneath it.
     expect(button.className).toContain("border-ink");
     expect(menu.textContent).toContain("PAGE CONTEXT");
-    expect(menu.textContent).toContain("Today");
+    expect(menu.textContent).toContain("Home");
     expect(menu.textContent).toContain("/");
     const checkbox = screen.getByTestId("assistant-context-send") as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
@@ -301,7 +301,7 @@ describe("the page-context button and menu (handoff §3)", () => {
     fireEvent.click(screen.getByTestId("assistant-send"));
     expect(sendCalls[0][1]).toEqual({
       spoken: false,
-      context: { route: "/", page: { label: "Today" } },
+      context: { route: "/", page: { label: "Home" } },
     });
 
     // Uncheck "Send with my messages": the context member is gone ENTIRELY.

@@ -291,9 +291,9 @@ describe("StudioInspector", () => {
     const select = getByTestId("insp-profile") as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.textContent);
     // claude: verified worker + recorded probe → the only green claim.
-    expect(options).toContain("Atlas · claude · acme/skills#v1.3.1 ✓ REQUIRED · VERIFIED");
+    expect(options).toContain("Atlas · claude · acme/skills#v1.3.1 ✓ sandbox required · verified");
     // codex: registered but no recorded probe → never green.
-    expect(options).toContain("Bolt · codex ! NOT VERIFIED");
+    expect(options).toContain("Bolt · codex ! not verified");
     expect(options).toContain("+ New profile…");
     expect(getByTestId("insp-profile-edit")).toBeTruthy();
     expect(screen.getByText(/Model is chosen by the profile.s launcher/)).toBeTruthy();

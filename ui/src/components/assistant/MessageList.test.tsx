@@ -916,7 +916,7 @@ describe("MessageList round 13: target-based draft recognition, readable chips",
     );
     const chips = screen.getAllByTestId("assistant-link").map((chip) => chip.textContent);
     expect(chips[0]).toContain("Workflow pl-9");
-    expect(chips[1]).toContain("Today");
+    expect(chips[1]).toContain("Home");
     expect(chips[2]).toContain("Run r-1");
     for (const chip of chips) {
       expect(chip).not.toMatch(/\//);

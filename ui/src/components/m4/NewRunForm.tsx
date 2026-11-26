@@ -42,7 +42,15 @@
  * predates) keeps the free-form form above, unchanged — the old contract
  * stays byte-for-byte what its suites assert.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { Link, useNavigate } from "react-router";
 import { useAssignments, usePipelines, useRevision } from "../../api/pipelines";
 import { useAgentProfiles, useRepositories } from "../../api/queries";
@@ -58,7 +66,7 @@ import { problemOf } from "../../api/client";
 import type { components } from "../../api/schema";
 import type { Repository, RunCreate } from "../../api/types";
 import { formatAge } from "../../lib/format";
-import { Button } from "../ds/Button";
+import { SoftButton } from "../ds/SoftButton";
 import { Field, Input, labelClass, Select, Textarea } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { routes } from "../../lib/routes";
@@ -491,6 +499,14 @@ export interface NewRunFormProps {
    * its own chrome) or `freeform`. The repo page uses it to stand its own
    * modal chrome down when the typed form takes over (one modal, 1k). */
   onFormModeChange?: (mode: "typed" | "freeform") => void;
+  /** When set (StartRunDialog), NewRunForm renders inside one shared RunFormDialog
+   * for both typed and freeform revisions so switching workflows never unmounts it. */
+  wrapDialog?: {
+    title: string;
+    subtitle: ReactNode;
+    helper: ReactNode;
+    headerSlot?: ReactNode;
+  };
 }
 
 /** The run-input form for a project: fields come from the pinned revision. */
@@ -502,6 +518,7 @@ export function NewRunForm({
   assignmentId: initialAssignmentId = null,
   repository = null,
   onFormModeChange,
+  wrapDialog,
 }: NewRunFormProps) {
   const navigate = useNavigate();
   const assignments = useAssignments(projectId);
@@ -759,53 +776,69 @@ export function NewRunForm({
     );
   };
 
-  if (typedMode && active) {
-    return (
-      <RunFormDialog
-        title={`Run ${active.displayName || active.pipelineSlug}`}
-        subtitle={`${carriedRepository ?? "whole project"} · pinned r${revision.data?.revision_number ?? "?"}`}
-        helper={
-          typedRequired.length > 0
-            ? "Required fields are marked *; the rest start on their defaults."
-            : "Nothing is required — every input starts on its default."
-        }
-        onCancel={onCancel}
-        submit={
-          <Button
-            type="button"
-            variant="primary"
-            disabled={typedBlocked}
-            onClick={startTyped}
-            data-testid="new-run-submit"
+  const showTyped = Boolean(typedMode && active);
+
+  const formBody = (
+    <form
+      className={showTyped ? "space-y-[12px]" : undefined}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (showTyped) startTyped();
+        else onSubmit(event);
+      }}
+      aria-labelledby={showTyped ? undefined : "new-run-heading"}
+      data-testid="new-run-form"
+    >
+      {!showTyped ? (
+        <>
+          <h2
+            className="font-mono text-[10.5px] font-semibold tracking-[.04em] text-muted uppercase"
+            id="new-run-heading"
           >
-            {createRun.isPending ? "Starting run…" : "Start run"}
-          </Button>
-        }
-      >
-        <div className="space-y-[12px]" data-testid="new-run-form">
-          {options.length > 1 ? (
-            <Field id="new-run-assignment" label="Workflow">
-              {/* Round-19 1k: at phone width the pinned workflow's name is
-                 longer than the control — the select stays full-width and
-                 TRUNCATES the displayed value with an ellipsis (never clips
-                 mid-glyph at the arrow). */}
-              <Select
-                id="new-run-assignment"
-                value={active.id}
-                onChange={(event) => setAssignmentId(event.target.value)}
-                className="min-w-0 truncate"
-                data-testid="new-run-assignment"
-              >
-                {options.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {(option.displayName || option.pipelineSlug) +
-                      ` · ${option.versionLabel}` +
-                      (option.repositoryName ? ` · ${option.repositoryName}` : "")}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            New run
+          </h2>
+
+          {assignments.isPending ? <Spinner label="Loading assignments" /> : null}
+          {assignments.isError ? (
+            <ProblemBanner error={assignments.error} fallback="Assignments could not be loaded." />
           ) : null}
+          {!assignments.isPending && !assignments.isError && options.length === 0 ? (
+            <p className="text-[12.5px] text-muted" data-testid="new-run-no-assignments">
+              This project has no enabled pipeline assignment, so there is no pinned revision to
+              start a run from.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+
+      {options.length > (showTyped ? 1 : 0) ? (
+        <Field id="new-run-assignment" label={showTyped ? "Workflow" : "Pipeline assignment"}>
+          {/* Round-19 1k: at phone width the pinned workflow's name is
+             longer than the control — the select stays full-width and
+             TRUNCATES the displayed value with an ellipsis (never clips
+             mid-glyph at the arrow). */}
+          <Select
+            id="new-run-assignment"
+            value={active?.id ?? ""}
+            onChange={(event) => setAssignmentId(event.target.value)}
+            className="min-w-0 truncate"
+            data-testid="new-run-assignment"
+          >
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>
+                {showTyped
+                  ? (option.displayName || option.pipelineSlug) +
+                    ` · ${option.versionLabel}` +
+                    (option.repositoryName ? ` · ${option.repositoryName}` : "")
+                  : `${option.pipelineSlug} · ${option.versionLabel} · max ${option.maxConcurrentRuns} concurrent`}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      ) : null}
+
+      {showTyped && active ? (
+        <>
           <TypedFields
             projectId={projectId}
             specs={[...typedSpecs].sort(
@@ -826,121 +859,144 @@ export function NewRunForm({
               assignmentId={active?.id ?? null}
             />
           ) : null}
+        </>
+      ) : (
+        <>
+          {revision.isPending ? <Spinner label="Loading pinned revision" /> : null}
+          {revision.isError ? (
+            <ProblemBanner
+              error={revision.error}
+              fallback="The pinned revision could not be read."
+            />
+          ) : null}
+          {fields === null && revision.data ? (
+            <p className="text-[12.5px] text-muted" data-testid="new-run-no-inputs">
+              The pinned revision declares no <code>spec.inputs</code> object schema, so this form
+              offers no fields.
+            </p>
+          ) : null}
+
+          <div className="space-y-3">
+            {fields?.map((field) => (
+              <InputFieldControl
+                key={field.name}
+                field={field}
+                value={values[field.name]}
+                repositories={repoNames}
+                repositoriesLoading={repositories.isPending}
+                error={showProblems ? problems[field.name] : undefined}
+                onChange={(value) => setValue(field.name, value)}
+              />
+            ))}
+          </div>
+
+          {chosenRepo ? (
+            <GitHubIssueSection
+              key={chosenRepo.id}
+              projectId={projectId}
+              repository={chosenRepo}
+              onFill={fillFromIssue}
+              fillNote={issueFillNote}
+            />
+          ) : null}
+
+          {createRun.isError ? (
+            <RunCreateError
+              error={createRun.error}
+              projectId={projectId}
+              assignmentId={active?.id ?? null}
+            />
+          ) : null}
+
+          <div className="mt-3 flex items-center gap-2">
+            <SoftButton
+              type="submit"
+              variant="primary"
+              disabled={blocked}
+              data-testid="new-run-submit"
+              title={
+                fields !== null && !declaresFields
+                  ? "The pinned revision declares no inputs — there is nothing to submit"
+                  : undefined
+              }
+            >
+              {createRun.isPending ? "Starting run…" : "Start run"}
+            </SoftButton>
+            {onCancel && !wrapDialog ? (
+              <SoftButton
+                type="button"
+                variant="ghost"
+                onClick={onCancel}
+                data-testid="new-run-cancel"
+              >
+                Cancel
+              </SoftButton>
+            ) : null}
+            <span
+              className="ml-auto font-mono text-[10.5px] text-faint"
+              data-testid="new-run-idempotency-key"
+            >
+              idempotency {idempotencyKey.current.slice(0, 22)}
+            </span>
+          </div>
+        </>
+      )}
+    </form>
+  );
+
+  if (showTyped && active) {
+    return (
+      <RunFormDialog
+        title={`Run ${active.displayName || active.pipelineSlug}`}
+        subtitle={`${carriedRepository ?? "whole project"} · pinned r${revision.data?.revision_number ?? "?"}`}
+        helper={
+          typedRequired.length > 0
+            ? "Required fields are marked *; the rest start on their defaults."
+            : "Nothing is required — every input starts on its default."
+        }
+        onCancel={onCancel}
+        submit={
+          <SoftButton
+            type="button"
+            variant="primary"
+            disabled={typedBlocked}
+            onClick={startTyped}
+            data-testid="new-run-submit"
+          >
+            {createRun.isPending ? "Starting run…" : "Start run"}
+          </SoftButton>
+        }
+      >
+        {wrapDialog?.headerSlot ? (
+          <div className="space-y-3">
+            {wrapDialog.headerSlot}
+            {formBody}
+          </div>
+        ) : (
+          formBody
+        )}
+      </RunFormDialog>
+    );
+  }
+
+  if (wrapDialog) {
+    return (
+      <RunFormDialog
+        title={wrapDialog.title}
+        subtitle={wrapDialog.subtitle}
+        helper={wrapDialog.helper}
+        onCancel={onCancel}
+        submit={null}
+      >
+        <div className="space-y-3">
+          {wrapDialog.headerSlot}
+          {formBody}
         </div>
       </RunFormDialog>
     );
   }
 
-  return (
-    <form onSubmit={onSubmit} aria-labelledby="new-run-heading" data-testid="new-run-form">
-      <h2
-        className="font-mono text-[10.5px] font-semibold tracking-[.04em] text-muted uppercase"
-        id="new-run-heading"
-      >
-        New run
-      </h2>
-
-      {assignments.isPending ? <Spinner label="Loading assignments" /> : null}
-      {assignments.isError ? (
-        <ProblemBanner error={assignments.error} fallback="Assignments could not be loaded." />
-      ) : null}
-      {!assignments.isPending && !assignments.isError && options.length === 0 ? (
-        <p className="text-[12.5px] text-muted" data-testid="new-run-no-assignments">
-          This project has no enabled pipeline assignment, so there is no pinned revision to start a
-          run from.
-        </p>
-      ) : null}
-
-      {options.length > 0 ? (
-        <Field id="new-run-assignment" label="Pipeline assignment">
-          <Select
-            id="new-run-assignment"
-            value={active?.id ?? ""}
-            onChange={(event) => setAssignmentId(event.target.value)}
-            className="min-w-0 truncate"
-            data-testid="new-run-assignment"
-          >
-            {options.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.pipelineSlug} · {option.versionLabel} · max {option.maxConcurrentRuns}{" "}
-                concurrent
-              </option>
-            ))}
-          </Select>
-        </Field>
-      ) : null}
-
-      {revision.isPending ? <Spinner label="Loading pinned revision" /> : null}
-      {revision.isError ? (
-        <ProblemBanner error={revision.error} fallback="The pinned revision could not be read." />
-      ) : null}
-      {fields === null && revision.data ? (
-        <p className="text-[12.5px] text-muted" data-testid="new-run-no-inputs">
-          The pinned revision declares no <code>spec.inputs</code> object schema, so this form
-          offers no fields.
-        </p>
-      ) : null}
-
-      <div className="space-y-3">
-        {fields?.map((field) => (
-          <InputFieldControl
-            key={field.name}
-            field={field}
-            value={values[field.name]}
-            repositories={repoNames}
-            repositoriesLoading={repositories.isPending}
-            error={showProblems ? problems[field.name] : undefined}
-            onChange={(value) => setValue(field.name, value)}
-          />
-        ))}
-      </div>
-
-      {chosenRepo ? (
-        <GitHubIssueSection
-          key={chosenRepo.id}
-          projectId={projectId}
-          repository={chosenRepo}
-          onFill={fillFromIssue}
-          fillNote={issueFillNote}
-        />
-      ) : null}
-
-      {createRun.isError ? (
-        <RunCreateError
-          error={createRun.error}
-          projectId={projectId}
-          assignmentId={active?.id ?? null}
-        />
-      ) : null}
-
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          type="submit"
-          variant="primary"
-          disabled={blocked}
-          data-testid="new-run-submit"
-          title={
-            fields !== null && !declaresFields
-              ? "The pinned revision declares no inputs — there is nothing to submit"
-              : undefined
-          }
-        >
-          {createRun.isPending ? "Starting run…" : "Start run"}
-        </Button>
-        {onCancel ? (
-          <Button type="button" variant="ghost" onClick={onCancel} data-testid="new-run-cancel">
-            Cancel
-          </Button>
-        ) : null}
-        <span
-          className="ml-auto font-mono text-[10.5px] text-faint"
-          data-testid="new-run-idempotency-key"
-        >
-          idempotency {idempotencyKey.current.slice(0, 22)}
-        </span>
-      </div>
-    </form>
-  );
+  return formBody;
 }
 
 /** The statuses the assignment's `max_concurrent_runs` ceiling counts — the
@@ -1342,9 +1398,9 @@ export function GitHubIssueSection({
               aria-label="Filter issues by label"
               className="w-40 rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[11.5px] text-ink placeholder:text-faint focus-visible:border-ink focus-visible:outline-none"
             />
-            <Button type="button" variant="ghost" onClick={() => setLabel(labelDraft)}>
+            <SoftButton type="button" variant="ghost" onClick={() => setLabel(labelDraft)}>
               Apply label
-            </Button>
+            </SoftButton>
           </div>
           {issues.isPending ? <Spinner label="Reading GitHub" /> : null}
           {issues.isError ? (
@@ -1400,7 +1456,7 @@ function IssueRow({ issue, onFill }: IssueRowProps) {
         >
           {issue.title}
         </span>
-        <Button
+        <SoftButton
           type="button"
           variant="ghost"
           compact
@@ -1409,7 +1465,7 @@ function IssueRow({ issue, onFill }: IssueRowProps) {
           data-testid={`issue-use-${issue.number}`}
         >
           Use this issue
-        </Button>
+        </SoftButton>
       </div>
       <div className="flex items-center gap-[6px] font-mono text-[10px] text-muted">
         {issue.labels.length > 0 ? (

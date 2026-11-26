@@ -40,7 +40,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { useAgentProfiles, useMe, useProject, useRepositories } from "../api/queries";
 import { useProjectRuns } from "../api/runs";
-import Page from "../components/ds/Page";
+import Page, { PAGE_BREADCRUMB_LINK_CLASS } from "../components/ds/Page";
 import { useAssignments, usePipelines } from "../api/pipelines";
 import { useProjectApprovals } from "../api/approvals";
 import { isGitHubRepository, useRepoIssues } from "../api/issues";
@@ -297,7 +297,11 @@ export default function Repository() {
         title={<span id="repo-load-error-heading">Repository</span>}
       >
         <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
-          <Link to={routes.project(id)} data-testid="repo-breadcrumb">
+          <Link
+            to={routes.project(id)}
+            data-testid="repo-breadcrumb"
+            className={PAGE_BREADCRUMB_LINK_CLASS}
+          >
             {projectData.name}
           </Link>
           <span aria-hidden="true" className="px-1.5">
@@ -408,7 +412,11 @@ export default function Repository() {
         >
           <div className="min-w-0 flex-1 space-y-1">
             <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
-              <Link to={routes.project(id)} data-testid="repo-breadcrumb">
+              <Link
+                to={routes.project(id)}
+                data-testid="repo-breadcrumb"
+                className={PAGE_BREADCRUMB_LINK_CLASS}
+              >
                 {projectData.name}
               </Link>
               <span aria-hidden="true" className="px-1.5">

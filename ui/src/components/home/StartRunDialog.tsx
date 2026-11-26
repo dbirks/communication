@@ -32,64 +32,62 @@ export function StartRunDialog({ onClose }: StartRunDialogProps) {
   }, [items]);
   const selected = items.find((project) => project.id === projectId) ?? null;
 
-  // NewRunForm reports which form the revision asks for; `typed` brings its
-  // own modal chrome, so this shell steps down (one modal, not two).
-  const [formMode, setFormMode] = useState<"typed" | "freeform">("freeform");
-  if (formMode === "typed" && selected) {
-    return (
-      <div data-testid="home-start-run-dialog">
+  const projectPicker =
+    items.length > 0 ? (
+      <Field id="home-start-run-project" label="Project">
+        <Select
+          id="home-start-run-project"
+          value={projectId}
+          onChange={(event) => setProjectId(event.target.value)}
+          className="min-w-0 truncate"
+          data-testid="home-start-run-project"
+        >
+          {items.length === 1 ? null : <option value="">— choose —</option>}
+          {items.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    ) : null;
+
+  return (
+    <div data-testid="home-start-run-dialog" className="fixed inset-0 z-50">
+      {selected ? (
         <NewRunForm
           key={selected.id}
           projectId={selected.id}
-          onFormModeChange={setFormMode}
           onCancel={onClose}
+          wrapDialog={{
+            title: "Start a run",
+            subtitle: selected.name,
+            helper: "The fields come from the workflow revision the project pins.",
+            headerSlot: projectPicker,
+          }}
         />
-      </div>
-    );
-  }
-
-  return (
-    <div data-testid="home-start-run-dialog">
-      <RunFormDialog
-        title="Start a run"
-        subtitle={selected ? selected.name : "choose a project"}
-        helper="The fields come from the workflow revision the project pins."
-        onCancel={onClose}
-        submit={null}
-      >
-        <div className="space-y-3">
-          {projects.isPending ? <Spinner label="Loading projects" /> : null}
-          {projects.isError ? (
-            <ProblemBanner error={projects.error} fallback="Projects could not be loaded." />
-          ) : null}
-          {!projects.isPending && !projects.isError && items.length === 0 ? (
-            <p className="text-[12.5px] text-muted" data-testid="home-start-run-no-projects">
-              You are not a member of any project yet, so there is nothing to start a run against.
-            </p>
-          ) : null}
-          {items.length > 0 ? (
-            <Field id="home-start-run-project" label="Project">
-              <Select
-                id="home-start-run-project"
-                value={projectId}
-                onChange={(event) => setProjectId(event.target.value)}
-                className="min-w-0 truncate"
-                data-testid="home-start-run-project"
-              >
-                {items.length === 1 ? null : <option value="">— choose —</option>}
-                {items.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          ) : null}
-          {selected ? (
-            <NewRunForm key={selected.id} projectId={selected.id} onFormModeChange={setFormMode} />
-          ) : null}
-        </div>
-      </RunFormDialog>
+      ) : (
+        <RunFormDialog
+          title="Start a run"
+          subtitle="choose a project"
+          helper="The fields come from the workflow revision the project pins."
+          onCancel={onClose}
+          submit={null}
+        >
+          <div className="space-y-3">
+            {projects.isPending ? <Spinner label="Loading projects" /> : null}
+            {projects.isError ? (
+              <ProblemBanner error={projects.error} fallback="Projects could not be loaded." />
+            ) : null}
+            {!projects.isPending && !projects.isError && items.length === 0 ? (
+              <p className="text-[12.5px] text-muted" data-testid="home-start-run-no-projects">
+                You are not a member of any project yet, so there is nothing to start a run against.
+              </p>
+            ) : null}
+            {projectPicker}
+          </div>
+        </RunFormDialog>
+      )}
     </div>
   );
 }
