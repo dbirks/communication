@@ -42,8 +42,15 @@ import { segmentTranscript } from "./ConversationTranscript";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-const path = `/p/${projectFixture.id}/conversations/${conversationId}`;
+// The redesign moved the thread page to `components/chats/ChatThread.tsx`
+// under `/p/:projectId/chats/:conversationId`; the old `/conversations/:id`
+// URL is now a replace-redirect to it, so the mail behaviours are proven on
+// the new route and read through the ids the new components define
+// (`chat-title` for the thread, `chat-menu` → `chat-menu-details` for what
+// the old side pane showed inline).
+const path = `/p/${projectFixture.id}/chats/${conversationId}`;
 const conversationPath = `/api/v1/conversations/${conversationId}`;
+const projectPath = `/api/v1/projects/${projectFixture.id}`;
 
 const linkedChat: ConversationLink = {
   id: "01987a75-1111-7000-8000-000000000001",
@@ -70,12 +77,35 @@ const mailConversation: Conversation = {
 };
 
 function routes(project: Project, extra: RouteStub[] = []): RouteStub[] {
+  // `extra` first so a stub there can shadow the defaults below.
   return [
     ...extra,
     { path: "/api/v1/me", body: meFixture },
-    { path: `/api/v1/projects/${projectFixture.id}`, body: project },
+    { path: "/api/v1/users", method: "GET", body: { items: [] } },
+    { path: "/api/v1/agent-profiles", body: { items: [] } },
+    { path: projectPath, method: "GET", body: project },
+    { path: `${projectPath}/repos`, method: "GET", body: { items: [] } },
+    { path: `${projectPath}/workspaces`, method: "GET", body: { workspaces: [] } },
+    { path: `${projectPath}/assignments`, method: "GET", body: { assignments: [] } },
+    { path: "/api/v1/pipelines", method: "GET", body: { pipelines: [] } },
+    { path: `${projectPath}/issue-triggers`, method: "GET", body: { issue_triggers: [] } },
+    { path: `${projectPath}/runs`, method: "GET", body: { runs: [] } },
+    { path: `${projectPath}/artifacts`, method: "GET", body: { artifacts: [] } },
+    { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
+    { path: `${projectPath}/conversations`, body: { items: [], next_cursor: null } },
     { path: conversationPath, body: mailConversation },
+    { path: `${conversationPath}/notes`, method: "GET", body: { notes: [] } },
+    { path: `${conversationPath}/assistant-notes`, body: { notes: [] } },
   ];
+}
+
+/** Open the chat, then the header's `…` → Details sheet that now carries the
+ * old side pane. */
+async function openDetailsSheet(): Promise<void> {
+  await screen.findByTestId("chat-title");
+  fireEvent.click(screen.getByTestId("chat-menu"));
+  await screen.findByTestId("chat-menu-popover");
+  fireEvent.click(screen.getByTestId("chat-menu-details"));
 }
 
 function emitMailFlow(): void {
@@ -122,12 +152,14 @@ function emitMailFlow(): void {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  FakeEventSource.reset();
+  window.localStorage.clear();
 });
 
 describe("the transcript mail card", () => {
   it("cuts the transcript at the ask and folds the answer into the same card", async () => {
     renderApp({ path, routes: routes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     emitMailFlow();
 
     const cards = await screen.findAllByTestId("mail-card");
@@ -140,7 +172,7 @@ describe("the transcript mail card", () => {
     expect(answer.textContent).toContain("← api · codex");
     expect(answer.textContent).toContain("max 100");
     const open = within(card).getByTestId("mail-card-open-chat");
-    expect(open.getAttribute("href")).toContain("/threads/chat-api-1");
+    expect(open.getAttribute("href")).toContain("/chats/chat-api-1");
     // The agent's own final message precedes the card in document order:
     // the ask cut the transcript under it.
     const transcript = screen.getByTestId("transcript");
@@ -325,7 +357,7 @@ describe("the transcript mail card", () => {
         { path: conversationPath, body: { ...mailConversation, repository_name: "server" } },
       ]),
     });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const source = FakeEventSource.last();
     act(() => {
       source.emit(
@@ -350,7 +382,9 @@ describe("the transcript mail card", () => {
     const note = await screen.findByText("Read-only: this agent can't change server.");
     // A muted system line, not a message from the agent: the wire's kind rides
     // the tooltip only, and no sentence on screen quotes the worker's note.
-    expect(note.closest("li")?.textContent).toBe(`i${mailReadOnlyCopy("server")}`);
+    // (The redesign's transcript restyle dropped the old literal `i` marker in
+    // front of a system line; the line itself and its tooltip are unchanged.)
+    expect(note.closest("li")?.textContent).toBe(mailReadOnlyCopy("server"));
     expect(note.getAttribute("title")).toBe("kind mail_readonly");
     expect(screen.queryByText(/mounted read-only in the sandbox/)).toBeNull();
     expect(screen.queryByText(/ADR-/)).toBeNull();
@@ -360,7 +394,7 @@ describe("the transcript mail card", () => {
 
   it("states its own state off the mail frames, not the chat's turn", async () => {
     renderApp({ path, routes: routes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     // Asked, no answer yet: the card says `asked` in a glyph AND a word.
     const source = FakeEventSource.last();
     act(() => {
@@ -403,7 +437,7 @@ describe("the transcript mail card", () => {
     // the card with no user message before it, as though the agent had asked
     // on its own. The ask IS the person's message, so it reads as one.
     renderApp({ path, routes: routes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const source = FakeEventSource.last();
     act(() => {
       source.emit(
@@ -433,7 +467,10 @@ describe("the transcript mail card", () => {
     });
     const card = (await screen.findByTestId("mail-card")) as HTMLElement;
     const asked = await screen.findByTestId("transcript-item");
-    expect(asked.textContent).toContain(`${meFixture.display_name}:`);
+    // The restyled transcript labels the reader's own line "you" with its
+    // clock time; it is still their message, not the agent's, and never a uuid.
+    expect(asked.textContent).toContain("you");
+    expect(asked.textContent).not.toContain(meFixture.id);
     expect(asked.textContent).toContain("@api");
     expect(asked.textContent).toContain("Does GET /search accept cursor params?");
     // Their message sits directly over the card that answers it, and the card
@@ -456,17 +493,17 @@ describe("the transcript mail card", () => {
   });
 });
 
-describe("the side panel LINKED CHATS section", () => {
+describe("the chat's Details sheet LINKED CHATS section", () => {
   it("lists the mail links with their state", async () => {
     renderApp({ path, routes: routes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await openDetailsSheet();
     const links = await screen.findByTestId("side-panel-links");
     const row = within(links).getByTestId("side-panel-link-row-0");
     expect(row.textContent).toContain("api");
     expect(row.textContent).toContain("✓ answered");
     expect(row.textContent).toContain("read-only");
     expect(within(links).getByTestId("side-panel-link-chat-0").getAttribute("href")).toContain(
-      "/threads/chat-api-1",
+      "/chats/chat-api-1",
     );
     expect(within(links).getByTestId("side-panel-links-note").textContent).toContain("read-only");
   });
@@ -478,7 +515,7 @@ describe("the side panel LINKED CHATS section", () => {
         { path: conversationPath, body: { ...conversationFixture, linked_chats: [] } },
       ]),
     });
-    await screen.findByTestId("conversation-title");
+    await openDetailsSheet();
     expect(screen.queryByTestId("side-panel-links")).toBeNull();
   });
 });
@@ -486,7 +523,7 @@ describe("the side panel LINKED CHATS section", () => {
 describe("the composer @-hint", () => {
   it("shows only while the project setting is on", async () => {
     renderApp({ path, routes: routes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const hint = await screen.findByTestId("composer-mail-hint");
     expect(hint.textContent).toContain("another repo's agent");
     expect(hint.textContent).toContain("read-only");
@@ -497,8 +534,8 @@ describe("the composer @-hint", () => {
       path,
       routes: routes({ ...projectFixture, agent_mail_enabled: false }),
     });
-    await screen.findByTestId("conversation-title");
-    await waitFor(() => screen.getByTestId("conversation-title"));
+    await screen.findByTestId("chat-title");
+    await waitFor(() => screen.getByTestId("chat-title"));
     expect(screen.queryByTestId("composer-mail-hint")).toBeNull();
   });
 });
@@ -569,7 +606,7 @@ describe("the composer @-menu (ADR-0072 § 9)", () => {
   it("lists the project's other repositories and completes the token on pick", async () => {
     const { fetchMock } = renderApp({ path, routes: mailRoutes(mailProject) });
     void fetchMock;
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const input = await screen.findByTestId("composer-input");
     fireEvent.change(input, { target: { value: "@" } });
 
@@ -597,7 +634,7 @@ describe("the composer @-menu (ADR-0072 § 9)", () => {
 
   it("types a long question verbatim straight after a completion", async () => {
     renderApp({ path, routes: mailRoutes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "@ap" } });
     input.setSelectionRange(3, 3);
@@ -623,12 +660,14 @@ describe("the composer @-menu (ADR-0072 § 9)", () => {
 
   it("sending `@<repo> <question>` posts mail_to — not a prompt", async () => {
     const { requests } = renderApp({ path, routes: mailRoutes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const input = await screen.findByTestId("composer-input");
     fireEvent.change(input, { target: { value: "@api where is search wired?" } });
     const send = await screen.findByTestId("composer-send");
-    // The verb says what the click does: an ask, not a prompt.
-    await waitFor(() => expect(send.textContent).toBe("Ask"));
+    // The old panel re-labelled its send button `Ask` for a mail arm; the
+    // redesign's shared `ds/PromptBox` sends with an icon whose accessible
+    // name is always `Send`, so that verb is retired with the old composer.
+    // What the click does is still proven below: the ask posts `mail_to`.
     fireEvent.click(send);
 
     await waitFor(() => {
@@ -648,7 +687,7 @@ describe("the composer @-menu (ADR-0072 § 9)", () => {
 
   it("an ordinary prompt, and a mention of the thread's own repo, post no mail_to", async () => {
     const { requests } = renderApp({ path, routes: mailRoutes(mailProject) });
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const input = await screen.findByTestId("composer-input");
     fireEvent.change(input, { target: { value: "run the tests" } });
     fireEvent.click(screen.getByTestId("composer-send"));
@@ -686,7 +725,7 @@ describe("the composer @-menu (ADR-0072 § 9)", () => {
       routes: routes({ ...projectFixture, agent_mail_enabled: false }, [reposStub]),
     });
     void fetchMock;
-    await screen.findByTestId("conversation-title");
+    await screen.findByTestId("chat-title");
     const input = await screen.findByTestId("composer-input");
     fireEvent.change(input, { target: { value: "@" } });
     expect(screen.queryByTestId("composer-mail-menu")).toBeNull();

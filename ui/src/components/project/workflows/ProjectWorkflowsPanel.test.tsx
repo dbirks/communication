@@ -179,10 +179,11 @@ describe("ProjectWorkflowsPanel — the row (2e shape, project scope)", () => {
         "Feature development",
       ),
     );
-    // The name is the way to the workflow's own page — where its YAML and
-    // graph now live. No `Edit` button duplicates it (2e item 8).
+    // The name is the way to the workflow's own page — the redesign's editor
+    // at `/factory/<id>` (`routes.workflow`), where its YAML and graph now
+    // live. No `Edit` button duplicates it (2e item 8).
     expect(screen.getByTestId(`project-workflow-name-${rowKey}`).getAttribute("href")).toBe(
-      `/workflows/${WIRE_PIPELINE_ID}`,
+      `/factory/${WIRE_PIPELINE_ID}`,
     );
     expect(screen.getByTestId(`project-workflow-revision-${rowKey}`).textContent).toBe("r7");
     expect(screen.getByTestId(`project-workflow-summary-${rowKey}`).textContent).toContain(
@@ -217,7 +218,9 @@ describe("ProjectWorkflowsPanel — the row (2e shape, project scope)", () => {
     const box = await screen.findByTestId(`project-workflow-starts-${rowKey}`);
     expect(box.textContent).toContain("STARTS WHEN");
     expect(box.textContent).toContain("Never triggered");
-    expect(box.textContent).toContain("Or start it by hand from the project's Runs tab.");
+    expect(box.textContent).toContain(
+      "Or start it by hand from the project's home (“or run a workflow”).",
+    );
     expect(screen.getAllByTestId(`project-workflow-add-${rowKey}`)).toHaveLength(1);
     expect(box.querySelector(`[data-testid="project-workflow-add-${rowKey}"]`)).toBeTruthy();
   });

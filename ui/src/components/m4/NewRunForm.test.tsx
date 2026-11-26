@@ -4,15 +4,14 @@
  * controls swap with it — and that submitting honours idempotency (one POST,
  * one key) and the run route on success.
  */
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { NewRunForm, runCeilingConflictOf, runCeilingSentence } from "./NewRunForm";
 import type { RunSummary } from "../../api/types";
 import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
-import { renderApp } from "../../test/render";
 import {
   WIRE_ASSIGNMENT_ID,
   WIRE_RUN_ID,
@@ -31,6 +30,10 @@ const REPOS_PATH = `/api/v1/projects/${wireProjectId}/repos`;
 const RUNS_PATH = `/api/v1/projects/${wireProjectId}/runs`;
 const REVISION_PATH = `/api/v1/revisions/${WIRE_REVISION_ID}`;
 const NEW_RUN_ID = "01987b30-0000-7000-8000-abcdef012345";
+
+// The file mounts components directly (no `renderApp`, which used to register
+// the cleanup through `test/render`), so it owns its own teardown.
+afterEach(cleanup);
 
 /** The project's two repos (`§ 7.2 W1`): the repository select lists these. */
 const repos: Repository[] = [
@@ -66,27 +69,46 @@ function createResponse(status = 201, body: unknown = { run_id: NEW_RUN_ID, stat
   return { path: RUNS_PATH, method: "POST", status, body } satisfies RouteStub;
 }
 
-/** Open the New run form on the project's runs page (the band's `Start run`
- *  is the one door now — it navigates with `?new=1`; the panel's own button is
- *  gone per the 1b pass-2 review). */
+/**
+ * Mount the free-form form for a project.
+ *
+ * The old door was the project's Runs page (`/projects/<p>/runs?new=1`); that
+ * route is now a replace-redirect to `/p/<p>/factory`, which does not carry the
+ * form. The component is alive and still mounted by `StartRunDialog` (Home's
+ * `or run a workflow` chip, the editor's `Try it`) and by the repository page's
+ * `Hand off` — so the form's own contract is asserted by mounting it directly,
+ * exactly as the typed sections below do. The user's door (the project home's
+ * chip opening this form and landing on the created run) is ported to
+ * `components/home/StartRunDialog.ported.test.tsx`.
+ */
 async function openForm(routes: RouteStub[] = []) {
-  const mounted = renderApp({
-    path: `/projects/${wireProjectId}/runs?new=1`,
-    routes: [
-      ...routes,
-      { path: "/api/v1/me", body: meFixture },
-      { path: `/api/v1/projects/${wireProjectId}`, body: projectFixture },
-      { path: "/api/v1/pipelines", body: wirePipelineList },
-      { path: RUNS_PATH, method: "GET", body: wireRunList },
-      { path: ASSIGNMENTS_PATH, body: wireAssignmentList },
-      { path: REPOS_PATH, body: { items: repos } },
-      { path: REVISION_PATH, body: wireRevision },
-      { path: `/api/v1/runs/${NEW_RUN_ID}`, body: wireRun },
-      createResponse(),
-    ],
-  });
+  const { requests } = mockFetch([
+    ...routes,
+    { path: "/api/v1/me", body: meFixture },
+    { path: `/api/v1/projects/${wireProjectId}`, body: projectFixture },
+    { path: "/api/v1/pipelines", body: wirePipelineList },
+    { path: RUNS_PATH, method: "GET", body: wireRunList },
+    { path: ASSIGNMENTS_PATH, body: wireAssignmentList },
+    { path: REPOS_PATH, body: { items: repos } },
+    { path: REVISION_PATH, body: wireRevision },
+    { path: `/api/v1/runs/${NEW_RUN_ID}`, body: wireRun },
+    createResponse(),
+  ]);
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+        })
+      }
+    >
+      <MemoryRouter>
+        <NewRunForm projectId={wireProjectId} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
   await screen.findByTestId("new-run-form");
-  return mounted;
+  return { requests };
 }
 
 /** Fill the two required inputs of the sample revision. */
@@ -221,16 +243,6 @@ describe("NewRunForm — submit is one run", () => {
       },
       idempotency: key,
     });
-  });
-
-  it("navigates to the created run", async () => {
-    const { requests } = await openForm();
-    await fillRequired();
-    fireEvent.click(screen.getByTestId("new-run-submit"));
-
-    await waitFor(() =>
-      expect(requestsTo(requests, `/api/v1/runs/${NEW_RUN_ID}`, "GET").length).toBeGreaterThan(0),
-    );
   });
 
   it("shows the control plane's problem verbatim when the ceiling refuses the run", async () => {

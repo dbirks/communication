@@ -1,44 +1,66 @@
-// Phase 1 acceptance: the app-shell + IA redesign's shell itself.
+// Phase 1 acceptance, redesign R8: the app shell itself — the project rail,
+// the top bar, the scope sheet on a phone, the redirects of every old address,
+// the one layout preference the app still persists, and the two assistant
+// doors (Search or ask ⌘K, Quick chat ⌘J / the mic).
 //
-// The sidebar replaces the top app bar, the nav rows point at the canonical
-// routes (contract C1), every legacy URL redirects, the tree expansion is a
-// persisted preference (contract C2), the Settings → Layout page states the
-// shell's fixed behaviour (finding 10: the sidebar is always the project
-// tree) and a stored OLD preferences document — one still carrying the three
-// retired keys — loads the same shell with no error (T7), the first ⌘K opens the jump palette and ⌘J opens Ask (finding 08,
-// superseding ADR-0050's first-press-opens-Ask toggle), and at phone width
-// (below 768px, finding 07) the sidebar is a drawer that Escape closes. Between 768px and
-// 1024px the shell forces the collapsed rail — no drawer, no labels — without
-// touching the stored `sidebar:collapsed` preference.
+// The sidebar is deleted (docs/design/redesign/CONTRACT.md "What happens to the
+// old app"), so this suite names the REPLACEMENT the contract draws and proves
+// that, not the old column:
 //
-// Runs ONLY when COMMUNICATION_E2E_SHELL=1 (skipped everywhere else — the
-// issue2 suites' env-gate idiom). Every page runs checkShellScreen (axe
-// serious/critical, no sideways scroll, no pageerror); every step leaves an
-// evidence() screenshot + log line.
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+//   rail (64px)  `project-rail`, `rail-tile-all`, `rail-tile-<projectId>`,
+//                `rail-add-project`, `rail-manage`, `rail-account`
+//   top bar (60px) `top-bar`, `top-bar-context`, `top-bar-scope-name`,
+//                `pill-home|pill-chats|pill-factory`, `search-or-ask`,
+//                `top-bar-mic`
+//   phone (below 768px) `scope-open` → `scope-sheet` (`scope-row-*`,
+//                `scope-account`), `scope-backdrop`
+//   gone: the drawer, the collapsed rail + its ⌘\ chord, the edge-drag snap,
+//         the rail's Projects popover, the floating Ask button, Settings →
+//         Layout (its retired keys are proven READ AND IGNORED in T7 below).
+//
+// The scope is a URL prefix (`/p/:projectId/...`), so the scope claims here are
+// URL claims: the pill's links carry the scope, the rail's tiles keep the
+// SECTION while they change the project, and Manage is global.
+//
+// Runs ONLY when COMMUNICATION_E2E_SHELL=1 (the issue2 suites' env-gate idiom).
+// Every page runs checkShellScreen (axe serious/critical, no sideways scroll,
+// no pageerror) plus noSidewaysScrollInShell — with `h-dvh overflow-hidden` on
+// the shell root the DOCUMENT can no longer scroll sideways at all, so the
+// scroll check has to look at the region that owns scrolling now. Every step
+// leaves an evidence() screenshot + log line.
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { expectNoLegacyAppBar, gotoApp, signIn } from "./helpers.js";
 import {
   SHELL_ENABLED,
   SHELL_GATE,
   apiCsrf,
-  apiPipelines,
   apiPreferences,
+  apiProjectWithRepo,
   apiProjects,
-  apiRuns,
-  apiConversations,
   checkShellScreen,
   evidence,
+  noSidewaysScrollInShell,
   signInNarrow,
   watchPageErrors,
 } from "./shell-helpers.js";
 
+/** The Manage destinations CONTRACT §7 names, in order. */
+const MANAGE_SECTIONS = [
+  "projects",
+  "repositories",
+  "people",
+  "runners",
+  "agents",
+  "secrets",
+] as const;
+
 /**
  * Press a ⌘-chord the way this lab's keyboard allows. The app binds
- * `metaKey || ctrlKey` for ⌘K/⌘J (CommandPalette.tsx, AssistantPopover.tsx);
- * `Meta+k`/`Meta+j` carry no browser default on the lab's Linux Chromium, so
- * they are tried first and `Control+…` is the documented fallback (the idiom
- * shell-journey.spec.ts already uses).
+ * `metaKey || ctrlKey` for ⌘K/⌘J (CommandPalette.tsx's hold-to-talk, the
+ * assistant chord in AssistantPopover.tsx); `Meta+k`/`Meta+j` carry no browser
+ * default on the lab's Linux Chromium, so they are tried first and `Control+…`
+ * is the documented fallback (the idiom shell-journey.spec.ts already uses).
  */
 async function pressChord(page: Page, key: string, opened: () => Promise<boolean>) {
   await page.keyboard.press(`Meta+${key}`);
@@ -47,310 +69,321 @@ async function pressChord(page: Page, key: string, opened: () => Promise<boolean
   }
 }
 
-/**
- * Press the ⌘\\ (⌃\\ here) COLUMN TOGGLE and wait for its effect. Unlike
- * opening the palette, a chord press is a toggle: firing the fallback while
- * the first press is still landing would toggle straight back, so the first
- * press gets a settle window before the fallback is tried, and the fallback
- * gets the full window. `settled` is the observable end state the toggle must
- * reach (e.g. "the rail is mounted").
- */
-async function pressToggleChord(page: Page, settled: () => Promise<boolean>) {
-  await page.keyboard.press("Meta+\\");
-  await expect
-    .poll(settled, { timeout: 3_000 })
-    .toBe(true)
-    .catch(async () => {
-      await page.keyboard.press("Control+\\");
-      await expect.poll(settled, { timeout: 30_000 }).toBe(true);
-    });
+/** The data-testid the app computes for an id is not needed here: the rail
+ * keys its tiles by the raw project id (`rail-tile-${project.id}`). */
+
+/** The repository page this suite can drive: one project that carries a repo,
+ * and that repo's name (the page is `/p/:projectId/:repo`). */
+async function repoPagePath(page: Page): Promise<{ path: string; repo: string }> {
+  const project = await apiProjectWithRepo(page.request);
+  const res = await page.request.get(`${BASE_URL}/api/v1/projects/${project.id}/repos?limit=50`);
+  if (!res.ok()) throw new Error(`GET /projects/${project.id}/repos -> ${res.status()}`);
+  const body = (await res.json()) as { items?: { name: string }[] };
+  const repo = (body.items ?? [])[0];
+  if (!repo) throw new Error(`project ${project.id} reported a repository but listed none`);
+  return { path: `/p/${project.id}/${encodeURIComponent(repo.name)}`, repo: repo.name };
 }
 
-/** Is the column collapsed in the SAVED document? A ≥1024px viewport must show
- * exactly what the document says (the forced-rail zone never rewrites it), so
- * the stored answer doubles as the settle TARGET after a resize out of that
- * zone — `setViewportSize` is not one by itself, and the forced rail carries
- * the same `sidebar-expand` the chosen rail does. */
-async function storedRailState(request: APIRequestContext): Promise<boolean> {
-  return (await apiPreferences(request)).layout.expanded["sidebar:collapsed"] === true;
+/** What element carries the caret right now (testid, href or tag). */
+async function caretOn(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el) return "(nothing)";
+    const testid = el.getAttribute("data-testid");
+    if (testid) return `[${testid}]`;
+    const href = el.getAttribute("href");
+    return href ? `a[href="${href}"]` : `${el.tagName.toLowerCase()}`;
+  });
 }
 
-/** Wait for the shell at 1500px to show the saved column state, both halves of
- * it: the control that belongs and the one that must not mount. Returns which
- * state was found, so the caller can put it back. */
-async function settleDesktopColumn(page: Page): Promise<"rail" | "column"> {
-  const rail = await storedRailState(page.request);
-  await expect(
-    page.getByTestId(rail ? "sidebar-expand" : "sidebar-collapse"),
-    `1500px shows the saved column state (sidebar:collapsed=${rail})`,
-  ).toBeVisible();
-  await expect(
-    page.getByTestId(rail ? "sidebar-collapse" : "sidebar-expand"),
-    "…and the other width's control does not mount",
-  ).toHaveCount(0);
-  return rail ? "rail" : "column";
+/** One rail tile or pill item's href, resolved against the app origin. */
+async function hrefOf(target: Locator): Promise<string> {
+  const href = await target.getAttribute("href");
+  if (href === null) throw new Error("the element carries no href");
+  return new URL(href, BASE_URL).pathname + new URL(href, BASE_URL).search;
 }
 
-/** Put the saved column state back through the UI's own doors. Best effort on
- * purpose: this runs in a `finally`, and a restore that throws would bury the
- * real failure behind its own. */
-async function restoreColumnState(page: Page, want: "rail" | "column"): Promise<void> {
-  try {
-    if ((await storedRailState(page.request)) === (want === "rail")) return;
-    await page.setViewportSize({ width: 1500, height: 950 });
-    const door = page.getByTestId(want === "rail" ? "sidebar-collapse" : "sidebar-expand");
-    if (await door.isVisible().catch(() => false)) {
-      await door.click({ timeout: 10_000 });
-    } else {
-      await pressToggleChord(page, () =>
-        page.getByTestId(want === "rail" ? "sidebar-expand" : "sidebar-collapse").isVisible(),
-      );
-    }
-    await expect(
-      page.getByTestId(want === "rail" ? "sidebar-expand" : "sidebar-collapse"),
-      `the saved column state (${want}) is restored`,
-    ).toBeVisible({ timeout: 15_000 });
-  } catch {
-    // The next shell test's own settle point reports a stranded preference.
-  }
+/** The shell frame in pixels: the rail's box, the bar's box and the content
+ * region's top-left corner — the three numbers CONTRACT "Shell" fixes. */
+async function measureFrame(page: Page): Promise<{
+  rail: { x: number; y: number; width: number; height: number };
+  bar: { x: number; y: number; width: number; height: number };
+  content: { x: number; y: number };
+}> {
+  const box = async (target: Locator) => {
+    const b = await target.boundingBox();
+    if (!b) throw new Error(`${await target.getAttribute("data-testid")} is not laid out`);
+    return { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: b.height };
+  };
+  const rail = await box(page.getByTestId("project-rail"));
+  const bar = await box(page.getByTestId("top-bar"));
+  const content = await box(page.locator("main").first());
+  return { rail, bar, content: { x: content.x, y: content.y } };
 }
 
-/** The library's folder labels as the Workflows page reads them (the filter's
- * own source: the wire's distinct non-empty `folder` values). */
-async function apiPipelineFolders(request: APIRequestContext): Promise<string[]> {
-  const res = await request.get(BASE_URL + "/api/v1/pipelines");
-  if (!res.ok()) throw new Error(`GET /pipelines -> ${res.status()}`);
-  const body = (await res.json()) as { pipelines?: { folder?: string | null }[] };
-  return (body.pipelines ?? []).map((row) => row.folder ?? "");
-}
-
-/** The sidebar's nav rows and the canonical route each must point at.
- * Handoff 2c/3c: Today (`/`, what the row called Home) and Threads
- * (`/threads`) are the cross-project rows; the Inbox and Board rows are gone
- * (Inbox folded into Today, the Board's behavior into the repository page's
- * Lanes view), and finding 03 unmounted `/inbox` and `/board` — both now
- * redirect to `/`. Finding 02: the LIBRARY block is gone — Workflows and
- * Agents are top-level rows (Steps is a tab of the Workflows page at
- * `/workflows/steps`, not a sidebar row; the row says `Agents`, not
- * `Agent profiles`). */
-const NAV: { testid: string; href: string }[] = [
-  { testid: "sidebar-link-home", href: "/" },
-  { testid: "sidebar-link-threads", href: "/threads" },
-  { testid: "sidebar-link-workflows", href: "/workflows" },
-  { testid: "sidebar-link-profiles", href: "/profiles" },
-];
-
-test.describe("shell p1 — app shell, nav, redirects, preferences, palette, drawer", () => {
+test.describe("shell p1 — rail, top bar, scope, redirects, preferences, ask doors", () => {
   test.skip(!SHELL_ENABLED, SHELL_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(8 * 60_000);
 
-  test("sidebar shell: no legacy primary header, nav rows point at canonical routes", async ({
+  test("rail shell: no legacy header, the pill and the rail link the canonical routes", async ({
     page,
   }) => {
     await signIn(page, "admin");
     // The IdP chain lands on the API origin's embedded build; the journey
     // runs against the dev origin, where the current source is served.
-    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+    await gotoApp(page, "/");
     const stopWatching = watchPageErrors(page);
     await expectNoLegacyAppBar(page); // header[aria-label="Primary"] is gone
-    await expect(page.getByTestId("sidebar")).toBeVisible();
-    for (const row of NAV) {
-      const link = page.getByTestId(row.testid);
-      await expect(link).toBeVisible();
-      const href = await link.getAttribute("href");
-      expect(href, `${row.testid} href`).toBe(row.href);
+    const projects = await apiProjects(page.request);
+    const project = projects[0];
+    expect(project, "the lab seeds at least one project").toBeTruthy();
+
+    // The frame: rail + bar, and the old column is not there at all.
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("top-bar")).toBeVisible();
+    await expect(page.getByTestId("sidebar"), "the 220px column is deleted").toHaveCount(0);
+    for (const gone of [
+      "sidebar-link-home",
+      "sidebar-link-threads",
+      "sidebar-link-workflows",
+      "sidebar-link-profiles",
+      "sidebar-project-toggle",
+      "rail-tooltip",
+      "rail-projects-popover",
+      "sidebar-resize-handle",
+      "phone-top-strip",
+      "project-switcher",
+      "ask-fab",
+    ]) {
+      await expect(page.locator(`[data-testid^="${gone}"]`), `${gone} is gone with the sidebar`).toHaveCount(0);
     }
-    // Finding 02: the LIBRARY block is gone — no section label, no Steps row,
-    // and the Agents row says `Agents`.
-    await expect(page.getByText("LIBRARY")).toHaveCount(0);
-    await expect(page.getByTestId("sidebar-link-steps")).toHaveCount(0);
-    // (the row carries a count chip, so match the label word, not the line)
-    await expect(page.getByTestId("sidebar-link-workflows")).toContainText(/Workflows/);
-    await expect(page.getByTestId("sidebar-link-profiles")).toContainText(/Agents/);
-    await checkShellScreen(page, "home with sidebar", stopWatching);
+
+    // The pill: the three daily places, at the unscoped (All) routes.
+    expect(await hrefOf(page.getByTestId("pill-home"))).toBe("/");
+    expect(await hrefOf(page.getByTestId("pill-chats"))).toBe("/chats");
+    expect(await hrefOf(page.getByTestId("pill-factory"))).toBe("/factory");
+    await expect(page.getByTestId("pill-home")).toContainText("Home");
+    await expect(page.getByTestId("pill-chats")).toContainText("Chats");
+    await expect(page.getByTestId("pill-factory")).toContainText("Factory");
+    await expect(page.getByTestId("search-or-ask")).toBeVisible();
+    await expect(page.getByTestId("top-bar-scope-name")).toHaveText("All projects");
+    // Manage is NOT in the pill — it lives in the rail; the pill holds exactly
+    // the three daily places.
+    const pill = page.getByRole("navigation", { name: "Sections" });
+    await expect(pill.getByRole("link")).toHaveCount(3);
+
+    // The rail: All, one tile per project, the "+", the gear and the account.
+    expect(await hrefOf(page.getByTestId("rail-tile-all"))).toBe("/");
+    expect(await hrefOf(page.getByTestId(`rail-tile-${project.id}`))).toBe(`/p/${project.id}`);
+    expect(await hrefOf(page.getByTestId("rail-add-project"))).toBe("/manage/projects?new=1");
+    expect(await hrefOf(page.getByTestId("rail-manage"))).toBe("/manage/projects");
+    await expect(page.getByTestId("rail-account").getByTestId("user-menu")).toBeVisible();
+    await expect(page.getByTestId("rail-account").getByTestId("user-badge")).toBeVisible();
+    await expect(page.getByTestId("scope-open"), "the scope trigger is the phone's door").toHaveCount(
+      0,
+    );
+
+    // In a project the pill carries the scope, and the rail's tiles keep the
+    // SECTION while they change the project (CONTRACT "Shell").
+    await gotoApp(page, `/p/${project.id}/chats`);
+    await expect(page.getByTestId("chats")).toBeVisible();
+    expect(await hrefOf(page.getByTestId("pill-home"))).toBe(`/p/${project.id}`);
+    expect(await hrefOf(page.getByTestId("pill-chats"))).toBe(`/p/${project.id}/chats`);
+    expect(await hrefOf(page.getByTestId("pill-factory"))).toBe(`/p/${project.id}/factory`);
+    expect(await hrefOf(page.getByTestId("rail-tile-all"))).toBe("/chats");
+    await expect(page.getByTestId("top-bar-scope-name")).toHaveText(project.name);
+
+    await gotoApp(page, "/");
+    await checkShellScreen(page, "home with the rail", undefined);
+    await noSidewaysScrollInShell(page);
+    stopWatching();
     await evidence(
       page,
-      "shell-p1-sidebar",
-      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, all four nav rows (Today, Threads, Workflows, Agents) link to the canonical routes, and no Steps row or LIBRARY label exists (finding 02)",
+      "shell-p1-rail",
+      "the rail (All, one tile per project, +, Manage, the account) and the 60px top bar replace the sidebar: the pill links /, /chats and /factory and carries the scope on a project page, the rail's tiles link /p/<id> and keep the section, the '+' deep-links New project, and the deleted column's rows, tooltip, popover, edge handle, phone strip, project switcher and floating Ask mount nowhere",
     );
   });
 
-  test("legacy routes redirect to the canonical URLs", async ({ page }) => {
+  test("legacy routes redirect to the canonical redesigned URLs", async ({ page }) => {
     await signIn(page, "admin");
     const project = (await apiProjects(page.request))[0];
-    const runs = await apiRuns(page.request);
-    const conversation = (await apiConversations(page.request))[0];
+    expect(project, "the lab seeds at least one project").toBeTruthy();
+    const pipelines = await page
+      .request.get(`${BASE_URL}/api/v1/pipelines`)
+      .then((r) => r.json())
+      .then((b: { pipelines?: { id: string }[] }) => b.pipelines ?? []);
+    const conversations = await page
+      .request.get(`${BASE_URL}/api/v1/conversations?limit=50`)
+      .then((r) => r.json())
+      .then((b: { items?: { id: string }[] }) => b.items ?? []);
+
     const rows: { old: string; canonical: string }[] = [
-      { old: "/library", canonical: "/workflows" },
-      { old: "/agents", canonical: "/profiles" },
-      // Finding 02: Steps is a tab of the Workflows page; the old addresses
-      // redirect there.
-      { old: "/steps", canonical: "/workflows/steps" },
-      // Finding 03: `/inbox` and `/board` are no longer destinations — both
-      // land on Today.
+      // CONTRACT "Redirects": Threads became Chats, Workflows became Factory,
+      // the settings pages became Manage sections, the board and Today's
+      // neighbours became Home.
+      { old: "/threads", canonical: "/chats" },
+      { old: "/workflows", canonical: "/factory" },
+      { old: "/library", canonical: "/factory" },
+      { old: "/agents", canonical: "/manage/agents" },
+      { old: "/profiles", canonical: "/manage/agents" },
+      { old: "/steps", canonical: "/manage/agents?tab=steps" },
+      { old: "/workflows/steps", canonical: "/manage/agents?tab=steps" },
+      { old: "/workflows/collections", canonical: "/manage/agents?tab=skills" },
+      { old: "/projects", canonical: "/manage/projects" },
+      { old: "/ops", canonical: "/manage/runners" },
+      { old: "/settings/operations", canonical: "/manage/runners" },
+      { old: "/settings/assistant", canonical: "/manage/agents?tab=assistant" },
+      // Finding 03 retired the Inbox and the Board as destinations; both land
+      // on Home, which is where their behaviour lives now.
       { old: "/inbox", canonical: "/" },
       { old: "/board", canonical: "/" },
+      { old: "/catch-up", canonical: "/" },
+      { old: `/p/${project.id}/pipelines`, canonical: `/p/${project.id}/factory` },
+      { old: `/p/${project.id}/workflows`, canonical: `/p/${project.id}/factory` },
+      { old: `/p/${project.id}/runs`, canonical: `/p/${project.id}/factory` },
+      { old: `/projects/${project.id}`, canonical: `/p/${project.id}` },
+      { old: `/p/${project.id}/settings`, canonical: `/manage/projects/${project.id}` },
+      {
+        old: `/p/${project.id}/members`,
+        canonical: `/manage/people?project=${encodeURIComponent(project.id)}`,
+      },
+      // The project-scoped Threads tab and the single thread (T1's proof):
+      // both old spellings land on the SCOPED chats address, not the global one.
+      { old: `/p/${project.id}/conversations`, canonical: `/p/${project.id}/chats` },
+      { old: `/p/${project.id}/threads`, canonical: `/p/${project.id}/chats` },
     ];
-    if (project)
-      // Finding 02: the project Workflows tab is `/p/:id/workflows`; the old
-      // `pipelines` spelling stays alive as a redirect.
+    if (pipelines.length > 0) {
       rows.push({
-        old: `/p/${project.id}/pipelines`,
-        canonical: `/p/${project.id}/workflows`,
+        old: `/workflows/${pipelines[0].id}`,
+        canonical: `/factory/${pipelines[0].id}`,
       });
-    if (project) rows.push({ old: `/projects/${project.id}`, canonical: `/p/${project.id}` });
-    if (project && runs.length > 0)
       rows.push({
-        old: `/projects/${project.id}/runs/${runs[0].id}?view=timeline`,
-        canonical: `/runs/${runs[0].id}?view=timeline`,
+        old: `/workflows/${pipelines[0].id}/history`,
+        canonical: `/factory/${pipelines[0].id}?panel=versions`,
       });
-    if (project && conversation)
       rows.push({
-        old: `/projects/${project.id}/conversations/${conversation.id}`,
-        canonical: `/threads/${conversation.id}`,
+        old: `/workflows/${pipelines[0].id}/yaml`,
+        canonical: `/factory/${pipelines[0].id}?panel=yaml`,
       });
-    // Acceptance T1: the project-scoped Threads tab is `/p/:id/threads`; the
-    // old `conversations` spelling of BOTH the tab and a single thread stays
-    // alive as a redirect (App.tsx), and the redirect must land on the
-    // project-scoped `/p/:id/threads[/:cid]` address, not the global one. This
-    // is the URL proof — the browser assertion the box rested on a unit test for.
-    if (project)
+    }
+    if (conversations.length > 0) {
       rows.push({
-        old: `/p/${project.id}/conversations`,
-        canonical: `/p/${project.id}/threads`,
+        old: `/threads/${conversations[0].id}`,
+        canonical: `/chats/${conversations[0].id}`,
       });
-    if (project && conversation)
       rows.push({
-        old: `/p/${project.id}/conversations/${conversation.id}`,
-        canonical: `/p/${project.id}/threads/${conversation.id}`,
+        old: `/p/${project.id}/conversations/${conversations[0].id}`,
+        canonical: `/p/${project.id}/chats/${conversations[0].id}`,
       });
-    expect(rows.length).toBeGreaterThanOrEqual(4);
+      rows.push({
+        old: `/projects/${project.id}/conversations/${conversations[0].id}`,
+        canonical: `/p/${project.id}/chats/${conversations[0].id}`,
+      });
+    }
+    expect(rows.length).toBeGreaterThanOrEqual(10);
     for (const row of rows) {
-      await page.goto(BASE_URL + row.old, { waitUntil: "domcontentloaded" });
-      await expect(page, `${row.old} must land on ${row.canonical}`).toHaveURL(
-        new RegExp(
-          `${BASE_URL.replace(/:/g, "\\:")}${row.canonical.replace(/[/?&=]/g, (c) => (c === "/" ? "/" : "\\" + c))}$`,
-        ),
+      await gotoApp(page, row.old);
+      const landed = new URL(page.url());
+      expect(
+        `${landed.pathname}${landed.search}`,
+        `${row.old} must land on ${row.canonical} with its query preserved`,
+      ).toBe(row.canonical);
+    }
+    // The workbench permalink keeps the ADR-0043 view state byte-for-byte.
+    const runs = await page
+      .request.get(`${BASE_URL}/api/v1/runs?limit=5`)
+      .then((r) => r.json())
+      .then((b: { runs?: { id: string; project_id: string }[] }) => b.runs ?? []);
+    if (runs.length > 0) {
+      const old = `/projects/${runs[0].project_id}/runs/${runs[0].id}?view=timeline`;
+      await gotoApp(page, old);
+      const landed = new URL(page.url());
+      expect(`${landed.pathname}${landed.search}`, `${old} keeps ?view=timeline`).toBe(
+        `/runs/${runs[0].id}?view=timeline`,
       );
     }
     await evidence(
       page,
       "shell-p1-redirects",
-      `all ${rows.length} legacy URLs (library, agents, steps, inbox, board, p/<id>/pipelines, projects/<id>, projects/<id>/runs/<run>?view=timeline, projects/<id>/conversations/<c>, p/<id>/conversations, p/<id>/conversations/<c>) land on their canonical URLs with query state preserved — /inbox and /board land on Today, and the project-scoped p/<id>/conversations[/] lands on p/<id>/threads[/] (T1)`,
+      `all ${rows.length} pre-redesign addresses (threads, workflows, library, agents, profiles, steps, collections, projects, ops, settings tabs, inbox, board, catch-up, the project tabs, project settings/members and the scoped conversations/threads spellings) land on their redesigned URL with the query preserved, and a run permalink keeps ?view=timeline`,
     );
   });
 
-  test("tree expansion persists across reload — /me/preferences carries it", async ({ page }) => {
+  test("the repository's List | Lanes choice persists across reload — /me/preferences carries it", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
-    const projects = await apiProjects(page.request);
-    const project = projects.find((p) => p.name === "M4 Exit") ?? projects[0];
-    expect(project, "a project exists to expand in the tree").toBeTruthy();
-    const toggle = page.getByTestId(`sidebar-project-toggle-${project.id}`);
-    await expect(toggle).toBeVisible();
-    const before = await toggle.getAttribute("aria-expanded");
+    // The project tree died with the sidebar, so the ONE layout choice the
+    // redesigned app still persists is the repository page's view (design 3a):
+    // the same contract C2 round-trip (PATCH → GET → survives a reload), on the
+    // key that survives (`layout.expanded["repo-view:<name>"]`).
+    const { path, repo } = await repoPagePath(page);
+    const key = `repo-view:${repo}`;
+    await gotoApp(page, path);
+    const stopWatching = watchPageErrors(page);
+    const toggle = page.getByTestId("repo-view-toggle");
+    await expect(toggle, "the repository page carries the List | Lanes control").toBeVisible({
+      timeout: 30_000,
+    });
+    const lanes = page.getByTestId("repo-view-lanes");
+    const list = page.getByTestId("repo-view-list");
+    // Start from List so the journey always writes something.
+    if ((await lanes.getAttribute("aria-pressed")) === "true") {
+      await list.click();
+      await expect(lanes).toHaveAttribute("aria-pressed", "false");
+    }
     const beforeDoc = await apiPreferences(page.request);
-    expect(beforeDoc.layout.projects_mode).toBe("tree");
+    expect(beforeDoc.layout.projects_mode, "the wire still carries the retired layout keys").toBeTruthy();
+
     const patch = page.waitForRequest(
       (req) => req.url().includes("/api/v1/me/preferences") && req.method() === "PATCH",
     );
-    await toggle.click();
+    await lanes.click();
     const patchRequest = await patch;
     const body = JSON.parse((await patchRequest.postData()) ?? "{}") as {
       layout?: { expanded?: Record<string, boolean> };
     };
-    // The expanded map is keyed "project:<id>" (the sidebar's own keying).
-    const key = Object.keys(body.layout?.expanded ?? {}).find((k) => k.endsWith(project.id));
-    expect(key, "the PATCH names this project's expansion").toBeTruthy();
-    const targetExpanded = body.layout!.expanded![key!];
-    // The chevron flips optimistically before the write lands: wait for the
-    // PATCH answer before the read-back, or the GET races the write and
-    // reads the pre-save document (a read-before-write, not a persistence
-    // bug).
+    expect(
+      body.layout?.expanded?.[key],
+      `the PATCH names this repository's view key (${key})`,
+    ).toBe(true);
     await patchRequest.response();
-    // The re-render after the PATCH can lag the request itself, so poll the
-    // attribute until it flips instead of reading it once.
-    await expect(async () => await toggle.getAttribute("aria-expanded")).not.toBe(before);
-    const after = await toggle.getAttribute("aria-expanded");
-    expect(after, "the attribute matches the PATCHed value").toBe(String(targetExpanded));
+    await expect(lanes, "the chosen arm reads as pressed").toHaveAttribute("aria-pressed", "true");
+    await expect(list).toHaveAttribute("aria-pressed", "false");
     const stored = await apiPreferences(page.request);
-    const storedKey = Object.keys(stored.layout.expanded).find((k) => k.endsWith(project.id));
-    expect(storedKey, "the stored expansion map names this project").toBeTruthy();
-    expect(stored.layout.expanded[storedKey!], "GET /me/preferences reflects the change").toBe(
-      targetExpanded,
-    );
-    // Reload: the tree re-reads the preference, so the expansion survives.
+    expect(stored.layout.expanded[key], "GET /me/preferences reflects the change").toBe(true);
+    // Reload: the page re-reads the preference, so the choice survives.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId(`sidebar-project-toggle-${project.id}`)).toHaveAttribute(
-      "aria-expanded",
-      String(targetExpanded),
-    );
+    await expect(page.getByTestId("repo-view-lanes")).toHaveAttribute("aria-pressed", "true", {
+      timeout: 30_000,
+    });
+    await checkShellScreen(page, "repository in Lanes", stopWatching);
+    // Put the choice back the way the person would, so no other suite inherits
+    // a repository it did not choose to open in Lanes.
+    await page.getByTestId("repo-view-list").click();
+    await expect
+      .poll(async () => (await apiPreferences(page.request)).layout.expanded[key] ?? false)
+      .toBe(false);
     await evidence(
       page,
-      "shell-p1-tree-expand",
-      `expanding "${project.name}" PATCHes /api/v1/me/preferences (layout.expanded), the GET returns it, and the expansion is still applied after a reload`,
+      "shell-p1-repo-view",
+      `Lanes on "${repo}" PATCHes /api/v1/me/preferences (layout.expanded["${key}"]=true), the GET returns it, the choice is still Lanes after a reload, and the List click writes it back — the one persisted layout choice the redesigned shell keeps`,
     );
   });
 
-  test("Settings → Layout: the sidebar is always the tree; Ask is the ⌘J float on every page", async ({
-    page,
-  }) => {
-    await signIn(page, "admin");
-    const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/settings/layout", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("settings-layout")).toBeVisible();
-    // Finding 10: the three layout preferences are gone — the page states the
-    // shell's fixed behaviour instead of offering choices.
-    await expect(page.getByTestId("settings-layout-sidebar-note")).toContainText(
-      /always the project tree/i,
-    );
-    await expect(page.getByTestId("settings-layout-chord-k")).toContainText(
-      "⌘K opens Search · ⌘J opens Ask",
-    );
-    for (const gone of [
-      "settings-layout-projects-mode",
-      "settings-layout-ask-placement",
-      "settings-layout-workflow-folders",
-    ]) {
-      await expect(page.getByTestId(gone), `finding 10 removed the ${gone} control`).toHaveCount(0);
-    }
-    await checkShellScreen(page, "settings layout", stopWatching);
-    await evidence(
-      page,
-      "shell-p1-settings-layout",
-      "the Settings → Layout tab shows the sidebar note and the ⌘K/⌘J chord line; the projects-mode, ask-placement and workflow-folders groups are gone",
-    );
-    // The sidebar is always the project tree: a real project's expansion
-    // chevron renders, and the deleted switcher does not.
-    const project = (await apiProjects(page.request))[0];
-    expect(project, "the lab seeds at least one project").toBeTruthy();
-    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId(`sidebar-project-toggle-${project.id}`)).toBeVisible();
-    await expect(page.getByTestId("project-switcher")).toHaveCount(0);
-    // Finding 08/10: Ask is one floating button on every page — the
-    // placement setting is gone, so the float is here whatever was stored.
-    await expect(page.getByTestId("ask-fab")).toBeVisible();
-    await checkShellScreen(page, "home with the ask float", stopWatching);
-    await evidence(
-      page,
-      "shell-p1-ask-floating",
-      "the sidebar shows the project tree and the floating Ask button (ask-fab) renders on the home page with no preference to set",
-    );
-  });
-
-  // T7: the client's three removed layout settings (finding 10) still live in
-  // rows the server saved BEFORE the cut — `GET /me/preferences` answers them
-  // and `parseLayout` (ui/src/lib/prefs.ts) drops them. A stored OLD document
-  // must therefore cost nothing: the shell loads clean, with the answers the
-  // 08/10 decisions fixed (always the project tree, always the floating Ask,
-  // folders as a Workflows filter).
+  // T7: the client's three removed layout settings still live in rows the
+  // server saved BEFORE the cut — `GET /me/preferences` answers them and
+  // `parseLayout` (ui/src/lib/prefs.ts) drops them. A stored OLD document must
+  // cost nothing in the REDESIGNED shell either: rail, top bar and every page
+  // load clean, the retired keys are read and IGNORED (not rewritten), and the
+  // doors the 08/10 decisions fixed are the ones the redesign draws.
   test("T7 — an OLD stored preferences document (the retired layout keys) still loads today's shell", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const request = page.request;
     const csrf = await apiCsrf(request);
-    const stopWatching = watchPageErrors(page);
     // Every console error the OLD document can cause, collected across the
     // reloads below: a client that still reads `projects_mode` (or trips on a
     // document carrying it) shows up here, not only as a wrong pixel.
@@ -372,16 +405,11 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     // The document BEFORE the write, restored in the `finally` — the lab's
     // admin is shared state and the next shell test reads this document too.
     const before = await apiPreferences(request);
-    // The rail is the one OTHER preference this test must not fight: the tree
-    // assertions need the expanded column, and an expanded rail is restored
-    // through the UI's own door below (same state, the user's own toggle).
-    const railWasStored = await storedRailState(request);
-    let railTouched = false;
     try {
       // Write an OLD payload — the three keys finding 10 removed from the
-      // client, through the same /me/preferences API the app uses. The
-      // server's `layout` section still stores them (its shape is unchanged),
-      // so this is a real pre-finding-10 row, not a made-up document.
+      // client, through the same /me/preferences API the app uses. The server's
+      // `layout` section still stores them (its shape is unchanged), so this is
+      // a real pre-finding-10 row, not a made-up document.
       const written = await request.patch(BASE_URL + "/api/v1/me/preferences", {
         data: {
           layout: {
@@ -405,47 +433,39 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       expect(stored.layout.show_workflow_folders).toBe(true);
 
       // Fresh document load: the client must read it and IGNORE the three keys.
+      // `projects_mode: "switcher"` is gone: no switcher mounts anywhere, and
+      // the rail (the redesign's project list) does.
       await gotoApp(page, "/");
-      await expect(page.getByTestId("home-page")).toBeVisible({ timeout: 30_000 });
-      if (await storedRailState(request)) {
-        await page.getByTestId("sidebar-expand").click({ timeout: 10_000 });
-        railTouched = true;
-        await expect(page.getByTestId("sidebar-collapse")).toBeVisible({ timeout: 15_000 });
-      }
-      const project = (await apiProjects(request))[0];
-      expect(project, "the lab seeds at least one project").toBeTruthy();
-      // `projects_mode: "switcher"` is gone: the sidebar is the project TREE
-      // and the deleted switcher does not mount.
-      await expect(
-        page.getByTestId(`sidebar-project-toggle-${project.id}`),
-        "an old projects_mode does not put the switcher back",
-      ).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByTestId("home-all")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("project-rail"), "an old projects_mode does not eat the rail").toBeVisible();
+      await expect(page.getByTestId("top-bar")).toBeVisible();
       await expect(page.getByTestId("project-switcher")).toHaveCount(0);
-      // `ask_placement: "sidebar"` is gone: Ask floats on every page.
-      await expect(
-        page.getByTestId("ask-fab"),
-        "an old ask_placement does not move Ask back into the sidebar",
-      ).toBeVisible();
-      // `show_workflow_folders` is gone: the sidebar has no folder rows.
-      await expect(page.locator('[data-testid^="sidebar-workflow-folder-"]')).toHaveCount(0);
+      // `ask_placement: "sidebar"` is gone: there is no floating Ask any more,
+      // and the redesign's two doors answer instead — Search or ask and the mic.
+      await expect(page.getByTestId("ask-fab"), "the Ask float stays retired").toHaveCount(0);
+      await expect(page.getByTestId("search-or-ask")).toBeVisible();
+      await expect(page.getByTestId("top-bar-mic")).toBeVisible();
+      // The Quick chat panel is the Ask surface an old ask_placement cannot
+      // move back into a column: it opens and closes from the top bar.
+      await pressChord(page, "j", async () => (await page.getByTestId("quick-chat").count()) > 0);
+      await expect(page.getByTestId("quick-chat")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("quick-chat")).toBeHidden();
 
-      // The Workflows list: the folder FILTER (when the library carries
-      // folders), never the retired grouped folder rows.
+      // `show_workflow_folders` is gone: the old library address answers the
+      // Factory floor, which groups nothing — no folder rows, no folder select.
       await gotoApp(page, "/workflows");
-      await expect(page.getByTestId("workflows-list")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("factory-index")).toBeVisible({ timeout: 30_000 });
       await expect(page.locator('[data-testid^="workflow-folder-header-"]')).toHaveCount(0);
-      const folders = (await apiPipelineFolders(request)).filter((name) => name !== "");
-      if (folders.length > 0) {
-        await expect(
-          page.getByTestId("workflows-folder-filter"),
-          `the library carries folders [${folders.join(", ")}]; an old show_workflow_folders may not hide the filter`,
-        ).toBeVisible();
-      } else {
-        // The design's own rule: an all-unfiled library carries no select
-        // (Workflows.tsx), so the honest proof here is the flat list plus the
-        // absence of the retired grouped rows asserted above.
-        await expect(page.getByTestId("workflows-folder-filter")).toHaveCount(0);
-      }
+      await expect(page.getByTestId("workflows-folder-filter")).toHaveCount(0);
+
+      // Project home and Manage both answer under the old document too.
+      const project = (await apiProjects(request))[0];
+      await gotoApp(page, `/p/${project.id}`);
+      await expect(page.getByTestId("project-home")).toBeVisible({ timeout: 30_000 });
+      await gotoApp(page, "/manage/agents");
+      await expect(page.getByTestId("manage-agents")).toBeVisible({ timeout: 30_000 });
+      await noSidewaysScrollInShell(page);
 
       // No console error survived the old document (and no uncaught one).
       // And the retired keys are READ AND IGNORED, not silently rewritten:
@@ -454,18 +474,20 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       expect(afterLoad.layout.projects_mode, "the client rewrote a key it no longer owns").toBe(
         "switcher",
       );
+      expect(afterLoad.layout.ask_placement, "the client rewrote ask_placement").toBe("sidebar");
+      expect(
+        afterLoad.layout.show_workflow_folders,
+        "the client rewrote show_workflow_folders",
+      ).toBe(true);
       expect(consoleErrors, "console errors under an old preferences row").toEqual([]);
-      stopWatching();
-      await checkShellScreen(page, "home under an old preferences row", undefined);
       await evidence(
         page,
         "shell-p1-old-prefs",
-        `a stored document still carrying projects_mode=switcher / ask_placement=sidebar / show_workflow_folders=true loads with no console error: the sidebar shows the project tree (no project-switcher, no folder rows), Ask floats (ask-fab), the Workflows list is flat with ${folders.length} folder name(s) behind the toolbar filter and no grouped folder rows`,
+        "a stored document still carrying projects_mode=switcher / ask_placement=sidebar / show_workflow_folders=true loads the redesigned shell with no console error: the rail and the top bar mount, the switcher and the floating Ask mount nowhere, ⌘J opens and Escape closes Quick chat, /workflows answers the Factory floor with no folder rows, and the retired keys are still exactly as stored",
       );
     } finally {
       // Restore the document (best effort: a restore failure must not bury the
-      // real one — the next shell test's own settle point reports a stranded
-      // preference).
+      // real one).
       await request
         .patch(BASE_URL + "/api/v1/me/preferences", {
           data: {
@@ -478,563 +500,442 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
           headers: { Origin: csrf.origin, "X-CSRF-Token": csrf.token },
         })
         .catch(() => undefined);
-      if (railTouched && railWasStored) {
-        await page
-          .getByTestId("sidebar-collapse")
-          .click({ timeout: 10_000 })
-          .catch(() => undefined);
-      }
       await expect
-        .poll(async () => await storedRailState(request), { timeout: 15_000 })
-        .toBe(railWasStored)
+        .poll(async () => (await apiPreferences(request)).layout.projects_mode, { timeout: 15_000 })
+        .toBe(before.layout.projects_mode)
         .catch(() => undefined);
     }
   });
 
-  test("⌘K opens the palette; ⌘J and the Ask button open the assistant; esc closes both", async ({
+  test("⌘K opens Search; ⌘J and the mic open Quick chat; esc and the × close them", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("home-page")).toBeVisible();
-    // Finding 08 supersedes ADR-0050's first-press-opens-Ask toggle: the
-    // FIRST ⌘K opens the jump palette, and the assistant never answers ⌘K.
-    await pressChord(page, "k", async () => {
-      return (await page.getByTestId("palette-input").count()) > 0;
-    });
+    await gotoApp(page, "/");
+    await expect(page.getByTestId("home-all")).toBeVisible();
+    // The FIRST ⌘K opens Search (the palette engine is unchanged; the field in
+    // the bar is its door), and Quick chat never answers ⌘K.
+    await pressChord(page, "k", async () => (await page.getByTestId("palette-input").count()) > 0);
+    await expect(page.getByTestId("palette-root")).toBeVisible();
     await expect(page.getByTestId("palette-input")).toBeVisible();
-    await expect(page.getByTestId("assistant-popover")).toHaveCount(0);
+    await expect(page.getByTestId("quick-chat")).toHaveCount(0);
     await evidence(
       page,
       "shell-p1-palette-open",
-      "the first ⌘K (Meta/Ctrl+K in this lab) opens the jump palette, not the assistant",
+      "the first ⌘K (Meta/Ctrl+K in this lab) opens Search, not Quick chat",
     );
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("palette-input")).toBeHidden();
-    await evidence(page, "shell-p1-palette-esc", "Escape closes the command palette");
-    // ⌘J opens the assistant popover — and only the popover.
-    await pressChord(page, "j", async () => {
-      return (await page.getByTestId("assistant-popover").count()) > 0;
-    });
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
-    await expect(page.getByTestId("palette-input")).toHaveCount(0);
-    await evidence(
-      page,
-      "shell-p1-ask-chord",
-      "⌘J opens the assistant popover (finding 08: Ask has its own chord)",
-    );
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("assistant-popover")).toBeHidden();
-    await evidence(page, "shell-p1-ask-esc", "Escape closes the assistant popover");
-    // The floating Ask button opens the same surface as the chord.
-    await page.getByTestId("ask-fab").click();
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("assistant-popover")).toBeHidden();
-    await evidence(
-      page,
-      "shell-p1-ask-fab",
-      "the floating Ask button (ask-fab) opens and Escape closes the assistant popover",
-    );
-    // The sidebar's Search field is the palette's other door.
-    await page.getByTestId("sidebar-search").click();
+    await evidence(page, "shell-p1-palette-esc", "Escape closes Search");
+    // "Search or ask" is the field the rail replaced the sidebar's with.
+    await page.getByTestId("search-or-ask").click();
     await expect(page.getByTestId("palette-input")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("palette-input")).toBeHidden();
-    stopWatching();
     await evidence(
       page,
-      "shell-p1-sidebar-search",
-      "the sidebar's Search ⌘K field (sidebar-search) opens the jump palette and Escape closes it",
+      "shell-p1-search-field",
+      "the top bar's Search or ask field (search-or-ask) opens Search and Escape closes it",
+    );
+    // ⌘J opens Quick chat — and only Quick chat.
+    await pressChord(page, "j", async () => (await page.getByTestId("quick-chat").count()) > 0);
+    await expect(page.getByTestId("quick-chat")).toBeVisible();
+    await expect(page.getByTestId("palette-input")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("quick-chat")).toBeHidden();
+    await evidence(
+      page,
+      "shell-p1-ask-chord",
+      "⌘J opens the docked Quick chat panel and Escape closes it (the assistant popover is gone)",
+    );
+    // The mic is the other door to Ask: it opens the same surface, and its ×
+    // closes it (the floating Ask button it replaced is retired).
+    await page.getByTestId("top-bar-mic").click();
+    await expect(page.getByTestId("quick-chat")).toBeVisible();
+    await page.getByTestId("quick-chat-close").click();
+    await expect(page.getByTestId("quick-chat")).toBeHidden();
+    await checkShellScreen(page, "home after the ask doors", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-ask-doors",
+      "the top bar's mic opens Quick chat and its × (quick-chat-close) closes it — the two Ask doors the redesign names, with no floating button",
     );
   });
 
-  test("at 1500x950 the sidebar is always visible (no drawer control)", async ({ page }) => {
-    await signIn(page, "admin");
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("sidebar")).toBeVisible();
-    await expect(page.getByTestId("sidebar-open")).toBeHidden();
-  });
-
-  // Finding 07 redrew the responsive contract: 768–1023px is a tablet, not a
-  // phone. The phone frame (drawer + `phone-top-strip`) only mounts below 768px
-  // (it stopped at 1024px), and in this zone the 52px RAIL is FORCED whatever
-  // the saved `sidebar:collapsed` preference says — `Shell`'s `RAIL_QUERY`, not
-  // a stylesheet, so the labelled column, its `New thread` and its nav rows do
-  // not merely hide, they do not mount. The preference itself is never
-  // rewritten (it rides `layout.expanded["sidebar:collapsed"]` on the wire), and
-  // widening brings the saved state back on its own.
-  test("at 900x800 the rail is forced and the stored preference is untouched", async ({ page }) => {
-    await signIn(page, "admin");
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    // The starting point is the EXPANDED column at desktop width: this is the
-    // preference the forced rail must not overwrite.
-    await expect(
-      page.getByTestId("sidebar-collapse"),
-      "1500px honours the expanded pref",
-    ).toBeVisible();
-    const storedBefore = (await apiPreferences(page.request)).layout.expanded;
-    expect(
-      storedBefore["sidebar:collapsed"],
-      `the session starts with the expanded column (stored expanded map: ${JSON.stringify(storedBefore)})`,
-    ).not.toBe(true);
-
-    await page.setViewportSize({ width: 900, height: 800 });
-    const stopWatching = watchPageErrors(page);
-    // The rail is what mounts: its expand control is there, the expanded
-    // column's controls are not.
-    await expect(page.getByTestId("sidebar")).toBeVisible();
-    await expect(page.getByTestId("sidebar-expand")).toBeVisible();
-    await expect(page.getByTestId("sidebar-collapse")).toHaveCount(0);
-    await expect(page.getByTestId("new-chat")).toHaveCount(0);
-    await expect(page.getByTestId("new-chat-rail"), "the rail's + is the same verb").toBeVisible();
-    for (const row of NAV) {
-      await expect(
-        page.getByTestId(row.testid),
-        `${row.testid} does not mount at 900px`,
-      ).toHaveCount(0);
-    }
-    await expect(
-      page.getByTestId("rail-item-workflows"),
-      "the rail's Workflows tile (redesign 4a: `rail-item-*`, the old `sidebar-rail-library` is gone)",
-    ).toBeVisible();
-    await expect(page.getByTestId("rail-item-agents"), "the rail's Agents tile").toBeVisible();
-    // And it is not the phone: no drawer, no top strip, at a width the phone
-    // frame used to own. The rail's own OVERLAY (4a: expand at a rail width)
-    // is not open either.
-    await expect(page.getByTestId("sidebar-open")).toHaveCount(0);
-    await expect(page.getByTestId("phone-top-strip")).toHaveCount(0);
-    await expect(page.getByTestId("sidebar-backdrop")).toHaveCount(0);
-    await expect(
-      page.getByTestId("rail-overlay-backdrop"),
-      "the forced rail stands alone — no overlay over the content",
-    ).toHaveCount(0);
-
-    // The forced rail wrote nothing: the stored preference still says expanded.
-    const storedAfter = (await apiPreferences(page.request)).layout.expanded;
-    expect(
-      storedAfter["sidebar:collapsed"],
-      `the rail-only width left the stored preference alone (before ${JSON.stringify(
-        storedBefore["sidebar:collapsed"],
-      )}, after ${JSON.stringify(storedAfter["sidebar:collapsed"])})`,
-    ).not.toBe(true);
-
-    // Widen, and the saved column comes back by itself — the proof that the
-    // rail was forced by width, not by a rewritten preference.
-    await page.setViewportSize({ width: 1500, height: 950 });
-    await expect(
-      page.getByTestId("sidebar-collapse"),
-      "1500px honours the pref again",
-    ).toBeVisible();
-    await expect(page.getByTestId("new-chat")).toBeVisible();
-    await checkShellScreen(page, "/workflows with the rail forced at 900px", stopWatching);
-    await evidence(
-      page,
-      "shell-p1-rail-900",
-      "at 900x800 the shell forces the 52px rail (no drawer, no top strip, no nav labels), the stored sidebar:collapsed preference is unchanged, and widening restores the saved column (finding 07)",
-    );
-  });
-
-  // The frame's exact edge: `Shell`'s NARROW_QUERY is `(max-width:
-  // 767.98px)` (finding 07 — it was 1023.98px), so 767 is the last phone width
-  // and 768 is the first rail width. Pinning both sides is what keeps the
-  // cutoff from drifting back a breakpoint by accident.
-  test("the phone frame ends at 768px: 767 is the drawer, 768 is the rail", async ({ page }) => {
-    await signIn(page, "admin");
-    await page.setViewportSize({ width: 767, height: 900 });
-    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
-    const strip = watchPageErrors(page);
-    await expect(page.getByTestId("phone-top-strip"), "767 is a phone").toBeVisible();
-    await expect(page.getByTestId("sidebar-open"), "767 opens the drawer").toBeVisible();
-    await expect(page.getByTestId("sidebar"), "a closed drawer is unmounted").toHaveCount(0);
-
-    await page.setViewportSize({ width: 768, height: 900 });
-    await expect(page.getByTestId("phone-top-strip"), "768 is not a phone").toHaveCount(0);
-    await expect(page.getByTestId("sidebar-open"), "768 has no drawer control").toHaveCount(0);
-    await expect(page.getByTestId("sidebar-expand"), "768 shows the forced rail").toBeVisible();
-    await checkShellScreen(page, "/workflows at the 768px frame cut", strip);
-    await evidence(
-      page,
-      "shell-p1-frame-cut-768",
-      "the phone frame stops below 768px: 767 mounts the top strip and drawer, 768 mounts the forced rail with no drawer control (finding 07)",
-    );
-  });
-
-  // Redesign 4a redrew the collapsed rail: no words and no initials on the
-  // tiles any more — hover or keyboard focus on a tile prints the one dark
-  // label (`rail-tooltip`) 8px off the rail's edge, and the third door to the
-  // column is the ⌘\ chord (⌃\ on this lab's keyboard) next to the expand
-  // button and the edge handle. The chord toggles the SAVED preference at
-  // ≥1024px (inside the forced-rail zone it opens an overlay instead), so the
-  // toggle runs at 1500px and ends EXPANDED — the preference as it was found.
-  test("the rail's hover label, and ⌘\\ collapses and re-expands the column at 1500px", async ({
+  test("⌘J and the mic open Quick chat from the Chats list and Manage, not just Home", async ({
     page,
   }) => {
     await signIn(page, "admin");
-    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     const stopWatching = watchPageErrors(page);
-
-    // The hover label, read at the FORCED rail (900px): the tiles mount there
-    // without the test writing the stored preference at all.
-    await page.setViewportSize({ width: 900, height: 800 });
-    const today = page.getByTestId("rail-item-today");
-    await expect(today, "900px forces the rail with the Today tile").toBeVisible();
-    const tip = page.getByTestId("rail-tooltip");
-    await expect(tip, "no label before the pointer arrives").toHaveCount(0);
-    await today.hover();
-    await expect(tip, "hover on the rail's Today tile prints the label").toBeVisible({
-      timeout: 5_000,
-    });
-    await expect(tip).toHaveRole("tooltip");
-    await expect(tip, "the label carries the tile's word").toContainText("Today");
-    // Acceptance T11 (the box rested on Sidebar.test.tsx): the label is the
-    // design's ONE dark chip. Prove it ON THE RENDERED PAGE — the computed
-    // background is the ink colour (`--color-ink: #1e1d1a` = rgb(30, 29, 26),
-    // asserted as rgb so it holds whatever the token's spelling is), and the
-    // chip points back at the tile with its arrow (`rail-tooltip-arrow`, the
-    // 8px ink square rotated 45° onto the tooltip's left edge).
-    await expect(tip, "the dark label paints in the ink colour (design 3a/4a)").toHaveCSS(
-      "background-color",
-      "rgb(30, 29, 26)",
-    );
-    const arrow = page.getByTestId("rail-tooltip-arrow");
-    await expect(arrow, "the label carries the arrow pointing back at the tile").toHaveCount(1);
-    await expect(arrow, "…and the arrow is the same ink").toHaveCSS(
-      "background-color",
-      "rgb(30, 29, 26)",
-    );
-    await page.mouse.move(600, 400); // leave the rail entirely
-    await expect(tip, "leaving the rail takes the label with it").toBeHidden({ timeout: 5_000 });
-
-    // The chord at a width where it owns the preference (≥1024px). Start from
-    // what the saved pref says — EXPANDED on a lab that behaves — and put that
-    // state back at the end, in a `finally`, so a failure halfway through the
-    // toggle cannot strand the eight shell tests that run after this one.
-    //
-    // The resize itself is NOT a settle point, and that is what hung acceptance
-    // 42456100374 for its whole 8-minute budget: the rail the hover leg just
-    // used at 900px is FORCED and carries the same `sidebar-expand` the chosen
-    // rail does, so the old `if (sidebar-expand.isVisible()) click()` aimed at
-    // a rail mid-unmount — the expanded column the 1500px width brings back
-    // never mounts that testid again, and with no action timeout the click
-    // waited for it until the test died. Waiting on the state the SAVED
-    // document commands at a width that honours it settles the frame first, and
-    // every click after it lands on a rail that is staying.
-    await page.setViewportSize({ width: 1500, height: 950 });
-    const found = await settleDesktopColumn(page);
-
-    try {
-      if (found === "rail") {
-        await page.getByTestId("sidebar-expand").click({ timeout: 30_000 });
-        await expect(
-          page.getByTestId("sidebar-collapse"),
-          "the rail's expand button starts the test from the column",
-        ).toBeVisible({ timeout: 30_000 });
-      }
+    for (const route of ["/chats", "/manage/projects"]) {
+      await gotoApp(page, route);
       await expect(
-        page.getByTestId("sidebar-collapse"),
-        "1500px starts from the expanded column",
-      ).toBeVisible();
-      await pressToggleChord(page, () => page.getByTestId("sidebar-expand").isVisible());
-      await expect(
-        page.getByTestId("sidebar-expand"),
-        "⌘\\ collapsed the column to the rail",
+        page.getByTestId("top-bar-mic"),
+        `the mic sits on ${route} too (CONTRACT: every top bar carries it)`,
       ).toBeVisible({ timeout: 30_000 });
-      // The rail it collapsed to is the clickable kind: no rail-zone overlay
-      // and no drawer backdrop left standing over the column's edge.
-      await expect(page.getByTestId("sidebar-collapse")).toHaveCount(0);
-      await expect(page.getByTestId("rail-overlay-backdrop")).toHaveCount(0);
-      await expect(page.getByTestId("sidebar-backdrop")).toHaveCount(0);
-      await pressToggleChord(page, () => page.getByTestId("sidebar-collapse").isVisible());
-      await expect(
-        page.getByTestId("sidebar-collapse"),
-        "⌘\\ expanded the column again",
-      ).toBeVisible({ timeout: 30_000 });
-      await checkShellScreen(page, "rail label + ⌘\\ toggle", stopWatching);
-      await evidence(
-        page,
-        "shell-p1-rail-label-chord",
-        "hovering the rail's Today tile prints the rail-tooltip label 'Today' in the ink colour rgb(30, 29, 26) with its rail-tooltip-arrow (and leaving takes it), and the ⌘\\ chord (Control+\\ on this lab) collapses the column to the rail and re-expands it at 1500px, restoring the saved preference (redesign 4a)",
-      );
-    } finally {
-      await restoreColumnState(page, found);
-    }
-  });
-
-  // Acceptance T4: the design canvas is 1440×900, and the acceptance line is
-  // the ruler one reads there — the page band's H1 sits at ONE left edge and
-  // ONE baseline across routes, measured as `x` and `y + height` (the typographic
-  // baseline of a single-line 22px/28px title is its bottom box edge). The band
-  // is `ds/Page`'s shared `page-band`; emulator/projects.spec.ts holds the same
-  // ruler at 1280 across four layout kinds — this is its 1440 sibling over the
-  // five routes the checklist names (Today, Projects, Threads, a real Workflow
-  // page, Settings).
-  test("at 1440x900 the band title's left edge and baseline do not move between routes", async ({
-    page,
-  }) => {
-    await signIn(page, "admin");
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const pipelines = await apiPipelines(page.request);
-    expect(pipelines.length, "the lab seeds at least one workflow").toBeGreaterThan(0);
-    const stopWatching = watchPageErrors(page);
-    const measured: { route: string; x: number; baseline: number }[] = [];
-    for (const route of [
-      "/",
-      "/projects",
-      "/threads",
-      `/workflows/${pipelines[0].id}`,
-      "/settings/layout",
-    ]) {
-      await page.goto(BASE_URL + route, { waitUntil: "domcontentloaded" });
-      const band = page.getByTestId("page-band");
-      await expect(
-        band,
-        `${route}: the shared header band (page-band) carries the page's title`,
-      ).toBeVisible({ timeout: 30_000 });
-      const title = band.getByRole("heading", { level: 1 });
-      await expect(title, `${route}: the band owns the page's one H1`).toHaveCount(1);
-      const box = await title.boundingBox();
-      expect(box, `${route}: the band's H1 is laid out`).not.toBeNull();
-      measured.push({ route, x: box!.x, baseline: box!.y + box!.height });
-    }
-    const [first, ...rest] = measured;
-    for (const row of rest) {
-      expect(
-        Math.abs(row.x - first.x),
-        `${first.route} title x=${first.x} vs ${row.route} title x=${row.x}: one title left edge at 1440 (±1px)`,
-      ).toBeLessThanOrEqual(1);
-      expect(
-        Math.abs(row.baseline - first.baseline),
-        `${first.route} title baseline=${first.baseline} vs ${row.route} baseline=${row.baseline}: one title baseline (y + height) at 1440 (±1px)`,
-      ).toBeLessThanOrEqual(1);
-    }
-    await checkShellScreen(page, "the five routes measured at 1440x900", stopWatching);
-    await evidence(
-      page,
-      "shell-p1-title-ruler-1440",
-      `the page-band H1's x and baseline (y + height) agree within 1px across /, /projects, /threads, /workflows/<id> and /settings/layout at 1440x900 (${measured.map((m) => `${m.route}@${m.x}/${m.baseline}`).join(" ")})`,
-    );
-  });
-
-  // Acceptance T5's second half: ⌘J answers from more than Today. The shell
-  // mounts the popover once (Shell.tsx), so the chord must open it on every
-  // shell page; the Today chord and the sidebar's Search field (sidebar-search
-  // → palette) are proven by the ⌘K/⌘J test above — these are the Threads and
-  // Workflow-page presses the checklist asks for.
-  test("⌘J opens Ask from the Threads and Workflow pages, not just Today", async ({ page }) => {
-    await signIn(page, "admin");
-    const pipelines = await apiPipelines(page.request);
-    expect(pipelines.length, "the lab seeds at least one workflow").toBeGreaterThan(0);
-    const stopWatching = watchPageErrors(page);
-    for (const route of ["/threads", `/workflows/${pipelines[0].id}`]) {
-      await page.goto(BASE_URL + route, { waitUntil: "domcontentloaded" });
-      await expect(
-        page.getByTestId("ask-fab"),
-        `the floating Ask sits on ${route} too (finding 08)`,
-      ).toBeVisible({ timeout: 30_000 });
-      await pressChord(page, "j", async () => {
-        return (await page.getByTestId("assistant-popover").count()) > 0;
-      });
-      await expect(
-        page.getByTestId("assistant-popover"),
-        `⌘J opens Ask from ${route}`,
-      ).toBeVisible();
+      await pressChord(page, "j", async () => (await page.getByTestId("quick-chat").count()) > 0);
+      await expect(page.getByTestId("quick-chat"), `⌘J opens Ask from ${route}`).toBeVisible();
       await page.keyboard.press("Escape");
-      await expect(page.getByTestId("assistant-popover")).toBeHidden();
+      await expect(page.getByTestId("quick-chat")).toBeHidden();
+      await page.getByTestId("top-bar-mic").click();
+      await expect(page.getByTestId("quick-chat"), `the mic opens Ask from ${route}`).toBeVisible();
+      await page.getByTestId("quick-chat-close").click();
+      await expect(page.getByTestId("quick-chat")).toBeHidden();
     }
     stopWatching();
     await evidence(
       page,
       "shell-p1-ask-two-pages",
-      "⌘J (Meta/Ctrl+j in this lab) opens the assistant popover from /threads and a Workflow page as well as Today, and Escape closes it on both",
+      "⌘J (Meta/Ctrl+j in this lab) and the mic open and close Quick chat from /chats and Manage as well as Home — the shell owns the surface, so a page change never loses it",
     );
   });
 
-  // Acceptance T11: the THIRD door to the column is the edge drag —
-  // `sidebar-resize-handle` (Sidebar.tsx's EdgeResizeHandle, RAIL_EDGE_SNAP_PX
-  // = 120). The pointer travels a ghost and the column SNAPS: dragging the
-  // rail's edge right past ~120px opens the column; dragging the expanded
-  // column's edge left back below it snaps the rail shut. Like the ⌘\ test
-  // above it, this writes the saved preference, so it runs at a ≥1024px width
-  // and restores what it found in a `finally`.
-  test("dragging the edge handle past ~120px snaps the column open, back below snaps the rail shut", async ({
+  test("at 1500x950 the rail is the frame: no phone scope trigger, no sheet", async ({ page }) => {
+    await signIn(page, "admin");
+    await gotoApp(page, "/factory");
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("top-bar")).toBeVisible();
+    await expect(page.getByTestId("scope-open"), "the 36px scope button is the phone's").toHaveCount(
+      0,
+    );
+    await expect(page.getByTestId("scope-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("scope-backdrop")).toHaveCount(0);
+    await noSidewaysScrollInShell(page);
+  });
+
+  // The rail is the frame from 768px up (CONTRACT "Phone": below 768 the rail
+  // does not mount). The old forced-rail band (768–1023) is gone with the
+  // column, so a tablet window is not a special case any more — and, as the old
+  // test insisted, changing the width must never write the stored document.
+  test("at 900x800 the rail is still the frame, the sheet does not mount, and the width writes nothing", async ({
     page,
   }) => {
     await signIn(page, "admin");
-    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+    await gotoApp(page, "/factory");
+    const storedBefore = (await apiPreferences(page.request)).layout.expanded;
+    await expect(page.getByTestId("project-rail")).toBeVisible();
     const stopWatching = watchPageErrors(page);
-    const found = await settleDesktopColumn(page);
-    try {
-      // The item's starting state: the preference COLLAPSED at ≥1024px.
-      if (found === "column") {
-        await page.getByTestId("sidebar-collapse").click({ timeout: 10_000 });
-      }
-      await expect(
-        page.getByTestId("sidebar-rail"),
-        "the drag journey starts from the chosen rail (1500px honours the collapsed pref)",
-      ).toBeVisible({ timeout: 15_000 });
-      const railHandle = page.getByTestId("sidebar-resize-handle");
-      await expect(railHandle, "the rail's right edge carries the drag handle").toBeVisible({
-        timeout: 10_000,
-      });
-      const railBox = await railHandle.boundingBox();
-      expect(railBox, "the rail's edge handle is laid out").not.toBeNull();
-      await page.mouse.move(railBox!.x + railBox!.width / 2, railBox!.y + 300);
-      await page.mouse.down();
-      // Past the 120px threshold — the snap fires on the pointermove, mid-drag.
-      await page.mouse.move(400, railBox!.y + 300, { steps: 16 });
-      await expect(
-        page.getByTestId("sidebar-collapse"),
-        "dragging the rail's edge past ~120px snapped the column open",
-      ).toBeVisible({ timeout: 15_000 });
-      await page.mouse.up();
-
-      // The mirror half: the expanded column's edge, dragged back below the
-      // threshold, snaps the rail closed.
-      const colHandle = page.getByTestId("sidebar-resize-handle");
-      await expect(
-        colHandle,
-        "the expanded column's right edge carries the same handle",
-      ).toBeVisible({ timeout: 10_000 });
-      const colBox = await colHandle.boundingBox();
-      expect(colBox, "the expanded column's edge handle is laid out").not.toBeNull();
-      await page.mouse.move(colBox!.x + colBox!.width / 2, colBox!.y + 300);
-      await page.mouse.down();
-      await page.mouse.move(40, colBox!.y + 300, { steps: 16 });
-      await expect(
-        page.getByTestId("sidebar-expand"),
-        "dragging the expanded column's edge back below ~120px snapped the rail closed",
-      ).toBeVisible({ timeout: 15_000 });
-      await page.mouse.up();
-      await expect(
-        page.getByTestId("sidebar-rail"),
-        "the rail is what stands at the end of the drag",
-      ).toBeVisible();
-      await checkShellScreen(page, "edge-handle snaps both ways", stopWatching);
-      await evidence(
-        page,
-        "shell-p1-edge-drag",
-        "dragging sidebar-resize-handle right past the 120px snap point opened the column and dragging the expanded column's edge left back below it snapped the rail shut (RAIL_EDGE_SNAP_PX, redesign T11); the rail's hover label is proven by the rail-label test and the Projects popover's Esc by the emulator's rail step",
+    const wide = await measureFrame(page);
+    await page.setViewportSize({ width: 900, height: 800 });
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    await expect(page.getByTestId("scope-open"), "a tablet window is not a phone").toHaveCount(0);
+    await expect(page.getByTestId("scope-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("top-bar-phone-slot"), "the phone strip is phone-only").toHaveCount(
+      0,
+    );
+    // The pill keeps its WORDS at a tablet width (they are sr-only on a phone).
+    await expect(page.getByTestId("pill-chats")).toContainText("Chats");
+    const narrow = await measureFrame(page);
+    // And widening comes back to the same frame — nothing was forced, because
+    // nothing is chosen by width above the phone cut.
+    await page.setViewportSize({ width: 1500, height: 950 });
+    await expect(page.getByTestId("project-rail")).toBeVisible();
+    const back = await measureFrame(page);
+    for (const [name, a, b] of [
+      ["rail width", wide.rail.width, narrow.rail.width],
+      ["rail width after widening", wide.rail.width, back.rail.width],
+      ["bar height", wide.bar.height, back.bar.height],
+      ["content top-left x", wide.content.x, back.content.x],
+      ["content top-left y", wide.content.y, back.content.y],
+    ] as const) {
+      expect(Math.abs(a - b), `900px and 1500px agree on ${name} (${a} vs ${b})`).toBeLessThanOrEqual(
+        1,
       );
-    } finally {
-      await restoreColumnState(page, found);
     }
+    const storedAfter = (await apiPreferences(page.request)).layout.expanded;
+    expect(
+      storedAfter,
+      `resizing the frame wrote to the stored preferences (before ${JSON.stringify(
+        storedBefore,
+      )}, after ${JSON.stringify(storedAfter)})`,
+    ).toEqual(storedBefore);
+    await checkShellScreen(page, "/factory at 900px", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-rail-900",
+      "at 900x800 the rail and the 60px top bar are still the frame (no scope trigger, no sheet, no phone strip, the pill still shows its words), the frame's rail width / bar height / content corner match the 1500px numbers within 1px, and the resize PATCHed nothing",
+    );
   });
 
-  // Acceptance T11's keyboard half: the rail's Projects popover is a real
-  // keyboard surface — ds/Popover parks the caret on the first item, ↑/↓ rove
-  // and Enter activates. Esc-closing the same popover is already proven
-  // (e2e/emulator/catchup.spec.ts' rail step); ↓-moves and Enter-navigates are
-  // what was missing. The forced rail at 900px mounts the tiles without the
-  // test ever touching the saved preference.
-  test("the rail's Projects popover walks on ↓ and navigates on Enter", async ({ page }) => {
+  // The frame's exact edge: `Shell`'s NARROW_QUERY is `(max-width: 767.98px)`,
+  // so 767 is the last phone width and 768 is the first rail width. Pinning
+  // both sides is what keeps the cutoff from drifting back a breakpoint by
+  // accident. The phone's `scope-open` button replaces the drawer's menu.
+  test("the phone frame ends at 768px: 767 opens the scope sheet, 768 is the rail", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await page.setViewportSize({ width: 767, height: 900 });
+    await gotoApp(page, "/factory");
+    const strip = watchPageErrors(page);
+    const phone = await measureFrame(page);
+    await expect(page.getByTestId("project-rail"), "767 is a phone: the rail does not mount").toHaveCount(
+      0,
+    );
+    await expect(page.getByTestId("scope-open"), "767 opens the scope sheet").toBeVisible();
+    await expect(page.getByTestId("top-bar-phone-slot"), "the phone bar owns its slot").toBeVisible();
+    await expect(page.getByTestId("scope-sheet"), "a closed sheet is unmounted").toHaveCount(0);
+    await page.getByTestId("scope-open").click();
+    await expect(page.getByTestId("scope-sheet")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("scope-sheet")).toBeHidden();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? ""))
+      .toBe("scope-open");
+    expect(phone.bar.height, "the phone bar is the 52px bar").toBeLessThanOrEqual(53);
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await expect(page.getByTestId("project-rail"), "768 is not a phone").toBeVisible();
+    await expect(page.getByTestId("scope-open"), "768 has no scope trigger").toHaveCount(0);
+    await expect(page.getByTestId("top-bar-phone-slot"), "768 has no phone strip").toHaveCount(0);
+    const desktop = await measureFrame(page);
+    expect(desktop.bar.height, "and the bar is the 60px one").toBeGreaterThanOrEqual(59);
+    await checkShellScreen(page, "/factory at the 768px frame cut", strip);
+    await evidence(
+      page,
+      "shell-p1-frame-cut-768",
+      "the phone frame stops below 768px: 767 mounts no rail but the 52px bar with its scope trigger (the sheet opens, Escape closes it and hands the caret back to scope-open), 768 mounts the 64px rail and the 60px bar with no scope trigger",
+    );
+  });
+
+  // The rail's tiles are the hover label's replacement: CONTRACT draws them as
+  // 38px initials with native `title` tooltips, and the words they hide are the
+  // tile's accessible name. The ⌘\ chord is retired with the column — so the
+  // honest claim is that it now changes NOTHING (no panel, no preference write).
+  test("the rail names every project, and the retired ⌘\\ chord changes nothing", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await gotoApp(page, "/");
+    const stopWatching = watchPageErrors(page);
+    const projects = await apiProjects(page.request);
+    expect(projects.length, "the lab seeds at least one project").toBeGreaterThan(0);
+    const before = await apiPreferences(page.request);
+
+    await expect(page.getByTestId("rail-tile-all")).toHaveAttribute("title", "All projects");
+    await expect(page.getByTestId("rail-tile-all")).toHaveAttribute("aria-label", "All projects");
+    for (const project of projects.slice(0, 6)) {
+      const tile = page.getByTestId(`rail-tile-${project.id}`);
+      await expect(tile, `the tile for "${project.name}" carries its name as the hover label`).toHaveAttribute(
+        "title",
+        project.name,
+      );
+      await expect(tile).toHaveAttribute("aria-label", project.name);
+    }
+    await expect(page.getByTestId("rail-manage")).toHaveAttribute("aria-label", "Manage");
+    await expect(page.getByTestId("rail-add-project")).toHaveAttribute("aria-label", "Add project");
+    // The rail is 64px, so the words cannot print on the tile — that is the
+    // design, and the tooltip is the label. The tile shows its two letters.
+    const all = page.getByTestId("rail-tile-all");
+    expect((await all.innerText()).trim(), "All").toBe("All");
+
+    // The retired chord: pressed at every width the shell draws, it opens no
+    // panel and PATCHes no preference.
+    for (const width of [1500, 900]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.keyboard.press("Meta+\\");
+      await page.keyboard.press("Control+\\");
+      await expect(page.getByTestId("scope-sheet")).toHaveCount(0);
+      await expect(page.locator('[data-testid^="sidebar"]')).toHaveCount(0);
+      await expect(page.getByTestId("project-rail")).toBeVisible();
+    }
+    const after = await apiPreferences(page.request);
+    expect(after.layout, "the ⌘\\ chord owns nothing: the document is unchanged").toEqual(
+      before.layout,
+    );
+    await page.setViewportSize({ width: 1500, height: 950 });
+    await checkShellScreen(page, "rail labels", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-rail-labels",
+      `every rail tile carries its project's name as title + aria-label (All projects, ${projects
+        .slice(0, 6)
+        .map((p) => p.name)
+        .join(", ")}), the tiles print only their initials in the 64px rail, and the retired ⌘\\ chord at 1500px and 900px opens nothing and PATCHes nothing`,
+    );
+  });
+
+  // Acceptance T4's successor: the design canvas is 1440×900 and the acceptance
+  // line there is the FRAME. The shared page band is gone on the redesigned
+  // pages (each one scrolls itself inside the shell), so the ruler this suite
+  // holds is CONTRACT's own numbers: a 64px rail, a 60px bar, and one content
+  // corner — the same on every route, so nothing steps sideways between places.
+  test("at 1440x900 the rail, the bar and the content corner do not move between routes", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const project = (await apiProjects(page.request))[0];
+    expect(project, "the lab seeds at least one project").toBeTruthy();
+    const stopWatching = watchPageErrors(page);
+    const measured: { route: string; rail: number; bar: number; x: number; y: number }[] = [];
+    for (const route of ["/", `/p/${project.id}`, "/chats", "/factory", "/manage/projects"]) {
+      await gotoApp(page, route);
+      const frame = await measureFrame(page);
+      measured.push({
+        route,
+        rail: frame.rail.width,
+        bar: frame.bar.height,
+        x: frame.content.x,
+        y: frame.content.y,
+      });
+      await expect(
+        page.getByTestId("top-bar-context"),
+        `${route}: the bar owns one left region`,
+      ).toBeVisible();
+      expect(
+        await page.getByTestId("page-band").count(),
+        `${route}: the redesigned pages draw no shared title band (the bar is the frame)`,
+      ).toBeLessThanOrEqual(1);
+      await noSidewaysScrollInShell(page);
+    }
+    const [first, ...rest] = measured;
+    for (const row of rest) {
+      for (const key of ["rail", "bar", "x", "y"] as const) {
+        expect(
+          Math.abs(row[key] - first[key]),
+          `${first.route} ${key}=${first[key]} vs ${row.route} ${key}=${row[key]}: one frame at 1440x900 (±1px)`,
+        ).toBeLessThanOrEqual(1);
+      }
+    }
+    expect(
+      first.rail,
+      `the rail is the 64px column CONTRACT draws (measured ${first.rail})`,
+    ).toBe(64);
+    expect(
+      first.bar,
+      `the bar is the 60px band CONTRACT draws (measured ${first.bar})`,
+    ).toBe(60);
+    await checkShellScreen(page, "the five routes measured at 1440x900", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-frame-ruler-1440",
+      `the shell frame is one geometry at 1440x900 across /, /p/<id>, /chats, /factory and /manage/projects (rail ${first.rail}px, bar ${first.bar}px, content corner ${first.x}/${first.y}, every route within 1px of the first): ${measured
+        .map((m) => `${m.route}@${m.rail}/${m.bar}/${m.x}/${m.y}`)
+        .join(" ")}`,
+    );
+  });
+
+  // The rail's Projects popover is gone (a tile is a link, never a menu); the
+  // scope's keyboard surface is the phone's sheet. It is a real dialog: the
+  // caret lands on it, Tab reaches its rows, Enter navigates, and Escape hands
+  // the caret back to the button the sheet came from.
+  test("the scope sheet walks on Tab, navigates on Enter, and gives the caret back on Escape", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     const projects = await apiProjects(page.request);
-    const project = projects.find((p) => p.slug === "m4-exit") ?? projects[0];
+    const project = projects[0];
     expect(project, "the lab seeds at least one project").toBeTruthy();
-    await page.setViewportSize({ width: 900, height: 800 });
-    await page.goto(BASE_URL + `/p/${project.id}`, { waitUntil: "domcontentloaded" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoApp(page, "/");
     const stopWatching = watchPageErrors(page);
-    await expect(page.getByTestId("sidebar-rail"), "900px forces the rail").toBeVisible({
-      timeout: 15_000,
-    });
-    await page.getByTestId("rail-item-projects").click({ timeout: 10_000 });
-    const popover = page.getByTestId("rail-projects-popover");
-    await expect(popover, "the Projects tile opens the popover").toBeVisible({ timeout: 10_000 });
-    // T11's visual bit: the popover points at its tile — the shared
-    // `ds/Popover` arrow square on the edge facing the trigger.
-    await expect(
-      popover.getByTestId("menu-arrow"),
-      "T11: the rail Projects popover carries its arrow",
-    ).toBeVisible({ timeout: 10_000 });
-    const firstRow = popover.locator('[data-testid^="rail-project-"]').first();
-    await expect(firstRow, "on open the caret parks on the popover's first item").toBeFocused({
-      timeout: 10_000,
-    });
-    // The active project's repositories ride below its row (design 4a), so the
-    // roving caret has somewhere to go even in a single-project lab.
-    const repoHref = `/p/${project.id}/app`;
-    await expect(
-      popover.locator(`a[href="${repoHref}"]`),
-      "the popover lists the active project's `app` repository beside its row",
-    ).toBeVisible({ timeout: 15_000 });
-    // Walk the caret down until it lands on the repository link — the same ↓ a
-    // keyboard reader presses.
+    await page.getByTestId("scope-open").focus();
+    expect(await caretOn(page)).toBe("[scope-open]");
+    await page.keyboard.press("Enter");
+    const sheet = page.getByTestId("scope-sheet");
+    await expect(sheet, "Enter on the scope button opens the sheet").toBeVisible();
+    await expect(sheet).toHaveAttribute("role", "dialog");
+    await expect(sheet).toHaveAttribute("aria-modal", "true");
+    await expect
+      .poll(() => caretOn(page), { message: "the caret lands inside the sheet" })
+      .toBe("[scope-sheet]");
+    // Tab to the project's row: the sheet's rows are real links in DOM order.
     let hops = 0;
+    const targetHref = `href="/p/${project.id}"`;
     for (;;) {
-      const active = await page.evaluate(() => document.activeElement?.getAttribute("href") ?? "");
-      if (active === repoHref) break;
+      const active = await caretOn(page);
+      if (active === targetHref) break;
       expect(
         hops++ < 12,
-        `the roving caret reached the repository link within the popover's items (stopped on [${active}], ${hops} presses in)`,
+        `the caret reached "${project.name}" within the sheet's rows (stopped on [${active}], ${hops} presses in)`,
       ).toBe(true);
-      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("Tab");
     }
-    await expect(
-      popover.locator(`a[href="${repoHref}"]`),
-      "↓ moved the caret between the popover's items",
-    ).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(
       page,
-      `Enter activates the focused item — the popover's app row must open ${repoHref}`,
-    ).toHaveURL(new URL(repoHref, BASE_URL).href, { timeout: 15_000 });
+      `Enter activates the focused row — the sheet's "${project.name}" row must open /p/${project.id}`,
+    ).toHaveURL(new URL(`/p/${project.id}`, BASE_URL).href, { timeout: 15_000 });
+    await expect(sheet, "choosing a row also closes the sheet").toBeHidden();
+    // Re-open and Escape: the caret goes home to the button that opened it.
+    await page.getByTestId("scope-open").click();
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expect
+      .poll(() => caretOn(page), { message: "Escape hands the caret back to scope-open" })
+      .toBe("[scope-open]");
     stopWatching();
     await evidence(
       page,
-      "shell-p1-rail-popover-keys",
-      "in the rail's Projects popover ArrowDown moves the caret between items and Enter activates the focused one (the caret walked from the project row to its app repository and the route changed); Esc closing the popover is proven in e2e/emulator/catchup.spec.ts' rail step (redesign T11)",
+      "shell-p1-scope-keys",
+      "the phone scope sheet is a keyboard surface: Enter opens it, the caret lands inside it, Tab walks its rows, Enter on a project row navigates to /p/<id>, choosing a row closes it, and Escape closes it and returns the caret to scope-open (the rail's Projects popover is retired with the rail)",
     );
   });
 
   test.describe("narrow 390x844", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
-    test("phone drawer opens from the menu button and esc closes it", async ({ page }) => {
-      await signInNarrow(page, "admin"); // drawer left open by the helper
+    test("the scope sheet opens from the phone bar and esc closes it", async ({ page }) => {
+      await signInNarrow(page, "admin"); // sheet left open by the helper
       const stopWatching = watchPageErrors(page);
-      await expect(page.getByTestId("sidebar").last()).toBeVisible();
+      const sheet = page.getByTestId("scope-sheet");
+      await expect(sheet).toBeVisible();
+      await expect(sheet.getByTestId("scope-row-all")).toBeVisible();
+      await expect(sheet.getByTestId("scope-row-manage")).toBeVisible();
+      await expect(sheet.getByTestId("scope-account").getByTestId("user-menu")).toBeVisible();
       await evidence(
         page,
-        "shell-p1-drawer-open",
-        "at 390x844 the menu button opens the sidebar drawer with the nav rows inside",
+        "shell-p1-sheet-open",
+        "at 390x844 the top bar's scope button opens the scope sheet with the rail's rows and the account menu inside",
       );
       await page.keyboard.press("Escape");
-      await expect(page.getByTestId("sidebar").last()).toBeHidden();
+      await expect(sheet).toBeHidden();
+      await expect(page.getByTestId("scope-backdrop"), "the sheet took its backdrop with it").toHaveCount(
+        0,
+      );
+      // The other two doors out: the trigger again, then the backdrop.
+      await page.getByTestId("scope-open").click();
+      await expect(sheet).toBeVisible();
+      await page.getByTestId("scope-backdrop").click({ position: { x: 350, y: 400 } });
+      await expect(sheet).toBeHidden();
+      // And the pill is icons only, with the words kept for a reader.
+      await expect(page.getByTestId("pill-chats")).toHaveText("Chats");
+      await expect(page.getByTestId("pill-chats").locator(".sr-only")).toBeVisible();
       await checkShellScreen(page, "home at phone width", stopWatching);
       await evidence(
         page,
-        "shell-p1-drawer-esc",
-        "at 390x844 Escape closes the drawer and the page stays without sideways scroll",
+        "shell-p1-sheet-esc",
+        "at 390x844 Escape and the backdrop both close the scope sheet, the pill keeps its labels sr-only, and the page stays without sideways scroll",
       );
     });
   });
 
-  // gh-3: a signed-out visitor sees the sign-in screen alone — no sidebar, no
-  // app chrome — for `/` and every deep link, at desktop and phone width; the
+  // gh-3: a signed-out visitor sees the sign-in screen alone — no shell chrome
+  // of any kind — for `/` and every deep link, at desktop and phone width; the
   // deep link rides along as `return_to` so a sign-in lands back on the page.
-  test("signed-out visitors see only the sign-in screen — no sidebar, no app chrome", async ({
-    page,
-  }) => {
+  test("signed-out visitors see only the sign-in screen — no rail, no top bar", async ({ page }) => {
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 800 });
-      // `/board` is retired (finding 03): `/workflows` is a real deep link now.
-      for (const path of ["/", "/workflows"]) {
-        await page.goto(BASE_URL + path, { waitUntil: "domcontentloaded" });
+      for (const path of ["/", "/factory"]) {
+        await gotoApp(page, path);
         const stopWatching = watchPageErrors(page);
         const signIn = page.getByTestId("sign-in");
         await expect(signIn).toBeVisible();
-        // No sidebar element at all — the shell chrome must not mount.
-        await expect(page.getByTestId("sidebar")).toHaveCount(0);
+        // No shell element at all — the chrome must not mount.
+        await expect(page.getByTestId("project-rail")).toHaveCount(0);
+        await expect(page.getByTestId("top-bar")).toHaveCount(0);
+        await expect(page.getByTestId("sidebar"), "no leftover column").toHaveCount(0);
         const expectedHref =
-          path === "/" ? "/auth/login?return_to=%2F" : "/auth/login?return_to=%2Fworkflows";
+          path === "/" ? "/auth/login?return_to=%2F" : "/auth/login?return_to=%2Ffactory";
         await expect(signIn).toHaveAttribute("href", expectedHref);
         await checkShellScreen(page, `signed-out ${path}`, stopWatching);
         await evidence(
           page,
           "shell-p1-signed-out",
-          `signed-out ${path} renders the sign-in screen only — no sidebar, no app chrome`,
+          `signed-out ${path} renders the sign-in screen only — no rail, no top bar, no app chrome`,
         );
       }
     }

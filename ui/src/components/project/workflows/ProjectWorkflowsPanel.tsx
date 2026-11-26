@@ -630,7 +630,7 @@ function ProjectWorkflowRow({
           ) : null}
           <div className="flex items-center gap-[10px] border-t border-line-soft px-3 py-[9px] text-[12px] text-muted">
             <IconPlayerPlay size={14} stroke={2} aria-hidden className="shrink-0 opacity-60" />
-            <span>Or start it by hand from the project's Runs tab.</span>
+            <span>Or start it by hand from the project's home (“or run a workflow”).</span>
           </div>
         </div>
       ) : null}

@@ -599,3 +599,97 @@ export async function apiProfileId(request: APIRequestContext): Promise<string> 
   if (!profile) throw new Error("the lab holds no agent profile");
   return profile.id;
 }
+
+/* ---------------------------------------------------------------- redesign
+ * shell-scroll helpers (appended by rx-e2e-b; nothing above this line changed).
+ *
+ * The redesigned shell is `h-dvh overflow-hidden` on its root with
+ * `min-h-0 flex-1 overflow-auto` on `<main>` (docs/design/redesign/
+ * CONTRACT.md "Shell"), so a page that is too wide for the screen no longer
+ * moves `documentElement.scrollWidth` — it moves the shell's content region.
+ * `noSidewaysScroll` above still checks the document (and every spec that used
+ * it keeps that check); these two helpers add the region that owns scrolling
+ * now, so "the page does not scroll sideways" keeps its teeth after the flip.
+ */
+
+/** What sideways overflow the frame carries: the document, the shell's content
+ * region, and up to five of the widest offenders below the region (elements a
+ * nested panel pans are excluded — that box is the design's answer to a narrow
+ * screen, not a bug). */
+export interface ShellFit {
+  docScrollWidth: number;
+  innerWidth: number;
+  mainScrollWidth: number;
+  mainClientWidth: number;
+  widest: string[];
+}
+
+/** Measure the document AND the shell's scrolling content region (`main`). */
+export function measureShellFit(page: Page): Promise<ShellFit> {
+  return page.evaluate(() => {
+    const inner = window.innerWidth;
+    const doc = document.documentElement;
+    const main = document.querySelector("main");
+    const label = (el: Element, right: number): string => {
+      const tag = el.tagName.toLowerCase();
+      const testid = el.getAttribute("data-testid");
+      const classes = Array.from(el.classList)
+        .slice(0, 3)
+        .map((name) => `.${name}`)
+        .join("");
+      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 50);
+      const bits = [
+        `<${tag}${testid ? `[testid=${testid}]` : ""}${classes}>`,
+        `right ${Math.round(right)}px`,
+        `pos ${window.getComputedStyle(el).position}`,
+      ];
+      return text ? `${bits.join(" ")} "${text}"` : bits.join(" ");
+    };
+    // A scroller BELOW the frame pans its content by design; `main` itself is
+    // the frame, so it is not its own scroller.
+    const inNestedScroller = (el: Element): boolean => {
+      for (let p = el.parentElement; p && p !== main; p = p.parentElement) {
+        const style = window.getComputedStyle(p);
+        if (["auto", "scroll", "hidden"].includes(style.overflowX)) return true;
+        if (["auto", "scroll", "hidden"].includes(style.overflowY)) return true;
+      }
+      return false;
+    };
+    const hits: Array<{ right: number; sel: string }> = [];
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") continue;
+      const box = el.getBoundingClientRect();
+      if (box.width === 0 || box.right <= inner + 0.5) continue;
+      if (inNestedScroller(el)) continue;
+      hits.push({ right: box.right, sel: label(el, box.right) });
+    }
+    hits.sort((a, b) => b.right - a.right);
+    const widest: string[] = [];
+    for (const hit of hits) {
+      if (widest.length >= 5) break;
+      if (!widest.includes(hit.sel)) widest.push(hit.sel);
+    }
+    return {
+      docScrollWidth: doc.scrollWidth,
+      innerWidth: inner,
+      mainScrollWidth: main ? main.scrollWidth : 0,
+      mainClientWidth: main ? main.clientWidth : inner,
+      widest,
+    };
+  });
+}
+
+/** The redesign's version of "no sideways scroll": neither the document nor the
+ * shell's content region pans, and nothing pokes past the viewport unpanned. */
+export async function noSidewaysScrollInShell(page: Page): Promise<void> {
+  const fit = await measureShellFit(page);
+  expect(
+    fit.docScrollWidth <= fit.innerWidth,
+    `the DOCUMENT scrolls sideways on ${page.url()} — documentElement.scrollWidth ${fit.docScrollWidth}px > window.innerWidth ${fit.innerWidth}px`,
+  ).toBe(true);
+  expect(
+    fit.mainScrollWidth <= fit.mainClientWidth,
+    `the shell's content region scrolls sideways on ${page.url()} — <main>.scrollWidth ${fit.mainScrollWidth}px > <main>.clientWidth ${fit.mainClientWidth}px. Widest elements past the viewport edge, outermost right first: ${fit.widest.join(" | ") || "none"}. Elements inside their own scrollable box are excluded: those scroll by design.`,
+  ).toBe(true);
+}
