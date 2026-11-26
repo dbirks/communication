@@ -13,11 +13,19 @@
  * and `/steps/:id` URLs redirect here, and the page draws the Workflows
  * page's frame (full-width band + `Workflows | Steps` tabs).
  *
+ * `embedded` (Manage → Agents & models → Step templates): the same list and
+ * detail panel with no Page band, no title and no tab strip, and the
+ * selection read from `?item=` instead of the route's `:id`. Step links
+ * inside the embedded page keep the current pathname and the `tab` query
+ * and set `item` (the row component is owned by another worker, so the click
+ * is intercepted here).
+ *
  * Honest states: an empty registry, a server without the endpoint, and an
  * unknown id each get their own copy — nothing is faked.
  */
 import { useState } from "react";
-import { Link, useParams } from "react-router";
+import type { MouseEvent } from "react";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { Alert } from "../components/ds/Alert";
 import Page from "../components/ds/Page";
 import { DuplicateDialog } from "../components/steps/DuplicateDialog";
@@ -29,8 +37,12 @@ import { useNodeTemplate, useNodeTemplates, type NodeTemplate } from "../api/nod
 import { routes } from "../lib/routes";
 import { WorkflowsTabs } from "./Workflows";
 
-export default function Steps() {
-  const { id } = useParams<{ id: string }>();
+export default function Steps({ embedded = false }: { embedded?: boolean }) {
+  const { id: routeId } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const id = embedded ? (searchParams.get("item") ?? undefined) : routeId;
   const [editOpen, setEditOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
 
@@ -42,19 +54,23 @@ export default function Steps() {
   const selected: NodeTemplate | undefined = detail?.template ?? templates.find((t) => t.id === id);
   const latest = detail?.revisions[0];
 
-  return (
-    <Page
-      layout="wide"
-      testid="steps-page"
-      title="Steps"
-      subtitle={
-        <span>
-          Saved node templates in YAML — kind: NodeTemplate. A step can be edited for every workflow
-          that uses it, or duplicated into a new step.
-        </span>
-      }
-      band={<WorkflowsTabs active="steps" />}
-    >
+  // In embedded mode a row link keeps the Manage page's pathname and `tab`
+  // query and carries the selection in ?item= (the Steps row owns its own
+  // link — components/steps/StepRow.tsx — so the click is intercepted here).
+  const interceptStepLink = (event: MouseEvent) => {
+    if (!embedded) return;
+    const anchor = (event.target as HTMLElement | null)?.closest?.("a");
+    const href = anchor?.getAttribute("href");
+    const match = href?.match(/\/workflows\/steps\/([^/?#]+)$/);
+    if (!match) return;
+    event.preventDefault();
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("item", decodeURIComponent(match[1]));
+    navigate(`${pathname}?${params.toString()}`);
+  };
+
+  const body = (
+    <>
       <div className="flex min-h-0 flex-1 flex-col gap-[14px] lg:flex-row">
         <div className="min-w-0 flex-1" data-testid="steps-list">
           {listQuery.isPending ? (
@@ -133,6 +149,31 @@ export default function Steps() {
           />
         </>
       ) : null}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div data-testid="steps-embedded" onClickCapture={interceptStepLink}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <Page
+      layout="wide"
+      testid="steps-page"
+      title="Steps"
+      subtitle={
+        <span>
+          Saved node templates in YAML — kind: NodeTemplate. A step can be edited for every workflow
+          that uses it, or duplicated into a new step.
+        </span>
+      }
+      band={<WorkflowsTabs active="steps" />}
+    >
+      {body}
     </Page>
   );
 }

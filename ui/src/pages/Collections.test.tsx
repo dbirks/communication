@@ -186,3 +186,34 @@ describe("Collections list", () => {
     });
   });
 });
+
+describe("Collections embedded (Manage → Agents & models → Skills)", () => {
+  it("draws no page title or tab strip, and the New button still opens the dialog", async () => {
+    const { requests } = mockFetch([
+      { path: "/api/v1/me", body: admin },
+      { path: "/api/v1/agent-profiles", body: { items: [] } },
+      { path: "/api/v1/apm-collections", body: { collections: [matt], next_cursor: null } },
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/manage/agents?tab=skills"]}>
+          <Routes>
+            <Route path="/manage/agents" element={<Collections embedded />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId("collections-embedded")).toBeTruthy();
+    expect(screen.queryByTestId("workflows-tabs")).toBeNull();
+    expect(screen.queryByTestId("page-band")).toBeNull();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    // Non-embedded output is unchanged: the full-page chrome is untouched.
+    expect(requestsTo(requests, "/api/v1/apm-collections", "GET").length).toBe(1);
+    fireEvent.click(await screen.findByTestId("collections-new"));
+    const dialog = await screen.findByTestId("collections-new-dialog");
+    expect(dialog).toBeTruthy();
+  });
+});

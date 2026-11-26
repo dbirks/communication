@@ -110,9 +110,9 @@ export default function Agents() {
               ) : null}
             </>
           ) : tab === "skills" ? (
-            <Collections />
+            <Collections embedded />
           ) : tab === "steps" ? (
-            <Steps />
+            <Steps embedded />
           ) : tab === "models" ? (
             <ModelsTab isAdmin={canWrite} />
           ) : (
