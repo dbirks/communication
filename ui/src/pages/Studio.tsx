@@ -85,6 +85,7 @@ import { AmbiguityDialog } from "../components/studio/AmbiguityDialog";
 import { AgentStepCard } from "../components/studio/AgentStepCard";
 import { VersionsPanel } from "../components/studio/VersionsPanel";
 import { YamlEditPanel } from "../components/studio/YamlEditPanel";
+import { ValidatePanel } from "../components/m4/ValidatePanel";
 import type { CanvasTool } from "../components/studio/ToolIsland";
 import {
   AssistantProposalBox,
@@ -936,8 +937,7 @@ export function StudioPage() {
       }
     }
     try {
-      const cachedVersion =
-        queryClient.getQueryData<Draft>(queryKeys.draft(draftId))?.version ?? 0;
+      const cachedVersion = queryClient.getQueryData<Draft>(queryKeys.draft(draftId))?.version ?? 0;
       const version = Math.max(studio.getSavedVersion(), cachedVersion);
       const revision = await publish.mutateAsync({ version });
       setPublishNote(`published as r${revision.revision_number} ${revision.version_label}`);
@@ -1901,42 +1901,65 @@ export function StudioPage() {
               </button>
             </div>
             {panelParam === "yaml" ? (
-              yamlEditable ? (
-                <YamlEditPanel
-                  text={studio.text}
-                  status={status}
-                  dirty={studio.dirty}
-                  saving={studio.saving}
-                  validating={validate.isPending}
-                  parseError={parseError}
-                  verdict={yamlVerdict}
-                  validateError={validateFailure}
-                  onChange={(next) => {
-                    setValidateOutcome(null);
-                    setValidateFailure(null);
-                    studio.setText(next);
-                  }}
-                  onValidate={() => void onValidateYaml()}
-                  onGoToNode={goToNode}
-                />
-              ) : (
-                <YamlView
-                  text={
-                    isViewingRun
-                      ? runDocumentText
-                      : isViewingHistory
-                        ? viewDocumentText
-                        : studio.text
-                  }
-                  filename={
-                    // A published revision's file carries its number
-                    // (`<slug>-r<n>.yaml`); a draft's is the bare slug.
-                    isViewingHistory && viewingRevision.data
-                      ? `${pipeline.data?.slug ?? pipelineId}-r${viewingRevision.data.revision_number}.yaml`
-                      : `${pipeline.data?.slug ?? pipelineId}.yaml`
-                  }
-                />
-              )
+              <div
+                className="flex min-h-0 flex-1 flex-col gap-[10px]"
+                data-testid="editor-yaml-body"
+              >
+                {yamlEditable ? (
+                  <YamlEditPanel
+                    text={studio.text}
+                    status={status}
+                    dirty={studio.dirty}
+                    saving={studio.saving}
+                    validating={validate.isPending}
+                    parseError={parseError}
+                    verdict={yamlVerdict}
+                    validateError={validateFailure}
+                    onChange={(next) => {
+                      setValidateOutcome(null);
+                      setValidateFailure(null);
+                      studio.setText(next);
+                    }}
+                    onValidate={() => void onValidateYaml()}
+                    onGoToNode={goToNode}
+                  />
+                ) : (
+                  <YamlView
+                    text={
+                      isViewingRun
+                        ? runDocumentText
+                        : isViewingHistory
+                          ? viewDocumentText
+                          : studio.text
+                    }
+                    filename={
+                      // A published revision's file carries its number
+                      // (`<slug>-r<n>.yaml`); a draft's is the bare slug.
+                      isViewingHistory && viewingRevision.data
+                        ? `${pipeline.data?.slug ?? pipelineId}-r${viewingRevision.data.revision_number}.yaml`
+                        : `${pipeline.data?.slug ?? pipelineId}.yaml`
+                    }
+                  />
+                )}
+                {/* Contract § 7.2 row W8's home, moved with the YAML tab: the
+                    editor's YAML panel carries the paste-and-validate block
+                    under its viewer, pinned to this workflow, for a caller with
+                    the library role only (the same check as `Make live`). */}
+                {canAuthor ? (
+                  <YamlValidateDisclosure
+                    pipelineId={pipelineId}
+                    slug={pipeline.data?.slug ?? pipelineId}
+                    displayName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
+                    initialText={
+                      isViewingRun
+                        ? runDocumentText
+                        : isViewingHistory
+                          ? viewDocumentText
+                          : studio.text
+                    }
+                  />
+                ) : null}
+              </div>
             ) : panelParam === "inputs" ? (
               <StudioInputsDrawer
                 pipelineId={pipelineId}
@@ -2002,6 +2025,68 @@ export function StudioPage() {
         initialProjectId={scope ?? undefined}
         onAssigned={() => setPanel("used-in")}
       />
+    </div>
+  );
+}
+
+/**
+ * The `Validate a YAML document` disclosure that carries contract § 7.2 row W8's
+ * Validate panel inside the editor's YAML panel (`?panel=yaml`) — the home the
+ * workflow page's YAML tab had, moved when the redesign retired that page.
+ *
+ * It is collapsed by default (the panel is a paste box, not the thing a reader
+ * came to the YAML for) and mounts only when opened: a hidden textarea and a
+ * button that talks to the server should not sit in the tab order of a panel
+ * that shows neither. It is pinned to THIS workflow, so there is no pipeline
+ * picker and the Validate button arms the moment the box holds text; the box is
+ * seeded with the document the panel is already showing (the draft's YAML, or
+ * the revision/run document under view). Only a caller with the library role
+ * mounts it — drafts and validation are the library surface, and the panel's
+ * own no-role refusal stays behind that as the honest fallback.
+ *
+ * The container wears the redesign's soft chrome (radius 10, 1px line); the
+ * panel inside it is the M4 component unchanged, test ids and copy included.
+ */
+function YamlValidateDisclosure({
+  pipelineId,
+  slug,
+  displayName,
+  initialText,
+}: {
+  pipelineId: string;
+  slug: string;
+  displayName: string;
+  initialText: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      data-testid="yaml-validate-disclosure-block"
+      className="shrink-0 rounded-[10px] border border-line p-[8px]"
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? "yaml-validate-panel" : undefined}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-[6px] rounded-[10px] px-[6px] py-[6px] text-left font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid="yaml-validate-disclosure"
+        title="paste YAML, check it against this workflow before publishing"
+      >
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+        Validate a YAML document
+      </button>
+      {open ? (
+        <div id="yaml-validate-panel" className="mt-[8px]" data-testid="yaml-validate-panel-open">
+          <ValidatePanel
+            pipelines={[{ id: pipelineId, slug, displayName }]}
+            canValidate
+            pinnedPipelineId={pipelineId}
+            initialText={initialText}
+            headingId="yaml-validate-heading"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

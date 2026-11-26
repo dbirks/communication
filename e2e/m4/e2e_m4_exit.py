@@ -23741,6 +23741,9 @@ def _playwright_stub(gid, intent):
 PW = ["pnpm", "dlx", "@playwright/cli@0.1.22"]
 PW_SHOTS = ".playwright-cli"          # gitignored; never committed
 _NODE_LINE = re.compile(r'^\s*-\s*(?P<role>[A-Za-z][\w.-]*)\s*(?P<tail>.*)$')
+# The one line a playwright-cli `eval` printed as its answer, as opposed to the
+# JavaScript it echoes back at the caller (see pw_eval_result).
+_PW_RESULT = re.compile(r"###\s*Result\s*\n(?P<val>.*?)(?:\n###|\Z)", re.DOTALL)
 _QUOTED = re.compile(r'"(?P<name>[^"]*)"')
 _REF = re.compile(r'ref=(?P<attr>[A-Za-z0-9]*e\d+)\b|(?P<bare>\bf?\d*e\d+)\b')
 _SNAP_FILE = re.compile(r'([\w./+@-]+\.(?:yml|yaml))')
@@ -23934,6 +23937,103 @@ def pw_click(role=None, name=None, contains=None, session="m4exit", label=""):
     return rc2 == 0, refs[0], out[:200]
 
 
+def pw_eval_result(out):
+    """The VALUE an `eval` printed, not the whole CLI transcript. The CLI echoes
+    the JavaScript it ran (`### Ran Playwright code`), and that source repeats the
+    page's own answer literals — a check against the raw output therefore reads
+    'clicked'/'absent'/'disabled' out of the CODE rather than out of the page. The
+    answer is the line under `### Result`; '' when no Result block came back."""
+    m = _PW_RESULT.search(out or "")
+    if not m:
+        return ""
+    return m.group("val").strip().strip('"')
+
+
+def pw_click_testid(testid, session="m4exit", tries=10, delay=2):
+    """Click an element by its own data-testid through `eval`. The accessibility
+    snapshot carries no attributes (pw_snapshot_nodes), so a control whose
+    accessible name is prose rather than the verb the leg needs is unreachable by
+    role+name; a testid is the product's own handle on it. Polls until the element
+    exists — a page that streams its panels in after the shell has not drawn the
+    control yet is a race, not a missing control. (clicked, detail): 'clicked' is
+    the PAGE'S own answer (pw_eval_result), never a word from the echoed code.
+    """
+    js = ("() => { const b = document.querySelector('[data-testid=" + testid + "]');"
+          " if (!b) return 'absent'; b.click(); return 'clicked'; }")
+    detail = "never polled"
+    for _ in range(tries):
+        rc, out = pw("eval", js, session=session, timeout=60)
+        answer = pw_eval_result(out)
+        detail = f"rc={rc} {answer or (out or '')[:100]}"
+        if rc == 0 and answer == "clicked":
+            return True, detail
+        time.sleep(delay)
+    return False, detail
+
+
+def w1_open_run_form(session="m4w1", tries=10, delay=2):
+    """Reach NewRunForm the way the redesigned product does: the project home's
+    `or run a workflow` chip (testid `home-prompt-run`), which mounts
+    StartRunDialog → NewRunForm in RunFormDialog's chrome. The click is only the
+    door; the caller still polls `w_form_opened_verdict` for the form itself.
+    A page that serves no chip falls back to the pre-redesign door (the header
+    band's `Start run` link) so the detail names the door the lab actually served.
+    (opened, ref, detail).
+    """
+    ok, detail = pw_click_testid(W1_HOME_DOOR_TESTID, session=session,
+                                 tries=tries, delay=delay)
+    if ok:
+        return True, W1_HOME_DOOR_TESTID, detail
+    ok2, ref, detail2 = pw_click(role=W_DOOR_ROLE, name=W_DOOR_NAME, session=session,
+                                 label="the header band's Start run link")
+    return ok2, ref, (f"no {W1_HOME_DOOR_TESTID} chip ({detail}); old door "
+                      f"{W_DOOR_ROLE} {W_DOOR_NAME!r}: {detail2.strip()}")
+
+
+def _project_name(client, project_id):
+    """The seeded project's own NAME (GET /projects/{id}) — what the start-run
+    dialog's picker labels its options with, never the slug. '' when the read
+    fails: the picker arm then picks nothing and the form-opened verdict says so
+    rather than guessing a project."""
+    got = client.get(LB, f"/api/v1/projects/{project_id}")
+    if got.status != 200:
+        return ""
+    try:
+        name = got.json().get("name")
+    except (AttributeError, ValueError):
+        return ""
+    return name if isinstance(name, str) else ""
+
+
+def w1_start_run_picker(session="m4w1"):
+    """The start-run dialog's project select: the dialog is opened with a
+    project CHOICE when the reader holds more than one membership
+    (ui/src/components/home/StartRunDialog.tsx: nothing mounts NewRunForm until
+    one is picked), and the field's one label is `Project`. Refs are looked up
+    against the newest snapshot. [] when the page offers no choice."""
+    rc, snap = pw_snapshot(session=session)
+    return pw_refs(pw_snapshot_nodes(snap), role="combobox", name="Project")
+
+
+def w1_pick_project(session="m4w1", want=""):
+    """Answer the start-run dialog's project choice with `want` (the seeded
+    project's own name — the picker labels options by name, never by slug) and
+    return the label picked, '' when there was no choice to make or the wanted
+    project was not among them. Never guesses a project: an unnamed want picks
+    nothing, and the caller's form-opened verdict says so honestly."""
+    refs = w1_start_run_picker(session=session)
+    if not refs or not want:
+        return ""
+    rc, opts = pw("snapshot", refs[0], session=session)
+    lines = [ln for ln in (opts or "").splitlines() if "option" in ln]
+    hit = next((ln for ln in lines if want in ln), "")
+    label = _QUOTED.search(hit)
+    if not label:
+        return ""
+    picked = label.group("name")
+    return picked if pw("select", refs[0], picked, session=session)[0] == 0 else ""
+
+
 # --- pure W-leg helpers (e2e/m4/test_w_logic.py) -----------------------------
 
 
@@ -23985,6 +24085,16 @@ def w_input_expectations(doc):
 # and is retired — a driver that still clicks it opens nothing, then reads a run
 # list with no form on it and fails every field arm for the wrong reason.
 #
+# The redesign (docs/design/redesign/CONTRACT.md, "What happens to the old app")
+# retired that band and the project's Runs tab: the door is now the project
+# home's prompt chip `home-prompt-run` (ui/src/pages/Project.tsx →
+# StartRunDialog → NewRunForm inside RunFormDialog). It is clicked through its
+# own data-testid (`w1_open_run_form`), because the snapshot carries no
+# attributes and the chip's words ("or run a workflow") are prose, not a verb the
+# arm should hinge on. `W_DOOR_ROLE`/`W_DOOR_NAME` keep their meaning as the
+# pre-redesign door, which `w1_open_run_form` falls back to so a lab built before
+# the redesign names itself instead of failing the leg blindly.
+#
 # Design 1k (commit 2e5c648) raised that form into `RunFormDialog` when the
 # pinned revision carries typed `input_specs` — and every published revision
 # does, since ADR-0066 derives them from spec.inputs: the heading reads
@@ -24004,6 +24114,10 @@ W_FORM_HEADING_1K = "Run "  # design 1k: `Run <workflow>`
 W_ASSIGNMENT_LABEL = "Pipeline assignment"
 W_ASSIGNMENT_LABEL_1K = "Workflow"
 W_SUBMIT_NAME = "Start run"
+# The redesign's door: the project home's "or run a workflow" chip, clicked
+# through pw_click_testid (its words are prose; its testid is the product's own
+# handle on it).
+W1_HOME_DOOR_TESTID = "home-prompt-run"
 # The roles a declared `spec.inputs` entry can render as (NewRunForm's
 # InputFieldControl: textarea/text -> textbox, repository/enum -> combobox,
 # boolean -> checkbox, integer/number -> spinbutton).
@@ -26073,17 +26187,26 @@ def w1():
         return
 
     before = psql("SELECT extract(epoch from now())::text")
-    if not pw_login("alice", f"/projects/{project_id}/runs", session="m4w1"):
+    if not pw_login("alice", f"/p/{project_id}", session="m4w1"):
         gap("W1 browser arms", "the mock IdP form did not sign alice in in the browser")
         return
-    pw_goto(f"/projects/{project_id}/runs", session="m4w1")
-    # The door is the header band's `Start run` LINK, not a panel button: the
-    # RUNS panel's own `New run` was retired with design 1b (f2f06d9) and this
-    # link's href — /projects/<id>/runs?new=1 — is what opens NewRunForm over
-    # the list. Role matters: the form's own submit button is ALSO named
-    # `Start run`, so a name-only lookup would click whichever came first.
-    opened, ref, detail = pw_click(role=W_DOOR_ROLE, name=W_DOOR_NAME, session="m4w1",
-                                   label="the header band's Start run link")
+    pw_goto(f"/p/{project_id}", session="m4w1")
+    # The door is the project home's prompt chip, not a panel button: the
+    # redesign retired the header band's `Start run` link and the Runs tab with
+    # it (docs/design/redesign/CONTRACT.md), and the chip mounts the SAME
+    # NewRunForm inside StartRunDialog/RunFormDialog. Role still matters for the
+    # submit below: the form's own verb is ALSO named `Start run`, so a name-only
+    # lookup would click whichever came first.
+    opened, ref, detail = w1_open_run_form(session="m4w1")
+    # The dialog asks WHICH project before the form exists when the reader holds
+    # more than one membership (`home-start-run-project`, StartRunDialog.tsx);
+    # the arm answers it with the seeded project, so a reader who belongs to
+    # project B too still reaches the same form and the same verdicts.
+    project_name = _project_name(client, project_id)
+    picked_project = w1_pick_project(session="m4w1", want=project_name)
+    if picked_project:
+        show("W1 start-run project picker",
+             f"picked {picked_project!r} (seeded project {project_id})")
     # The click is the door; the FORM is the verdict. Poll until the card raises
     # its own heading and a control under it, so no field arm below reads a page
     # that has not rendered the form yet (or never will).
@@ -26092,12 +26215,12 @@ def w1():
     _, why_form = w_form_opened_verdict(nodes, expected)
     shot_open = pw_shot("w1-door", session="m4w1")
     check("W1 New run opens the form", opened and ok_form,
-          f"door={W_DOOR_ROLE} {W_DOOR_NAME!r} ref={ref}; {detail.strip()} — {why_form} "
+          f"door={ref or '(none)'} ref={ref}; {detail.strip()} — {why_form} "
           f"[{shot_open}]")
     if not ok_form:
-        gap("W1 form arms", f"the band's {W_DOOR_NAME!r} never put NewRunForm on the "
-                            f"page ({why_form}) — there is no form to read fields, "
-                            "defaults, the repository list or Submit off")
+        gap("W1 form arms", f"the project home's {W1_HOME_DOOR_TESTID!r} chip never put "
+                            f"NewRunForm on the page ({why_form}) — there is no form to "
+                            "read fields, defaults, the repository list or Submit off")
         pw("close", session="m4w1")
         return
     # the form renders the FIRST assignment's revision; pin the arm to the exit
@@ -28362,48 +28485,67 @@ def w8_pick_pipeline(session="m4w8"):
     return picked if pw("select", combo[0], picked, session=session)[0] == 0 else ""
 
 
-# The YAML tab's collapsed disclosure over the W8 panel (design 2d keeps the tab
-# to its YAML block, so the panel is one click away rather than on the page).
+# The YAML panel's door in the redesigned editor: the workflow page and its YAML
+# tab are gone (docs/design/redesign/CONTRACT.md — YAML lives in the editor's
+# right panel), so W8 reaches the panel the way a person does now:
+# /factory/<pipelineId> → the top-right "…" button (`editor-more-btn`) → its YAML
+# item (`editor-menu-yaml`, which sets `?panel=yaml`) → the Validate disclosure.
+# Both are named by their own test ids because the menu item's label is prose
+# that changes with the surface ("Edit as YAML" over a draft, "View YAML" over a
+# revision).
+W8_EDITOR_MORE_TESTID = "editor-more-btn"
+W8_EDITOR_YAML_TESTID = "editor-menu-yaml"
+# The YAML panel's collapsed disclosure over the W8 panel — the panel is mounted
+# closed, so the leg opens it with one click.
 W8_DISCLOSURE_TESTID = "yaml-validate-disclosure"
 W8_DISCLOSURE_LABEL = "Validate a YAML document"      # the button's accessible name
-W8_DISCLOSURE_JS = ("() => { const b = document.querySelector('[data-testid="
-                    + W8_DISCLOSURE_TESTID + "]');"
-                    " if (!b) return 'absent'; b.click(); return 'clicked'; }")
+# The panel's own Validate button, by its own test id. It used to be found by a
+# name prefix, which was safe when the panel sat alone on the YAML tab; in the
+# editor's YAML panel the draft viewer wears a `Validate` button of its own
+# (`studio-yaml-validate`), so a name match would click the wrong verb.
+W8_SUBMIT_TESTID = "validate-panel-submit"
+W8_SUBMIT_JS = ("() => { const b = document.querySelector('[data-testid="
+                + W8_SUBMIT_TESTID + "]');"
+                " if (!b) return 'absent'; if (b.disabled) return 'disabled';"
+                " b.click(); return 'clicked'; }")
+
+
+def w8_open_yaml_panel(session="m4w8", tries=10, delay=2):
+    """Open the editor's YAML panel: the "…" button, then its YAML item. The
+    menu is drawn only while open and closed by a pointerdown outside it, and an
+    eval click fires neither, so the two presses are the whole gesture a person
+    makes. (opened, detail)."""
+    ok, detail = pw_click_testid(W8_EDITOR_MORE_TESTID, session=session,
+                                 tries=tries, delay=delay)
+    if not ok:
+        return False, f"{W8_EDITOR_MORE_TESTID}: {detail}"
+    ok2, detail2 = pw_click_testid(W8_EDITOR_YAML_TESTID, session=session,
+                                   tries=tries, delay=delay)
+    return ok2, f"{W8_EDITOR_MORE_TESTID} clicked; {W8_EDITOR_YAML_TESTID}: {detail2}"
 
 
 def w8_open_disclosure(session="m4w8", tries=10, delay=2):
-    """Open the YAML tab's `Validate a YAML document` disclosure — the panel mounts
-    lazily behind it (closed by default so the 2d design reads as designed), so the
-    leg opens it the way an operator does: one click. The snapshot carries no
-    attributes (pw_snapshot_nodes), so the click is made against the element's own
-    testid (W8_DISCLOSURE_TESTID) through `eval`. (opened, detail) — 'clicked' is
-    the page's own answer that the disclosure existed."""
-    detail = "never polled"
-    for _ in range(tries):
-        rc, out = pw("eval", W8_DISCLOSURE_JS, session=session, timeout=60)
-        detail = f"rc={rc} {(out or '')[:120]}"
-        if rc == 0 and "clicked" in (out or ""):
-            return True, detail
-        time.sleep(delay)
-    return False, detail
+    """Open the YAML panel's `Validate a YAML document` disclosure — the panel
+    mounts lazily behind it (closed by default, so the YAML panel reads as the
+    viewer alone), so the leg opens it the way an operator does: one click on the
+    element's own testid. (opened, detail)."""
+    return pw_click_testid(W8_DISCLOSURE_TESTID, session=session,
+                           tries=tries, delay=delay)
 
 
 def w8_click_validate(session="m4w8"):
-    """(clicked, ref, detail) — the panel's own button ("Validate (writes the
-    draft)" / "Validate again"), matched by prefix so no nav item steals it. The
-    YAML tab's disclosure is named `Validate a YAML document` and sits ABOVE the
-    panel in DOM order, so its name (and any other `Validate…` label that is not
-    the panel's button) is excluded by name — clicking it would close the panel."""
-    rc, snap = pw_snapshot(session=session)
-    btn = [n["ref"] for n in pw_snapshot_nodes(snap)
-           if n["role"] == "button" and (n["name"] or n["text"]).strip().lower()
-           .startswith("validate")
-           and W8_DISCLOSURE_LABEL.lower() not in (n["name"] or n["text"]).lower()
-           and n["ref"]]
-    if not btn:
-        return False, None, "no Validate button in the snapshot"
-    rc2, out = pw("click", btn[0], session=session, timeout=60)
-    return rc2 == 0, btn[0], (out or "")[:180]
+    """(clicked, ref, detail) — the panel's own Validate button, pressed through
+    its own test id (W8_SUBMIT_TESTID) and read back honestly: 'disabled' is
+    reported as NOT clicked, because the panel keeps its button disabled until the
+    pipeline it validates against is resolved, and the leg's own honesty arm
+    ("the panel's Validate button is enabled once the YAML is pasted") exists to
+    name exactly that. The disclosure line above the panel is named
+    `Validate a YAML document` and would close the panel if clicked, which a
+    test-id press cannot do."""
+    rc, out = pw("eval", W8_SUBMIT_JS, session=session, timeout=60)
+    answer = pw_eval_result(out)
+    clicked = rc == 0 and answer == "clicked"
+    return clicked, (None if answer == "absent" else W8_SUBMIT_TESTID), answer or (out or "")[:180]
 
 
 def w8():
@@ -28411,15 +28553,16 @@ def w8():
     typos, pasted into the YAML viewer's "Validate" panel → "each error renders with
     instance_location on the document, source (loader/schema/compiler) and the hint;
     kind_not_implemented names the milestone (M5/M6); a secret-literal finding
-    renders redacted". The panel the row names is ValidatePanel, mounted on the
-    workflow page's YAML TAB (design 2d, /workflows/:id/yaml —
-    ui/src/pages/Workflow.tsx) under its YAML block, behind the collapsed
-    `Validate a YAML document` disclosure and pinned to the pipeline these drafts
-    belong to."""
+    renders redacted". The panel the row names is ValidatePanel. The workflow page
+    and its YAML tab were retired by the redesign, so its home is the editor's
+    YAML panel (`/factory/:pipelineId` → "…" → `editor-menu-yaml`, i.e.
+    `?panel=yaml` — ui/src/pages/Studio.tsx), under the YAML viewer, behind the
+    same collapsed `Validate a YAML document` disclosure and pinned to the
+    pipeline these drafts belong to."""
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
-        gap("W8 all arms", "no seed manifest (§ 7.0 seed has not run) — no workflow YAML tab to "
-                           "carry the panel and no library role to validate a draft")
+        gap("W8 all arms", "no seed manifest (§ 7.0 seed has not run) — no editor YAML panel "
+                           "to carry the panel and no library role to validate a draft")
         return
     pid_pipe = mf(facts, "pipeline_id", "agent")
     admin = CTX.get("admin") or Client("admin")
@@ -28434,29 +28577,35 @@ def w8():
         gap("W8 all arms", f"no probe document could be built from {SEED_PIPELINE_YAML} — "
                            "there is nothing to paste into the panel")
         return
-    yaml_tab = f"/workflows/{pid_pipe}/yaml"
+    yaml_tab = f"/factory/{pid_pipe}"
     if not pw_login("admin", yaml_tab, session="m4w8"):
         gap("W8 browser arms", "the mock IdP did not sign admin in, so the Validate panel "
                                "was never rendered")
         return
     try:
         pw_goto(yaml_tab, session="m4w8")
-        # The panel mounts lazily behind the YAML tab's collapsed disclosure (2d is
-        # the YAML block alone), so the leg opens it first — one click, by testid.
+        # The YAML viewer lives in the editor's right panel now, so the leg opens
+        # it the way a person does: the "…" button, then its YAML item.
+        armed, adetail = w8_open_yaml_panel(session="m4w8")
+        # The panel mounts lazily behind that collapsed disclosure (the YAML
+        # panel is the viewer alone), so the leg opens it too — one click, by
+        # testid.
         opened, odetail = w8_open_disclosure(session="m4w8")
         landed, nodes = pw_poll(lambda ns: "validate yaml" in w8_dom_text(ns).lower()
                                 and pw_refs(ns, role="textbox",
                                             name="Pipeline YAML to validate"),
                                 session="m4w8", tries=10, delay=2)
         shot = pw_shot("w8-panel", session="m4w8")
-        check('W8 the "Validate" panel the row names is on the workflow YAML tab', landed,
-              f"disclosure {W8_DISCLOSURE_TESTID} opened={opened} ({odetail}); "
+        check('W8 the "Validate" panel the row names is on the editor YAML panel', landed,
+              f"yaml panel opened={armed} ({adetail}); "
+              f"disclosure {W8_DISCLOSURE_TESTID} ({W8_DISCLOSURE_LABEL!r}) "
+              f"opened={opened} ({odetail}); "
               f"VALIDATE YAML panel + its textarea seen={landed} "
-              f"(ui/src/components/m4/ValidatePanel.tsx, mounted by "
-              f"/workflows/:pipelineId/yaml at {yaml_tab}) [{shot}]")
+              f"(ui/src/components/m4/ValidatePanel.tsx, mounted by the editor's "
+              f"YAML panel at {yaml_tab}?panel=yaml) [{shot}]")
         if not landed:
-            gap("W8 paste arms", "the disclosure never opened or the panel or its textarea "
-                                 "never rendered — nothing was pasted, so nothing can be "
+            gap("W8 paste arms", "the YAML panel, its disclosure or its textarea never "
+                                 "rendered — nothing was pasted, so nothing can be "
                                  "said about how errors render")
             return
         for slug, tag, text in docs:

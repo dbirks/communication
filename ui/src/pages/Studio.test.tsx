@@ -986,6 +986,77 @@ spec:
     expect(screen.queryByTestId("studio-yaml")).toBeNull();
   });
 
+  it("carries the W8 Validate disclosure at the foot of the YAML panel, in both views", async () => {
+    // The panel contract § 7.2 row W8 names moved here with the YAML tab the
+    // redesign retired (docs/design/redesign/CONTRACT.md: YAML is an editor
+    // panel now). The disclosure is the line the W8 driver opens; the panel
+    // behind it is `components/m4/ValidatePanel`, pinned to this workflow.
+    mount(studioPath, [{ path: draftPath, body: parseableDraft() }]);
+    await screen.findByTestId("studio-canvas");
+
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    await screen.findByTestId("studio-yaml");
+
+    // Closed by default, one line, named exactly as the contract words it.
+    const disclosure = screen.getByTestId("yaml-validate-disclosure");
+    expect(disclosure.textContent).toContain("Validate a YAML document");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("validate-panel-input")).toBeNull();
+
+    // Opening mounts the pinned panel: no picker, the workflow named, the box
+    // seeded with the document the panel is already showing.
+    fireEvent.click(disclosure);
+    expect(await screen.findByTestId("yaml-validate-panel-open")).toBeTruthy();
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("validate-panel-pipeline").textContent).toContain(
+      "Feature development",
+    );
+    expect(screen.getByTestId("validate-panel-pinned").textContent).toContain("pinned");
+    expect(screen.getByTestId("validate-panel-not-editor").textContent).toContain("not an editor");
+    const box = screen.getByTestId("validate-panel-input") as HTMLTextAreaElement;
+    expect(box.value).toContain("apiVersion: communication.dev/v1alpha1");
+    expect(screen.getByTestId("validate-panel-submit").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps the Validate disclosure on the read-only revision view of the YAML panel", async () => {
+    mount(studioPath, [
+      { path: `/api/v1/runs`, body: { runs: [] } },
+      { path: draftPath, body: parseableDraft(validValidation as ValidateResponse) },
+    ]);
+    await screen.findByTestId("studio-canvas");
+
+    fireEvent.click(screen.getByTestId("editor-versions-btn"));
+    const versions = await screen.findByTestId("versions-panel");
+    fireEvent.click(
+      within(versions).getByTestId(`versions-select-v${wireRevision.revision_number}`),
+    );
+    await screen.findByTestId("version-viewing-banner");
+
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    await screen.findByTestId("yaml-view");
+
+    fireEvent.click(screen.getByTestId("yaml-validate-disclosure"));
+    expect(await screen.findByTestId("validate-panel-input")).toBeTruthy();
+    // Seeded from the revision under view, not from the open draft.
+    const box = screen.getByTestId("validate-panel-input") as HTMLTextAreaElement;
+    expect(box.value).toBe(wireRevision.document_text);
+  });
+
+  it("hides the Validate disclosure from a caller without the library role", async () => {
+    mount(studioPath, [
+      { path: "/api/v1/me", body: member },
+      { path: draftPath, body: parseableDraft() },
+    ]);
+    await screen.findByTestId("studio-canvas");
+
+    fireEvent.click(screen.getByTestId("editor-more-btn"));
+    fireEvent.click(screen.getByTestId("editor-menu-yaml"));
+    await screen.findByTestId("yaml-view");
+    expect(screen.queryByTestId("yaml-validate-disclosure")).toBeNull();
+  });
+
   it("mounts Run inputs… panel from the … menu and from the inspector Who fills these → link", async () => {
     mount(studioPath, [
       { path: draftPath, body: parseableDraft() },
