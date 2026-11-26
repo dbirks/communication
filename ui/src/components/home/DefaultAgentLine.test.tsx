@@ -75,6 +75,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("what the line says", () => {
+  it("heads the block with a sentence-case column heading", async () => {
+    harness([get(project({ my_role: "viewer" }))]);
+
+    const head = await screen.findByTestId("project-default-agent-label");
+    expect(head.tagName).toBe("H3");
+    expect(head.textContent).toBe("Default agent");
+    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("border-line-soft");
+    expect(head.className).not.toContain("font-mono");
+  });
+
   it("prints the profile's own name for a member, with no way to move it", async () => {
     harness([get(project({ my_role: "viewer" }))]);
 

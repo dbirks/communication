@@ -19,7 +19,7 @@ import { useRepositories } from "../../api/queries";
 import type { Repository } from "../../api/types";
 import { routes } from "../../lib/routes";
 import { openIssuesText } from "../project/Repositories";
-import { SectionLabel } from "./SectionLabel";
+import { ColumnHeading } from "./SectionLabel";
 
 export interface RepoListProps {
   projectId: string;
@@ -72,7 +72,7 @@ export function RepoList({ projectId }: RepoListProps) {
 
   return (
     <section className="min-w-0" aria-label="Repositories" data-testid="repo-list">
-      <SectionLabel testid="repo-list-label">Repos</SectionLabel>
+      <ColumnHeading testid="repo-list-label">Repos</ColumnHeading>
       {items.length === 0 ? (
         <p className="m-0 text-[13.5px] text-muted" data-testid="repo-list-empty">
           {repos.isPending
@@ -88,7 +88,7 @@ export function RepoList({ projectId }: RepoListProps) {
       )}
       <Link
         to={addRepositoryHref(projectId)}
-        className="mt-[10px] inline-flex min-h-[44px] items-center font-mono text-[11.5px] text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-[560px]:min-h-[20px]"
+        className="mt-[10px] inline-flex min-h-[44px] items-center text-[13px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-[560px]:min-h-[20px]"
         data-testid="repo-list-add"
       >
         Add repository

@@ -59,6 +59,41 @@ function issues(count: number): GitHubIssueList {
 afterEach(cleanup);
 
 describe("RepoList", () => {
+  it("heads the block with a column heading that survives an empty list", async () => {
+    const { wrapper } = harness([
+      { path: `/api/v1/projects/${projectId}/repos`, body: { items: [] } },
+    ]);
+    render(<RepoList projectId={projectId} />, { wrapper });
+
+    const head = await screen.findByTestId("repo-list-label");
+    expect(head.tagName).toBe("H3");
+    expect(head.textContent).toBe("Repos");
+    expect(head.className).toContain("text-[16px]");
+    expect(head.className).not.toContain("font-mono");
+  });
+
+  it("divides its rows and words its add link in the UI font", async () => {
+    const { wrapper } = harness([
+      { path: `/api/v1/projects/${projectId}/repos`, body: { items: [repo()] } },
+      {
+        path: `/api/v1/projects/${projectId}/repos/${repositoryId}/issues`,
+        body: issues(3),
+      },
+    ]);
+    render(<RepoList projectId={projectId} />, { wrapper });
+
+    const row = await screen.findByTestId("repo-row-app");
+    expect(row.className).toContain("border-b");
+    expect(row.className).toContain("border-line-soft");
+
+    const add = screen.getByTestId("repo-list-add");
+    expect((add.textContent ?? "").trim()).toBe("Add repository");
+    expect(add.className).not.toContain("font-mono");
+    expect(add.className).toContain("text-[13px]");
+    expect(add.className).toContain("text-accent-text");
+    expect(add.className).toContain("hover:underline");
+  });
+
   it("says the empty sentence and still offers the repository form", async () => {
     const { wrapper } = harness([
       { path: `/api/v1/projects/${projectId}/repos`, body: { items: [] } },

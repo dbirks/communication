@@ -46,8 +46,12 @@ vi.mock("../components/home/HomePrompt", () => ({
   ),
 }));
 vi.mock("../components/home/SinceYouLeft", () => ({
-  SinceYouLeft: ({ projectId }: { projectId?: string }) => (
-    <div data-testid="since-you-left" data-project-id={projectId ?? ""} />
+  SinceYouLeft: ({ projectId, projectName }: { projectId?: string; projectName?: string }) => (
+    <div
+      data-testid="since-you-left"
+      data-project-id={projectId ?? ""}
+      data-project-name={projectName ?? ""}
+    />
   ),
 }));
 
@@ -168,10 +172,12 @@ describe("/p/:projectId — the project home", () => {
     expect(await screen.findByTestId("home-start-run-dialog")).toBeTruthy();
   });
 
-  it("scopes the since-you-left block to this project", async () => {
+  it("scopes the since-you-left block to this project and names it", async () => {
     renderApp({ path: `/p/${projectId}`, routes: routesFor() });
     const block = await screen.findByTestId("since-you-left");
     expect(block.getAttribute("data-project-id")).toBe(projectId);
+    // The empty sentence names the project, so the page hands the name down.
+    expect(block.getAttribute("data-project-name")).toBe(projectFixture.name);
   });
 
   it("offers the starter pills the project really has, and links each one", async () => {

@@ -75,12 +75,23 @@ function renderNewChat(scope: string | null, items: ConversationSummary[] = rece
 }
 
 describe("NewChatPane", () => {
+  it("asks for the new chat with the one placeholder sentence, in both scopes", async () => {
+    renderNewChat(null, []);
+    const allScope = await screen.findByTestId("new-chat-prompt-input");
+    expect(allScope.getAttribute("placeholder")).toBe("Ask, plan, or hand off a task…");
+    cleanup();
+
+    renderNewChat(projectFixture.id, []);
+    const projectScope = await screen.findByTestId("new-chat-prompt-input");
+    expect(projectScope.getAttribute("placeholder")).toBe("Ask, plan, or hand off a task…");
+  });
+
   it("creates a conversation with first prompt and navigates to the new chat", async () => {
     const { requests } = renderNewChat(projectFixture.id, []);
 
     await screen.findByTestId("new-chat-prompt");
     await screen.findByText(claudeProfile.name);
-    // In project scope, project picker chip is hidden.
+    // In project scope the picker is gone; the project wears a fixed chip.
     expect(screen.queryByTestId("new-chat-project-chip")).toBeNull();
 
     const input = screen.getByTestId("new-chat-prompt-input");
@@ -106,14 +117,105 @@ describe("NewChatPane", () => {
     });
   });
 
-  it("renders up to 5 OR PICK UP recent chat rows linking to them", async () => {
+  it("lists the five chats after the first three when there are more than three", async () => {
     renderNewChat(null, recentItems);
 
     const pickUp = await screen.findByTestId("new-chat-pick-up");
     expect(pickUp.textContent).toContain("OR PICK UP");
-    expect(screen.getByTestId("new-chat-recent-chat-1").getAttribute("href")).toBe("/chats/chat-1");
-    expect(screen.getByTestId("new-chat-recent-chat-5")).toBeTruthy();
-    expect(screen.queryByTestId("new-chat-recent-chat-6")).toBeNull();
+    // The first three are already at the top of the left list.
+    expect(screen.queryByTestId("new-chat-recent-chat-1")).toBeNull();
+    expect(screen.queryByTestId("new-chat-recent-chat-3")).toBeNull();
+    expect(screen.getByTestId("new-chat-recent-chat-4").getAttribute("href")).toBe("/chats/chat-4");
+    expect(screen.getByTestId("new-chat-recent-chat-6")).toBeTruthy();
+    expect(pickUp.querySelectorAll("a")).toHaveLength(3);
+  });
+
+  it("lists every chat when there are three or fewer", async () => {
+    renderNewChat(null, recentItems.slice(0, 2));
+    await screen.findByTestId("new-chat-recent-chat-1");
+    expect(screen.getByTestId("new-chat-recent-chat-2")).toBeTruthy();
+    expect(screen.getByTestId("new-chat-pick-up").querySelectorAll("a")).toHaveLength(2);
+    cleanup();
+
+    renderNewChat(null, recentItems.slice(0, 3));
+    await screen.findByTestId("new-chat-recent-chat-1");
+    expect(screen.getByTestId("new-chat-recent-chat-3")).toBeTruthy();
+    expect(screen.getByTestId("new-chat-pick-up").querySelectorAll("a")).toHaveLength(3);
+  });
+
+  it("caps the list at the next five chats", async () => {
+    renderNewChat(
+      null,
+      Array.from({ length: 10 }, (_, i) => ({
+        ...recentItems[0],
+        id: `chat-${i + 1}`,
+        title: `Recent chat ${i + 1}`,
+      })),
+    );
+
+    await screen.findByTestId("new-chat-recent-chat-4");
+    expect(screen.getByTestId("new-chat-recent-chat-8")).toBeTruthy();
+    expect(screen.queryByTestId("new-chat-recent-chat-9")).toBeNull();
+    expect(screen.getByTestId("new-chat-pick-up").querySelectorAll("a")).toHaveLength(5);
+  });
+
+  it("gives each pick-up row its resume arrow, and the project tag only at All scope", async () => {
+    renderNewChat(null, recentItems.slice(0, 3));
+    const allScopeRow = await screen.findByTestId("new-chat-recent-chat-1");
+    const icon = allScopeRow.querySelector("svg");
+    expect(icon).toBeTruthy();
+    expect(icon?.getAttribute("class")).toContain("text-accent-edge");
+    const tag = screen.getByTestId("new-chat-recent-project-chat-1");
+    expect(tag.textContent).toBe(projectFixture.name);
+    expect(tag.getAttribute("class")).toContain("font-mono");
+    // The project tag sits before the age.
+    expect(
+      Array.from(allScopeRow.querySelectorAll("span")).indexOf(tag) <
+        Array.from(allScopeRow.querySelectorAll("span")).indexOf(
+          allScopeRow.querySelector(".text-faint")!,
+        ),
+    ).toBe(true);
+    cleanup();
+
+    renderNewChat(projectFixture.id, recentItems.slice(0, 3));
+    const scopedRow = await screen.findByTestId("new-chat-recent-chat-1");
+    expect(scopedRow.querySelector("svg")).toBeTruthy();
+    expect(screen.queryByTestId("new-chat-recent-project-chat-1")).toBeNull();
+    // A scoped row shows no project name at all.
+    expect(scopedRow.textContent).not.toContain(projectFixture.name);
+  });
+
+  it("centres the block in the pane and caps the box and list at 700px", async () => {
+    renderNewChat(projectFixture.id, recentItems.slice(0, 2));
+
+    const body = await screen.findByTestId("new-chat-body");
+    expect(body.getAttribute("class")).toContain("max-w-[700px]");
+    expect(body.getAttribute("class")).toContain("min-h-full");
+    expect(body.getAttribute("class")).toContain("justify-center");
+    expect(body.getAttribute("class")).toContain("py-[48px]");
+    // Phone (below 768px): start at the top with 24px of padding.
+    expect(body.getAttribute("class")).toContain("max-md:justify-start");
+    expect(body.getAttribute("class")).toContain("max-md:pt-[24px]");
+
+    // The prompt box and the OR PICK UP list are the block's only children.
+    await screen.findByTestId("new-chat-pick-up");
+    expect(screen.getByTestId("new-chat-prompt").parentElement).toBe(body);
+    expect(screen.getByTestId("new-chat-pick-up").parentElement).toBe(body);
+  });
+
+  it("shows the project as a fixed chip in a project scope and the picker at All scope", async () => {
+    renderNewChat(projectFixture.id, []);
+    const chip = await screen.findByTestId("chat-new-project-fixed");
+    expect(chip.textContent).toContain(projectFixture.name);
+    expect(chip.hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByTestId("new-chat-project-menu")).toBeNull();
+    fireEvent.click(chip);
+    expect(screen.queryByTestId("new-chat-project-menu")).toBeNull();
+    cleanup();
+
+    renderNewChat(null, []);
+    await screen.findByTestId("new-chat-project-chip");
+    expect(screen.queryByTestId("chat-new-project-fixed")).toBeNull();
   });
 });
 

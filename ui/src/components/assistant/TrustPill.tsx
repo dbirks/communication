@@ -33,9 +33,17 @@ export interface TrustPillProps {
   value: TrustLevel;
   onChange: (level: TrustLevel) => void;
   className?: string;
+  /**
+   * The Quick chat footer's quiet chip (redesign review 16-1280-1): the same
+   * control, drawn as a 26px chip — radius 8, 1px `line` border, white, sans
+   * 12px/500 `ink-2`, 13px chevron — sharing the row with the page-context
+   * chip and "Open as chat". `false` (the composer on the full page) keeps the
+   * handoff §1 mono 10.5px pill.
+   */
+  chip?: boolean;
 }
 
-export function TrustPill({ value, onChange, className = "" }: TrustPillProps) {
+export function TrustPill({ value, onChange, className = "", chip = false }: TrustPillProps) {
   const [open, setOpen] = useState(false);
   const pillRef = useRef<HTMLButtonElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -98,14 +106,16 @@ export function TrustPill({ value, onChange, className = "" }: TrustPillProps) {
           // Open into the first item so arrow keys work immediately.
           requestAnimationFrame(() => itemRefs.current[0]?.focus());
         }}
-        className={`inline-flex h-[26px] min-w-0 shrink-0 cursor-pointer items-center gap-[4px] overflow-hidden whitespace-nowrap rounded-[4px] border border-line px-[7px] font-mono text-[10.5px] leading-none text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${KEEP_COMPOSER_SIZE_PX} ${
-          // §1: while the menu is OPEN the pill stays white on a line border —
-          // no pressed/grey fill. The grey wash belongs to hover alone.
-          open ? "bg-surface" : "bg-surface hover:bg-fill"
+        className={`inline-flex h-[26px] min-w-0 shrink-0 cursor-pointer items-center overflow-hidden whitespace-nowrap border border-line bg-surface leading-none text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${KEEP_COMPOSER_SIZE_PX} ${
+          chip
+            ? "gap-[5px] rounded-[8px] px-[8px] text-[12px] font-medium"
+            : // §1: while the menu is OPEN the pill stays white on a line border
+              // — no pressed/grey fill. The grey wash belongs to hover alone.
+              `gap-[4px] rounded-[4px] px-[7px] font-mono text-[10.5px] ${open ? "" : "hover:bg-fill"}`
         }`}
       >
         {trustPillLabel(value)}
-        <IconChevronDown size={11} stroke={2} aria-hidden className="shrink-0" />
+        <IconChevronDown size={chip ? 13 : 11} stroke={2} aria-hidden className="shrink-0" />
       </button>
       <ComposerMenu
         triggerRef={pillRef}

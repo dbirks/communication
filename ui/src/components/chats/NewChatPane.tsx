@@ -1,10 +1,14 @@
 /**
  * NewChatPane — start a new chat or pick up a recent one (redesign R3).
  *
- * Uses PromptBox with project picker (hidden when already in a project scope),
- * repository chip (when the selected project has > 1 repository), and
- * AgentPicker. Creates the conversation with its first prompt and navigates to
- * the new thread.
+ * Its placeholder is the one sentence every new chat starts behind, "Ask,
+ * plan, or hand off a task…" — the same string the all-projects Home box
+ * prints, so the two entry points ask for the same thing.
+ *
+ * Uses PromptBox with project picker (in a project scope the project is a
+ * fact, so a fixed, disabled chip replaces the picker), repository chip (when
+ * the selected project has > 1 repository), and AgentPicker. Creates the
+ * conversation with its first prompt and navigates to the new thread.
  *
  * The agent chip starts on `pickDefaultAgent` (ADR-0086) — the choice stored
  * for this project, else the project's default agent, else the first profile —
@@ -13,7 +17,13 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { IconArrowLeft, IconChevronDown, IconFolder, IconGitBranch } from "@tabler/icons-react";
+import {
+  IconArrowBackUp,
+  IconArrowLeft,
+  IconChevronDown,
+  IconFolder,
+  IconGitBranch,
+} from "@tabler/icons-react";
 import {
   useAgentProfiles,
   useCreateConversation,
@@ -21,7 +31,7 @@ import {
   useProjects,
   useRepositories,
 } from "../../api/queries";
-import { formatAge } from "../../lib/format";
+import { formatAge, shortId } from "../../lib/format";
 import { previewLine } from "../../lib/preview";
 import { routes } from "../../lib/routes";
 import { FormError } from "../Feedback";
@@ -105,10 +115,16 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
 
   const create = useCreateConversation(activeProjectId);
 
+  // The first three chats are already at the top of the left list, so "OR PICK
+  // UP" continues where that list stops: with more than three chats it shows
+  // the next five (ranks 4–8); with three or fewer there is nothing to skip.
   const recentChats = useMemo(() => {
     const items = scope ? recentList.items.filter((c) => c.project_id === scope) : recentList.items;
-    return items.slice(0, 5);
+    return items.length > 3 ? items.slice(3, 8) : items;
   }, [recentList.items, scope]);
+
+  const projectNameOf = (id: string) =>
+    projects.data?.items.find((project) => project.id === id)?.name ?? shortId(id);
 
   const projectMenuItems: MenuEntry[] =
     writableProjects.length > 0
@@ -185,6 +201,17 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
 
   const chips = (
     <>
+      {scope && activeProject ? (
+        // In a project scope the project is a fact, not a choice: a fixed chip
+        // with no menu where the picker used to sit.
+        <PromptChip
+          testid="chat-new-project-fixed"
+          disabled
+          icon={<IconFolder size={14} stroke={1.5} aria-hidden="true" />}
+        >
+          {activeProject.name}
+        </PromptChip>
+      ) : null}
       {scope ? null : (
         <span className="relative inline-flex max-w-full">
           <PromptChip
@@ -286,7 +313,10 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
         </div>
       ) : null}
 
-      <div className="mx-auto mt-[14vh] flex w-full max-w-[700px] flex-col gap-[18px] px-[20px] pb-[40px]">
+      <div
+        data-testid="new-chat-body"
+        className="mx-auto flex min-h-full w-full max-w-[700px] flex-col justify-center gap-[18px] px-[20px] py-[48px] max-md:justify-start max-md:pt-[24px]"
+      >
         <h2 className="text-center text-[24px] font-bold text-ink">New chat</h2>
 
         {cannotStartChat ? (
@@ -301,7 +331,7 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
               rows={2}
               readOnly
               disabled
-              placeholder="What should we work on?"
+              placeholder="Ask, plan, or hand off a task…"
               className="block w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint disabled:text-disabled-fg"
             />
             <div className="mt-[10px] flex items-center gap-[8px]">
@@ -324,7 +354,7 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
               if (validationError) setValidationError(null);
             }}
             onSubmit={handleSubmit}
-            placeholder="What should we work on?"
+            placeholder="Ask, plan, or hand off a task…"
             label="New chat prompt"
             autoFocus
             rows={2}
@@ -352,6 +382,12 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
                   data-testid={`new-chat-recent-${chat.id}`}
                   className="flex items-center gap-[12px] rounded-[8px] border border-line-soft px-[12px] py-[10px] hover:border-line-strong hover:bg-rail focus-visible:outline-2 focus-visible:outline-accent"
                 >
+                  <IconArrowBackUp
+                    size={14}
+                    stroke={1.5}
+                    className="shrink-0 text-accent-edge"
+                    aria-hidden="true"
+                  />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13.5px] font-semibold text-ink">
                       {title}
@@ -360,6 +396,14 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
                       <span className="block truncate text-[12.5px] text-muted">{preview}</span>
                     ) : null}
                   </span>
+                  {scope ? null : (
+                    <span
+                      data-testid={`new-chat-recent-project-${chat.id}`}
+                      className="max-w-[140px] shrink-0 truncate font-mono text-[11px] text-muted"
+                    >
+                      {projectNameOf(chat.project_id)}
+                    </span>
+                  )}
                   <span className="shrink-0 font-mono text-[11px] text-faint">
                     {formatAge(chat.updated_at)}
                   </span>

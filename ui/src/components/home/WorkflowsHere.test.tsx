@@ -71,6 +71,30 @@ const library: RouteStub = {
 afterEach(cleanup);
 
 describe("WorkflowsHere", () => {
+  it("heads the block with a column heading and words its Factory link in the UI font", async () => {
+    const { wrapper } = harness([
+      { path: `/api/v1/projects/${projectId}/assignments`, body: { assignments: [] } },
+      { path: `/api/v1/projects/${projectId}/schedules`, body: { schedules: [] } },
+      { path: `/api/v1/projects/${projectId}/issue-triggers`, body: { issue_triggers: [] } },
+      library,
+    ]);
+    render(<WorkflowsHere projectId={projectId} />, { wrapper });
+
+    const head = await screen.findByTestId("workflows-here-label");
+    expect(head.tagName).toBe("H3");
+    expect(head.textContent).toBe("Workflows here");
+    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("border-line-soft");
+    expect(head.className).not.toContain("font-mono");
+
+    const link = await screen.findByTestId("workflows-here-factory");
+    expect((link.textContent ?? "").trim()).toBe("Open the Factory");
+    expect(link.className).not.toContain("font-mono");
+    expect(link.className).toContain("text-[13px]");
+    expect(link.className).toContain("text-accent-text");
+    expect(link.className).toContain("hover:underline");
+  });
+
   it("says nothing is assigned and points at the Factory", async () => {
     const { wrapper } = harness([
       { path: `/api/v1/projects/${projectId}/assignments`, body: { assignments: [] } },

@@ -435,6 +435,18 @@
   main input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]) {
     min-height: 44px;
   }
+  /* EXCEPTION — the round send button (PromptBox marks it `data-round`). The
+     floor above would stretch its 32×32 box into a 32×44 capsule; the design
+     keeps a circle at every width. The box holds at 32px and a transparent
+     ::before (inset -6px, so 44×44 total) carries the touch target instead. */
+  main button[data-round] {
+    min-height: 32px;
+  }
+  main button[data-round]::before {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
   /* Vertically centre the label of controls that only centre horizontally
      (flex containers with `items-start`, canvas edge “+” pills) so the 44px
      box grows around the ink, not below it. Non-flex controls ignore it. */

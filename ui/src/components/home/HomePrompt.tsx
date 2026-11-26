@@ -1,6 +1,9 @@
 /**
  * HomePrompt — the prompt box of the redesigned Home (handoff README §2,
- * CONTRACT.md "Shared components"): ask, plan or start something.
+ * CONTRACT.md "Shared components"): ask, plan or start something. Its one
+ * placeholder in the all-projects scope is "Ask, plan, or hand off a task…"
+ * — the same sentence the New chat pane uses, since both start a new chat;
+ * the project home overrides it with `placeholder`.
  *
  * Submitting creates a conversation with EXACTLY the body
  * `NewConversationDialog` sends (`agent_profile_id`, `title`, optional
@@ -168,7 +171,7 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
       <PromptBox
         testid="home-prompt"
         label="Ask, plan or start something"
-        placeholder={placeholder ?? "Ask, plan or start something…"}
+        placeholder={placeholder ?? "Ask, plan, or hand off a task…"}
         value={text}
         onChange={setText}
         onSubmit={submit}
@@ -184,6 +187,7 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
                   buttonRef={projectRef}
                   testid="home-prompt-project"
                   icon={<IconFolder size={14} stroke={1.5} aria-hidden />}
+                  chevron
                   aria-haspopup="menu"
                   aria-expanded={projectMenuOpen}
                   disabled={projects.length === 0}
@@ -217,6 +221,7 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
                   buttonRef={repoRef}
                   testid="home-prompt-repository"
                   icon={<IconPackage size={14} stroke={1.5} aria-hidden />}
+                  chevron
                   aria-haspopup="menu"
                   aria-expanded={repoMenuOpen}
                   title="Choose the repository"

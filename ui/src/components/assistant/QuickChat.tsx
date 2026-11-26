@@ -416,7 +416,7 @@ export default function QuickChat({
       >
         <IconSparkles size={16} stroke={1.5} aria-hidden className="shrink-0 text-accent" />
         <span className="whitespace-nowrap text-[14px] font-bold text-ink">Quick chat</span>
-        <span className="hidden min-w-0 truncate text-[12px] text-muted min-[380px]:inline">
+        <span className="hidden min-w-0 truncate font-mono text-[10.5px] text-muted min-[380px]:inline">
           stays open until you close it
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-[4px]">
@@ -523,32 +523,36 @@ export default function QuickChat({
               {askLabel}
             </span>
           ) : null}
-          <div
-            data-testid="composer-box"
-            className={`flex items-end gap-[8px] rounded-[12px] border px-[10px] py-[8px] ${
-              recording ? "border-accent bg-accent-wash/40" : "border-line-strong bg-surface"
-            }`}
-          >
-            <textarea
-              ref={textareaRef}
-              rows={MIN_ROWS}
-              data-testid="assistant-composer-input"
-              value={draft}
-              placeholder={`Reply, or hold ${commandKeyHint()} to talk`}
-              aria-label="Reply to Quick chat"
-              disabled={busy || transcribing}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  submit(draft, {
-                    spoken: spokenDraftRef.current,
-                    context: pageContextPayload(page, contextOn),
-                  });
-                }
-              }}
-              className="my-auto min-w-0 flex-1 resize-none overflow-y-auto border-none bg-transparent p-0 text-[13.5px] leading-[20px] text-ink outline-none placeholder:text-faint disabled:text-disabled-fg"
-            />
+          {/* Row 1: the reply field (flex-1, radius 12, 1px line-strong) with
+              the 32px mic circle and the 32px accent send circle beside it. */}
+          <div data-testid="quick-chat-reply-row" className="flex min-w-0 items-end gap-[8px]">
+            <div
+              data-testid="composer-box"
+              className={`flex min-w-0 flex-1 items-start rounded-[12px] border px-[10px] py-[8px] ${
+                recording ? "border-accent bg-accent-wash/40" : "border-line-strong bg-surface"
+              }`}
+            >
+              <textarea
+                ref={textareaRef}
+                rows={MIN_ROWS}
+                data-testid="assistant-composer-input"
+                value={draft}
+                placeholder={`Reply, or hold ${commandKeyHint()} to talk`}
+                aria-label="Reply to Quick chat"
+                disabled={busy || transcribing}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    submit(draft, {
+                      spoken: spokenDraftRef.current,
+                      context: pageContextPayload(page, contextOn),
+                    });
+                  }
+                }}
+                className="my-auto min-w-0 flex-1 resize-none overflow-y-auto border-none bg-transparent p-0 text-[13.5px] leading-[20px] text-ink outline-none placeholder:text-faint disabled:text-disabled-fg"
+              />
+            </div>
             <MicButton
               circle
               phase={dictation.phase}
@@ -585,10 +589,14 @@ export default function QuickChat({
               {dictationError}
             </p>
           ) : null}
-          <div className="mt-[8px] flex min-w-0 items-center gap-[6px]">
-            <ContextButton page={page} on={contextOn} onToggle={setContextOn} />
-            <TrustPill value={trustLevel} onChange={onTrustLevelChange} />
-            <span className="min-w-0 grow" aria-hidden="true" />
+          {/* Row 2: the two existing controls as quiet 26px chips, with
+              "Open as chat" right-aligned on the same row. */}
+          <div
+            data-testid="quick-chat-controls-row"
+            className="mt-[8px] flex min-w-0 items-center gap-[6px]"
+          >
+            <ContextButton chip page={page} on={contextOn} onToggle={setContextOn} />
+            <TrustPill chip value={trustLevel} onChange={onTrustLevelChange} />
             <a
               href={ASSISTANT_PAGE_PATH}
               data-testid="quick-chat-open-as-chat"
@@ -596,7 +604,7 @@ export default function QuickChat({
                 event.preventDefault();
                 onExpandPage();
               }}
-              className="shrink-0 text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+              className="ml-auto shrink-0 text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
             >
               Open as chat
             </a>

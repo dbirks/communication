@@ -65,7 +65,9 @@ export function HappeningNow({ projectId }: HappeningNowProps) {
 
   return (
     <section className="min-w-0" aria-label="Happening now" data-testid="happening-now">
-      <SectionLabel testid="happening-now-label">Happening now</SectionLabel>
+      <SectionLabel testid="happening-now-label" glyph="●" tone="running">
+        Happening now
+      </SectionLabel>
       {cards === 0 ? (
         <p className="m-0 text-[13.5px] text-muted" data-testid="happening-now-empty">
           {runs.isPending || threads.isPending

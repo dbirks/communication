@@ -182,15 +182,30 @@ export interface ContextButtonProps {
   on: boolean;
   onToggle: (next: boolean) => void;
   className?: string;
+  /**
+   * The Quick chat footer's quiet chip (redesign review 16-1280-1): the same
+   * control and the same menu, drawn as a 26px chip — radius 8, 1px `line`
+   * border, white, sans 12px/500 `ink-2`, 13px glyph plus the page name — so it
+   * sits on one row with the trust chip and "Open as chat". `false` keeps the
+   * handoff §1 26px square used by the full page's composer.
+   */
+  chip?: boolean;
 }
 
 /**
  * The page-context button. On: the current-location glyph in accent ink on the
  * accent wash, because something IS attached; off: the slashed glyph in faint
  * on white. The menu it opens names the page, prints the route in mono, and
- * carries the "Send with my messages" checkbox.
+ * carries the "Send with my messages" checkbox. In `chip` mode the surface is
+ * always white and on/off is carried by the glyph and the label instead.
  */
-export function ContextButton({ page, on, onToggle, className = "" }: ContextButtonProps) {
+export function ContextButton({
+  page,
+  on,
+  onToggle,
+  className = "",
+  chip = false,
+}: ContextButtonProps) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const checkboxRef = useRef<HTMLInputElement | null>(null);
@@ -216,17 +231,34 @@ export function ContextButton({ page, on, onToggle, className = "" }: ContextBut
         title={on ? `Page context: ${page.label}` : "Page context off"}
         aria-label={on ? `Page context: ${page.label}` : "Page context off"}
         onClick={() => setOpen((next) => !next)}
-        className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[4px] border ${KEEP_COMPOSER_SIZE_PX} focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+        className={`shrink-0 border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${KEEP_COMPOSER_SIZE_PX} ${
           // The menu's pressed state is the INK border (prototype ctxBtnStyle:
           // border #1e1d1a while the ctx menu is open), over the on/off fill.
           open ? "border-ink" : "border-line"
-        } ${on ? "bg-accent-wash text-accent-text" : "bg-surface text-faint"}`}
+        } ${
+          chip
+            ? "inline-flex h-[26px] min-w-0 items-center gap-[5px] whitespace-nowrap rounded-[8px] bg-surface px-[8px] text-[12px] font-medium leading-none text-ink-2"
+            : `grid h-[26px] w-[26px] place-items-center rounded-[4px] ${on ? "bg-accent-wash text-accent-text" : "bg-surface text-faint"}`
+        }`}
       >
         {on ? (
-          <IconCurrentLocation size={14} stroke={2} aria-hidden className="shrink-0" />
+          <IconCurrentLocation
+            size={chip ? 13 : 14}
+            stroke={2}
+            aria-hidden
+            className={chip ? "shrink-0 text-accent-text" : "shrink-0"}
+          />
         ) : (
-          <IconCurrentLocationOff size={14} stroke={2} aria-hidden className="shrink-0" />
+          <IconCurrentLocationOff
+            size={chip ? 13 : 14}
+            stroke={2}
+            aria-hidden
+            className="shrink-0"
+          />
         )}
+        {chip ? (
+          <span className="max-w-[132px] truncate">{on ? page.label : "Page off"}</span>
+        ) : null}
       </button>
       <ComposerMenu
         triggerRef={buttonRef}

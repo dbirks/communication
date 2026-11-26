@@ -124,7 +124,7 @@ export default function Project() {
             <StarterPills projectId={data.id} />
           </div>
           <HappeningNow projectId={data.id} />
-          <SinceYouLeft projectId={data.id} />
+          <SinceYouLeft projectId={data.id} projectName={data.name} />
         </div>
 
         <div className="flex min-w-0 flex-col gap-[28px]">

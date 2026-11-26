@@ -446,6 +446,81 @@ describe("QuickChat chrome and lifecycle", () => {
     expect(mic.title).toContain("unavailable");
   });
 
+  it("footer is two rows: field + mic + send, then the two chips with Open as chat", async () => {
+    stubServer();
+    renderQuickChat("/");
+
+    act(() => openAsk());
+    await screen.findByTestId("quick-chat");
+
+    const composer = screen.getByTestId("assistant-composer");
+    const kids = Array.from(composer.children);
+    // The sr-only context label plus exactly two rows, in order (review
+    // 16-1280-1: the footer is two rows, not the two-row control cluster the
+    // prototype review saw).
+    expect(kids).toHaveLength(3);
+    expect(kids[0].getAttribute("data-testid")).toBe("assistant-context-chip");
+    const replyRow = screen.getByTestId("quick-chat-reply-row");
+    const controlsRow = screen.getByTestId("quick-chat-controls-row");
+    expect(kids[1]).toBe(replyRow);
+    expect(kids[2]).toBe(controlsRow);
+
+    // Row 1: field (flex-1, radius 12, 1px line-strong), mic 32px circle,
+    // send 32px accent circle — in that order.
+    expect(Array.from(replyRow.children).map((el) => el.getAttribute("data-testid"))).toEqual([
+      "composer-box",
+      "mic-button",
+      "assistant-send",
+    ]);
+    const field = screen.getByTestId("composer-box");
+    expect(field.className).toContain("flex-1");
+    expect(field.className).toContain("rounded-[12px]");
+    expect(field.className).toContain("border-line-strong");
+    const mic = screen.getByTestId("mic-button");
+    expect(mic.className).toContain("h-[32px]");
+    expect(mic.className).toContain("rounded-full");
+
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), { target: { value: "hi" } });
+    const send = screen.getByTestId("assistant-send");
+    expect(send.className).toContain("h-[32px]");
+    expect(send.className).toContain("rounded-full");
+    expect(send.className).toContain("bg-accent");
+
+    // Row 2: trust + page-context controls keep their test ids and sit as
+    // quiet chips, with "Open as chat" right-aligned on the same row.
+    expect(
+      Array.from(controlsRow.children).map(
+        (el) =>
+          el.querySelector("[data-testid]")?.getAttribute("data-testid") ??
+          el.getAttribute("data-testid"),
+      ),
+    ).toEqual(["assistant-context-button", "assistant-pill", "quick-chat-open-as-chat"]);
+    for (const testid of ["assistant-context-button", "assistant-pill"]) {
+      const chip = screen.getByTestId(testid);
+      for (const cls of [
+        "h-[26px]",
+        "rounded-[8px]",
+        "border-line",
+        "bg-surface",
+        "text-[12px]",
+        "font-medium",
+        "text-ink-2",
+      ]) {
+        expect(chip.className).toContain(cls);
+      }
+    }
+    const openAsChat = screen.getByTestId("quick-chat-open-as-chat");
+    expect(openAsChat.className).toContain("ml-auto");
+    expect(openAsChat.className).toContain("text-[12.5px]");
+    expect(openAsChat.className).toContain("text-accent-text");
+
+    // The chips still open their menus (existing behaviour, same ids).
+    fireEvent.click(screen.getByTestId("assistant-pill"));
+    expect(screen.getByTestId("assistant-pill-menu")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("assistant-context-button"));
+    expect(screen.getByTestId("assistant-context-menu")).toBeTruthy();
+  });
+
   it("Open as chat links to /assistant and opens the full page for the thread", async () => {
     stubServer();
     renderQuickChat("/");

@@ -34,7 +34,9 @@ export function RunningList({ runs }: RunningListProps) {
   const running = runs.filter((run) => run.status === "running");
   return (
     <section data-testid="running-list">
-      <SectionLabel>Running</SectionLabel>
+      <SectionLabel testid="running-list-label" glyph="●" tone="running">
+        Running
+      </SectionLabel>
       {running.length === 0 ? (
         <p data-testid="running-list-empty" className="text-[13.5px] text-muted">
           Nothing is running.

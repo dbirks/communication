@@ -92,6 +92,13 @@ describe("titleFromPrompt", () => {
 });
 
 describe("HomePrompt (All scope)", () => {
+  it("asks for the new chat with the one placeholder sentence", async () => {
+    renderPrompt(baseRoutes([projectFixture]));
+    const input = await screen.findByTestId("home-prompt-input");
+    expect(input.getAttribute("placeholder")).toBe("Ask, plan, or hand off a task…");
+    expect(input.getAttribute("aria-label")).toBe("Ask, plan or start something");
+  });
+
   it("defaults to the first project and first profile and ignores stale storage", async () => {
     localStorage.setItem(HOME_PROJECT_KEY, "removed");
     localStorage.setItem(`communication.home.agent.${projectFixture.id}`, "removed");
@@ -138,6 +145,20 @@ describe("HomePrompt (All scope)", () => {
     renderPrompt(baseRoutes([projectFixture]));
     const chip = await screen.findByText("Widgets");
     expect(chip.closest("[data-testid='home-prompt-project']")).toBeTruthy();
+  });
+
+  it("marks the menu chips with a trailing chevron (project, repository) — rx-h3", async () => {
+    renderPrompt(baseRoutes([projectFixture], [repoFixture("api"), repoFixture("web")]));
+    const lastClass = (el: Element) => {
+      const svgs = el.querySelectorAll("svg");
+      return svgs[svgs.length - 1]?.getAttribute("class") ?? "";
+    };
+    const projectChip = await screen.findByTestId("home-prompt-project");
+    // The folder icon comes first, the chevron last.
+    expect(projectChip.querySelectorAll("svg").length).toBe(2);
+    expect(lastClass(projectChip)).toContain("tabler-icon-chevron-down");
+    const repoChip = await screen.findByTestId("home-prompt-repository");
+    expect(lastClass(repoChip)).toContain("tabler-icon-chevron-down");
   });
 
   it("creates the conversation with the dialog's body, remembers the pick, and navigates to the chat", async () => {

@@ -48,6 +48,32 @@ const approval: Approval = {
 afterEach(cleanup);
 
 describe("NeedsYouCards", () => {
+  it("carries the waiting glyph and colour on its label, empty or filled", () => {
+    const { unmount } = render(
+      <MemoryRouter>
+        <NeedsYouCards approvals={[]} runs={[]} />
+      </MemoryRouter>,
+    );
+    const empty = screen.getByTestId("needs-you-label");
+    expect(empty.tagName).toBe("H3");
+    expect(empty.textContent).toBe("! Needs you");
+    expect(empty.className).toContain("uppercase");
+    expect(empty.className).toContain("text-st-waiting-tag-fg");
+    expect(empty.className).not.toContain("text-muted");
+    // The glyph is decoration: the words carry the state to a reader.
+    expect(empty.querySelector("span")?.getAttribute("aria-hidden")).toBe("true");
+    unmount();
+
+    render(
+      <MemoryRouter>
+        <NeedsYouCards approvals={[approval]} runs={[run]} />
+      </MemoryRouter>,
+    );
+    const filled = screen.getByTestId("needs-you-label");
+    expect(filled.textContent).toBe("! Needs you");
+    expect(filled.className).toContain("text-st-waiting-tag-fg");
+  });
+
   it("says the one true sentence when nothing waits", () => {
     render(
       <MemoryRouter>

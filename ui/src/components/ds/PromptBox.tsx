@@ -10,7 +10,7 @@
  * workflow", "Run workflow").
  */
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
-import { IconArrowUp } from "@tabler/icons-react";
+import { IconArrowUp, IconChevronDown } from "@tabler/icons-react";
 
 export interface PromptBoxProps {
   value: string;
@@ -101,12 +101,17 @@ export function PromptBox({
       <div className="mt-[10px] flex items-center gap-[8px]">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-[6px]">{chips}</div>
         {trailing}
+        {/* `data-round` opts the button out of the phone touch-target floor in
+            tokens.css (APP-SHELL-PHONE) so it stays a 32px circle at every
+            width; that rule gives it the 44px hit area through a transparent
+            ::before instead of stretching it into a capsule. */}
         <button
           type="submit"
           data-testid={`${testid}-send`}
+          data-round
           aria-label="Send"
           disabled={!canSend}
-          className="grid h-[32px] w-[32px] shrink-0 place-items-center rounded-full bg-accent text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
+          className="relative grid aspect-square h-[32px] w-[32px] shrink-0 place-items-center rounded-full p-0 bg-accent text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
         >
           <IconArrowUp size={17} stroke={2} aria-hidden />
         </button>
@@ -119,6 +124,8 @@ export function PromptBox({
 export interface PromptChipProps {
   children: ReactNode;
   icon?: ReactNode;
+  /** Trailing muted chevron: the chip opens a menu (a plain action has none). */
+  chevron?: boolean;
   onClick?: () => void;
   /** Forwarded so a ds `Menu` can anchor to the chip. */
   buttonRef?: React.Ref<HTMLButtonElement>;
@@ -130,10 +137,12 @@ export interface PromptChipProps {
 }
 
 /** A chip in the prompt box's bottom row: 26px tall, radius 8, 1px line,
- * 12.5px text. */
+ * 12.5px/600 text-ink in the UI font; `chevron` adds the trailing 12px
+ * muted chevron that marks a chip as a menu trigger. */
 export function PromptChip({
   children,
   icon,
+  chevron = false,
   onClick,
   buttonRef,
   disabled,
@@ -150,10 +159,13 @@ export function PromptChip({
       disabled={disabled}
       onClick={onClick}
       {...aria}
-      className="inline-flex h-[26px] max-w-full items-center gap-[5px] rounded-[8px] border border-line bg-surface px-[8px] text-[12.5px] text-ink-2 hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg"
+      className="inline-flex h-[26px] max-w-full items-center gap-[5px] rounded-[8px] border border-line bg-surface px-[8px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg"
     >
       {icon}
-      <span className="min-w-0 truncate">{children}</span>
+      <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{children}</span>
+      {chevron ? (
+        <IconChevronDown size={12} stroke={1.5} className="shrink-0 text-muted" aria-hidden />
+      ) : null}
     </button>
   );
 }

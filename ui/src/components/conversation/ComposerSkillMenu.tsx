@@ -23,8 +23,21 @@
  * under the textbox without overflow.
  */
 import { useRef } from "react";
+import { IconChevronDown } from "@tabler/icons-react";
 import type { AgentProfile } from "../../api/types";
 import { Menu, type MenuEntry } from "../ds/Menu";
+
+/** Verbatim `PromptChip`'s className (ds/PromptBox.tsx) — the composer chip a
+ *  `chip` trigger wears so `/ skill` looks like every other chip in the row
+ *  (rx-c1). Kept as a literal because `PromptChip` itself cannot carry the
+ *  trigger's `aria-label`. */
+const CHIP_TRIGGER_CLASS =
+  "inline-flex h-[26px] max-w-full items-center gap-[5px] rounded-[8px] border border-line bg-surface px-[8px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg";
+
+/** The retired panel's own look (AgentConversationPanel), kept for callers
+ *  that do not sit in a PromptBox chip row. */
+const PLAIN_TRIGGER_CLASS =
+  "inline-flex h-[28px] items-center gap-[3px] rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[11.5px] text-ink hover:border-ink disabled:cursor-not-allowed disabled:text-muted";
 
 /** Why the skill list the menu owes the person is not the lock's own list. */
 export interface ComposerSkillMenuState {
@@ -107,6 +120,10 @@ export interface ComposerSkillMenuProps {
   onPick: (skill: string) => void;
   /** Nobody who cannot prompt cannot open the menu either. */
   disabled?: boolean;
+  /** Render the trigger as a composer chip (rx-c1): `PromptChip`'s box, a
+   *  muted mono leading `/` and the word in the UI font. Off by default so
+   *  the panel's own controls row keeps its old button. */
+  chip?: boolean;
 }
 
 export function ComposerSkillMenu({
@@ -115,10 +132,11 @@ export function ComposerSkillMenu({
   onOpenChange,
   onPick,
   disabled = false,
+  chip = false,
 }: ComposerSkillMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   return (
-    <span className="relative inline-flex">
+    <span className={chip ? "relative inline-flex max-w-full" : "relative inline-flex"}>
       <button
         ref={triggerRef}
         type="button"
@@ -129,13 +147,33 @@ export function ComposerSkillMenu({
         disabled={disabled}
         title="The agent's skills"
         onClick={() => onOpenChange(!open)}
-        className="inline-flex h-[28px] items-center gap-[3px] rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[11.5px] text-ink hover:border-ink disabled:cursor-not-allowed disabled:text-muted"
+        className={chip ? CHIP_TRIGGER_CLASS : PLAIN_TRIGGER_CLASS}
       >
-        <span aria-hidden="true">/</span>
-        {/* The word never folds: "skill" is short enough that "/ skill" and
-            the caret-free label fit the 390px controls row with the chip and
-            Send (round-8 review item 2); the accessible name stays "Skills". */}
-        <span aria-hidden="true">skill</span>
+        {chip ? (
+          <>
+            {/* `PromptChip`'s own anatomy: a muted leading glyph, then the word
+                in 12.5px/600 UI ink, then the muted chevron that marks a chip
+                as a menu trigger. */}
+            <span className="font-mono text-muted" aria-hidden="true">
+              /
+            </span>
+            <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">skill</span>
+            <IconChevronDown
+              size={12}
+              stroke={1.5}
+              className="shrink-0 text-muted"
+              aria-hidden="true"
+            />
+          </>
+        ) : (
+          <>
+            <span aria-hidden="true">/</span>
+            {/* The word never folds: "skill" is short enough that "/ skill" and
+                the caret-free label fit the 390px controls row with the chip and
+                Send (round-8 review item 2); the accessible name stays "Skills". */}
+            <span aria-hidden="true">skill</span>
+          </>
+        )}
       </button>
       <Menu
         open={open}

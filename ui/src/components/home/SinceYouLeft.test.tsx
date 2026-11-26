@@ -1,8 +1,8 @@
 /**
  * SinceYouLeft: the rows the catch-up list read serves (important items
  * first, routine ones behind the "+ N routine updates" line that expands in
- * place), the brief headline above them, the empty sentence, and the visit
- * stamp CatchUp recorded on open.
+ * place), the brief headline above them, the one empty sentence per scope,
+ * and the visit stamp CatchUp recorded on open.
  */
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -72,6 +72,25 @@ function renderSince(routes: RouteStub[], props: Parameters<typeof SinceYouLeft>
 afterEach(cleanup);
 
 describe("SinceYouLeft", () => {
+  it("heads the section with a sentence-case column heading, even when empty", async () => {
+    renderSince([
+      {
+        path: "/api/v1/catch-up/items",
+        body: { items: [], total_unseen: 0, oldest_unseen_at: null },
+      },
+      { path: "/api/v1/catch-up/brief", body: briefFixture() },
+    ]);
+    const head = await screen.findByTestId("since-you-left-label");
+    expect(head.tagName).toBe("H3");
+    expect(head.textContent).toBe("Since you left");
+    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("font-bold");
+    expect(head.className).toContain("border-line-soft");
+    expect(head.className).not.toContain("font-mono");
+    expect(head.className).not.toContain("uppercase");
+    expect(screen.getByRole("heading", { name: "Since you left" })).toBe(head);
+  });
+
   it("says the empty sentence when the window holds nothing", async () => {
     renderSince([
       {
@@ -84,6 +103,41 @@ describe("SinceYouLeft", () => {
     expect(screen.getByTestId("since-you-left-empty").textContent).toBe(
       "Nothing new since you left.",
     );
+  });
+
+  it("names the project in the empty sentence in project scope", async () => {
+    renderSince(
+      [
+        {
+          path: "/api/v1/catch-up/items",
+          body: { items: [], total_unseen: 0, oldest_unseen_at: null },
+        },
+        { path: "/api/v1/catch-up/brief", body: briefFixture() },
+      ],
+      { projectId: projectFixture.id, projectName: projectFixture.name },
+    );
+    expect(await screen.findByTestId("since-you-left-empty")).toBeTruthy();
+    expect(screen.getByTestId("since-you-left-empty").textContent).toBe(
+      `Nothing new in ${projectFixture.name} since you left.`,
+    );
+  });
+
+  it("prints one sentence, not the quiet headline, when the window holds nothing", async () => {
+    renderSince([
+      {
+        path: "/api/v1/catch-up/items",
+        body: { items: [], total_unseen: 0, oldest_unseen_at: null },
+      },
+      {
+        path: "/api/v1/catch-up/brief",
+        body: briefFixture({ headline: { state: "ready", text: "A quiet stretch." } }),
+      },
+    ]);
+    expect(await screen.findByTestId("since-you-left-empty")).toBeTruthy();
+    expect(screen.queryByTestId("since-you-left-headline")).toBeNull();
+    // One sentence in the section, no matter what the brief read said.
+    const section = screen.getByTestId("since-you-left");
+    expect(section.querySelectorAll("p")).toHaveLength(1);
   });
 
   it("shows important rows, folds routine ones behind '+ N routine updates' and expands in place", async () => {

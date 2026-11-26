@@ -79,6 +79,19 @@ const emptyRoutes = (runs: CrossProjectRun[]): RouteStub[] => [
 afterEach(cleanup);
 
 describe("HappeningNow", () => {
+  it("labels the block with the running glyph and colour while it is empty", async () => {
+    const { wrapper } = harness(emptyRoutes([]));
+    render(<HappeningNow projectId={projectId} />, { wrapper });
+
+    await screen.findByTestId("happening-now-empty");
+    const label = screen.getByTestId("happening-now-label");
+    expect(label.tagName).toBe("H3");
+    expect(label.textContent).toBe("● Happening now");
+    expect(label.className).toContain("uppercase");
+    expect(label.className).toContain("text-st-running-tag-fg");
+    expect(label.className).not.toContain("text-muted");
+  });
+
   it("says the one true sentence when nothing is live", async () => {
     const { wrapper } = harness(emptyRoutes([]));
     render(<HappeningNow projectId={projectId} />, { wrapper });
@@ -96,6 +109,10 @@ describe("HappeningNow", () => {
     render(<HappeningNow projectId={projectId} />, { wrapper });
 
     const card = await screen.findByTestId(`happening-run-${shortId(live.id)}`);
+    // The label keeps its glyph and running colour once the block has cards.
+    const label = screen.getByTestId("happening-now-label");
+    expect(label.textContent).toBe("● Happening now");
+    expect(label.className).toContain("text-st-running-tag-fg");
     expect(card.getAttribute("href")).toBe("/runs/01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c");
     expect(card.textContent).toContain("running");
     expect(card.textContent).toContain("Workflow One");

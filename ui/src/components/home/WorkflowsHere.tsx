@@ -22,7 +22,7 @@ import { useIssueTriggers } from "../../api/useIssueTriggers";
 import { shortId } from "../../lib/format";
 import { routes } from "../../lib/routes";
 import { triggerSentence } from "../factory/factoryData";
-import { SectionLabel } from "./SectionLabel";
+import { ColumnHeading } from "./SectionLabel";
 
 export interface WorkflowsHereProps {
   projectId: string;
@@ -43,7 +43,7 @@ export function WorkflowsHere({ projectId }: WorkflowsHereProps) {
 
   return (
     <section className="min-w-0" aria-label="Workflows here" data-testid="workflows-here">
-      <SectionLabel testid="workflows-here-label">Workflows here</SectionLabel>
+      <ColumnHeading testid="workflows-here-label">Workflows here</ColumnHeading>
       {pins.length === 0 ? (
         <p className="m-0 text-[13.5px] text-muted" data-testid="workflows-here-empty">
           {assignments.isPending ? "Reading this project's workflows." : "No workflows here yet."}
@@ -88,10 +88,10 @@ export function WorkflowsHere({ projectId }: WorkflowsHereProps) {
       {pins.length === 0 && !assignments.isPending ? (
         <Link
           to={routes.factory(projectId)}
-          className="mt-[8px] inline-block font-mono text-[11.5px] text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className="mt-[8px] inline-block text-[13px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           data-testid="workflows-here-factory"
         >
-          open the factory
+          Open the Factory
         </Link>
       ) : null}
     </section>

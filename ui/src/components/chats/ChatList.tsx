@@ -159,7 +159,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
         onPointerEnter={() => prefetchConversation(queryClient, conversation.id)}
         data-testid={`chat-row-${conversation.id}`}
         aria-current={selected ? "page" : undefined}
-        className={`flex flex-col gap-[2px] rounded-[8px] px-[8px] py-[9px] focus-visible:outline-2 focus-visible:outline-accent ${
+        className={`flex flex-col justify-center gap-[2px] rounded-[8px] px-[8px] py-[9px] focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] ${
           selected ? "bg-accent-wash" : "bg-transparent hover:bg-rail"
         }`}
       >
@@ -201,7 +201,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
         </Link>
       </div>
 
-      <div className="flex flex-col gap-[6px] px-[8px] pb-[6px]">
+      <div className="flex flex-col gap-[6px] px-[8px] pb-[6px] md:flex-row md:items-center">
         <input
           type="search"
           data-testid="chat-search"
@@ -209,19 +209,34 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
           placeholder="Search chats"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          className="h-[30px] w-full rounded-[8px] border border-line bg-surface px-[10px] text-[12.5px] text-ink placeholder:text-faint focus:border-accent focus:outline-none max-md:min-h-[44px]"
+          className="h-[30px] w-full rounded-[8px] border border-line bg-surface px-[10px] text-[12.5px] text-ink placeholder:text-faint focus:border-accent focus:outline-none md:min-w-0 md:flex-1 max-md:min-h-[44px]"
         />
         <div
           role="group"
           aria-label="Chat filters"
           data-testid="threads-filters"
-          className="grid h-[26px] grid-cols-3 gap-[2px] rounded-[8px] bg-disabled-bg p-[2px] max-md:h-auto"
+          className="grid h-[26px] grid-cols-3 gap-[2px] rounded-[8px] bg-disabled-bg p-[2px] md:w-fit md:shrink-0 max-md:h-auto max-md:min-h-[44px]"
         >
           {(
             [
-              { id: "all", label: "All", testid: "threads-filter-all" },
-              { id: "manual", label: "One-off", testid: "threads-filter-manual" },
-              { id: "runs", label: "From runs", testid: "threads-filter-runs" },
+              {
+                id: "all",
+                label: "All",
+                accessible: "All",
+                testid: "threads-filter-all",
+              },
+              {
+                id: "manual",
+                label: "One-off",
+                accessible: "One-off",
+                testid: "threads-filter-manual",
+              },
+              {
+                id: "runs",
+                label: "Runs",
+                accessible: "From runs",
+                testid: "threads-filter-runs",
+              },
             ] as const
           ).map((option) => {
             const active = originFilter === option.id;
@@ -230,9 +245,10 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
                 key={option.id}
                 type="button"
                 aria-pressed={active}
+                aria-label={option.accessible}
                 data-testid={option.testid}
                 onClick={() => setOriginFilter(option.id)}
-                className={`flex items-center justify-center rounded-[6px] border px-[6px] text-[12px] leading-none focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] ${
+                className={`flex items-center justify-center rounded-[6px] border px-[6px] text-[11.5px] leading-none focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] ${
                   active
                     ? "border-fill-edge bg-surface font-semibold text-ink"
                     : "border-transparent font-medium text-muted hover:text-ink"

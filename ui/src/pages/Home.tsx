@@ -15,8 +15,9 @@
  * note (finding 12) where the waiting cards would have stood.
  *
  * Layout is the prototype's: a centered 760 column for the greeting and
- * the prompt (padding 36 / phone 20 16), then a max-1100 grid of
- * `1fr 320px` with a 44 gap, one column below 900.
+ * the prompt (48px above the greeting, 18px between the greeting and the
+ * prompt box; side padding 36 / phone 16, bottom 48 / phone 36), then a
+ * max-1100 grid of `1fr 320px` with a 44 gap, one column below 900.
  */
 import { HomePrompt } from "../components/home/HomePrompt";
 import { SinceYouLeft } from "../components/home/SinceYouLeft";
@@ -58,7 +59,7 @@ export default function Home() {
   return (
     <div
       data-testid="home-all"
-      className="h-full overflow-auto bg-surface px-[16px] pt-[20px] pb-[36px] min-[768px]:px-[36px] min-[768px]:pt-[36px] min-[768px]:pb-[48px]"
+      className="h-full overflow-auto bg-surface px-[16px] pt-[48px] pb-[36px] min-[768px]:px-[36px] min-[768px]:pb-[48px]"
     >
       <div className="mx-auto w-full max-w-[760px]">
         <h2
@@ -67,7 +68,7 @@ export default function Home() {
         >
           {greetingLine(new Date(), me.data?.display_name)}
         </h2>
-        <div className="mt-[18px]">
+        <div className="mt-[18px]" data-testid="home-prompt-space">
           <HomePrompt />
         </div>
       </div>

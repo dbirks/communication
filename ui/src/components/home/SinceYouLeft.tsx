@@ -17,17 +17,33 @@
  * accent-text, the story (title + one-line summary), the age right-aligned
  * in mono — and links to the item's own catch-up page, the href CatchUp's
  * list rows build.
+ *
+ * When the window holds nothing the section is exactly ONE plain sentence
+ * (CONTRACT.md "Home": data blocks print one sentence when empty): scoped to
+ * the whole workspace it reads "Nothing new since you left.", scoped to one
+ * project it names that project. A brief headline is never printed beside an
+ * empty list — with zero items it only restates the quiet, so the sentence
+ * below says all there is to say.
  */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { SectionLabel } from "./SectionLabel";
+import { ColumnHeading } from "./SectionLabel";
 import { useCatchUpBrief, useCatchUpItems, useRecordVisit } from "../../api/catchup";
 import type { CatchUpListItem } from "../../api/catchup";
+import { useProject } from "../../api/queries";
 import { formatAge } from "../../lib/format";
 
 export interface SinceYouLeftProps {
   /** Filter the stories to one project (the project home). Absent = all. */
   projectId?: string;
+  /** The project's name for the empty sentence; the project home already has it. */
+  projectName?: string;
+}
+
+/** The one sentence an empty window prints, named for its scope. */
+export function emptySentence(projectId: string | undefined, projectName: string | undefined) {
+  if (projectId && projectName) return `Nothing new in ${projectName} since you left.`;
+  return "Nothing new since you left.";
 }
 
 function SinceRow({ item }: { item: CatchUpListItem }) {
@@ -55,8 +71,12 @@ function SinceRow({ item }: { item: CatchUpListItem }) {
   );
 }
 
-export function SinceYouLeft({ projectId }: SinceYouLeftProps) {
+export function SinceYouLeft({ projectId, projectName }: SinceYouLeftProps) {
   const projectFilter = projectId ? [projectId] : [];
+  /* The caller normally hands the name down (the project home has the read);
+   * the query is the fallback for a caller that cannot, and stays disabled
+   * in the all-projects scope. */
+  const project = useProject(projectId && !projectName ? projectId : "");
   const items = useCatchUpItems({ projects: projectFilter, window: "unseen" });
   const brief = useCatchUpBrief("unseen", projectFilter);
   const recordVisit = useRecordVisit();
@@ -75,14 +95,17 @@ export function SinceYouLeft({ projectId }: SinceYouLeftProps) {
   const list = items.data?.items ?? [];
   const important = list.filter((item) => item.importance !== "routine");
   const routine = list.filter((item) => item.importance === "routine");
-  const headline =
+  const readyHeadline =
     brief.data?.headline && brief.data.headline.state === "ready" && brief.data.headline.text
       ? brief.data.headline.text
       : null;
+  // Zero items: the headline would only repeat "it was quiet", so the single
+  // empty sentence below is all the section prints.
+  const headline = list.length > 0 ? readyHeadline : null;
 
   return (
     <section data-testid="since-you-left" className="min-w-0">
-      <SectionLabel>Since you left</SectionLabel>
+      <ColumnHeading testid="since-you-left-label">Since you left</ColumnHeading>
       {headline ? (
         <p
           data-testid="since-you-left-headline"
@@ -96,7 +119,7 @@ export function SinceYouLeft({ projectId }: SinceYouLeftProps) {
       ) : null}
       {items.isSuccess && list.length === 0 ? (
         <p data-testid="since-you-left-empty" className="py-[10px] text-[13.5px] text-muted">
-          Nothing new since you left.
+          {emptySentence(projectId, projectName ?? project.data?.name)}
         </p>
       ) : null}
       {important.map((item) => (

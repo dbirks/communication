@@ -41,7 +41,10 @@ function makeSession(overrides: Partial<ConversationSession> = {}): Conversation
   } as unknown as ConversationSession;
 }
 
-function renderHeader(session: ConversationSession) {
+function renderHeader(
+  session: ConversationSession,
+  props: Partial<Parameters<typeof ChatHeader>[0]> = {},
+) {
   render(
     <MemoryRouter>
       <ChatHeader
@@ -53,6 +56,7 @@ function renderHeader(session: ConversationSession) {
         participants={["Ada Lovelace"]}
         onOpenDetails={vi.fn()}
         onOpenArtifacts={vi.fn()}
+        {...props}
       />
     </MemoryRouter>,
   );
@@ -107,5 +111,64 @@ describe("ChatHeader status line", () => {
     );
     expect(screen.getByTestId("turn-status").textContent).toBe("× failed");
     expect(screen.getByTestId("turn-status").className).toContain("text-st-failed-tag-fg");
+  });
+});
+
+/**
+ * Phone layout (below 768px). jsdom applies no CSS, so the `max-md:*` order
+ * classes and the DOM shape ARE the contract: the header breaks into row 1 =
+ * back arrow · title (full width) · "…" menu, and row 2 = repo chip · status
+ * line. Desktop stays the one 54px row (`md:h-[54px]`, the row-2 wrapper is
+ * `md:contents`, so the chip and the status line are plain header items).
+ */
+function mobileOrderOf(element: HTMLElement): number {
+  const match = element.className.match(/(?:^|\s)max-md:order-(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
+describe("ChatHeader phone rows", () => {
+  it("puts the back arrow, the title and the menu on row 1, the chip and status on row 2", () => {
+    renderHeader(makeSession(), { showBack: true });
+
+    const back = screen.getByTestId("chat-back");
+    const title = screen.getByTestId("chat-title");
+    const menu = screen.getByTestId("chat-menu").parentElement as HTMLElement;
+    const chip = screen.getByTestId("chat-repo-chip");
+    const status = screen.getByTestId("chat-header-status");
+
+    // Row 1 order: back < title < menu, and the title is the flexible item.
+    expect(mobileOrderOf(back)).toBe(1);
+    expect(mobileOrderOf(title)).toBe(2);
+    expect(mobileOrderOf(menu)).toBe(3);
+    for (const cls of ["max-md:flex-1", "min-w-0", "truncate"]) {
+      expect(title.className.split(/\s+/)).toContain(cls);
+    }
+
+    // Row 2: the chip and the status line ride one full-width band, the chip
+    // first, and that band follows the menu.
+    expect(chip.parentElement).toBe(status.parentElement);
+    const row2 = chip.parentElement as HTMLElement;
+    expect(mobileOrderOf(row2)).toBe(4);
+    for (const cls of ["max-md:w-full", "max-md:flex", "md:contents"]) {
+      expect(row2.className.split(/\s+/)).toContain(cls);
+    }
+    expect(chip.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(status.textContent).toContain("agent: claude");
+
+    // Desktop keeps the single row: the header is a fixed-height nowrap flex
+    // band and the row-2 wrapper dissolves.
+    const header = screen.getByTestId("chat-header");
+    for (const cls of ["md:h-[54px]", "md:flex-nowrap", "flex-wrap"]) {
+      expect(header.className.split(/\s+/)).toContain(cls);
+    }
+  });
+
+  it("still breaks into two rows without the back arrow or a repository", () => {
+    renderHeader(makeSession(), { repositoryName: null, wholeProject: true });
+    const title = screen.getByTestId("chat-title");
+    const chip = screen.getByTestId("chat-repo-chip");
+    expect(mobileOrderOf(title)).toBe(2);
+    expect(chip.textContent).toBe("Whole project");
+    expect(mobileOrderOf(chip.parentElement as HTMLElement)).toBe(4);
   });
 });

@@ -57,7 +57,7 @@ export function FactoryHealth({ runs, numbers, now }: FactoryHealthProps) {
   const quiet = counts.running === 0 && counts.waiting === 0 && counts.failed === 0;
   return (
     <section data-testid="factory-health">
-      <SectionLabel>Factory health</SectionLabel>
+      <SectionLabel testid="factory-health-label">Factory health</SectionLabel>
       <p data-testid="factory-health-sentence" className="text-[13.5px] leading-[20px] text-ink-2">
         {quiet
           ? "All quiet."

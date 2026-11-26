@@ -217,4 +217,71 @@ describe("ChatList", () => {
     fireEvent.click(screen.getByTestId("threads-filter-runs"));
     await waitFor(() => expect(seen).toContain("/api/v1/projects/proj-1/conversations?origin=run"));
   });
+
+  /**
+   * Phone contract (below 768px): every row is a 44px touch target with its
+   * content centred. jsdom applies no CSS, so the `max-md:*` classes are the
+   * contract.
+   */
+  it("gives every row a 44px phone touch target with vertically centred content", async () => {
+    renderChatList({ scope: null, items: [chatA, chatB, chatC] });
+    await screen.findByTestId("chat-row-chat-a");
+
+    for (const id of ["chat-a", "chat-b", "chat-c"]) {
+      const classes = screen.getByTestId(`chat-row-${id}`).className.split(/\s+/);
+      expect(classes).toContain("max-md:min-h-[44px]");
+      expect(classes).toContain("justify-center");
+      expect(classes).toContain("flex-col");
+    }
+  });
+
+  /**
+   * Desktop: the search field and the segmented filter share ONE row — search
+   * `flex-1 min-w-0` at 30px, filter at its natural width to the right. Below
+   * 768px they stack (search, then filter) at 44px tall. The short visible
+   * labels keep their long accessible names via aria-label, and both controls
+   * always render — e2e depends on `threads-filter-runs` on a short list.
+   */
+  it("shares one row between the search field and the filter, with short labels and long accessible names", async () => {
+    renderChatList({ scope: null, items: [chatA] });
+    const search = await screen.findByTestId("chat-search");
+    const filters = screen.getByTestId("threads-filters");
+
+    // One row on desktop, stacked below 768px.
+    expect(search.parentElement).toBe(filters.parentElement);
+    const rowClasses = (search.parentElement as HTMLElement).className.split(/\s+/);
+    expect(rowClasses).toContain("flex-col");
+    expect(rowClasses).toContain("md:flex-row");
+
+    for (const cls of ["md:flex-1", "md:min-w-0", "h-[30px]", "max-md:min-h-[44px]"]) {
+      expect(search.className.split(/\s+/)).toContain(cls);
+    }
+    for (const cls of ["md:w-fit", "md:shrink-0", "max-md:min-h-[44px]"]) {
+      expect(filters.className.split(/\s+/)).toContain(cls);
+    }
+
+    // Short labels, long accessible names, every test id intact.
+    const expected = [
+      { testid: "threads-filter-all", label: "All", accessible: "All" },
+      { testid: "threads-filter-manual", label: "One-off", accessible: "One-off" },
+      { testid: "threads-filter-runs", label: "Runs", accessible: "From runs" },
+    ];
+    for (const option of expected) {
+      const button = screen.getByTestId(option.testid);
+      expect(button.textContent).toBe(option.label);
+      expect(button.getAttribute("aria-label")).toBe(option.accessible);
+      expect(button.className.split(/\s+/)).toContain("text-[11.5px]");
+      expect(button.className.split(/\s+/)).toContain("max-md:min-h-[44px]");
+    }
+    expect(screen.getByRole("button", { name: "From runs" })).toBe(
+      screen.getByTestId("threads-filter-runs"),
+    );
+  });
+
+  it("always renders the search field and the filter, even on an empty list", async () => {
+    renderChatList({ scope: null, items: [] });
+    await screen.findByTestId("chat-list-empty");
+    expect(screen.getByTestId("chat-search")).toBeTruthy();
+    expect(screen.getByTestId("threads-filter-runs")).toBeTruthy();
+  });
 });

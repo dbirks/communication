@@ -11,7 +11,7 @@
  * - rendering controller/turn/archived explainers and errors in the footer
  */
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { IconBuildingFactory2, IconHash } from "@tabler/icons-react";
+import { IconBuildingFactory2 } from "@tabler/icons-react";
 import { useAgentProfiles, useProject, useRepositories } from "../../api/queries";
 import { isGitHubRepository, useRepoIssues } from "../../api/issues";
 import { turnStatusText } from "../../api/transcript";
@@ -216,7 +216,13 @@ export function ChatComposer({ session, onOpenWorkflow, aboveBox }: ChatComposer
   const archived = data?.status === "archived";
 
   const chips = (
-    <>
+    // One line at every width (rx-c1): the row scrolls sideways with a hidden
+    // scrollbar instead of wrapping under the textarea, and its children keep
+    // their natural width. Send stays outside it, at the right.
+    <div
+      data-testid="composer-chips"
+      className="flex w-full min-w-0 flex-nowrap items-center gap-[6px] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0"
+    >
       <AgentPicker
         value={data?.agent_profile_id ?? null}
         onChange={(profileId) => switchAgent.mutate({ agent_profile_id: profileId })}
@@ -237,19 +243,30 @@ export function ChatComposer({ session, onOpenWorkflow, aboveBox }: ChatComposer
         onOpenChange={(next) => setSkillQuery(next ? "" : null)}
         onPick={pickSkill}
         disabled={!isController}
+        chip
       />
       {issuesAnswerable ? (
         <PromptChip
-          icon={<IconHash size={14} stroke={1.5} aria-hidden="true" />}
+          // A muted mono glyph plus the word, the same anatomy as `/ skill`
+          // and every other PromptChip (rx-c1) — no icon drawing for a
+          // character the composer already types.
+          icon={
+            <span className="font-mono text-muted" aria-hidden="true">
+              #
+            </span>
+          }
+          chevron
           onClick={() => setIssueQuery((q) => (q === null ? "" : null))}
           disabled={!isController}
           testid="chat-issue-button"
+          aria-haspopup="menu"
+          aria-expanded={issueOpen}
           title="Attach a GitHub issue"
         >
           issue
         </PromptChip>
       ) : null}
-    </>
+    </div>
   );
 
   const trailing =

@@ -1,6 +1,9 @@
 /**
  * ChatHeader — 54px thread header with title, repo chip, participants,
  * control actions and details/artifacts access behind the "…" menu (redesign R3).
+ *
+ * Desktop is the one 54px row; below 768px it breaks into two: row 1 = back
+ * arrow · title (full width) · "…" menu, row 2 = repo chip · status line.
  */
 import { Fragment, useRef, useState } from "react";
 import { Link } from "react-router";
@@ -196,7 +199,7 @@ export function ChatHeader({
             to={routes.chats(scope)}
             data-testid="chat-back"
             aria-label="Back to chats"
-            className="inline-flex shrink-0 items-center justify-center rounded-[8px] p-[6px] text-ink-2 hover:bg-rail focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] max-md:min-w-[44px]"
+            className="inline-flex shrink-0 items-center justify-center rounded-[8px] p-[6px] text-ink-2 hover:bg-rail focus-visible:outline-2 focus-visible:outline-accent max-md:order-1 max-md:min-h-[44px] max-md:min-w-[44px]"
           >
             <IconArrowLeft size={18} stroke={1.5} aria-hidden="true" />
           </Link>
@@ -204,43 +207,51 @@ export function ChatHeader({
 
         <h1
           data-testid="chat-title"
-          className="min-w-0 truncate text-[15px] font-bold text-ink max-md:flex-1"
+          className="min-w-0 truncate text-[15px] font-bold text-ink max-md:order-2 max-md:flex-1"
         >
           {data.title}
         </h1>
 
-        {repositoryName ? (
-          <Link
-            to={routes.repository(projectId, repositoryName)}
-            data-testid="chat-repo-chip"
-            className="shrink-0 rounded-[6px] border border-line px-[7px] py-[2px] font-mono text-[11.5px] text-ink-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            {repositoryName}
-          </Link>
-        ) : wholeProject ? (
-          <span
-            data-testid="chat-repo-chip"
-            className="shrink-0 rounded-[6px] border border-line px-[7px] py-[2px] font-mono text-[11.5px] text-muted"
-          >
-            Whole project
-          </span>
-        ) : null}
+        {repositoryName || wholeProject || statusParts.length > 0 ? (
+          /* Phone: the chip and the status line drop to their own second row
+           * so the title gets the full width of row 1. Desktop: `contents`
+           * dissolves the wrapper and both stay header flex items in the one
+           * 54px row. */
+          <div className="md:contents max-md:order-4 max-md:flex max-md:w-full max-md:min-w-0 max-md:items-center max-md:gap-[6px]">
+            {repositoryName ? (
+              <Link
+                to={routes.repository(projectId, repositoryName)}
+                data-testid="chat-repo-chip"
+                className="shrink-0 rounded-[6px] border border-line px-[7px] py-[2px] font-mono text-[11.5px] text-ink-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                {repositoryName}
+              </Link>
+            ) : wholeProject ? (
+              <span
+                data-testid="chat-repo-chip"
+                className="shrink-0 rounded-[6px] border border-line px-[7px] py-[2px] font-mono text-[11.5px] text-muted"
+              >
+                Whole project
+              </span>
+            ) : null}
 
-        {statusParts.length > 0 ? (
-          <div
-            data-testid="chat-header-status"
-            className="flex min-w-0 items-center gap-[6px] overflow-x-auto font-mono text-[12px] text-muted max-md:order-last max-md:h-[24px] max-md:basis-full md:shrink-0 md:overflow-visible"
-          >
-            {statusParts.map((part, index) => (
-              <Fragment key={part.key}>
-                {index > 0 ? (
-                  <span aria-hidden="true" className="shrink-0 text-faint">
-                    ·
-                  </span>
-                ) : null}
-                {part.node}
-              </Fragment>
-            ))}
+            {statusParts.length > 0 ? (
+              <div
+                data-testid="chat-header-status"
+                className="flex min-w-0 items-center gap-[6px] overflow-x-auto font-mono text-[12px] text-muted max-md:h-[24px] max-md:flex-1 md:shrink-0 md:overflow-visible"
+              >
+                {statusParts.map((part, index) => (
+                  <Fragment key={part.key}>
+                    {index > 0 ? (
+                      <span aria-hidden="true" className="shrink-0 text-faint">
+                        ·
+                      </span>
+                    ) : null}
+                    {part.node}
+                  </Fragment>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -254,7 +265,7 @@ export function ChatHeader({
           <span
             data-testid="stream-status"
             role="status"
-            className="shrink-0 font-mono text-[11px] text-st-retrying-tag-fg"
+            className="shrink-0 font-mono text-[11px] text-st-retrying-tag-fg max-md:order-5"
           >
             ↻ {status}
           </span>
@@ -267,7 +278,7 @@ export function ChatHeader({
           {peopleLabel}
         </span>
 
-        <span className="relative inline-flex shrink-0">
+        <span className="relative inline-flex shrink-0 max-md:order-3">
           <button
             ref={menuTriggerRef}
             type="button"

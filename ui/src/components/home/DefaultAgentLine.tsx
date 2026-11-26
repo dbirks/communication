@@ -27,7 +27,7 @@ import { useState } from "react";
 import { defaultAgentSaveSentence, useSetProjectDefaultAgent } from "../../api/queries";
 import type { Project } from "../../api/types";
 import { AgentPicker } from "../shell/AgentPicker";
-import { SectionLabel } from "./SectionLabel";
+import { ColumnHeading } from "./SectionLabel";
 
 export interface DefaultAgentLineProps {
   project: Project;
@@ -71,7 +71,7 @@ export function DefaultAgentLine({ project }: DefaultAgentLineProps) {
 
   return (
     <section className="min-w-0" aria-label="Default agent" data-testid="project-default-agent">
-      <SectionLabel testid="project-default-agent-label">Default agent</SectionLabel>
+      <ColumnHeading testid="project-default-agent-label">Default agent</ColumnHeading>
       <div
         className="flex flex-wrap items-baseline gap-x-[8px]"
         data-testid="project-default-agent-line"

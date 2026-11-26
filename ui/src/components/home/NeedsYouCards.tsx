@@ -29,7 +29,9 @@ export interface NeedsYouCardsProps {
 export function NeedsYouCards({ approvals, runs }: NeedsYouCardsProps) {
   return (
     <section data-testid="needs-you">
-      <SectionLabel>Needs you</SectionLabel>
+      <SectionLabel testid="needs-you-label" glyph="!" tone="waiting">
+        Needs you
+      </SectionLabel>
       {approvals.length === 0 ? (
         <p data-testid="needs-you-empty" className="text-[13.5px] text-muted">
           Nothing is waiting on you.

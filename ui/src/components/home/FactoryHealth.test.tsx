@@ -42,6 +42,17 @@ const NOW = new Date("2026-10-14T18:00:00Z");
 afterEach(cleanup);
 
 describe("FactoryHealth", () => {
+  it("keeps its label plain muted with no glyph", () => {
+    render(<FactoryHealth runs={[]} numbers={null} now={NOW} />);
+    const label = screen.getByTestId("factory-health-label");
+    expect(label.tagName).toBe("H3");
+    expect(label.textContent).toBe("Factory health");
+    expect(label.className).toContain("font-mono");
+    expect(label.className).toContain("text-muted");
+    expect(label.className).not.toContain("text-st-");
+    expect(label.querySelector("span")).toBeNull();
+  });
+
   it("prints the brief's counts (2 running, 1 waiting, 0 failed) as one sentence", () => {
     render(<FactoryHealth runs={[]} numbers={numbers()} now={NOW} />);
     expect(screen.getByTestId("factory-health-sentence").textContent).toBe(

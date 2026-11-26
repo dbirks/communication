@@ -201,6 +201,21 @@ describe("Home, all projects", () => {
     expect(screen.getByTestId("factory-health-sentence").textContent).toBe("All quiet.");
   });
 
+  it("leaves 48px above the greeting and 18px between it and the prompt box", async () => {
+    renderHome(homeRoutes());
+    const heading = await screen.findByTestId("home-greeting");
+    // The page's own top padding is the space above the greeting, and the
+    // prompt wrapper carries the gap below it (handoff README §2).
+    expect(heading.parentElement?.parentElement?.className).toContain("pt-[48px]");
+    const space = screen.getByTestId("home-prompt-space");
+    expect(space.className).toContain("mt-[18px]");
+    expect(space.querySelector("[data-testid='home-prompt']")).toBeTruthy();
+    // The all-projects box asks for the new chat with the one sentence.
+    expect(screen.getByTestId("home-prompt-input").getAttribute("placeholder")).toBe(
+      "Ask, plan, or hand off a task…",
+    );
+  });
+
   it("prompt submit creates the conversation in the chosen project and navigates to its chat", async () => {
     const { requests } = renderHome(
       homeRoutes([

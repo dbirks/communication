@@ -36,6 +36,30 @@ const runFixture = (overrides: Partial<CrossProjectRunSummary> = {}): CrossProje
 afterEach(cleanup);
 
 describe("RunningList", () => {
+  it("carries the running glyph and colour on its label, empty or filled", () => {
+    const { unmount } = render(
+      <MemoryRouter>
+        <RunningList runs={[]} />
+      </MemoryRouter>,
+    );
+    const empty = screen.getByTestId("running-list-label");
+    expect(empty.tagName).toBe("H3");
+    expect(empty.textContent).toBe("● Running");
+    expect(empty.className).toContain("uppercase");
+    expect(empty.className).toContain("text-st-running-tag-fg");
+    expect(empty.className).not.toContain("text-muted");
+    unmount();
+
+    render(
+      <MemoryRouter>
+        <RunningList runs={[runFixture()]} />
+      </MemoryRouter>,
+    );
+    const filled = screen.getByTestId("running-list-label");
+    expect(filled.textContent).toBe("● Running");
+    expect(filled.className).toContain("text-st-running-tag-fg");
+  });
+
   it("says nothing is running when no row runs", () => {
     render(
       <MemoryRouter>
