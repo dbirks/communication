@@ -28,7 +28,26 @@ import {
   templateById,
 } from "../../lib/pipeline/templates";
 
-afterEach(cleanup);
+// The one test that needs the templates section absent — only Blank exists —
+// swaps this list. Defaults to the real templates so every other test is
+// unaffected.
+const templatesState = vi.hoisted(() => ({
+  list: null as readonly import("../../lib/pipeline/templates").PipelineTemplate[] | null,
+}));
+vi.mock("../../lib/pipeline/templates", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/pipeline/templates")>();
+  return {
+    ...actual,
+    get PIPELINE_TEMPLATES() {
+      return templatesState.list ?? actual.PIPELINE_TEMPLATES;
+    },
+  };
+});
+
+afterEach(() => {
+  templatesState.list = null;
+  cleanup();
+});
 
 const NEW_PIPELINE_ID = "01987c01-0000-7000-8000-newcopy01234";
 const NEW_DRAFT_ID = "01987c02-0000-7000-8000-newcopy01234";
@@ -337,9 +356,11 @@ describe("NewWorkflowSheet", () => {
     );
     expect(text.indexOf("Or start from a template")).toBeLessThan(text.indexOf("Or copy"));
 
-    // One row per template, in the library's own order, each carrying its name,
-    // its one-line description and the steps its document puts on the canvas.
-    for (const template of PIPELINE_TEMPLATES) {
+    // One row per non-Blank template, in the library's own order, each carrying
+    // its name, its one-line description and the steps its document puts on the canvas.
+    const nonBlank = PIPELINE_TEMPLATES.filter((template) => template.id !== "blank");
+    expect(nonBlank.length).toBeGreaterThan(0);
+    for (const template of nonBlank) {
       const row = screen.getByTestId(`new-workflow-template-${template.id}`).closest("div");
       expect(row, `row for ${template.id}`).toBeTruthy();
       expect(row?.textContent).toContain(template.label);
@@ -357,7 +378,19 @@ describe("NewWorkflowSheet", () => {
     expect(pstackSteps.textContent).toBe(
       "Steps: survey→plan→approve→implement→review+1 1 more step",
     );
+    // The Blank template is dropped: the sheet's own Blank canvas link is the
+    // one way to start blank.
+    expect(screen.queryByTestId("new-workflow-template-blank")).toBeNull();
     unmount();
+  });
+
+  it("renders no template section when only the Blank template exists", () => {
+    templatesState.list = PIPELINE_TEMPLATES.filter((template) => template.id === "blank");
+    mount(routesFor(createdPipeline("x", NEW_PIPELINE_ID), NEW_PIPELINE_ID, NEW_DRAFT_ID));
+    expect(screen.queryByTestId("new-workflow-templates-label")).toBeNull();
+    expect(screen.queryByTestId("new-workflow-template-blank")).toBeNull();
+    // The Blank canvas link still offers the blank start.
+    expect(screen.getByTestId("new-workflow-blank").textContent).toBe("Blank canvas");
   });
 
   it("uses a template with the old dialog's two writes and its suggested name", async () => {
@@ -389,29 +422,6 @@ describe("NewWorkflowSheet", () => {
     expect(draftYaml).toContain("name: plan-with-approval");
     expect(draftYaml).toContain("- id: survey");
     expect(draftYaml).not.toBe(BLANK_SKELETON_YAML);
-  });
-
-  it("names the Blank row's workflow like the blank canvas does", async () => {
-    const { requests } = mount(
-      routesFor(
-        createdPipeline("untitled-workflow", NEW_PIPELINE_ID),
-        NEW_PIPELINE_ID,
-        NEW_DRAFT_ID,
-      ),
-    );
-    fireEvent.click(screen.getByTestId("new-workflow-template-blank"));
-    await waitFor(() => expect(screen.queryByTestId("landing")).toBeTruthy());
-    expect(screen.getByTestId("landing").textContent).toBe(
-      `/factory/${NEW_PIPELINE_ID}?draft=${NEW_DRAFT_ID}`,
-    );
-    const posts = requests.filter((request) => request.method === "POST");
-    expect(JSON.parse(posts[0]?.body ?? "{}")).toEqual({
-      slug: "untitled-workflow",
-      display_name: "Untitled workflow",
-    });
-    expect(String(JSON.parse(posts[1]?.body ?? "{}").document_yaml)).toContain(
-      "name: untitled-workflow",
-    );
   });
 
   it("keeps a failed template create open and says what the server refused", async () => {

@@ -203,6 +203,7 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
   const [nameError, setNameError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
+  const templates = PIPELINE_TEMPLATES.filter((template) => template.id !== "blank");
   const speech = useSpeechToText();
   const create = useCreatePipeline();
   const queryClient = useQueryClient();
@@ -472,21 +473,26 @@ export function NewWorkflowSheet({ scope, workflows, onClose }: NewWorkflowSheet
 
         {/* 3. The vetted samples the old New workflow dialog offered (README § 4
             keeps the section; the dialog is gone, its starters are not). One row
-            per entry of `PIPELINE_TEMPLATES`, in the library's own order. */}
-        <div className="flex flex-col gap-[8px]">
-          <SectionLabel id="new-workflow-templates-label" testid="new-workflow-templates-label">
-            Or start from a template
-          </SectionLabel>
-          {PIPELINE_TEMPLATES.map((template) => (
-            <TemplateRow
-              key={template.id}
-              template={template}
-              busy={busy === `template:${template.id}`}
-              disabled={Boolean(busy)}
-              onUse={() => useTemplate(template)}
-            />
-          ))}
-        </div>
+            per template, in the library's own order — the Blank template is
+            dropped: the sheet already has its own "Blank canvas" link below,
+            and the same thing twice is not a choice. The section is absent
+            when no template is left. */}
+        {templates.length > 0 ? (
+          <div className="flex flex-col gap-[8px]">
+            <SectionLabel id="new-workflow-templates-label" testid="new-workflow-templates-label">
+              Or start from a template
+            </SectionLabel>
+            {templates.map((template) => (
+              <TemplateRow
+                key={template.id}
+                template={template}
+                busy={busy === `template:${template.id}`}
+                disabled={Boolean(busy)}
+                onUse={() => useTemplate(template)}
+              />
+            ))}
+          </div>
+        ) : null}
 
         {/* 4. Copy something that already exists */}
         <div className="flex flex-wrap items-center gap-[8px]">
