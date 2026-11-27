@@ -1326,11 +1326,14 @@ export function StudioPage() {
         <Link
           to={routes.scopeHome(scope)}
           data-testid="studio-breadcrumb-project"
-          className="max-w-[240px] shrink-0 truncate text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          className="max-w-[240px] shrink-0 truncate text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent max-[1439px]:hidden"
         >
           {scope ? projectLabel : "All projects"}
         </Link>
-        <span aria-hidden className="shrink-0 text-line-strong">
+        {/* Below 1440px the scope segment gives its room to the workflow name
+            and the draft status (review-3 F1): the rail tile beside it already
+            says which scope is open. */}
+        <span aria-hidden className="shrink-0 text-line-strong max-[1439px]:hidden">
           /
         </span>
         <Link

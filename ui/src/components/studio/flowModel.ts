@@ -641,6 +641,28 @@ export function toFlow(
     }
   }
 
+  // A scope the draft has moved carries its body with it: shift the scope's
+  // laid-out box and every descendant that has no override of its own by the
+  // move. Without this the children kept their dagre boxes while the frame
+  // drew at the override, so on reload they slid into the frame's header and
+  // the edges between them were routed where the frame used to be.
+  const movedScopes = [...abs.entries()]
+    .filter(([, e]) => e.node.isScope && overridden(e.node.id) !== null)
+    .sort((a, b) => a[1].node.scope.length - b[1].node.scope.length);
+  for (const [scopeFid, scopeEntry] of movedScopes) {
+    const o = overridden(scopeEntry.node.id) as { x: number; y: number };
+    const dx = o.x - scopeEntry.x;
+    const dy = o.y - scopeEntry.y;
+    if (dx === 0 && dy === 0) continue;
+    for (const [fid, entry] of abs) {
+      const inside = fid === scopeFid || fid.startsWith(`${scopeFid}/`);
+      if (!inside) continue;
+      if (fid !== scopeFid && overridden(entry.node.id) !== null) continue;
+      entry.x += dx;
+      entry.y += dy;
+    }
+  }
+
   const nodes: FlowNodeBase[] = [];
   const byFlowId = new Map<string, FlowNodeBase>();
   for (const node of model.nodes) {

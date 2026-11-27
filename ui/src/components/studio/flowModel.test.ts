@@ -80,6 +80,31 @@ describe("flowId", () => {
 });
 
 describe("toFlow", () => {
+  it("carries a moved scope's body with it: children keep their offsets and edges follow", () => {
+    const plain = toFlow(model, probeDocument);
+    const scope = plain.nodes.find((n) => n.id === "build_until_verified")!;
+    const moved = toFlow(model, probeDocument, {
+      nodes: { build_until_verified: { x: scope.position.x + 300, y: scope.position.y - 40 } },
+    });
+    const movedScope = moved.nodes.find((n) => n.id === "build_until_verified")!;
+    expect(movedScope.position).toEqual({ x: scope.position.x + 300, y: scope.position.y - 40 });
+    for (const child of plain.nodes.filter((n) => n.parentId === "build_until_verified")) {
+      const after = moved.nodes.find((n) => n.id === child.id)!;
+      expect(after.position).toEqual(child.position);
+    }
+    // An edge between two body steps is routed from their moved boxes.
+    const inner = plain.edges.find(
+      (e) =>
+        e.source.startsWith("build_until_verified/") &&
+        e.target.startsWith("build_until_verified/"),
+    )!;
+    const innerMoved = moved.edges.find((e) => e.id === inner.id)!;
+    const box = (e: typeof inner) =>
+      (e as unknown as { sourceBox: { x: number; y: number } }).sourceBox;
+    expect(box(innerMoved).x - box(inner).x).toBe(300);
+    expect(box(innerMoved).y - box(inner).y).toBe(-40);
+  });
+
   it("renders the until scope as a scope group whose children are positioned relative to it", () => {
     const group = node("build_until_verified");
     expect(group.type).toBe("scope");
