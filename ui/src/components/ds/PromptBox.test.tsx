@@ -62,15 +62,24 @@ describe("PromptBox send button", () => {
 });
 
 describe("PromptChip", () => {
-  it("labels itself 12.5px/600 text-ink in the UI font", () => {
-    render(<PromptChip testid="chip">Widgets</PromptChip>);
-    const chip = screen.getByTestId("chip");
-    expect(chip.className).toContain("font-ui");
-    const label = chip.querySelector("span") as HTMLElement;
-    expect(label.textContent).toBe("Widgets");
-    for (const cls of ["text-[12.5px]", "font-semibold", "text-ink"]) {
-      expect(label.className).toContain(cls);
+  it("labels itself 12.5px text-ink in the UI font: 600 on a picker, regular on an action", () => {
+    render(
+      <>
+        <PromptChip testid="action">Widgets</PromptChip>
+        <PromptChip testid="picker" chevron>
+          Gadgets
+        </PromptChip>
+      </>,
+    );
+    const action = screen.getByTestId("action");
+    expect(action.className).toContain("font-ui");
+    const actionLabel = action.querySelector("span") as HTMLElement;
+    expect(actionLabel.textContent).toBe("Widgets");
+    for (const cls of ["text-[12.5px]", "font-normal", "text-ink"]) {
+      expect(actionLabel.className).toContain(cls);
     }
+    const pickerLabel = screen.getByTestId("picker").querySelector("span") as HTMLElement;
+    expect(pickerLabel.className).toContain("font-semibold");
   });
 
   it("shows the 12px muted chevron only when asked", () => {

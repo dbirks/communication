@@ -409,6 +409,21 @@ export function panToShowWrap(
   return { dx, dy };
 }
 
+/** Phone: where the selection goes so the wrap bottom sheet does not cover it.
+ * The box is centred across the pane and its top lands `top` px down (under
+ * the floating buttons and the "N steps selected" label). */
+export function panAboveSheet(
+  target: { x: number; y: number; width: number; height: number },
+  pane: { w: number; h: number },
+  top = 110,
+): { dx: number; dy: number } | null {
+  if (!(pane.w > 0) || !(pane.h > 0)) return null;
+  const dx = Math.max(72, (pane.w - target.width) / 2) - target.x;
+  const dy = top - target.y;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return null;
+  return { dx, dy };
+}
+
 export function computeSelectionPaneRect(
   selectedIds: string[],
   nodes: Node[],
@@ -2508,18 +2523,22 @@ function CanvasInner({
     : 0;
   // Selecting brings the box and its panel into view (README section 8). Runs
   // once per selection, not on every pan, so the reader can still move away.
-  const wrapKey = showWrapBox && !phone ? activeSelection.join("|") : "";
+  const wrapKey = showWrapBox ? activeSelection.join("|") : "";
   const wrapPannedRef = useRef("");
   // The latest geometry, for the pan that runs after the pointer is released.
-  const wrapPanInputRef = useRef({ wrapKey, antsRect, paneSize, effectiveViewport });
-  wrapPanInputRef.current = { wrapKey, antsRect, paneSize, effectiveViewport };
+  const wrapPanInputRef = useRef({ wrapKey, antsRect, paneSize, effectiveViewport, phone });
+  wrapPanInputRef.current = { wrapKey, antsRect, paneSize, effectiveViewport, phone };
   const pointerDownRef = useRef(false);
   const panWrapIntoView = useCallback(() => {
     const now = wrapPanInputRef.current;
     if (now.wrapKey === "" || !now.antsRect) return;
     if (wrapPannedRef.current === now.wrapKey) return;
     wrapPannedRef.current = now.wrapKey;
-    const move = panToShowWrap(now.antsRect, now.paneSize);
+    // On a phone the panel is a bottom sheet over the lower two thirds of the
+    // canvas: the selection moves up into the strip that stays visible.
+    const move = now.phone
+      ? panAboveSheet(now.antsRect, now.paneSize)
+      : panToShowWrap(now.antsRect, now.paneSize);
     if (!move) return;
     void setViewport(
       {

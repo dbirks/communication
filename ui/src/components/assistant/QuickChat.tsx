@@ -281,6 +281,18 @@ export default function QuickChat({
   const recording = dictation.phase === "recording";
   const transcribing = dictation.phase === "transcribing";
 
+  // The capsule takes its own row above the footer when listening starts, so
+  // the transcript loses that height: keep the newest line in view.
+  useEffect(() => {
+    if (!recording) return;
+    const pin = () => {
+      const box = bodyRef.current;
+      if (box) box.scrollTop = box.scrollHeight;
+    };
+    pin();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(pin);
+  }, [recording]);
+
   // The top bar's mic mirrors this (it turns accent while we listen).
   useEffect(() => {
     announceListening(recording);

@@ -5,7 +5,7 @@
  * reads. In All scope, groups rows by project in the projects list order; in a
  * project scope, renders flat rows without headers.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { IconPlus } from "@tabler/icons-react";
@@ -97,6 +97,21 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
   const projects = useProjects();
   const profiles = useAgentProfiles();
   const queryClient = useQueryClient();
+  // A row's "● run" / "! you" reads the chat's detail and its linked runs out
+  // of the query cache (the open thread fetches them). A cache read does not
+  // subscribe, so the list re-renders when either kind of entry changes;
+  // without this a run started from the thread never reached its row.
+  const [, refreshRowStatus] = useReducer((n: number) => n + 1, 0);
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        const head = event.query.queryKey[0];
+        if (event.type === "updated" && (head === "conversation" || head === "run")) {
+          refreshRowStatus();
+        }
+      }),
+    [queryClient],
+  );
 
   const projectItems = projects.data?.items ?? [];
   const projectName = (id: string) => projectItems.find((p) => p.id === id)?.name ?? shortId(id);
@@ -209,7 +224,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
           placeholder="Search chats"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          className="h-[30px] w-full rounded-[8px] border border-line bg-surface px-[10px] text-[12.5px] text-ink placeholder:text-faint focus:border-accent focus:outline-none md:min-w-0 md:flex-1 max-md:min-h-[44px]"
+          className="h-[30px] w-full shrink-0 rounded-[8px] border border-line bg-surface px-[10px] text-[12.5px] text-ink placeholder:text-faint focus:border-accent focus:outline-none max-md:min-h-[44px]"
         />
         <div
           role="group"

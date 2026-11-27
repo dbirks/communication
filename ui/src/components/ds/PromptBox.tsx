@@ -136,8 +136,8 @@ export interface PromptChipProps {
   testid?: string;
 }
 
-/** A chip in the prompt box's bottom row: 26px tall, radius 8, 1px line,
- * 12.5px/600 text-ink in the UI font; `chevron` adds the trailing 12px
+/** A chip in the prompt box's bottom row: a 28px pill, 1px line, 12.5px
+ * text-ink in the UI font (600 on a picker, regular on an action); `chevron` adds the trailing 12px
  * muted chevron that marks a chip as a menu trigger. */
 export function PromptChip({
   children,
@@ -162,7 +162,13 @@ export function PromptChip({
       className="inline-flex h-[28px] max-w-full items-center gap-[6px] rounded-full border border-line bg-surface px-[10px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg"
     >
       {icon}
-      <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{children}</span>
+      {/* A picker (it has the chevron) names a choice in 600; a plain action
+          ("or run a workflow", "Run workflow") is regular weight. */}
+      <span
+        className={`min-w-0 truncate text-[12.5px] text-ink ${chevron ? "font-semibold" : "font-normal"}`}
+      >
+        {children}
+      </span>
       {chevron ? (
         <IconChevronDown size={12} stroke={1.5} className="shrink-0 text-muted" aria-hidden />
       ) : null}

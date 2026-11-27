@@ -145,7 +145,7 @@ and the prototype.
 
 | Where | The app has / lacks | Why |
 |---|---|---|
-| Chats list | a search field, and an All · One-off · From runs filter that appears when the list is long, a filter is active or the search has text | Existing behaviour (finding chats; separating run chats); the lab journeys use both |
+| Chats list | a search field with an All · One-off · Runs filter under it, each the full width of the list, always shown | Existing behaviour (finding chats; separating run chats); the lab journeys use both, and a control that appears only on long lists moves the rows |
 | Chat composer | "/ skill" and "# issue" chips beside the agent chip and "Run workflow" | Existing behaviour (attach a skill, link an issue); styled as the same chips |
 | Chat header | the turn status and controller ("✓ done · you control"), the agent line, and a "…" menu (Details, Artifacts, control hand-off) | Existing behaviour; the prototype's header is title, repo chip, people |
 | Quick chat footer | the trust-level and page-context chips | Existing assistant controls (what it may do without asking; whether it reads the open page) |
@@ -161,6 +161,10 @@ and the prototype.
 | Factory cards | a "…" menu (Triggers, Use in a project, Duplicate, Open YAML) and "Open run" / "Watch on canvas" on a live run | Existing actions |
 | Home | data blocks print one plain sentence when empty | Real data; the prototype is always populated |
 | Editor, goal frame | the wrapped steps stack top to bottom inside the frame (the prototype keeps them in a row) | A loop body has always been laid out top to bottom here, and README "Edges" allows "bottom→top inside a vertical stack". **Open: David has not confirmed this one** |
+| Send, Wrap and Sketch it buttons | grey and disabled until there is something to send (text in the box, a goal in the field); primary with the hard shadow once there is | The prototype is a static picture with an empty box and a primary button; a button that does nothing must not look pressable |
+| Editor, goal frame | the judge of a "judge says" loop is a visible step inside the frame; the edge from the step before ends at the frame's border | The judge is a real model step (see the "Repeat until a judge says" line); a loop is entered as a whole, so the edge belongs to the frame |
+| Editor, box selection | the marching-ants box's pale fill lies over the selected steps | The box is drawn in the canvas overlay above the steps; the steps' ink edge is the selected mark |
+| Editor, phone | selecting steps slides them into the strip above the wrap bottom sheet | Section 8: box and panel both stay visible; on a phone the panel is a bottom sheet |
 | Editor, wrap | a selection that cannot be wrapped says why in one sentence above the canvas | The engine refuses a loop whose results are read from outside it; the prototype has no refusal state |
 | Top bar mic | a click opens Quick chat and starts listening; "Stop" in the dark capsule or a second click sends | README section 6: "The mic button does the same by click" |
 | Factory | "Recent runs" under the cards (newest first, 10 at a time) | Past runs had no other place to be found; there is no Runs tab |

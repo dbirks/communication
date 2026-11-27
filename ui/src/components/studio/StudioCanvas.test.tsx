@@ -13,6 +13,7 @@ import { addNode, parseGraph, type OpResult } from "../../lib/pipeline/graphDoc"
 import {
   centerOnBox,
   anchorWrapPanel,
+  panAboveSheet,
   clampWrapTop,
   panToShowWrap,
   chooseFloatingPanelPlacement,
@@ -2191,6 +2192,14 @@ describe("the wrap panel is anchored to the selection (README section 8)", () =>
     expect(clampWrapTop(300, 400, 800)).toBe(100);
     expect(clampWrapTop(60, 400, 800)).toBe(8);
     expect(clampWrapTop(760, 400, 800)).toBe(392);
+  });
+
+  it("on a phone moves the selection up into the strip above the bottom sheet", () => {
+    // A 196px box at (60, 400) in a 390×780 pane: centred (97) and 110px down.
+    expect(panAboveSheet({ x: 60, y: 400, width: 196, height: 84 }, { w: 390, h: 780 })).toEqual({
+      dx: 37,
+      dy: -290,
+    });
   });
 
   it("asks for no pan when box and panel already fit", () => {

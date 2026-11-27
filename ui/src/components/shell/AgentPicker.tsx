@@ -196,7 +196,7 @@ export function AgentPicker({
             <IconChevronDown
               size={12}
               stroke={1.5}
-              className="shrink-0 text-muted"
+              className="ml-[6px] shrink-0 text-muted"
               aria-hidden="true"
             />
           </span>

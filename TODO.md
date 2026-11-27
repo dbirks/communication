@@ -365,7 +365,9 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
 ## R2. Home
 - [x] All projects: greeting, prompt box, Since you left, Needs you, Running, Factory health.
       ui/src/pages/Home.tsx + components/home/{HomePrompt,SinceYouLeft,NeedsYouCards,RunningList,FactoryHealth}.tsx (+ tests). e2e shell-p2-home-board and m5-inbox (6 passed) on the new Home. Deployed: evidence/redesign/deployed/home-all-1280-9a0c115.png.
-- [ ] Project home: prompt box, starter pills, Happening now, Since you left, Repos, Workflows here, default agent.
+- [x] Project home: prompt box, starter pills, Happening now, Since you left, Repos, Workflows here, default agent.
+      Evidence: production `02-home-project-1280/390.png` in `~/.cache/pi-orch/communication/evidence/redesign-v2/deployed/`; default agent is one line under Workflows here
+      (`DefaultAgentLine.test.tsx`, ADR-0086).
 - [x] `/catch-up` is a section of Home; a piece of work and its tour still open.
       `/catch-up` redirects to `/`; e2e catchup-lab 4 passed locally (redirect, Since you left rows, the tour player marking stops seen, a decision reply reaching the chat).
 
@@ -394,10 +396,14 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
       components/studio/wrap/* (wrapModel builds judge / command / output-contains loops from today's schema: a model.chat or process.exec last step plus `passWhen`; no schema change). ~/.cache/pi-orch/communication/evidence/redesign/wip/editor-select-wrap.png, editor-goal-frame.png.
 - [x] Side by side wrap.
       wrapModel.wrapSideBySide (parallel scope, join all) + WrapPanel tab (+ tests).
-- [ ] Run state on the canvas (node states, animated frame, verdicts beside the frame).
+- [x] Run state on the canvas (node states, animated frame, verdicts beside the frame).
+      Evidence: `evidence/redesign-v2/wip/runstate-1280.png` (lab run on the canvas: status tags, frame state, round
+      verdicts beside the frame); `nodes.test.tsx`, `VerdictStack` tests.
 - [x] Agent step inspector; YAML and Used in panels; triggers from the trigger step.
       components/studio/{AgentStepCard,YamlEditPanel}.tsx, the "…" menu (Edit as YAML, Used in, Run inputs, Use in a project), trigger node → TriggersDialog. e2e shell-p789 test 3 (agent card → More settings) and m5-prompt-edit 6 passed. ~/.cache/pi-orch/communication/evidence/redesign/wip/editor-agent-card.png.
-- [ ] Judge condition: ADR written and approved by David before any backend work.
+- [x] Judge condition: ADR written and approved by David before any backend work.
+      Closed without an ADR: David agreed (Nov 27) to keep the judge loop on the existing `until` condition (a model
+      step that answers GOAL_MET); no backend work was done. CONTRACT "Decided differences".
 
 ## R6. Assistant
 - [x] Search or ask: tap ⌘K searches or asks; hold ⌘K (or the mic) talks.
@@ -413,13 +419,18 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
 - [x] Agents & models: accounts strip with sign-in, profiles table, profile side sheet, Skills, Step templates,
       Models, Assistant tabs.
       pages/manage/Agents.tsx + agents/* (commit 4813310, polish in 060b4e1). e2e shell-p5-profiles 5 passed. Deployed: evidence/redesign/deployed/manage-agents-1280-9a0c115.png (Codex "! needs sign-in" + Sign in).
-- [ ] Agent chip is a profile picker on Home, Chats and the canvas; project default agent on the project home.
-- [ ] Codex is signed in through the accounts strip in production and a Codex chat or run is proven there.
+- [x] Agent chip is a profile picker on Home, Chats and the canvas; project default agent on the project home.
+      Evidence: production `x-agent-picker-new-chat-1280.png` (picker open on New chat: Claude Code, Codex, Pi),
+      `01`/`02`/`03` shots (chip on Home and the composer) in `~/.cache/pi-orch/communication/evidence/redesign-v2/deployed/`; `AgentStepCard` on the canvas (unit tests).
+- [x] Codex is signed in through the accounts strip in production and a Codex chat or run is proven there.
+      Evidence: David signed in (Nov 27); production scratch chat `01a21c21-fc41-7259-8215-ace782887a9e` in Sandbox
+      ran on Codex and answered "pong" (`x-codex-chat-pong-1280.png` in `~/.cache/pi-orch/communication/evidence/redesign-v2/deployed/`).
 
 ## R8. Clean-up
 - [x] Replaced pages and components are deleted; no dead routes; no unused exports left behind.
       43 unreachable files deleted with their tests (import-graph check from main.tsx), 244 test ids retired in ui/scripts/retired-testids.json; unit suite 264 files / 2967 tests green before the push (CI on PR #606 and on main 9a0c115).
-- [ ] e2e journeys and the emulator loop use the new navigation.
+- [x] e2e journeys and the emulator loop use the new navigation.
+      Evidence: Acceptance 45988420669 on `1e90f4b`: lab-e2e green, emulator loop "two consecutive clean passes".
 
 ## Redesign done when
 - [ ] Every box above is checked with evidence.
@@ -433,40 +444,57 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
 Source: `docs/design/redesign/README.md` section 8 and `Prototype v2.dc.html` (the source of truth since Nov 27).
 
 ### V1 Acceptance on 44e6b67
-- [ ] `lab-e2e` is green: the phone editor journey pans to a step (the editor opens at zoom 1, left-aligned, so
+- [x] `lab-e2e` is green: the phone editor journey pans to a step (the editor opens at zoom 1, left-aligned, so
       at 390px only the trigger is in view); the assistant credentials journey's 429 was the model, re-run.
 
 ### V2 Tokens and buttons
-- [ ] `.ds-btn` is rounded BTN-I: radius 8 (compact 7), height 32 (34 `--tall`), 13/600; `SoftButton` emits it.
-- [ ] `--shadow-prompt`, `--shadow-pop`, `--shadow-modal` are hard tonal offsets; `--radius-modal` 14; the pill
+- [x] `.ds-btn` is rounded BTN-I: radius 8 (compact 7), height 32 (34 `--tall`), 13/600; `SoftButton` emits it.
+      Evidence: `tokens.css`, `ds/SoftButton.tsx`; review-2 "Section 8 otherwise holds wherever I could measure it".
+- [x] `--shadow-prompt`, `--shadow-pop`, `--shadow-modal` are hard tonal offsets; `--radius-modal` 14; the pill
       and the Quick chat edge keep their soft shadow.
-- [ ] Round send buttons: radius 999 with the primary border and `2px 2px 0` shadow.
-- [ ] Search or ask: hairline pill, "⌘K" plain mono 10.5 `#6e6a62`, no chip.
+      Evidence: `tokens.css`; production `02`, `07`, `08`, `11a`, `14` shots.
+- [x] Round send buttons: radius 999 with the primary border and `2px 2px 0` shadow.
+      Evidence: `.ds-btn--round` (`PromptBox.test.tsx`); disabled-until-text is a decided difference (CONTRACT).
+- [x] Search or ask: hairline pill, "⌘K" plain mono 10.5 `#6e6a62`, no chip.
+      Evidence: every production 1280 shot's top bar.
 
 ### V3 Surfaces
-- [ ] Prompt box; workflow cards (`2px 2px 0 #ece9e2`, hover edge and shadow `#cfc9bd`); tool island; Versions
+- [x] Prompt box; workflow cards (`2px 2px 0 #ece9e2`, hover edge and shadow `#cfc9bd`); tool island; Versions
       panel; New workflow sheet (radius 14, `4px 4px 0 #cfc9bd`); Manage tables and sheets; Chats "New"; "Run it".
+      Evidence: production `01`–`08`, `14`, `15` shots at both widths; review-2 found no section 8 deviation on them.
 
 ### V4 Canvas
-- [ ] Steps: rest `#cfc9bd` edge + `2px 2px 0 #e1ddd4`; selected and box-selected ink edge + ink shadow.
-- [ ] Dragging: no box shadow, hatch card 6px down-right, dashed snap target on the 20px grid, edges follow live,
+- [x] Steps: rest `#cfc9bd` edge + `2px 2px 0 #e1ddd4`; selected and box-selected ink edge + ink shadow.
+      Evidence: production `09-editor-1280.png`, `11a-…-1280.png`.
+- [x] Dragging: no box shadow, hatch card 6px down-right, dashed snap target on the 20px grid, edges follow live,
       a press under 4px is a click.
-- [ ] Live state: mono status tag on the step's top-right corner; running step `#1a6da6` edge + `#8cc8ec` shadow.
-- [ ] Notes get the same rest / selected / drag treatment.
-- [ ] Factory thumbnails use single dots (`#dcd8ce` 1px, 14px).
+      Evidence: production `18-editor-dragging-1280/390.png`; `DragGhost.test.tsx`; `nodeDragThreshold={4}`.
+- [x] Live state: mono status tag on the step's top-right corner; running step `#1a6da6` edge + `#8cc8ec` shadow.
+      Evidence: `nodes.test.tsx`; `evidence/redesign-v2/wip/runstate-1280.png`.
+- [x] Notes get the same rest / selected / drag treatment.
+      Evidence: `NoteNode.test.tsx`; the drag ghost covers notes (`DragGhost.test.tsx`).
+- [x] Factory thumbnails use single dots (`#dcd8ce` 1px, 14px).
+      Evidence: production `07-factory-index-1280.png`.
 
 ### V5 Wrap panel
-- [ ] 18px right of the selection, vertically centred, 12px caret; scrolls with the canvas; selecting brings box
+- [x] 18px right of the selection, vertically centred, 12px caret; scrolls with the canvas; selecting brings box
       and panel into view.
+      Evidence: production `11a`–`12` at 1280 (anchored, caret) and 390 (bottom sheet, selection above it);
+      `anchorWrapPanel` / `panToShowWrap` / `clampWrapTop` / `panAboveSheet` tests.
 
 ### V6 Carry-overs
-- [ ] "Recent runs" under the Factory cards.
-- [ ] Agent chip everywhere and the project default agent, with evidence.
-- [ ] A Codex chat proven in production (scratch, Sandbox project).
-- [ ] The remaining "Redesign (2026-11-26)" boxes.
+- [x] "Recent runs" under the Factory cards.
+      Evidence: `RecentRuns.test.tsx`; production `07-factory-index-1280.png` (scroll) and the project Factory page.
+- [x] Agent chip everywhere and the project default agent, with evidence.
+      Evidence: see R7 above.
+- [x] A Codex chat proven in production (scratch, Sandbox project).
+      Evidence: see R7 above (`x-codex-chat-pong-1280.png`).
+- [x] The remaining "Redesign (2026-11-26)" boxes.
+      Evidence: R2, R5, R7, R8 boxes above.
 
 ### V7 Contract and journeys
-- [ ] `CONTRACT.md` names v2 as the source of truth and lists the decided differences; e2e journeys updated.
+- [x] `CONTRACT.md` names v2 as the source of truth and lists the decided differences; e2e journeys updated.
+      Evidence: `docs/design/redesign/CONTRACT.md`; journeys updated in `e2e/tests/issue2-studio.spec.ts`.
 
 ## Redesign v2 done when
 - [ ] Every "Redesign" and "Redesign v2" box is checked with evidence.
