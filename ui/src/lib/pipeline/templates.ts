@@ -33,21 +33,27 @@ import implementThenCodexReviewYaml from "./templates/implement-then-codex-revie
 /**
  * The minimal skeleton every zero-document start posts as its first draft —
  * the Blank template and a "New draft" on a pipeline with no published
- * revision (which has nothing to clone). It is the document's top-level
- * shape only — `apiVersion`/`kind`/`metadata.name`/`spec` — with one node,
- * the smallest node list the schema's shape allows (a node needs only its
- * `id` and `kind`). It does not have to validate: a draft may be invalid,
- * and Validate is what judges it. `withMetadataName` rewrites the `name:`
- * line to the pipeline's slug, exactly as it does for the samples.
+ * revision (which has nothing to clone). It is the smallest document that
+ * VALIDATES and runs: the schema requires `spec.inputs`, and a command step
+ * requires its `executable`. A blank canvas that could never be made live
+ * without opening the YAML (the old skeleton had neither) was a dead end;
+ * found on production, Nov 27. `withMetadataName` rewrites the `name:` line
+ * to the pipeline's slug, exactly as it does for the samples.
  */
 export const BLANK_SKELETON_YAML = `apiVersion: communication.dev/v1alpha1
 kind: Pipeline
 metadata:
   name: pipeline
 spec:
+  inputs:
+    type: object
   nodes:
     - id: first
       kind: process.exec
+      config:
+        executable: echo
+        args:
+          - hello
 `;
 
 export type TemplateId =
