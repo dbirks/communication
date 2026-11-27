@@ -102,7 +102,7 @@ export function Sheet({
         aria-label={ariaLabel}
         tabIndex={-1}
         data-testid={testid}
-        className={`max-h-[calc(100dvh-2rem)] max-w-full overflow-y-auto rounded-[18px] border border-line bg-surface shadow-[var(--shadow-modal)] max-md:max-h-[85dvh] max-md:w-full max-md:max-w-none max-md:rounded-b-none ${widthClassName} ${panelClassName}`}
+        className={`max-h-[calc(100dvh-2rem)] max-w-full overflow-y-auto rounded-[14px] border border-line bg-surface shadow-[var(--shadow-modal)] max-md:max-h-[85dvh] max-md:w-full max-md:max-w-none max-md:rounded-b-none ${widthClassName} ${panelClassName}`}
       >
         {children}
       </div>

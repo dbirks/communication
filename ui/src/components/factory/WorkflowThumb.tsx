@@ -120,7 +120,7 @@ export function WorkflowThumb({ steps, className = "" }: WorkflowThumbProps) {
       data-testid="workflow-thumb"
       className={`relative flex h-[120px] items-center overflow-hidden border-b border-line bg-rail px-[20px] ${className}`}
       style={{
-        backgroundImage: "radial-gradient(var(--color-line) 1px, transparent 1px)",
+        backgroundImage: "radial-gradient(#dcd8ce 1px, transparent 1.2px)",
         backgroundSize: "14px 14px",
       }}
     >

@@ -180,7 +180,7 @@ export function WrapPanel({
       aria-modal={sheet ? true : undefined}
       aria-label={sheet ? "Wrap selected steps" : undefined}
       data-testid="wrap-panel"
-      className={`flex flex-col gap-[12px] border border-line bg-surface p-[14px] shadow-[var(--shadow-pop)] ${containerLayout} ${className}`}
+      className={`flex flex-col gap-[12px] border border-fill-edge bg-surface p-[14px] shadow-[var(--shadow-pop)] ${containerLayout} ${className}`}
     >
       <div className="flex items-center gap-2">
         <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">

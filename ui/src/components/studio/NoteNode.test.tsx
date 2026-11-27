@@ -70,11 +70,19 @@ describe("NoteNode", () => {
     expect(screen.getByRole("button", { name: "Note: check with Ada" })).toBeTruthy();
   });
 
-  it("rings the selected note with the accent edge", () => {
+  it("rings the selected note with the ink edge + shadow", () => {
     renderNote({ selected: true });
     const card = screen.getByTestId("canvas-note-note-1");
-    expect(card.className).toContain("border-accent");
+    expect(card.className).toContain("border-ink");
+    expect(card.className).toContain("shadow-(--shadow-node-selected)");
     expect(card.dataset["selected"]).toBe("true");
+  });
+
+  it("rests with the tonal offset shadow", () => {
+    renderNote();
+    const card = screen.getByTestId("canvas-note-note-1");
+    expect(card.className).toContain("shadow-(--shadow-node)");
+    expect(card.className).not.toContain("shadow-(--shadow-node-selected)");
   });
 
   it("a plain click selects, a double-click edits", () => {

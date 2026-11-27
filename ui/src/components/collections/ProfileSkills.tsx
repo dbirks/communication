@@ -385,7 +385,7 @@ function AttachCollectionDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-skills-picker-title"
-        className="mt-[10vh] w-full max-w-[480px] rounded-[18px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)] max-md:mt-auto max-md:rounded-b-none"
+        className="mt-[10vh] w-full max-w-[480px] rounded-[14px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)] max-md:mt-auto max-md:rounded-b-none"
         data-testid="agent-skills-picker"
       >
         <h2

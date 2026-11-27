@@ -423,7 +423,7 @@ export function NewWorkflowSheet({
         aria-modal="true"
         aria-labelledby="new-workflow-sheet-title"
         data-testid="new-workflow-sheet"
-        className="flex max-h-full w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[18px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85dvh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
+        className="flex max-h-full w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[14px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85dvh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
       >
         <div className="flex items-center gap-[10px]">
           <h2 id="new-workflow-sheet-title" className="m-0 text-[18px] font-bold">

@@ -52,11 +52,11 @@ export default function SearchField({ compact = false }: SearchFieldProps) {
       data-testid="search-or-ask"
       aria-label="Search or ask"
       onClick={openPalette}
-      className={`flex h-8 w-[250px] min-w-0 shrink items-center gap-2 rounded-full border border-line bg-surface py-0 pl-3 pr-1.5 text-left hover:bg-disabled-bg ${FOCUS_RING}`}
+      className={`flex h-8 w-[250px] min-w-0 shrink items-center gap-2 rounded-full border border-line bg-surface py-0 pl-[10px] pr-1.5 text-left hover:border-fill-edge ${FOCUS_RING}`}
     >
       <IconSearch size={15} className="shrink-0 text-muted" aria-hidden />
       <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted">Search or ask</span>
-      <span className="shrink-0 rounded-[6px] bg-disabled-bg px-[6px] py-[2px] font-mono text-[10.5px] text-muted">
+      <span className="shrink-0 px-[6px] font-mono text-[10.5px] text-faint">
         {commandKeyHint()}
       </span>
     </button>

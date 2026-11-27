@@ -787,25 +787,36 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     expect(await page.getByTestId("step-outline").count(), "no outline below 768px").toBe(0);
     await expect(page.getByTestId("tool-island")).toBeVisible();
 
-    // Pick any non-agent step currently visible inside the 390px canvas viewport
-    // (the wide LR graph extends beyond 390px at minZoom 0.4, so leftmost
-    // `plan` can start panned off-screen left); tapping it opens the inspector
-    // bottom sheet directly.
-    const stepId = await page.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll<HTMLElement>("[data-step-node-id]"));
-      for (const el of candidates) {
-        const id = el.dataset.stepNodeId;
-        if (!id || id === "code_review" || id.startsWith("agent")) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width > 0 && r.left >= 70 && r.right <= 385 && r.top >= 70 && r.bottom <= 800) {
-          return id;
+    // The editor opens at zoom 1 with the trigger at the left, so at 390px the
+    // next step starts off-screen to the right. Pan the canvas left (a drag on
+    // the empty pane, as a reader would) until a non-agent step is fully in
+    // view; tapping it opens the inspector bottom sheet directly.
+    const visibleStep = () =>
+      page.evaluate(() => {
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-step-node-id]"),
+        );
+        for (const el of candidates) {
+          const id = el.dataset.stepNodeId;
+          if (!id || id === "code_review" || id.startsWith("agent")) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.left >= 70 && r.right <= 385 && r.top >= 70 && r.bottom <= 800) {
+            return id;
+          }
         }
-      }
-      return null;
-    });
+        return null;
+      });
+    let stepId = await visibleStep();
+    for (let pans = 0; stepId === null && pans < 12; pans += 1) {
+      await page.mouse.move(340, 780);
+      await page.mouse.down();
+      await page.mouse.move(180, 780, { steps: 8 });
+      await page.mouse.up();
+      stepId = await visibleStep();
+    }
     expect(
       stepId,
-      "at least one non-agent step sits inside the initial 390px canvas",
+      "a non-agent step can be panned into the 390px canvas",
     ).not.toBeNull();
     await page.getByTestId(`canvas-step-${stepId!}`).click();
     const outline = page.getByTestId("insp-node");

@@ -427,3 +427,51 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
       reviewer with no unresolved differences.
 - [ ] CI and Acceptance are green on the final main SHA.
 - [ ] communication.beluga-wyvern.ts.net runs that SHA.
+
+## Redesign v2 (2026-11-27): the Nov 27 visual language
+
+Source: `docs/design/redesign/README.md` section 8 and `Prototype v2.dc.html` (the source of truth since Nov 27).
+
+### V1 Acceptance on 44e6b67
+- [ ] `lab-e2e` is green: the phone editor journey pans to a step (the editor opens at zoom 1, left-aligned, so
+      at 390px only the trigger is in view); the assistant credentials journey's 429 was the model, re-run.
+
+### V2 Tokens and buttons
+- [ ] `.ds-btn` is rounded BTN-I: radius 8 (compact 7), height 32 (34 `--tall`), 13/600; `SoftButton` emits it.
+- [ ] `--shadow-prompt`, `--shadow-pop`, `--shadow-modal` are hard tonal offsets; `--radius-modal` 14; the pill
+      and the Quick chat edge keep their soft shadow.
+- [ ] Round send buttons: radius 999 with the primary border and `2px 2px 0` shadow.
+- [ ] Search or ask: hairline pill, "⌘K" plain mono 10.5 `#6e6a62`, no chip.
+
+### V3 Surfaces
+- [ ] Prompt box; workflow cards (`2px 2px 0 #ece9e2`, hover edge and shadow `#cfc9bd`); tool island; Versions
+      panel; New workflow sheet (radius 14, `4px 4px 0 #cfc9bd`); Manage tables and sheets; Chats "New"; "Run it".
+
+### V4 Canvas
+- [ ] Steps: rest `#cfc9bd` edge + `2px 2px 0 #e1ddd4`; selected and box-selected ink edge + ink shadow.
+- [ ] Dragging: no box shadow, hatch card 6px down-right, dashed snap target on the 20px grid, edges follow live,
+      a press under 4px is a click.
+- [ ] Live state: mono status tag on the step's top-right corner; running step `#1a6da6` edge + `#8cc8ec` shadow.
+- [ ] Notes get the same rest / selected / drag treatment.
+- [ ] Factory thumbnails use single dots (`#dcd8ce` 1px, 14px).
+
+### V5 Wrap panel
+- [ ] 18px right of the selection, vertically centred, 12px caret; scrolls with the canvas; selecting brings box
+      and panel into view.
+
+### V6 Carry-overs
+- [ ] "Recent runs" under the Factory cards.
+- [ ] Agent chip everywhere and the project default agent, with evidence.
+- [ ] A Codex chat proven in production (scratch, Sandbox project).
+- [ ] The remaining "Redesign (2026-11-26)" boxes.
+
+### V7 Contract and journeys
+- [ ] `CONTRACT.md` names v2 as the source of truth and lists the decided differences; e2e journeys updated.
+
+## Redesign v2 done when
+- [ ] Every "Redesign" and "Redesign v2" box is checked with evidence.
+- [ ] Each screen and state in `Prototype v2.dc.html` has a deployed screenshot at 1280 and 390 in
+      `~/.cache/pi-orch/communication/evidence/redesign-v2/`, compared against v2 by a fresh reviewer with no
+      unresolved differences.
+- [ ] CI and Acceptance are green on the final main SHA.
+- [ ] communication.beluga-wyvern.ts.net runs that SHA.

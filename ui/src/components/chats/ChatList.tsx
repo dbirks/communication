@@ -194,7 +194,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
         <Link
           to={routes.chat("new", scope)}
           data-testid="chat-new"
-          className="inline-flex h-[28px] shrink-0 items-center gap-[6px] rounded-[8px] bg-accent-tint px-[10px] text-[12.5px] font-semibold text-accent-edge hover:bg-accent-ring focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px]"
+          className="ds-btn ds-btn--secondary ds-btn--compact h-[28px]! shrink-0 gap-[6px]! max-md:min-h-[44px]"
         >
           <IconPlus size={14} stroke={1.5} aria-hidden="true" />
           New

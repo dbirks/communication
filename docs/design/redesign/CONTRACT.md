@@ -1,7 +1,9 @@
 # Redesign build contract
 
 This is the shared contract for building the redesign in `README.md` (the handoff) and
-`Prototype.dc.html` (the clickable source of truth; open it in a browser). Every brief builds on it. Where the
+`Prototype v2.dc.html` (the clickable source of truth since Nov 27; open it in a browser). `Prototype.dc.html` is
+the earlier soft-styled prototype, kept for reference; `Visual Directions.dc.html` is the board behind README
+section 8. Every brief builds on it. Where the
 handoff README is silent, this file decides.
 
 ## Rules for every piece
@@ -10,11 +12,19 @@ handoff README is silent, this file decides.
   and issue numbers are design-mock strings; CI (`node e2e/emulator/mockdata-scan.mjs`) fails the build on them.
   Tests use their own neutral fixtures ("Project One", "wf-1", "Ada").
 - Real data only. A block whose data the API doesn't have yet shows a plain empty state sentence, never fake rows.
-- Tailwind v4 classes with the tokens in `ui/src/styles/tokens.css`. New radii/shadows: `rounded-[10px]` cards,
-  `rounded-[12px]` panels, `rounded-[14px]` prompt box, `rounded-[18px]` modals, `rounded-full` pills;
-  `shadow-[var(--shadow-pill)]`, `--shadow-prompt`, `--shadow-pop`, `--shadow-modal`. The old hard
-  `2px 2px 0` shadow and `ds/Panel` chrome are not used on redesigned surfaces. Page background is white
-  (`bg-surface`); the rail is `bg-rail`.
+- Tailwind v4 classes with the tokens in `ui/src/styles/tokens.css`. Radii: `rounded-[10px]` cards and steps,
+  `rounded-[12px]` panels, `rounded-[14px]` prompt box and modals, `rounded-full` pills.
+- **Visual language (README section 8, Nov 27).** Depth is a hard tonal offset with no blur:
+  `--shadow-prompt` (`2px 2px 0 #e6e2d9`), `--shadow-card` / `--shadow-card-hover` (workflow cards),
+  `--shadow-island` (tool island), `--shadow-pop` (`3px 3px 0 #e1ddd4`, with a `border-fill-edge` border: wrap
+  panel, Versions panel, menus), `--shadow-modal` (`4px 4px 0 #cfc9bd`), `--shadow-node` /
+  `--shadow-node-selected` / `--shadow-node-running` (canvas steps and notes). Only the section pill
+  (`--shadow-pill`) and the Quick chat panel's left edge stay soft.
+- **Buttons are BTN-I, rounded**: `.ds-btn` + a variant (`ds/Button` or `ds/SoftButton`, which emit the same
+  classes): radius 8, height 32, 13/600; `ds-btn--compact` (26px, radius 7), `ds-btn--tall` (34px, the editor's
+  floating buttons), `ds-btn--round` (the 32px send button). Never hand-roll a button's border and shadow.
+- Page background is white (`bg-surface`); the rail is `bg-rail`. `ds/Panel` chrome is not used on redesigned
+  surfaces.
 - Icons: `@tabler/icons-react`, 14–19px, stroke 1.5.
 - Status is always glyph + word (● running, ! waiting, × failed, ✓ done, ⊘ interrupted). Plain declarative
   sentences. Never "something went wrong".
@@ -150,4 +160,7 @@ and the prototype.
 | Factory, project scope | "Schedules and triggers here" under the cards | Seeing, adding and pausing a workflow's schedules had no other home |
 | Factory cards | a "…" menu (Triggers, Use in a project, Duplicate, Open YAML) and "Open run" / "Watch on canvas" on a live run | Existing actions |
 | Home | data blocks print one plain sentence when empty | Real data; the prototype is always populated |
+| Factory | "Recent runs" under the cards (newest first, 10 at a time) | Past runs had no other place to be found; there is no Runs tab |
+| Kept pages (run workbench, approvals, artifacts, repository) | the same rounded buttons as the new shell | One button style across the app (`--radius-btn` is 8) |
+| Editor, phone | opens at zoom 1 with the trigger at the left; later steps are reached by panning | Steps stay readable; the prototype is desktop-only |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |

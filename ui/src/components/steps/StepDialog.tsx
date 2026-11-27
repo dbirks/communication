@@ -102,7 +102,7 @@ function StepDialogBody({
         aria-modal="true"
         aria-labelledby={titleId}
         style={{ maxWidth: "100%", width, boxSizing: "border-box" }}
-        className="mt-[6vh] rounded-[18px] border border-line bg-surface shadow-[var(--shadow-modal)] max-md:mt-auto max-md:w-full max-md:rounded-b-none"
+        className="mt-[6vh] rounded-[14px] border border-line bg-surface shadow-[var(--shadow-modal)] max-md:mt-auto max-md:w-full max-md:rounded-b-none"
         data-testid={testid}
       >
         <div className="border-b border-line px-[16px] py-[12px]">

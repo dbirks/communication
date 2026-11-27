@@ -171,29 +171,39 @@
   --color-seg-failed: var(--color-st-failed-strong);
   --color-seg-open: #ffffff;
 
-  /* 03 Shape — radii: 2 tags/bars, 3 panels/inputs/cards, 4 buttons */
+  /* 03 Shape — radii: 2 tags/bars, 3 panels/inputs/cards, 8 buttons (7 on
+     the compact 26–28px ones): BTN-I rounded, redesign README section 8. */
   --radius-tag: 2px;
   --radius-panel: 3px;
-  --radius-btn: 4px;
+  --radius-btn: 8px;
+  --radius-btn-compact: 7px;
 
   /* 03 Depth — one shadow style: 2px 2px 0, no blur. Pressed =
      translate(2px,2px) + no shadow (see .ds-btn in the component layer). */
   --shadow-raised: 2px 2px 0 var(--color-ink);
 
-  /* Redesign (docs/design/redesign/README.md "Design tokens"): the new shell,
-     Home, Chats, Factory, the canvas and Manage use these soft radii and
-     shadows. The hard 2px offset shadow above is NOT used on them. */
+  /* Redesign (docs/design/redesign/README.md section 8, "Visual language",
+     Nov 27): depth is a hard tonal offset with no blur. Only the section
+     pill keeps a soft shadow (and the Quick chat panel its left-edge one). */
   --color-rail: #faf9f6;
   --radius-chip: 8px;
   --radius-card: 10px;
   --radius-pane: 12px;
   --radius-prompt: 14px;
   --radius-frame: 16px;
-  --radius-modal: 18px;
+  --radius-modal: 14px;
   --shadow-pill: 0 1px 3px rgba(30, 29, 26, 0.06);
-  --shadow-prompt: 0 4px 18px rgba(30, 29, 26, 0.06);
-  --shadow-pop: 0 10px 30px rgba(30, 29, 26, 0.1);
-  --shadow-modal: 0 24px 60px rgba(30, 29, 26, 0.16);
+  --shadow-prompt: 2px 2px 0 #e6e2d9;
+  --shadow-card: 2px 2px 0 #ece9e2;
+  --shadow-card-hover: 2px 2px 0 #cfc9bd;
+  --shadow-island: 2px 2px 0 #e1ddd4;
+  --shadow-pop: 3px 3px 0 #e1ddd4;
+  --shadow-modal: 4px 4px 0 #cfc9bd;
+  /* Canvas steps: tonal at rest, ink when selected, blue while running. */
+  --shadow-node: 2px 2px 0 #e1ddd4;
+  --shadow-node-selected: 2px 2px 0 #1e1d1a;
+  --shadow-node-running: 2px 2px 0 #8cc8ec;
+  --color-hatch: #b3ada2;
 
   /* M4/M5 application roles — transcribed from docs/design/design-system.md,
      "Token extensions M5 needs (additive; identity-neutral)", which says of
@@ -285,7 +295,7 @@
 }
 
 /*
- * BTN-I — buttons, 30px tall, radius 4. Border and shadow use a darker tone
+ * BTN-I — buttons, 32px tall, radius 8 (rounded; README section 8). Border and shadow use a darker tone
  * of the fill; hover is 4% darker; pressed moves into the shadow; focus adds
  * a paper gap and a royal ring on top of the tonal shadow.
  */
@@ -295,12 +305,12 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    height: 30px;
+    height: 32px;
     padding: 0 13px;
     border-radius: var(--radius-btn);
     border: 1px solid transparent;
     font-family: var(--font-ui);
-    font-size: var(--text-small);
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
@@ -400,8 +410,20 @@
   /* Compact 26px button inside alerts (ALERT-K carries emphasis). */
   .ds-btn--compact {
     height: 26px;
+    border-radius: var(--radius-btn-compact);
     padding: 0 10px;
     font-size: var(--text-ui);
+  }
+  /* 34px: the editor's floating buttons (Versions, Try it, Make live). */
+  .ds-btn--tall {
+    height: 34px;
+    padding: 0 14px;
+  }
+  /* The round send button: radius 999 with the primary border and shadow. */
+  .ds-btn--round {
+    width: 32px;
+    padding: 0;
+    border-radius: 999px;
   }
 }
 

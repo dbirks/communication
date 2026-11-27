@@ -62,7 +62,7 @@ export function ToolIsland({
       // any-touch-opens-it handler — let a tap widen the island. The island
       // has no toggle of its own, so on touch it simply never widens; the
       // icons and 44px targets stay.
-      className={`absolute left-4 top-[40px] z-20 box-border w-[48px] overflow-hidden rounded-[12px] border border-line bg-surface p-[5px] shadow-[var(--shadow-pop)] transition-[width] duration-100 ${
+      className={`absolute left-4 top-[40px] z-20 box-border w-[48px] overflow-hidden rounded-[12px] border border-fill-edge bg-surface p-[5px] shadow-[var(--shadow-island)] transition-[width] duration-100 ${
         narrow ? "" : "pointer-fine:hover:w-[176px] pointer-fine:focus-within:w-[176px]"
       }`}
     >

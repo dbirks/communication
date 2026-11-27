@@ -387,7 +387,7 @@ export function ThreadsMenu({
       onKeyDown={onMenuKeyDown}
       className={
         quick
-          ? "absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[12px] border border-line bg-surface p-2 shadow-[var(--shadow-pop)]"
+          ? "absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[12px] border border-fill-edge bg-surface p-2 shadow-[var(--shadow-pop)]"
           : "absolute z-30 flex w-[300px] flex-col gap-[2px] rounded-[4px] border border-ink bg-surface p-2 shadow-raised"
       }
       style={{ top: headerHeightPx + 5, right: MENU_INSET_PX }}

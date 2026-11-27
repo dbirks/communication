@@ -40,14 +40,9 @@ describe("PromptBox send button", () => {
     renderBox();
     const send = screen.getByTestId("prompt-box-send");
     expect(send.getAttribute("data-round")).toBe("true");
-    for (const cls of [
-      "h-[32px]",
-      "w-[32px]",
-      "aspect-square",
-      "rounded-full",
-      "shrink-0",
-      "p-0",
-    ]) {
+    // Rounded BTN-I, round variant: 32×32, radius 999, primary border and
+    // 2px offset shadow (tokens.css `.ds-btn--round`).
+    for (const cls of ["ds-btn", "ds-btn--primary", "ds-btn--round", "shrink-0"]) {
       expect(send.className).toContain(cls);
     }
     // A fixed 32×32 box: no min-height/padding utility that could stretch it.

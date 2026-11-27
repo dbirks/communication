@@ -1709,10 +1709,8 @@ export function StudioPage() {
             aria-label="Versions"
             aria-pressed={versionsOpen}
             onClick={() => setPanel(versionsOpen ? null : "versions")}
-            className={`flex h-[34px] shrink-0 items-center gap-[6px] whitespace-nowrap rounded-[10px] border border-line px-[12px] text-[13px] font-semibold shadow-[var(--shadow-pill)] focus-visible:outline-2 focus-visible:outline-accent ${
-              versionsOpen
-                ? "bg-accent-tint text-accent-edge"
-                : "bg-surface text-ink hover:border-line-strong"
+            className={`ds-btn ds-btn--secondary-plain ds-btn--tall shrink-0 gap-[6px]! px-[12px]! ${
+              versionsOpen ? "bg-accent-tint!" : ""
             }`}
           >
             <IconHistory size={16} stroke={1.5} aria-hidden />
@@ -1724,7 +1722,7 @@ export function StudioPage() {
             data-testid="editor-try-it-btn"
             aria-label="Try it"
             onClick={() => setTryItOpen(true)}
-            className="flex h-[34px] shrink-0 items-center gap-[6px] whitespace-nowrap rounded-[10px] border border-line bg-surface px-[12px] text-[13px] font-semibold text-ink shadow-[var(--shadow-pill)] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent"
+            className="ds-btn ds-btn--secondary ds-btn--tall shrink-0 gap-[6px]! px-[12px]!"
           >
             <IconPlayerPlay size={14} stroke={1.5} aria-hidden />
             <span className={phone ? "sr-only" : undefined}>Try it</span>
@@ -1751,7 +1749,7 @@ export function StudioPage() {
                     : "Validate and make this draft live"
               }
               onClick={() => void onMakeLive()}
-              className="flex h-[34px] shrink-0 items-center whitespace-nowrap rounded-[10px] bg-accent px-[14px] text-[13px] font-semibold text-white shadow-[var(--shadow-pill)] hover:brightness-95 disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
+              className="ds-btn ds-btn--primary ds-btn--tall shrink-0"
             >
               {publish.isPending || validate.isPending ? "Making live…" : "Make live"}
             </button>
@@ -1765,7 +1763,7 @@ export function StudioPage() {
               aria-haspopup="menu"
               aria-expanded={moreMenuOpen}
               onClick={() => setMoreMenuOpen((open) => !open)}
-              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[10px] border border-line bg-surface text-ink shadow-[var(--shadow-pill)] hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent"
+              className="ds-btn ds-btn--secondary ds-btn--tall w-[34px] shrink-0 p-0!"
             >
               <IconDots size={16} stroke={1.5} aria-hidden />
             </button>
@@ -1774,7 +1772,7 @@ export function StudioPage() {
                 role="menu"
                 aria-label="Workflow actions"
                 data-testid="editor-more-menu"
-                className="absolute right-0 top-[40px] z-40 w-[190px] rounded-[12px] border border-line bg-surface py-[6px] shadow-[var(--shadow-pop)]"
+                className="absolute right-0 top-[40px] z-40 w-[190px] rounded-[12px] border border-fill-edge bg-surface py-[6px] shadow-[var(--shadow-pop)]"
               >
                 <button
                   type="button"
@@ -1878,8 +1876,8 @@ export function StudioPage() {
             data-testid="studio-validate-drawer"
             className={
               phone
-                ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
-                : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-80px)] w-[360px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+                ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[14px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
+                : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-80px)] w-[360px] overflow-y-auto rounded-[12px] border border-fill-edge bg-surface p-3 shadow-[var(--shadow-pop)]"
             }
           >
             <div className="mb-2 flex items-center gap-2">
@@ -1989,10 +1987,10 @@ export function StudioPage() {
               phone
                 ? panelParam === "yaml" || panelParam === "inputs"
                   ? "fixed inset-x-0 top-0 bottom-0 z-40 flex flex-col overflow-y-auto bg-surface p-4"
-                  : "fixed inset-x-0 bottom-0 z-40 max-h-[80dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
+                  : "fixed inset-x-0 bottom-0 z-40 max-h-[80dvh] overflow-y-auto rounded-t-[14px] border-t border-line bg-surface p-4 shadow-[var(--shadow-modal)]"
                 : panelParam === "yaml" || panelParam === "inputs"
-                  ? "absolute right-4 top-[58px] bottom-[52px] z-30 flex w-[520px] max-w-[calc(100%-32px)] flex-col overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
-                  : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-114px)] w-[420px] overflow-y-auto rounded-[12px] border border-line bg-surface p-3 shadow-[var(--shadow-pop)]"
+                  ? "absolute right-4 top-[58px] bottom-[52px] z-30 flex w-[520px] max-w-[calc(100%-32px)] flex-col overflow-y-auto rounded-[12px] border border-fill-edge bg-surface p-3 shadow-[var(--shadow-pop)]"
+                  : "absolute right-4 top-[58px] z-30 max-h-[calc(100%-114px)] w-[420px] overflow-y-auto rounded-[12px] border border-fill-edge bg-surface p-3 shadow-[var(--shadow-pop)]"
             }
           >
             <div className="mb-2 flex items-center justify-end">
@@ -2094,8 +2092,8 @@ export function StudioPage() {
             data-testid="editor-inspector-panel"
             className={
               phone
-                ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface shadow-[var(--shadow-modal)]"
-                : "absolute right-4 top-[64px] z-20 max-h-[calc(100%-80px)] w-[360px] overflow-hidden rounded-[12px] border border-line bg-surface shadow-[var(--shadow-pop)]"
+                ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[14px] border-t border-line bg-surface shadow-[var(--shadow-modal)]"
+                : "absolute right-4 top-[64px] z-20 max-h-[calc(100%-80px)] w-[360px] overflow-hidden rounded-[12px] border border-fill-edge bg-surface shadow-[var(--shadow-pop)]"
             }
           >
             {inspectorPanel}

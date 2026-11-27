@@ -51,7 +51,7 @@ export function WorkflowSuggestion({
           data-testid="workflow-suggestion-run"
           disabled={busy}
           onClick={onRun}
-          className="inline-flex h-[26px] shrink-0 items-center rounded-full bg-accent px-[12px] text-[12.5px] font-semibold text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
+          className="ds-btn ds-btn--primary ds-btn--compact shrink-0 rounded-full! text-[12px]!"
         >
           {busy ? "Starting…" : "Run it"}
         </button>

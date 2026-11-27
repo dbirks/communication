@@ -226,7 +226,7 @@ export function NewProjectDialog({
         aria-modal="true"
         aria-labelledby="create-project-heading"
         data-testid="create-project-dialog"
-        className="w-[520px] max-w-full rounded-[18px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:rounded-b-none max-md:p-[16px]"
+        className="w-[520px] max-w-full rounded-[14px] border border-line bg-surface p-[24px] shadow-(--shadow-modal) max-md:rounded-b-none max-md:p-[16px]"
       >
         <h2 id="create-project-heading" className="text-[18px] font-bold">
           New project

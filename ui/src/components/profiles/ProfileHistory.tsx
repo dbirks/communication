@@ -391,7 +391,7 @@ function ProfileHistoryConfirm({
         aria-modal="true"
         aria-labelledby="profile-history-confirm-title"
         data-testid="profile-history-confirm"
-        className="w-full max-w-[420px] rounded-[18px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)]"
+        className="w-full max-w-[420px] rounded-[14px] border border-line bg-surface p-[16px] shadow-[var(--shadow-modal)]"
       >
         <h2 id="profile-history-confirm-title" className="text-[15px] font-bold">
           Restore version v{version}

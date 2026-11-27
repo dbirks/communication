@@ -27,13 +27,16 @@ export type NoteNodeRender = {
   onSave: (text: string) => void;
 };
 
-/** `#fdf6e4` paper, `#e8cf94` edge, selected `#2f4bd6` — the design's amber
- * sticky, taken off the waiting-status token pair the identity table already
- * owns (no hex literal in a class, so `check:tokens` keeps its teeth). The card
- * IS the drag handle, so it carries no `nodrag`; the textarea does. */
+/** `#fdf6e4` paper, `#e8cf94` edge — the design's amber sticky, taken off the
+ * waiting-status token pair the identity table already owns (no hex literal in a
+ * class, so `check:tokens` keeps its teeth). Same rest/selected treatment as a
+ * step: gray-edge + tonal shadow at rest, ink at selected (README section 8).
+ * The card IS the drag handle, so it carries no `nodrag`; the textarea does. */
 const cardClass = (selected: boolean): string =>
   `block w-full rounded-[10px] border px-[10px] py-[8px] text-left text-[13px] leading-[18px] text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent ${
-    selected ? "border-accent" : "border-st-waiting-pale-edge"
+    selected
+      ? "border-ink shadow-(--shadow-node-selected)"
+      : "border-st-waiting-pale-edge shadow-(--shadow-node)"
   } bg-st-waiting-pale-body`;
 
 export function NoteNode(props: NodeProps<Node<NoteNodeRender>>): ReactElement {

@@ -82,8 +82,8 @@ export function VersionsPanel({
   const liveRevision = revisions.find((r) => r.status === "published") ?? null;
 
   const containerClass = sheet
-    ? "w-full rounded-t-[18px] rounded-b-none border-t border-line bg-surface shadow-[var(--shadow-modal)] max-h-[75dvh] overflow-y-auto"
-    : "w-[304px] rounded-[12px] border border-line bg-surface shadow-[var(--shadow-pop)] max-h-[calc(100dvh-175px)] overflow-y-auto";
+    ? "w-full rounded-t-[14px] rounded-b-none border-t border-line bg-surface shadow-[var(--shadow-modal)] max-h-[75dvh] overflow-y-auto"
+    : "w-[304px] rounded-[12px] border border-fill-edge bg-surface shadow-[var(--shadow-pop)] max-h-[calc(100dvh-175px)] overflow-y-auto";
 
   return (
     <section

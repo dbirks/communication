@@ -217,25 +217,25 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   // the same string.
   const secondLine = keyFact ? `${data.kindWord} · ${keyFact}` : data.kindWord;
   const stateCat = stepStateCategory(data.status?.state);
-  const cardSurfaceClass = selected
-    ? stateCat === "running"
-      ? "border-accent bg-st-running-pale-body"
+  // README section 8 (3f / 4g / 4h): grey edge + tonal offset shadow at rest,
+  // ink edge + ink shadow when selected (box-selected included), blue edge +
+  // blue shadow while the step runs. The pale state body stays under both.
+  const bodyClass =
+    stateCat === "running"
+      ? "bg-st-running-pale-body"
       : stateCat === "waiting"
-        ? "border-accent bg-st-waiting-pale-body"
+        ? "bg-st-waiting-pale-body"
         : stateCat === "failed"
-          ? "border-accent bg-st-failed-pale-body"
+          ? "bg-st-failed-pale-body"
           : stateCat === "interrupted"
-            ? "border-accent bg-st-interrupted-pale-body"
-            : "border-accent bg-surface"
+            ? "bg-st-interrupted-pale-body"
+            : "bg-surface";
+  const edgeClass = selected
+    ? "border-ink shadow-(--shadow-node-selected)"
     : stateCat === "running"
-      ? "border-st-running-strong bg-st-running-pale-body"
-      : stateCat === "waiting"
-        ? "border-st-waiting-pale-edge bg-st-waiting-pale-body"
-        : stateCat === "failed"
-          ? "border-st-failed-pale-edge bg-st-failed-pale-body"
-          : stateCat === "interrupted"
-            ? "border-st-interrupted-pale-edge bg-st-interrupted-pale-body"
-            : "border-line bg-surface";
+      ? "border-st-running-strong shadow-(--shadow-node-running)"
+      : "border-fill-edge shadow-(--shadow-node)";
+  const cardSurfaceClass = `${edgeClass} ${bodyClass}`;
   const tileClass =
     stateCat === "done"
       ? "bg-st-done-tag text-st-done-tag-fg"
@@ -246,6 +246,21 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           : data.kind === "human.approval"
             ? "bg-st-waiting-tag text-st-waiting-tag-fg"
             : "bg-fill text-ink-2";
+  // README section 8 (4h): the corner tag wears its state's TAG colours (bg +
+  // fg); a state outside the five sets (queued, retried, info…) stays plain
+  // fill so an unknown word never borrows an urgent palette.
+  const tagTone =
+    stateCat === "running"
+      ? "bg-st-running-tag text-st-running-tag-fg"
+      : stateCat === "waiting"
+        ? "bg-st-waiting-tag text-st-waiting-tag-fg"
+        : stateCat === "failed"
+          ? "bg-st-failed-tag text-st-failed-tag-fg"
+          : stateCat === "done"
+            ? "bg-st-done-tag text-st-done-tag-fg"
+            : stateCat === "interrupted"
+              ? "bg-st-interrupted-tag text-st-interrupted-tag-fg"
+              : "bg-fill text-ink-2";
 
   return (
     <div
@@ -267,7 +282,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         }
         onClick={() => data.onSelect()}
         onKeyDown={pick}
-        className={`flex ${data.status ? "min-h-[56px] py-1" : "h-[56px]"} w-[168px] items-center gap-[10px] rounded-[10px] border px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${cardSurfaceClass} ${data.stale ? "opacity-70" : ""}`}
+        className={`flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${cardSurfaceClass} ${data.stale ? "opacity-70" : ""}`}
       >
         <span
           data-testid={`canvas-step-tile-${data.id}`}
@@ -293,22 +308,30 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           >
             {secondLine}
           </span>
-          {data.status && (
-            <span
-              className="block truncate text-[10px] leading-3"
-              aria-label={`status: ${data.status.label}`}
-              // The card's role=button aria-label OVERRIDES its text content for
-              // an assistive tech, so the state word has to ride that name (and a
-              // hover title) — a sighted-only "✓ done" is colour-alone for anyone
-              // who cannot see the tile (identity rule 06).
-              title={data.status.label}
-              data-testid={`step-status-${data.id}`}
-            >
-              {statusGlyph(data.status.state)} {data.status.label}
-            </span>
-          )}
         </span>
       </div>
+
+      {/* README section 8 (4h): live state is a small mono status TAG riding the
+          card's top-right corner, not a third text line — the card stays a
+          fixed 56px so a run overlay never reflows the graph. The tag keeps the
+          DOM text exactly as the old line had it (glyph + space + label) and is
+          capitalised by CSS `uppercase`, so existing tests/e2e that compare the
+          lower-case label still match. */}
+      {data.status && (
+        <span
+          className={`pointer-events-none absolute z-[3] block h-[16px] rounded-[4px] px-[5px] font-mono text-[9.5px] font-semibold uppercase leading-[16px] tracking-[.04em] whitespace-nowrap ${tagTone}`}
+          style={{ right: showMenu ? 22 : -6, top: -9 }}
+          aria-label={`status: ${data.status.label}`}
+          // The card's role=button aria-label OVERRIDES its text content for
+          // an assistive tech, so the state word has to ride that name (and a
+          // hover title) — a sighted-only "✓ done" is colour-alone for anyone
+          // who cannot see the tile (identity rule 06).
+          title={data.status.label}
+          data-testid={`step-status-${data.id}`}
+        >
+          {statusGlyph(data.status.state) || "·"} {data.status.label}
+        </span>
+      )}
 
       {/* Issue #66: Duplicate/Delete left the plain-click toolbar and live on
           right-click, the keyboard and THIS ⋯ — drawn only while the step is
@@ -556,7 +579,7 @@ export function TriggerNode(props: NodeProps<Node<TriggerNodeRender>>) {
         }}
         disabled={!data.onClick}
         aria-label={`Trigger: ${data.subline}`}
-        className="flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border border-line bg-surface px-3 text-left outline-none hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
+        className="flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border border-fill-edge bg-surface px-3 text-left shadow-(--shadow-node) outline-none focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
       >
         <span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[8px] bg-ink text-surface">
           <IconBolt size={17} stroke={1.5} aria-hidden />

@@ -227,7 +227,7 @@ describe("AccountsStrip", () => {
     expect(rows[2].textContent).toContain("Antigravity");
   });
 
-  it("uses the soft button with primary accent fill for needs sign-in and white secondary when signed in", () => {
+  it("uses the rounded BTN-I button: primary for needs sign-in, secondary-plain when signed in", () => {
     mocks.accounts.mockReturnValue({
       data: {
         items: [
@@ -244,15 +244,10 @@ describe("AccountsStrip", () => {
     });
     mount();
     const buttons = screen.getAllByTestId("agent-account-signin");
-    expect(buttons[0].className).toContain("h-[30px]");
-    expect(buttons[0].className).toContain("rounded-[8px]");
-    expect(buttons[0].className).toContain("bg-accent");
-    expect(buttons[0].className).not.toContain("ds-btn");
-
-    expect(buttons[1].className).toContain("h-[30px]");
-    expect(buttons[1].className).toContain("rounded-[8px]");
-    expect(buttons[1].className).toContain("bg-surface");
-    expect(buttons[1].className).toContain("border-line");
+    expect(buttons[0].className).toContain("ds-btn");
+    expect(buttons[0].className).toContain("ds-btn--primary");
+    expect(buttons[1].className).toContain("ds-btn");
+    expect(buttons[1].className).not.toContain("ds-btn--primary");
   });
 
   it("never fires the accounts read for a non-admin and shows the sentence", () => {

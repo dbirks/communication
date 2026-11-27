@@ -205,14 +205,13 @@ describe("ChatComposer", () => {
 
   // rx-c1: on a phone the row used to fold under itself and push Send off the
   // line. It is one scrolling line at every width now.
-  it("keeps the chip row on one scrolling line", () => {
+  it("never clips the chip row: a scrolling row would hide the pickers that open from it", () => {
     renderComposer(makeSession());
     const row = screen.getByTestId("composer-chips");
-    expect(row.className).toContain("flex-nowrap");
-    expect(row.className).toContain("overflow-x-auto");
-    expect(row.className).toContain("[scrollbar-width:none]");
-    expect(row.className).toContain("[&::-webkit-scrollbar]:hidden");
-    expect(row.className).not.toContain("flex-wrap");
+    // `overflow-x: auto` also clips vertically, so the agent picker opened
+    // under the transcript and could not be clicked (Acceptance 45917627404).
+    expect(row.className).not.toMatch(/overflow-/);
+    expect(row.className).toContain("flex-wrap");
     // The chips are the row's children and the send button stays outside it.
     expect(row.contains(screen.getByTestId("composer-agent-chip"))).toBe(true);
     expect(row.contains(screen.getByTestId("composer-send"))).toBe(false);

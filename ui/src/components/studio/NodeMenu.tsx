@@ -149,7 +149,7 @@ export function NodeMenu({
             "flex shrink-0 flex-nowrap items-center gap-[6px] border-t border-line bg-surface p-[3px] outline-none"
           : /* One row (`compact`) or the 1g two-row menu; the same ink border +
              hard shadow either way, so the menu still reads as the step's. */
-            `absolute z-20 flex flex-nowrap gap-[6px] rounded-[10px] border border-line bg-surface p-[4px] shadow-[var(--shadow-pop)] outline-none ${
+            `absolute z-20 flex flex-nowrap gap-[6px] rounded-[10px] border border-fill-edge bg-surface p-[4px] shadow-[var(--shadow-pop)] outline-none ${
               compact ? "flex-row" : "flex-col gap-[2px]"
             }`
       }

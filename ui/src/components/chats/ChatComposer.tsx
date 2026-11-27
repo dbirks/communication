@@ -216,12 +216,12 @@ export function ChatComposer({ session, onOpenWorkflow, aboveBox }: ChatComposer
   const archived = data?.status === "archived";
 
   const chips = (
-    // One line at every width (rx-c1): the row scrolls sideways with a hidden
-    // scrollbar instead of wrapping under the textarea, and its children keep
-    // their natural width. Send stays outside it, at the right.
+    // The chips keep their natural width and wrap when the row is too narrow.
+    // The row must never scroll: `overflow-x: auto` clips vertically too, which
+    // put the pickers opened from it under the transcript. Send stays outside.
     <div
       data-testid="composer-chips"
-      className="flex w-full min-w-0 flex-nowrap items-center gap-[6px] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0"
+      className="flex w-full min-w-0 flex-wrap items-center gap-[6px] [&>*]:shrink-0"
     >
       <AgentPicker
         value={data?.agent_profile_id ?? null}

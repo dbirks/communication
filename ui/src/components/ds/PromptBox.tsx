@@ -111,7 +111,7 @@ export function PromptBox({
           data-round
           aria-label="Send"
           disabled={!canSend}
-          className="relative grid aspect-square h-[32px] w-[32px] shrink-0 place-items-center rounded-full p-0 bg-accent text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
+          className="ds-btn ds-btn--primary ds-btn--round relative shrink-0"
         >
           <IconArrowUp size={17} stroke={2} aria-hidden />
         </button>

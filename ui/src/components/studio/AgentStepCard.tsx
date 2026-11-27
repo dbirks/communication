@@ -78,8 +78,8 @@ export function AgentStepCard({
   );
 
   const containerLayout = sheet
-    ? "w-full rounded-t-[18px] rounded-b-none border-t border-line p-[16px] shadow-[var(--shadow-modal)]"
-    : "w-[340px] rounded-[14px] border border-line p-[14px] shadow-[var(--shadow-pop)]";
+    ? "w-full rounded-t-[14px] rounded-b-none border-t border-line p-[16px] shadow-[var(--shadow-modal)]"
+    : "w-[340px] rounded-[14px] border border-fill-edge p-[14px] shadow-[var(--shadow-pop)]";
 
   return (
     <div
