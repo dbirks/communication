@@ -738,9 +738,9 @@ export const FIT_TOP_PAD_PX = 72;
  * canvas fits itself (review-1 09-390-1): the fit is LEFT-aligned as well as
  * top-aligned. A horizontally CENTRED fit opened a wide left→right flow at
  * its middle on phone widths (steps 1-2 off-screen) and let the tool island
- * cover the entry step on desktop; at 72px the first step clears the 48px
- * island that sits at left 16. */
-export const FIT_LEFT_PAD_PX = 72;
+ * cover the entry step on desktop; at 88px the first step stands 24px clear
+ * of the 48px island that sits at left 16 (review-3 F15). */
+export const FIT_LEFT_PAD_PX = 88;
 
 /** The editor dot grid, exactly as the README names it:
  * `radial-gradient(#d6d2c8 1.1px, transparent 1.1px)` on a 20px grid,

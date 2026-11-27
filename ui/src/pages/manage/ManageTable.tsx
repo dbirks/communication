@@ -107,9 +107,9 @@ function ManageRows({
   }
   return (
     <div className="overflow-hidden rounded-[12px] border border-line bg-surface">
-      <div className="px-[16px]">
+      <div>
         <table
-          className="w-full border-collapse [&>tbody>tr:last-child>td]:border-b-0"
+          className="w-full border-collapse [&>tbody>tr:last-child>td]:border-b-0 [&_td:first-child]:pl-[16px] [&_td:first-child]:whitespace-nowrap [&_td:last-child]:pr-[16px] [&_th:first-child]:pl-[16px] [&_th:last-child]:pr-[16px]"
           data-testid={testid}
           data-layout="table"
         >

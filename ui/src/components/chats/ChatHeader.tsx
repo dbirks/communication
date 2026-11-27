@@ -273,7 +273,7 @@ export function ChatHeader({
 
         <span
           data-testid="chat-people"
-          className="hidden min-w-0 max-w-[150px] shrink truncate text-[12.5px] text-muted lg:inline"
+          className="hidden min-w-0 max-w-[220px] shrink-0 truncate text-[12.5px] text-muted lg:inline"
         >
           {peopleLabel}
         </span>

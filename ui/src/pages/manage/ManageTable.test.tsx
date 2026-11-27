@@ -81,10 +81,12 @@ describe("ManageTable", () => {
     expect(card.className).toContain("rounded-[12px]");
     expect(card.className).toContain("border-line");
     expect(card.className).toContain("bg-surface");
-    // The header row is printed inside the frame, and the table's wrapper
-    // carries the 16px inner side padding.
+    // The header row is printed inside the frame; the row rules run edge to
+    // edge, so the 16px inset rides the first and last cells, not a wrapper.
     expect(table.querySelector("thead th")).toBeTruthy();
-    expect(card.firstElementChild?.className).toContain("px-[16px]");
+    expect(card.firstElementChild?.className ?? "").not.toContain("px-[16px]");
+    expect(table.className).toContain("[&_td:first-child]:pl-[16px]");
+    expect(table.className).toContain("[&_th:last-child]:pr-[16px]");
   });
 
   it("prints the empty sentence and no table when there are no rows", async () => {

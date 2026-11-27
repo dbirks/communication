@@ -170,7 +170,7 @@ export function WorkflowCard({
         <WorkflowThumb steps={item.steps} />
       </div>
       <div className="flex flex-col gap-[6px] px-[14px] py-[12px]">
-        <div className="flex items-baseline gap-[8px]">
+        <div className="flex items-baseline gap-[8px] max-md:flex-wrap max-md:items-center max-md:gap-y-[2px]">
           {/* The card's accessible name, and the link the whole card answers to. */}
           <Link
             to={routes.factoryWorkflow(pipeline.id, scope)}
@@ -186,7 +186,7 @@ export function WorkflowCard({
           <span
             data-testid={`workflow-card-trigger-${pipeline.id}`}
             title={item.triggerText}
-            className="min-w-0 flex-1 truncate text-[13px] text-muted"
+            className="min-w-0 flex-1 truncate text-[13px] text-muted max-md:order-last max-md:basis-full"
           >
             {item.triggerText}
           </span>

@@ -182,4 +182,22 @@ and the prototype.
 | Quick chat | a pop-out icon in the header; a separate round send button; mic and "Open as chat" outside the reply field | Opening the assistant as a page and sending by button existed before; the footer keeps the prototype's three controls |
 | Manage, phone | the sub-nav is a horizontal strip of chips that scrolls, faded at both edges, opened at the current section | CONTRACT "Phone": two-column pages stack; six sections do not fit 390px |
 | Page gutters | Home and Factory content is centred at the README's max widths (1100 / 1180 including padding) | README section 2 gives max widths, not the prototype's left offset |
+| Editor breadcrumb | on desktop the draft or run status is never shortened; a long workflow name gives way and shows in full on hover | The status is short and bounded; a name is whatever people typed (the prototype's is "fix-issue") |
+| Editor | opens top- and left-aligned at zoom 1, the first step 24px clear of the tool island, not centred on the board | A centred fit opened long flows in their middle (review 1); the reader starts at the trigger |
+| Goal frame | the space under the last step holds the step's "+" handle and the rounds footer (88px) | The "+" under a terminal step is how a step is added inside the loop |
+| Project home | the starter pills are the resumable chats first, then "Run <workflow>" and "New chat" | Real data: picking up recent work is the common case; the prototype's order is its fixed demo |
+| Prompt chips | a chip with no chevron (the project chip of a project-scoped New chat) is regular weight; a chevron chip is a picker and is 600 | Weight says "you can change this"; the project is fixed by the page's scope |
+| New chat, pick up | each row is the chat's title (600), with the resume icon and its age | The rows are chats to resume, one kind; the age is what tells them apart |
+| Chat, run from the hand-off dialog | no "Started …" message is posted; the run card itself is the record | The hand-off links the run to the chat; a second line would say the same thing |
+| Run card step strip | one segment per step execution, up to five (more are grouped), so a one-step workflow draws one bar | The strip shows the real run, not a fixed five |
+| Chat composer, phone | the chips wrap onto a second row at the 44px touch height | Phone touch floor (CONTRACT "Phone"); a sideways-scrolling row hides chips |
+| Chat transcript, phone | the "+N" chips beside session lines are 44px tall touch targets | Phone touch floor |
+| Run card, phone | "Open in Factory" sits on its own line under the title and strip | The title needs the width at 390 |
+| Factory | a 2-column card grid | README section 4 ("a 2-column grid"); the prototype shows 3 |
+| Factory card state | "○ idle" when the workflow has nothing in flight | A card has to say something when there is no live run; ○ is the "not running" mark beside ● |
+| Factory, phone | the trigger sentence is a second line under the name; "New workflow" sits under the title, right-aligned | 390px has no room for name, trigger and state on one line |
+| Wrap panel | sits 18px right of the selection even when other canvas content is there | Section 8: the panel is anchored to the selection; both stay visible |
+| Editor, phone | the "…" menu of a selected step sits on the step's top-right corner, and the tool island may cover the leftmost step until the board is panned | 390px of board; the island stays reachable |
+| Editor, dragging | while a step is dragged past the border of a goal frame its edge to the frame is drawn straight | The edge ends at the frame's border (see above); it settles when the step is dropped |
+| Chat transcript | prints the agent's text as the agent sent it, chunks joined as received | The transcript is a kept surface |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |

@@ -184,7 +184,7 @@ export function RunCard({ runId, workflowName }: RunCardProps) {
         className={`shrink-0 ${palette.icon}`}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col gap-[7px]">
+      <div className="flex min-w-0 flex-1 flex-col gap-[7px] max-md:basis-[calc(100%-34px)]">
         <div className="flex items-baseline justify-between gap-[12px]">
           <span className="min-w-0 truncate text-[13.5px] font-semibold text-ink">
             {displayName}
@@ -224,7 +224,7 @@ export function RunCard({ runId, workflowName }: RunCardProps) {
       <Link
         to={routes.run(runId)}
         data-testid="run-card-open"
-        className="shrink-0 text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent max-md:min-h-[44px] max-md:inline-flex max-md:items-center"
+        className="shrink-0 text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent max-md:-my-[8px] max-md:ml-[34px] max-md:min-h-[44px] max-md:inline-flex max-md:items-center"
       >
         Open in Factory
       </Link>

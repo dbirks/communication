@@ -1693,7 +1693,7 @@ spec:
     })!;
     expect(vp).not.toBeNull();
     expect(vp.zoom).toBe(1); // never zoomed out to fit
-    expect(vp.x).toBe(FIT_LEFT_PAD_PX - 0); // first box at 72px from the left
+    expect(vp.x).toBe(FIT_LEFT_PAD_PX - 0); // first box at 88px from the left
     expect(vp.y).toBe(FIT_TOP_PAD_PX - 0); // …and 72px under the top
 
     // TALLER than the pane: still 1.0 — it overflows and pans, it does not

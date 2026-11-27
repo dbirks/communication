@@ -589,7 +589,17 @@ export function toFlow(
   // GoalFrame scopes reserve extra top/bottom padding so the goal header and
   // round footer never overlap child step cards.
   const GROUP_PAD = 8;
-  const GOAL_TOP_PAD = 76;
+  // The header is 10px padding, the 18px kind line, a 4px gap, one 18px row
+  // per wrapped line of the quoted goal and 10px padding; the first step then
+  // starts 28px under it. The quote wraps in the frame width less 44px (14px
+  // left, 30px right for the edit affordance), at ~6.6px a character for the
+  // 13px UI face and ~7.8px for mono (command / contains goals).
+  const goalTopPad = (goal: GoalSpec, width: number): number => {
+    const charPx = goal.kind === "judge" ? 6.6 : 7.8;
+    const perLine = Math.max(1, Math.floor((width - 44) / charPx));
+    const lines = Math.max(1, Math.ceil((goal.text.length + 2) / perLine));
+    return 10 + 18 + 4 + 18 * lines + 10 + 28;
+  };
   // Terminal steps inside a GoalFrame render a 10px dashed stub + 44px hit
   // button below the card (~53px) above the 32px footer ("up to N rounds · …").
   // 88px preserves clear separation between the terminal + target and footer.
@@ -621,13 +631,13 @@ export function toFlow(
       group.width = Math.max(group.width, ex + entry.width + sidePad - group.x);
       group.height = Math.max(group.height, ey + entry.height - group.y + bottomPad);
     }
-    if (isGoal && Number.isFinite(minChildY)) {
-      const targetTop = minChildY - GOAL_TOP_PAD;
+    if (group.goal !== null && Number.isFinite(minChildY)) {
+      group.width = Math.max(group.width, 224);
+      const targetTop = minChildY - goalTopPad(group.goal, group.width);
       if (targetTop < group.y) {
         group.height += group.y - targetTop;
         group.y = targetTop;
       }
-      group.width = Math.max(group.width, 224);
     }
   }
 
