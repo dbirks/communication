@@ -102,9 +102,7 @@ export default function RunnersSection() {
           {/* The host tag belongs to WHERE (review 15-1280-6), not to the
               name. */}
           {worker.hostname !== worker.name ? null : (
-            <span className="ml-[6px] font-sans text-[11.5px] font-normal text-muted">
-              same host
-            </span>
+            <span className="font-sans text-[11.5px] font-normal text-muted">{" · "}same host</span>
           )}
         </span>
       ),

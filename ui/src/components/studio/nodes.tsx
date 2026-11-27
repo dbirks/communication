@@ -463,7 +463,7 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
       data-testid={`node-menu-button-${data.id}`}
       aria-label={`Actions for scope ${data.id}`}
       aria-haspopup="menu"
-      className="icon-hit absolute! right-[8px] top-[8px] z-20 grid h-[20px] w-[20px] place-items-center rounded-[6px] border border-line bg-surface text-[12px] leading-none text-ink-2 hover:border-accent hover:text-accent"
+      className="icon-hit absolute! right-[8px] top-[8px] z-20 grid h-[20px] w-[20px] max-md:min-w-[44px] place-items-center rounded-[6px] border border-line bg-surface text-[12px] leading-none text-ink-2 hover:border-accent hover:text-accent"
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();

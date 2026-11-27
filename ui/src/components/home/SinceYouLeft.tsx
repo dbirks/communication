@@ -100,8 +100,10 @@ export function SinceYouLeft({ projectId, projectName }: SinceYouLeftProps) {
       ? brief.data.headline.text
       : null;
   // Zero items: the headline would only repeat "it was quiet", so the single
-  // empty sentence below is all the section prints.
-  const headline = list.length > 0 ? readyHeadline : null;
+  // empty sentence below is all the section prints. Only routine items: the
+  // brief's "quiet stretch, nothing changed" would contradict the "+ N
+  // routine updates" line under it (review-5), so that line speaks alone.
+  const headline = important.length > 0 ? readyHeadline : null;
 
   return (
     <section data-testid="since-you-left" className="min-w-0">

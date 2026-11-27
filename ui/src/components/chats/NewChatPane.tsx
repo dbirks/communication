@@ -380,7 +380,7 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
                   key={chat.id}
                   to={routes.chat(chat.id, scope)}
                   data-testid={`new-chat-recent-${chat.id}`}
-                  className="flex items-center gap-[12px] rounded-[8px] border border-line-soft px-[12px] py-[10px] hover:border-line-strong hover:bg-rail focus-visible:outline-2 focus-visible:outline-accent"
+                  className="flex items-center gap-[12px] rounded-[8px] border border-line-soft px-[12px] py-[10px] max-md:min-h-[44px] hover:border-line-strong hover:bg-rail focus-visible:outline-2 focus-visible:outline-accent"
                 >
                   <IconArrowBackUp
                     size={14}

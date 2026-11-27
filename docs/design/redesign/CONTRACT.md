@@ -188,7 +188,7 @@ and the prototype.
 | Project home | the starter pills are the resumable chats first, then "Run <workflow>" and "New chat" | Real data: picking up recent work is the common case; the prototype's order is its fixed demo |
 | Prompt chips | a chip with no chevron (the project chip of a project-scoped New chat) is regular weight; a chevron chip is a picker and is 600 | Weight says "you can change this"; the project is fixed by the page's scope |
 | New chat, pick up | each row is the chat's title (600), with the resume icon and its age | The rows are chats to resume, one kind; the age is what tells them apart |
-| Chat, run from the hand-off dialog | no "Started …" message is posted; the run card itself is the record | The hand-off links the run to the chat; a second line would say the same thing |
+| Chat, run from the hand-off dialog or the suggestion's "Run it" | no "Started …" message is posted; the run card itself is the record | The hand-off links the run to the chat; a second line would say the same thing |
 | Run card step strip | one segment per step execution, up to five (more are grouped), so a one-step workflow draws one bar | The strip shows the real run, not a fixed five |
 | Chat composer, phone | the chips wrap onto a second row at the 44px touch height | Phone touch floor (CONTRACT "Phone"); a sideways-scrolling row hides chips |
 | Chat transcript, phone | the "+N" chips beside session lines are 44px tall touch targets | Phone touch floor |
@@ -205,4 +205,11 @@ and the prototype.
 | Tool island, touch | no hover labels; every tool carries its name (and key) as its accessible label | A touch screen cannot hover; the island stays 48px wide on a 390px board |
 | Goal frame | its "…" button shows while the frame is selected (right after a wrap it is), 8px inside the corner | The same rule as a step's "…" |
 | Wrap panel | "Side by side" is unavailable with one step selected, and says why on hover | One step cannot run beside itself |
+| Versions panel | a line joins the version dots, and each older version has "Restore as draft" | Restoring an old version existed before; the line reads the rows as one history |
+| Versions panel, phone | rows are 44px touch targets | Phone touch floor |
+| Editor, after a wrap | the board keeps its place; the 24px clearance from the tool island is how the editor opens | Moving the board under the reader's hands after an edit loses their place |
+| Editor, phone | a selection made before the window narrows to phone width keeps its place; selecting on the phone slides the steps above the sheet | The slide runs when the selection is made |
+| Quick chat composer | while listening, the mic button is a stop square | It stops the dictation; the capsule above carries the mic |
+| Lists (Repos, chats, runners) | the last row has no rule under it | A rule separates rows; the card's own edge ends the list |
+| Rail and top bar | their 1px rules can sit 1px from where the prototype draws them | A 1px offset review 5 measured; the rail keeps its 64px and the bar its 60px box |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |

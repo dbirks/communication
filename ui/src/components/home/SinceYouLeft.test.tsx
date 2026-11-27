@@ -182,6 +182,30 @@ describe("SinceYouLeft", () => {
     expect(screen.getByTestId("since-you-left-headline").textContent).toBe("Two projects moved.");
   });
 
+  it("prints no headline when only routine updates came in", async () => {
+    renderSince([
+      {
+        path: "/api/v1/catch-up/items",
+        body: {
+          items: [catchUpItemFixture({ id: "w-1", importance: "routine" })],
+          total_unseen: 1,
+          oldest_unseen_at: null,
+        },
+      },
+      {
+        path: "/api/v1/catch-up/brief",
+        body: briefFixture({
+          headline: {
+            state: "ready",
+            text: "Quiet stretch: nothing changed in the projects you follow.",
+          },
+        }),
+      },
+    ]);
+    expect(await screen.findByTestId("since-you-left-routine")).toBeTruthy();
+    expect(screen.queryByTestId("since-you-left-headline")).toBeNull();
+  });
+
   it("stamps the visit once, fire-and-forget, like CatchUp did", async () => {
     const { requests } = renderSince([
       {
