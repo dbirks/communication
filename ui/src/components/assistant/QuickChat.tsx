@@ -24,6 +24,7 @@ import { IconArrowUp, IconMessages, IconSparkles, IconX } from "@tabler/icons-re
 import { ASSISTANT_PAGE_PATH } from "../Shell";
 import type { ComposerSendOptions } from "./Composer";
 import { ContextButton } from "./ContextButton";
+import { announceListening } from "./askControl";
 import ListeningCapsule from "./ListeningCapsule";
 import MessageList from "./MessageList";
 import MicButton from "./MicButton";
@@ -279,6 +280,14 @@ export default function QuickChat({
 
   const recording = dictation.phase === "recording";
   const transcribing = dictation.phase === "transcribing";
+
+  // The top bar's mic mirrors this (it turns accent while we listen).
+  useEffect(() => {
+    announceListening(recording);
+    return () => {
+      if (recording) announceListening(false);
+    };
+  }, [recording]);
 
   // Execute voice commands sent from HoldToTalk / startVoiceAsk().
   const lastVoiceSeqRef = useRef<number | null>(null);

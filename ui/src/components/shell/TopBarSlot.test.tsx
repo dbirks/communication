@@ -28,7 +28,10 @@ vi.mock("../../lib/sidebarFlags", () => ({
     projects: {},
   }),
 }));
-vi.mock("../assistant/askControl", () => ({ openAsk: vi.fn() }));
+vi.mock("../assistant/askControl", () => ({
+  startVoiceAsk: vi.fn(),
+  ASSISTANT_LISTENING_EVENT: "communication:assistant-listening",
+}));
 
 function Frame({ page, phone = false }: { page?: ReactNode; phone?: boolean }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -62,6 +62,15 @@ export const ASSISTANT_VOICE_ASK_EVENT = "communication:assistant-voice-ask";
 /** Event dispatched by `HoldToTalk` to control Quick chat dictation on ⌘K hold. */
 export const ASSISTANT_HOLD_EVENT = "communication:assistant-hold";
 
+/** Broadcast by Quick chat whenever dictation starts or stops recording, so
+ * the top bar's mic can show that it is listening (README section 1: "While
+ * listening it turns #2f4bd6 with a white icon"). `detail` is the new state. */
+export const ASSISTANT_LISTENING_EVENT = "communication:assistant-listening";
+
+export function announceListening(listening: boolean): void {
+  window.dispatchEvent(new CustomEvent<boolean>(ASSISTANT_LISTENING_EVENT, { detail: listening }));
+}
+
 export type HoldAction = "start" | "stop" | "cancel";
 
 /**

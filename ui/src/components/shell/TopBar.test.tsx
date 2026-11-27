@@ -4,7 +4,7 @@
  * pill, the right is search + the mic, and on the phone the left region
  * becomes the 36px scope button that opens the sheet.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ import TopBar from "./TopBar";
 
 const projects = vi.hoisted(() => ({ current: undefined as { items: Project[] } | undefined }));
 const scope = vi.hoisted(() => ({ current: null as string | null }));
-const openAsk = vi.hoisted(() => vi.fn());
+const startVoiceAsk = vi.hoisted(() => vi.fn());
 
 vi.mock("../../api/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/queries")>()),
@@ -31,7 +31,10 @@ vi.mock("../../lib/sidebarFlags", () => ({
     projects: {},
   }),
 }));
-vi.mock("../assistant/askControl", () => ({ openAsk }));
+vi.mock("../assistant/askControl", () => ({
+  startVoiceAsk,
+  ASSISTANT_LISTENING_EVENT: "communication:assistant-listening",
+}));
 
 function project(id: string, name: string): Project {
   return {
@@ -97,11 +100,22 @@ describe("the bar", () => {
     );
   });
 
-  it("opens Ask from the mic until the voice wiring lands", () => {
+  it("starts a voice ask from the mic and turns accent while Quick chat listens", () => {
     projects.current = { items: [] };
     renderBar();
-    fireEvent.click(screen.getByTestId("top-bar-mic"));
-    expect(openAsk).toHaveBeenCalledTimes(1);
+    const mic = screen.getByTestId("top-bar-mic");
+    fireEvent.click(mic);
+    expect(startVoiceAsk).toHaveBeenCalledTimes(1);
+    expect(mic.getAttribute("aria-pressed")).toBe("false");
+    act(() => {
+      window.dispatchEvent(new CustomEvent("communication:assistant-listening", { detail: true }));
+    });
+    expect(mic.getAttribute("aria-pressed")).toBe("true");
+    expect(mic.className).toContain("bg-accent");
+    act(() => {
+      window.dispatchEvent(new CustomEvent("communication:assistant-listening", { detail: false }));
+    });
+    expect(mic.getAttribute("aria-pressed")).toBe("false");
   });
 });
 

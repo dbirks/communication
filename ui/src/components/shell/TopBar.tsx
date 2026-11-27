@@ -21,7 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { IconMicrophone } from "@tabler/icons-react";
 import { useProjects } from "../../api/queries";
 import { useScope } from "../../lib/scope";
-import { openAsk } from "../assistant/askControl";
+import { ASSISTANT_LISTENING_EVENT, startVoiceAsk } from "../assistant/askControl";
 import { useSidebarFlags } from "../../lib/sidebarFlags";
 import { needsYouBadge, projectInitials } from "./ProjectRail";
 import SectionPill from "./SectionPill";
@@ -57,8 +57,24 @@ export interface TopBarProps {
   onScopeOpen?: () => void;
 }
 
+/** The mic at rest, and while Quick chat is listening (accent fill, white
+ * icon). */
+function micTone(listening: boolean): string {
+  return listening
+    ? "border-accent-edge bg-accent text-white"
+    : "border-line bg-surface text-ink-2 hover:bg-disabled-bg";
+}
+
 export default function TopBar({ phone = false, scopeOpen = false, onScopeOpen }: TopBarProps) {
   const scope = useScope();
+  // Quick chat announces when dictation records; the mic mirrors it.
+  const [listening, setListening] = useState(false);
+  useEffect(() => {
+    const onListening = (event: Event) =>
+      setListening(Boolean((event as CustomEvent<boolean>).detail));
+    window.addEventListener(ASSISTANT_LISTENING_EVENT, onListening);
+    return () => window.removeEventListener(ASSISTANT_LISTENING_EVENT, onListening);
+  }, []);
   const projects = useProjects();
   const flags = useSidebarFlags();
   const slotRef = useRef<HTMLDivElement>(null);
@@ -125,8 +141,10 @@ export default function TopBar({ phone = false, scopeOpen = false, onScopeOpen }
               type="button"
               data-testid="top-bar-mic"
               aria-label="Talk to the assistant"
-              onClick={() => openAsk()}
-              className={`grid h-9 w-9 shrink-0 place-items-center rounded-full border border-line bg-surface text-ink-2 hover:bg-disabled-bg ${FOCUS_RING}`}
+              aria-pressed={listening}
+              data-listening={listening ? "true" : undefined}
+              onClick={() => startVoiceAsk()}
+              className={`grid h-9 w-9 shrink-0 place-items-center rounded-full border ${micTone(listening)} ${FOCUS_RING}`}
             >
               <IconMicrophone size={16} aria-hidden />
             </button>
@@ -173,8 +191,10 @@ export default function TopBar({ phone = false, scopeOpen = false, onScopeOpen }
           type="button"
           data-testid="top-bar-mic"
           aria-label="Talk to the assistant"
-          onClick={() => openAsk()}
-          className={`grid h-8 w-8 shrink-0 place-items-center rounded-full border border-line bg-surface text-ink-2 hover:bg-disabled-bg ${FOCUS_RING}`}
+          aria-pressed={listening}
+          data-listening={listening ? "true" : undefined}
+          onClick={() => startVoiceAsk()}
+          className={`grid h-8 w-8 shrink-0 place-items-center rounded-full border ${micTone(listening)} ${FOCUS_RING}`}
         >
           <IconMicrophone size={16} aria-hidden />
         </button>
