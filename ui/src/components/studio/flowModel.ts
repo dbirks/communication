@@ -25,8 +25,74 @@ import {
 } from "../../lib/pipeline/layout";
 import { readGoal, type GoalSpec } from "./wrap/wrapModel";
 
+/** A canvas sticky note (README “Note N”): text pinned to a flow point. It
+ * lives in `ui_layout.notes`, beside the node positions, and is a plain JSON
+ * field: it is never a definition node, never reaches `document_yaml`'s spec,
+ * and cannot be connected (it has no handles). */
+export interface CanvasNote {
+  id: string;
+  x: number;
+  y: number;
+  /** Box width; the height follows the text. */
+  width: number;
+  text: string;
+}
+
+/** The canvas grid every note snaps to — the same 20px the steps snap to. */
+export const NOTE_GRID_PX = 20;
+export const NOTE_DEFAULT_WIDTH = 200;
+export const NOTE_MIN_WIDTH = 140;
+export const NOTE_MAX_WIDTH = 360;
+/** The note box's floor: one 13/18 line plus the 8px padding, top and bottom. */
+export const NOTE_MIN_HEIGHT = 56;
+
+export function snapToNoteGrid(value: number): number {
+  const snapped = Math.round(value / NOTE_GRID_PX) * NOTE_GRID_PX;
+  // A note at the origin snaps to `-0` in JS; the block gets written as JSON,
+  // where a signed zero is noise (and would be a needless diff on save).
+  return snapped === 0 ? 0 : snapped;
+}
+
+function finiteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** `ui_layout.notes` off the wire: malformed entries are dropped, a missing
+ * width takes the design's 200px default, and coordinates stay as authored. */
+export function normalizeNotes(value: unknown): CanvasNote[] {
+  if (!Array.isArray(value)) return [];
+  const notes: CanvasNote[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const raw = entry as Record<string, unknown>;
+    if (typeof raw.id !== "string" || raw.id.length === 0 || seen.has(raw.id)) continue;
+    if (typeof raw.text !== "string") continue;
+    seen.add(raw.id);
+    const width = finiteNumber(raw.width, NOTE_DEFAULT_WIDTH);
+    notes.push({
+      id: raw.id,
+      x: snapToNoteGrid(finiteNumber(raw.x, 0)),
+      y: snapToNoteGrid(finiteNumber(raw.y, 0)),
+      width: Math.min(NOTE_MAX_WIDTH, Math.max(NOTE_MIN_WIDTH, Math.round(width))),
+      text: raw.text,
+    });
+  }
+  return notes;
+}
+
+/** `note-1`, `note-2`, … — the first id the canvas does not already hold. */
+export function nextNoteId(notes: CanvasNote[]): string {
+  const taken = new Set(notes.map((note) => note.id));
+  for (let n = 1; ; n += 1) {
+    const id = `note-${n}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
 export interface LayoutOverrides {
   nodes?: Record<string, { x: number; y: number }>;
+  notes?: CanvasNote[];
 }
 
 /** Static payload of a step or scope node — the canvas adds handlers on top. */
@@ -55,19 +121,32 @@ export interface FlowNodeData {
   goal: GoalSpec | null;
   /** Synthetic trigger node subline (never serialized). */
   triggerSubline?: string;
+  /** Set on a canvas note: the note itself, as `ui_layout` holds it. */
+  note?: CanvasNote;
 }
 
 export interface FlowNodeBase {
   /** Scope-qualified id — unique even when two scopes share a node id. */
   id: string;
-  type: "step" | "scope" | "trigger";
+  type: "step" | "scope" | "trigger" | "note";
   position: { x: number; y: number };
   width: number;
   height: number;
   /** Flow id of the enclosing scope group, or null at the root. */
   parentId: string | null;
   data: FlowNodeData;
+  /** The node's z within the node layer: notes sit under steps and above the
+   * goal frames' fill; steps and the trigger sit on top. Absent = the library
+   * default, which every step carried until the notes arrived. */
+  zIndex?: number;
 }
+
+/** The flow id of a canvas note — namespaced so it can never collide with a
+ * definition node id. */
+export function noteFlowId(noteId: string): string {
+  return `${NOTE_FLOW_PREFIX}${noteId}`;
+}
+const NOTE_FLOW_PREFIX = "__note__:";
 
 export interface FlowEdgeBase {
   id: string;
@@ -745,15 +824,21 @@ export function toFlow(
       const avgX =
         entryNodes.reduce((sum, n) => sum + n.position.x + n.width / 2, 0) / entryNodes.length -
         STEP_BOX.width / 2;
+      // Review-1 rx-rv-editor-editor-1280: the trigger card sits BESIDE the
+      // entry step (LR) or above it (TB), and its CENTRE must land on the
+      // entry's centre line. Snapping the centre coordinate to the 20px grid
+      // is what pushed it ~8px off: the grid orders the box's CORNER, and a
+      // 56px card's centre is never on a grid line (0 + 28 ≠ 20k). Only the
+      // offset axis — the one that places the card in the free lane — snaps.
       const trigPos =
         direction === "LR"
           ? {
-              x: Math.round((minX - STEP_BOX.width - 72) / 20) * 20,
-              y: Math.round(avgY / 20) * 20,
+              x: Math.round((minX - STEP_BOX.width - 72) / NOTE_GRID_PX) * NOTE_GRID_PX,
+              y: avgY,
             }
           : {
-              x: Math.round(avgX / 20) * 20,
-              y: Math.round((minY - STEP_BOX.height - 64) / 20) * 20,
+              x: avgX,
+              y: Math.round((minY - STEP_BOX.height - 64) / NOTE_GRID_PX) * NOTE_GRID_PX,
             };
       const trigBox: EdgeBox = {
         x: trigPos.x,
@@ -821,8 +906,43 @@ export function toFlow(
     }
   }
 
+  // Canvas notes last, so a structural sort never moves them ahead of a step:
+  // they are pure decoration of the authoring surface, not graph members.
+  for (const note of normalizeNotes(layout.notes)) {
+    nodes.push({
+      id: noteFlowId(note.id),
+      type: "note",
+      position: { x: note.x, y: note.y },
+      width: note.width,
+      height: NOTE_MIN_HEIGHT,
+      parentId: null,
+      data: {
+        nodeId: note.id,
+        kind: NOTE_KIND,
+        label: "Note",
+        kindWord: "note",
+        deferred: null,
+        when: null,
+        scope: [],
+        terminal: false,
+        emptyBody: false,
+        headerText: null,
+        loopNote: null,
+        goal: null,
+        note,
+      },
+      zIndex: NOTE_Z,
+    });
+  }
+
   return { nodes, edges };
 }
+
+/** The note's marker `kind` — never a definition kind, so anything that maps
+ * canvas nodes back to steps (inspector, run projection) can filter it out. */
+export const NOTE_KIND = "canvas.note";
+/** Notes paint UNDER the step cards and ABOVE the goal frames' fill (0). */
+export const NOTE_Z = 1;
 
 /** No sibling in the node's own scope depends on it (error routes don't count:
  * a step inserted after the target still reads the same outputs). */

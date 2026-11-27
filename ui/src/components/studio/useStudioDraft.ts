@@ -33,17 +33,46 @@ import { draftConflictOf, useDraft, usePutDraft } from "../../api/pipelines";
 import { queryKeys } from "../../api/queries";
 import type { DraftPut } from "../../api/types";
 import { useUnsavedGuard, type UnsavedGuard } from "../../lib/pipeline/unsavedGuard";
+import { normalizeNotes, type CanvasNote } from "./flowModel";
 import type { UiLayout } from "./StudioCanvas";
 
-/** The canvas's `{nodes: {id: {x, y}}}` layout, normalized off unknown shapes. */
+/** The canvas's `{nodes: {id: {x, y}}, notes: [...]}` layout, normalized off
+ * unknown shapes. Anything else the block carried is KEPT: `ui_layout` is
+ * authored bytes with `additionalProperties: true`, and an editor that drops a
+ * field it does not understand would delete another tool's work on save. */
 export function normalizeLayout(value: unknown): UiLayout {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const nodes = (value as { nodes?: unknown }).nodes;
-    if (nodes && typeof nodes === "object" && !Array.isArray(nodes)) {
-      return { nodes: nodes as UiLayout["nodes"] };
-    }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const source = value as Record<string, unknown>;
+  const out: UiLayout = { ...source };
+  if (source.nodes && typeof source.nodes === "object" && !Array.isArray(source.nodes)) {
+    out.nodes = source.nodes as UiLayout["nodes"];
+  } else {
+    delete out.nodes;
   }
-  return {};
+  const notes = normalizeNotes(source.notes);
+  if (notes.length > 0) out.notes = notes;
+  else delete out.notes;
+  return out;
+}
+
+/** Does this layout carry anything at all? */
+function hasLayoutContent(layout: UiLayout): boolean {
+  if (Object.keys(layout.nodes ?? {}).length > 0) return true;
+  if ((layout.notes?.length ?? 0) > 0) return true;
+  return Object.keys(layout).some((key) => key !== "nodes" && key !== "notes");
+}
+
+/** The `metadata.ui` block as it gets written: empty collections drop out, and
+ * every member the editor does not know about survives. */
+function uiBlockOf(layout: UiLayout): Record<string, unknown> {
+  const block: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(layout)) {
+    if (value === undefined) continue;
+    if (key === "nodes" && Object.keys(value as object).length === 0) continue;
+    if (key === "notes" && Array.isArray(value) && value.length === 0) continue;
+    block[key] = value;
+  }
+  return block;
 }
 
 /**
@@ -54,8 +83,8 @@ export function normalizeLayout(value: unknown): UiLayout {
  * digest, so saving positions cannot change what a run executes.
  */
 export function withUILayout(text: string, layout: UiLayout): string {
-  const nodes = layout.nodes ?? {};
-  if (text.length === 0 || Object.keys(nodes).length === 0) return text;
+  const block = uiBlockOf(layout);
+  if (text.length === 0) return text;
   let doc: Document;
   try {
     doc = parseDocument(text);
@@ -66,11 +95,18 @@ export function withUILayout(text: string, layout: UiLayout): string {
   const root = doc.contents;
   if (!isMap(root)) return text;
   let meta: YAMLMap | undefined = root.get("metadata") as YAMLMap | undefined;
+  // Nothing to write, and no block that would keep a stale note alive: the
+  // bytes stay exactly they were (a draft with no layout is never rewritten
+  // just to save it).
+  const hadBlock = isMap(meta) && meta.has("ui");
+  if (!hadBlock && Object.keys(block).length === 0) return text;
   if (!isMap(meta)) {
     meta = doc.createNode({}) as YAMLMap;
     root.set("metadata", meta);
   }
-  meta.set("ui", doc.createNode({ nodes }) as YAMLMap);
+  // The block is REPLACED, not merged: deleting the last note has to survive a
+  // save, and a stale `notes` member left in the bytes would resurrect it.
+  meta.set("ui", doc.createNode(block) as YAMLMap);
   return toBlockString(doc);
 }
 
@@ -395,6 +431,8 @@ export interface StudioDraft {
   setText: (text: string) => void;
   /** Move a node in `ui_layout` only — undoable, never touches the YAML. */
   move: (id: string, pos: { x: number; y: number }) => void;
+  /** Replace the canvas notes in `ui_layout` — undoable, never the YAML. */
+  setNotes: (notes: CanvasNote[]) => void;
   tidy: () => void;
   undo: () => void;
   redo: () => void;
@@ -461,10 +499,9 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     const bytes = served.document_yaml ?? "";
     setTextState(bytes);
     // Positions live in the served document's `metadata.ui`; the served
-    // `ui_layout` member wins when it actually carries positions.
+    // `ui_layout` member wins when it actually carries anything.
     const servedLayout = normalizeLayout(served.ui_layout);
-    const seededLayout =
-      Object.keys(servedLayout.nodes ?? {}).length > 0 ? servedLayout : uiLayoutOfText(bytes);
+    const seededLayout = hasLayoutContent(servedLayout) ? servedLayout : uiLayoutOfText(bytes);
     setLayout(seededLayout);
     savedVersionRef.current = served.version;
     setSavedVersion(served.version);
@@ -504,8 +541,18 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     pushUndo();
     setSaveError(null);
     setLayout((current) => ({
+      ...current,
       nodes: { ...current.nodes, [id]: pos },
     }));
+    setDirty(true);
+  }
+
+  /** Replace `ui_layout.notes` — every note add / move / edit / delete.
+   * Undoable like a move, and it never touches the YAML text. */
+  function setNotes(notes: CanvasNote[]) {
+    pushUndo();
+    setSaveError(null);
+    setLayout((current) => ({ ...current, notes }));
     setDirty(true);
   }
 
@@ -555,9 +602,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
       // all; the layout state re-reads from whichever of the two carries it.
       setTextState(sentText);
       const servedLayout = normalizeLayout(saved.ui_layout);
-      setLayout(
-        Object.keys(servedLayout.nodes ?? {}).length > 0 ? servedLayout : uiLayoutOfText(sentText),
-      );
+      setLayout(hasLayoutContent(servedLayout) ? servedLayout : uiLayoutOfText(sentText));
       setDirty(false);
       return true;
     } catch (error) {
@@ -643,6 +688,7 @@ export function useStudioDraft(draftId: string, liveText?: string): StudioDraft 
     apply,
     setText,
     move,
+    setNotes,
     tidy,
     undo,
     redo,

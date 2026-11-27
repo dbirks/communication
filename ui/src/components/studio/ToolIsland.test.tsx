@@ -65,9 +65,9 @@ it("renders every tool key in one muted normal-weight style", () => {
   );
   const island = screen.getByTestId("tool-island");
   const keys = Array.from(island.querySelectorAll("span")).filter((span) =>
-    /^(V|H|B|C)$/.test(span.textContent ?? ""),
+    /^(V|H|B|C|N)$/.test(span.textContent ?? ""),
   );
-  expect(keys.length).toBe(4);
+  expect(keys.length).toBe(5);
   for (const key of keys) {
     expect(key.className).toContain("font-mono");
     expect(key.className).toContain("font-normal");
@@ -85,14 +85,21 @@ it("exposes the tools, active state, additions and disabled state", () => {
   expect(
     within(toolbar).getByRole("button", { name: "Select (V)" }).getAttribute("aria-pressed"),
   ).toBe("true");
-  for (const name of ["Move around (H)", "Box select (B)", "Connect (C)"])
+  for (const name of ["Move around (H)", "Box select (B)", "Connect (C)", "Note (N)"])
     expect(within(toolbar).getByRole("button", { name }).getAttribute("aria-pressed")).toBe(
       "false",
     );
+  // Review-1 09-1280-1: the Note row is in the island, with its key.
+  const note = within(toolbar).getByRole("button", { name: "Note (N)" });
+  expect(note.getAttribute("data-testid")).toBe("tool-note");
+  expect(note.textContent).toContain("Note");
+  expect(note.textContent).toContain("N");
   fireEvent.click(within(toolbar).getByRole("button", { name: "Move around (H)" }));
+  fireEvent.click(within(toolbar).getByRole("button", { name: "Note (N)" }));
   fireEvent.click(within(toolbar).getByRole("button", { name: "Agent" }));
   fireEvent.click(within(toolbar).getByRole("button", { name: "More steps…" }));
   expect(onTool).toHaveBeenCalledWith("move");
+  expect(onTool).toHaveBeenCalledWith("note");
   expect(onAddStep).toHaveBeenCalledWith("agent.acp");
   expect(onMoreSteps).toHaveBeenCalledOnce();
   rerender(<ToolIsland {...props} disabled />);

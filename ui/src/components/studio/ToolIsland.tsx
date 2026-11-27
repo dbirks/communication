@@ -3,13 +3,14 @@ import {
   IconHandStop,
   IconMarquee2,
   IconLine,
+  IconNote,
   IconRobot,
   IconTerminal2,
   IconUserCheck,
   IconDots,
 } from "@tabler/icons-react";
 
-export type CanvasTool = "select" | "move" | "box" | "connect";
+export type CanvasTool = "select" | "move" | "box" | "connect" | "note";
 
 export function ToolIsland({
   tool,
@@ -33,6 +34,10 @@ export function ToolIsland({
     { id: "move" as const, label: "Move around", key: "H", Icon: IconHandStop },
     { id: "box" as const, label: "Box select", key: "B", Icon: IconMarquee2 },
     { id: "connect" as const, label: "Connect", key: "C", Icon: IconLine },
+    // Review-1 09-1280-1 (the review's one blocker): README's island is
+    // “Select V, Move around H, Box select B, Connect C, Note N; a separator;
+    // then Agent, Command, Approval” — the Note row sits before the separator.
+    { id: "note" as const, label: "Note", key: "N", Icon: IconNote },
   ];
   const additions = [
     { kind: "agent.acp", label: "Agent", Icon: IconRobot },
@@ -68,6 +73,7 @@ export function ToolIsland({
           disabled={disabled}
           aria-label={`${label} (${key})`}
           aria-pressed={tool === id}
+          data-testid={id === "note" ? "tool-note" : undefined}
           onClick={() => onTool(id)}
           className={`${row} ${tool === id ? "bg-accent-tint font-semibold text-accent-edge" : "text-ink-2"}`}
         >

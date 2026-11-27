@@ -8,6 +8,7 @@
  */
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement } from "react";
+import { parse } from "yaml";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
@@ -198,6 +199,120 @@ describe("useStudioDraft", () => {
     const broken = "kind: [broken";
     expect(withUILayout(broken, LAYOUT)).toBe(broken);
     expect(uiLayoutOfText(broken)).toEqual({});
+  });
+
+  it("notes ride ui_layout: an add, an edit and a delete never touch the YAML", async () => {
+    const { result } = mount();
+    await waitFor(() => expect(result.current.text).toBe(YAML));
+    const note = { id: "note-1", x: 400, y: 60, width: 200, text: "check with Ada" };
+
+    await act(async () => {
+      result.current.setNotes([note]);
+    });
+    expect(result.current.layout.notes).toEqual([note]);
+    // The definition text is byte-identical: a note cannot change what a run
+    // executes, and there is no note step in the document.
+    expect(result.current.text).toBe(YAML);
+    expect(result.current.dirty).toBe(true);
+
+    await act(async () => {
+      result.current.setNotes([{ ...note, text: "check with Ada before making live" }]);
+    });
+    expect(result.current.layout.notes).toEqual([
+      { ...note, text: "check with Ada before making live" },
+    ]);
+
+    await act(async () => {
+      result.current.undo();
+    });
+    expect(result.current.layout.notes).toEqual([note]);
+
+    // A move keeps the notes it was not told about.
+    await act(async () => {
+      result.current.move("first", { x: 99, y: 100 });
+    });
+    expect(result.current.layout.notes).toEqual([note]);
+    expect(result.current.layout.nodes?.["first"]).toEqual({ x: 99, y: 100 });
+  });
+
+  it("saves notes in ui_layout through the draft, and the note never enters the document", async () => {
+    const { requests, result } = mount([
+      { path: draftPath, method: "PUT", body: wireDraft({ version: 6 }) },
+    ]);
+    await waitFor(() => expect(result.current.text).toBe(YAML));
+    await act(async () => {
+      result.current.setNotes([
+        { id: "note-1", x: 420, y: 60, width: 200, text: "check with Ada before making live" },
+      ]);
+    });
+    expect(await result.current.save()).toBe(true);
+
+    const puts = requestsTo(requests, draftPath, "PUT");
+    expect(puts).toHaveLength(1);
+    const body = JSON.parse(puts[0].body ?? "{}") as {
+      document_yaml?: string;
+      version?: number;
+      ui_layout?: unknown;
+    };
+    // The frozen wire body is still exactly {document_yaml, version}.
+    expect(body.ui_layout).toBeUndefined();
+    const baked = body.document_yaml ?? "";
+    const layout = uiLayoutOfText(baked);
+    expect(layout.notes).toEqual([
+      { id: "note-1", x: 420, y: 60, width: 200, text: "check with Ada before making live" },
+    ]);
+    // Nothing outside `metadata.ui` changed: the executable part of the
+    // document — the spec the compiler reads and a run pins — is untouched,
+    // so a note cannot change what a run executes.
+    const withoutUi = (text: string) => {
+      const doc = parse(text) as { metadata?: Record<string, unknown> };
+      delete doc.metadata?.ui;
+      return JSON.stringify(doc);
+    };
+    expect(withoutUi(baked)).toBe(withoutUi(YAML));
+    expect(baked).not.toContain("check with Ada before making live\n  spec");
+  });
+
+  it("ui_layout fields the editor does not know survive the write and the read", () => {
+    const layout = {
+      nodes: { first: { x: 10, y: 20 } },
+      notes: [{ id: "note-1", x: 40, y: 60, width: 200, text: "keep me" }],
+      // Something the canvas has never heard of: another tool's bytes.
+      minimap: { enabled: true, zoom: 0.8 },
+    };
+    const baked = withUILayout(YAML, layout);
+    expect(uiLayoutOfText(baked)).toEqual(layout);
+  });
+
+  it("a deleted note stays deleted through the save path", async () => {
+    const { requests, result } = mount([
+      { path: draftPath, method: "PUT", body: wireDraft({ version: 6 }) },
+    ]);
+    await waitFor(() => expect(result.current.text).toBe(YAML));
+    await act(async () => {
+      result.current.setNotes([{ id: "note-1", x: 40, y: 60, width: 200, text: "old note" }]);
+    });
+    expect(await result.current.save()).toBe(true);
+    const first = (
+      JSON.parse(requestsTo(requests, draftPath, "PUT").at(-1)!.body ?? "{}") as {
+        document_yaml?: string;
+      }
+    ).document_yaml;
+    expect(uiLayoutOfText(first ?? "").notes).toHaveLength(1);
+
+    await act(async () => {
+      result.current.setNotes([]);
+    });
+    expect(await result.current.save()).toBe(true);
+    const second = (
+      JSON.parse(requestsTo(requests, draftPath, "PUT").at(-1)!.body ?? "{}") as {
+        document_yaml?: string;
+      }
+    ).document_yaml;
+    // The ui block is replaced, not merged: nothing is left to resurrect.
+    expect(uiLayoutOfText(second ?? "").notes).toBeUndefined();
+    expect(second).not.toContain("old note");
+    expect(result.current.layout.nodes).toEqual(LAYOUT.nodes);
   });
 
   it("a 409 stale_draft_version becomes a conflict with the server's version", async () => {

@@ -9,6 +9,10 @@ import { parseGraph, wrapInScope } from "../../lib/pipeline/graphDoc";
 import {
   canvasLayout,
   clearLabelAnchor,
+  nextNoteId,
+  normalizeNotes,
+  NOTE_DEFAULT_WIDTH,
+  snapToNoteGrid,
   edgeLabelAnchor,
   flowId,
   nearestEdge,
@@ -598,5 +602,125 @@ spec:
     const judge = flow.nodes.find((n) => n.id === "loop/judge")!;
     const childBottomRel = judge.position.y + (judge.height ?? 0);
     expect((loopNode?.height ?? 0) - childBottomRel).toBeGreaterThanOrEqual(64);
+  });
+});
+
+describe("canvas notes (ui_layout.notes)", () => {
+  it("normalizes the authored block: malformed rows drop, the grid and width clamp", () => {
+    expect(
+      normalizeNotes([
+        // A note the canvas can draw: only the width is missing, and it has a
+        // default; coordinates are off the grid and get snapped.
+        { id: "note-1", x: 213, y: 137, text: "check with Ada" },
+        // Too wide / too narrow for the design's range.
+        { id: "note-2", x: 0, y: 0, width: 900, text: "" },
+        { id: "note-3", x: 0, y: 0, width: 20, text: "" },
+        // Not notes.
+        { id: "note-4", x: 0, y: 0 },
+        { id: "", x: 0, y: 0, text: "" },
+        { id: 7, x: 0, y: 0, text: "" },
+        null,
+        ["note-5"],
+        // A duplicate id would collide as a flow node id — the second one goes.
+        { id: "note-1", x: 40, y: 40, text: "again" },
+      ]),
+    ).toEqual([
+      { id: "note-1", x: 220, y: 140, width: NOTE_DEFAULT_WIDTH, text: "check with Ada" },
+      { id: "note-2", x: 0, y: 0, width: 360, text: "" },
+      { id: "note-3", x: 0, y: 0, width: 140, text: "" },
+    ]);
+    expect(normalizeNotes(undefined)).toEqual([]);
+    expect(normalizeNotes({ nodes: {} })).toEqual([]);
+    expect(snapToNoteGrid(-7)).toEqual(0);
+  });
+
+  it("ids never reuse a note the canvas already holds", () => {
+    expect(nextNoteId([])).toBe("note-1");
+    const held = normalizeNotes([
+      { id: "note-1", x: 0, y: 0, text: "a" },
+      { id: "note-3", x: 0, y: 0, text: "b" },
+    ]);
+    expect(nextNoteId(held)).toBe("note-2");
+  });
+
+  it("emits a note as its own node, never as a graph member", () => {
+    const flow = toFlow(model, probeDocument, {
+      nodes: { plan: { x: 400, y: 120 } },
+      notes: [{ id: "note-1", x: 220, y: 140, width: 200, text: "a sticky" }],
+    });
+    const note = flow.nodes[flow.nodes.length - 1];
+    expect(note.id).toBe("__note__:note-1");
+    expect(note.type).toBe("note");
+    expect(note.position).toEqual({ x: 220, y: 140 });
+    expect(note.width).toBe(200);
+    expect(note.parentId).toBeNull();
+    // Its own lane: above the goal frames' fill (0), under the step cards.
+    expect(note.zIndex).toBe(1);
+    expect(flow.nodes.find((n) => n.id === "plan")?.position).toEqual({ x: 400, y: 120 });
+    // A note is not a step: nothing in the graph references it.
+    expect(flow.edges.some((e) => e.source === note.id || e.target === note.id)).toBe(false);
+    expect(flow.nodes.filter((n) => n.type === "note")).toHaveLength(1);
+  });
+
+  it("a note never disturbs the layout of the steps", () => {
+    const bare = toFlow(model, probeDocument);
+    const withNote = toFlow(model, probeDocument, {
+      notes: [{ id: "note-1", x: -1200, y: 900, width: 200, text: "far away" }],
+    });
+    const steps = (flow: typeof bare) =>
+      flow.nodes
+        .filter((n) => n.type !== "note")
+        .map((n) => `${n.id}:${n.position.x},${n.position.y}`);
+    expect(steps(withNote)).toEqual(steps(bare));
+    expect(withNote.edges).toHaveLength(bare.edges.length);
+  });
+});
+
+describe("the trigger node's centre line", () => {
+  const triggerYaml = `kind: Pipeline
+spec:
+  nodes:
+    - id: plan
+      kind: model.chat
+      config:
+        model: m
+        messages:
+          - { role: user, content: hi }
+    - id: ship
+      kind: process.exec
+      dependsOn: [plan]
+      config:
+        executable: sh
+        args: []
+`;
+  const triggerDoc = parseDocument(triggerYaml).toJS();
+  const triggerGraph = parseGraph(triggerYaml);
+  if (!triggerGraph.ok) throw new Error(triggerGraph.error);
+
+  it("shares the first step's vertical centre in the editor's left-to-right cut", () => {
+    const flow = toFlow(triggerGraph.model, triggerDoc, undefined, {
+      direction: "LR",
+      trigger: { subline: "when you start it" },
+    });
+    const trig = flow.nodes.find((n) => n.id === "__trigger__");
+    const plan = flow.nodes.find((n) => n.id === "plan");
+    expect(trig).toBeTruthy();
+    expect(plan).toBeTruthy();
+    // Review-1 rx-rv-editor-editor-1280: the trigger card sat ~8px high —
+    // snapping its CENTRE coordinate to the 20px grid cannot land on a 56px
+    // card's centre, which is always 28 (off-grid) past a grid corner.
+    expect(trig!.position.y + trig!.height / 2).toBeCloseTo(plan!.position.y + plan!.height / 2, 6);
+  });
+
+  it("shares the first step's horizontal centre when the graph runs top to bottom", () => {
+    const flow = toFlow(triggerGraph.model, triggerDoc, undefined, {
+      direction: "TB",
+      trigger: { subline: "when you start it" },
+    });
+    const trig = flow.nodes.find((n) => n.id === "__trigger__");
+    const plan = flow.nodes.find((n) => n.id === "plan");
+    expect(trig!.position.x + trig!.width / 2).toBeCloseTo(plan!.position.x + plan!.width / 2, 6);
+    // The axis that places the card in the free lane still snaps to the grid.
+    expect(Math.abs(trig!.position.y % 20)).toBe(0);
   });
 });

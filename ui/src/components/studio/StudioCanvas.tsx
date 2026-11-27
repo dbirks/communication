@@ -34,7 +34,17 @@ import {
   type GraphModel,
   type ScopePath,
 } from "../../lib/pipeline/graphDoc";
-import { nearestEdge, stepLabel, toFlow, type FlowModel } from "./flowModel";
+import {
+  nearestEdge,
+  nextNoteId,
+  normalizeNotes,
+  stepLabel,
+  snapToNoteGrid,
+  toFlow,
+  NOTE_DEFAULT_WIDTH,
+  type CanvasNote,
+  type FlowModel,
+} from "./flowModel";
 import {
   ErrorEdge,
   InsertableEdge,
@@ -51,6 +61,7 @@ import {
   type StepNodeRender,
   type TriggerNodeRender,
 } from "./nodes";
+import { NoteNode, type NoteNodeRender } from "./NoteNode";
 import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
 import { ToolIsland, type CanvasTool } from "./ToolIsland";
@@ -69,7 +80,42 @@ import {
   type ReactNode,
 } from "react";
 
-export type UiLayout = { nodes?: Record<string, { x: number; y: number }> };
+/** The canvas part of a draft: node positions and the sticky notes, plus
+ * whatever else the author's `metadata.ui` block carried (an editor must never
+ * drop a field it does not understand — the block is served, not digested). */
+export type UiLayout = {
+  nodes?: Record<string, { x: number; y: number }>;
+  notes?: CanvasNote[];
+  [key: string]: unknown;
+};
+
+/** The node layer's paint order, lowest first: goal-frame fills (the scope
+ * groups, 0) → sticky notes (1) → the cards themselves (2) → the lifted edge
+ * layer (3) and the edge labels / “+” targets (4). Steps were left at the
+ * library default until the notes needed a lane of their own under them. */
+export const STEP_Z = 2;
+
+/** A note dropped at a flow point, in the shape `ui_layout.notes` stores. */
+export function newNote(at: { x: number; y: number }, existing: CanvasNote[]): CanvasNote {
+  return {
+    id: nextNoteId(existing),
+    x: snapToNoteGrid(at.x),
+    y: snapToNoteGrid(at.y),
+    width: NOTE_DEFAULT_WIDTH,
+    text: "",
+  };
+}
+
+/** One note's snapped position, written back into the note list. */
+export function moveNote(
+  notes: CanvasNote[],
+  id: string,
+  pos: { x: number; y: number },
+): CanvasNote[] {
+  return notes.map((note) =>
+    note.id === id ? { ...note, x: snapToNoteGrid(pos.x), y: snapToNoteGrid(pos.y) } : note,
+  );
+}
 
 /** Persist a dropped node in absolute, grid-snapped coordinates. */
 export function moveDraggedNode(
@@ -143,6 +189,13 @@ export interface StudioCanvasProps {
   /** Controlled active canvas tool (falls back to internal state when omitted). */
   tool?: CanvasTool;
   onToolChange?(tool: CanvasTool): void;
+  /**
+   * Every note edit: add, move, type, delete. The canvas computes the whole
+   * next `ui_layout.notes` list and hands it over — the page persists it
+   * through its draft save path (the Studio) or ignores it (a read-only run).
+   * Absent on a read-only canvas, which then shows notes without editing.
+   */
+  onNotesChange?(notes: CanvasNote[]): void;
   phone?: boolean;
   onWrapRepeat?(nodeIds: string[], goal: GoalSpec): void;
   onWrapSideBySide?(nodeIds: string[]): void;
@@ -209,6 +262,7 @@ const nodeTypes = {
   step: StepNode,
   scope: ScopeNode,
   trigger: TriggerNode,
+  note: NoteNode,
 };
 
 const edgeTypes = {
@@ -912,6 +966,7 @@ function CanvasInner({
   hideStepList = false,
   showToolIsland = false,
   onIslandAdd,
+  onNotesChange,
   direction = "TB",
   tool: controlledTool,
   onToolChange,
@@ -960,6 +1015,15 @@ function CanvasInner({
     },
     [controlledTool, onToolChange],
   );
+  // The sticky notes of the canvas (README “Note N”). They ride the draft's
+  // `ui_layout` (non-semantic, digest-excluded) and are edited here: the page
+  // only persists the list it is handed back.
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const activeNoteIdRef = useRef<string | null>(null);
+  activeNoteIdRef.current = activeNoteId;
+  const editingNoteIdRef = useRef<string | null>(null);
+  editingNoteIdRef.current = editingNoteId;
   const [source, setSource] = useState<string | null>(null);
   const [islandPicker, setIslandPicker] = useState(false);
   const [editingScopeId, setEditingScopeId] = useState<string | null>(null);
@@ -983,6 +1047,108 @@ function CanvasInner({
   canConnectRef.current = canConnect;
   onConnectRef.current = onConnect;
   onTriggerClickRef.current = trigger?.onClick;
+
+  /* ------------------------------------------------------------ notes ----
+   * The canvas notes come from `ui_layout.notes` (normalized: the block is
+   * authored bytes, not a typed value) and go back out as a whole list —
+   * add, move, type and delete all persist through the draft's save path.
+   * A canvas that was given no `onNotesChange` (a published revision, a run
+   * on the graph) shows the notes and edits none of them.
+   */
+  const notes = useMemo(() => normalizeNotes(layout.notes), [layout]);
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+  const onNotesChangeRef = useRef(onNotesChange);
+  onNotesChangeRef.current = onNotesChange;
+  const notesEditable = !readOnly && !stale && onNotesChange !== undefined;
+
+  const saveNote = useCallback((id: string, text: string) => {
+    setEditingNoteId((current) => (current === id ? null : current));
+    const current = notesRef.current;
+    const note = current.find((item) => item.id === id);
+    if (!note) return;
+    if (text.trim().length === 0) {
+      // Nothing but paper is nothing: a note left blank — emptied or never
+      // typed into — is removed, not kept.
+      onNotesChangeRef.current?.(current.filter((item) => item.id !== id));
+      setActiveNoteId((active) => (active === id ? null : active));
+      return;
+    }
+    if (note.text === text) return;
+    onNotesChangeRef.current?.(current.map((item) => (item.id === id ? { ...item, text } : item)));
+  }, []);
+  /**
+   * Leave the open editor WITHOUT losing its words. Blur commits, but the
+   * paths that unmount the textarea from elsewhere (a pane click, Escape, the
+   * Delete key, another note taking the selection) never fire blur: React
+   * removes the node and the typed text would vanish with it. Those paths read
+   * the live textarea back and commit it here.
+   */
+  const commitOpenNote = useCallback(() => {
+    const id = editingNoteIdRef.current;
+    if (id === null) return;
+    const el = globalThis.document.querySelector<HTMLTextAreaElement>(
+      `[data-testid='canvas-note-input-${id}']`,
+    );
+    setEditingNoteId(null);
+    if (el) saveNote(id, el.value);
+  }, [saveNote]);
+  const selectNote = useCallback(
+    (id: string) => {
+      commitOpenNote();
+      setActiveNoteId(id);
+      setEditingNoteId(null);
+    },
+    [commitOpenNote],
+  );
+  const editNote = useCallback(
+    (id: string) => {
+      commitOpenNote();
+      setActiveNoteId(id);
+      setEditingNoteId(id);
+    },
+    [commitOpenNote],
+  );
+  const removeNote = useCallback(
+    (id: string) => {
+      commitOpenNote();
+      const current = notesRef.current;
+      if (!current.some((item) => item.id === id)) return;
+      onNotesChangeRef.current?.(current.filter((item) => item.id !== id));
+      setActiveNoteId(null);
+      setEditingNoteId(null);
+    },
+    [commitOpenNote],
+  );
+  const commitNoteMove = useCallback((id: string, pos: { x: number; y: number }) => {
+    const current = notesRef.current;
+    const note = current.find((item) => item.id === id);
+    if (!note) return;
+    const next = moveNote(current, id, pos);
+    const moved = next.find((item) => item.id === id);
+    if (!moved || (moved.x === note.x && moved.y === note.y)) return;
+    onNotesChangeRef.current?.(next);
+  }, []);
+  const addNoteAt = useCallback(
+    (at: { x: number; y: number }) => {
+      commitOpenNote();
+      const current = notesRef.current;
+      const note = newNote(at, current);
+      onNotesChangeRef.current?.([...current, note]);
+      // The note is born typing: its text takes the keyboard, and the tool
+      // steps back to Select — `N` is a mode with one use, not a sticky tool.
+      setActiveNoteId(note.id);
+      setEditingNoteId(note.id);
+      setTool("select");
+      setSource(null);
+    },
+    [commitOpenNote, setTool],
+  );
+  const clearNoteSelection = useCallback(() => {
+    commitOpenNote();
+    setActiveNoteId(null);
+    setEditingNoteId(null);
+  }, [commitOpenNote]);
 
   useEffect(() => {
     if (!islandPicker) return;
@@ -1009,6 +1175,7 @@ function CanvasInner({
       if (event.key === "Escape") {
         setSource(null);
         setEditingScopeId(null);
+        clearNoteSelection();
         onSelectionChangeRef.current?.([]);
         onSelectRef.current?.(null);
         return;
@@ -1025,16 +1192,23 @@ function CanvasInner({
           (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))
       )
         return;
-      const next: Record<string, CanvasTool> = { v: "select", h: "move", b: "box", c: "connect" };
+      const next: Record<string, CanvasTool> = {
+        v: "select",
+        h: "move",
+        b: "box",
+        c: "connect",
+        n: "note",
+      };
       const selected = next[event.key.toLowerCase()];
       if (selected) {
         setTool(selected);
         setSource(null);
+        clearNoteSelection();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showToolIsland, readOnly, stale, setTool]);
+  }, [showToolIsland, readOnly, stale, setTool, clearNoteSelection]);
 
   // The node content's click handler calls `onSelect` unconditionally (it has
   // no access to the event). While Shift is held, React Flow's own click
@@ -1095,6 +1269,10 @@ function CanvasInner({
     // while a scope child's `position` is relative to its group — add the
     // parent's offset back, or every drop inside a scope misses by the
     // group's whole displacement.
+    //
+    // Notes are excluded on purpose: they are not edge endpoints, not menu
+    // blockers and not part of the fit — a sticky note parked in a far corner
+    // must never zoom the graph out.
     const absolute = new Map<string, { x: number; y: number }>();
     for (const node of base.nodes) {
       const parent = node.parentId ? absolute.get(node.parentId) : null;
@@ -1104,10 +1282,17 @@ function CanvasInner({
       });
     }
     return Object.fromEntries(
-      base.nodes.map((n) => [
-        n.id,
-        { x: absolute.get(n.id)!.x, y: absolute.get(n.id)!.y, width: n.width, height: n.height },
-      ]),
+      base.nodes
+        .filter((n) => n.type !== "note")
+        .map((n) => [
+          n.id,
+          {
+            x: absolute.get(n.id)!.x,
+            y: absolute.get(n.id)!.y,
+            width: n.width,
+            height: n.height,
+          },
+        ]),
     );
   }, [base]);
 
@@ -1277,9 +1462,15 @@ function CanvasInner({
 
   const onNodeDragStop = useCallback(
     (_event: unknown, node: Node) => {
+      // A dragged note writes `ui_layout.notes`, not a step position.
+      if (node.type === "note") {
+        const id = (node.data as NoteNodeRender).note?.id;
+        if (id) commitNoteMove(id, node.position);
+        return;
+      }
       moveDraggedNode(node, nodes, onMove);
     },
-    [onMove, nodes],
+    [commitNoteMove, onMove, nodes],
   );
 
   // The hit test needs the pointer in FLOW coordinates. React Flow's
@@ -1373,7 +1564,9 @@ function CanvasInner({
     (selection: { nodes: Node[] } | undefined) => {
       if (!selection) return;
       const ids = selection.nodes
-        .filter((n) => n.type !== "trigger")
+        // Notes are never part of a wrap (they are not steps), and the
+        // trigger is not a step either.
+        .filter((n) => n.type !== "trigger" && n.type !== "note")
         .map((n) => (n.data as { id?: string }).id ?? "")
         .filter(Boolean);
       onSelectionChange?.(ids);
@@ -1460,6 +1653,36 @@ function CanvasInner({
     // `prevMeasured`) start unmeasured and get measured on first paint.
     const prevMeasured = new Map(nodes.map((n) => [n.id, n.measured]));
     const rfNodes: Node[] = base.nodes.map((b) => {
+      if (b.type === "note" && b.data.note) {
+        const note = b.data.note;
+        const noteData: NoteNodeRender = {
+          note,
+          readOnly: readOnly || stale || onNotesChange === undefined,
+          selected: activeNoteId === note.id,
+          editing: editingNoteId === note.id,
+          onSelect: () => selectNote(note.id),
+          onEdit: () => editNote(note.id),
+          onSave: (text: string) => saveNote(note.id, text),
+        };
+        return {
+          id: b.id,
+          type: "note",
+          position: b.position,
+          data: noteData,
+          // The note is as tall as its text; only its width is authored.
+          style: { width: note.width },
+          measured: prevMeasured.get(b.id),
+          zIndex: b.zIndex,
+          // Draggable with the Select tool only, like a step; a note being
+          // typed in never drags.
+          draggable: notesEditable && tool === "select" && editingNoteId !== note.id,
+          // Never selectable, so a box-select wrap can never swallow a note.
+          selectable: false,
+          focusable: false,
+          deletable: false,
+          connectable: false,
+        };
+      }
       if (b.type === "trigger") {
         const triggerData: TriggerNodeRender = {
           subline: b.data.triggerSubline ?? "",
@@ -1473,6 +1696,8 @@ function CanvasInner({
           data: triggerData,
           style: { width: b.width, height: b.height },
           measured: prevMeasured.get(b.id),
+          // Above a note: the note is decoration, the cards are the graph.
+          zIndex: STEP_Z,
           draggable: false,
           selectable: false,
           deletable: false,
@@ -1560,6 +1785,7 @@ function CanvasInner({
         node.parentId = b.parentId;
         node.extent = "parent";
       }
+      if (b.type === "step") node.zIndex = STEP_Z;
       return node;
     });
     const rfEdges: Edge[] = base.edges.map((b) => {
@@ -1601,7 +1827,25 @@ function CanvasInner({
     });
     setNodes(rfNodes);
     setEdges(rfEdges);
-  }, [base, readOnly, stale, highlight, statusOverlay, verdictsByScope, preview, direction]);
+  }, [
+    base,
+    readOnly,
+    stale,
+    highlight,
+    statusOverlay,
+    verdictsByScope,
+    preview,
+    direction,
+    // A note's own flags ride in its `data`, so these rebuild the node set.
+    tool,
+    notes,
+    activeNoteId,
+    editingNoteId,
+    notesEditable,
+    selectNote,
+    editNote,
+    saveNote,
+  ]);
 
   /* --------------------------------------------- viewport fitting & repair
    * The canvas owns its own fit — React Flow's mount-time `fitView` prop is
@@ -1619,7 +1863,14 @@ function CanvasInner({
    * A MutationObserver sentinel repairs anything that still ends up blank
    * or non-finite: restore the last good transform, or re-fit when every
    * node sits outside the pane and the reader has not moved the view. */
-  const nodeSetKey = useMemo(() => base.nodes.map((n) => n.id).join("\u0000"), [base]);
+  const nodeSetKey = useMemo(
+    () =>
+      base.nodes
+        .filter((n) => n.type !== "note")
+        .map((n) => n.id)
+        .join("\u0000"),
+    [base],
+  );
   const baseRef = useRef(base);
   baseRef.current = base;
   const nodeSetKeyRef = useRef(nodeSetKey);
@@ -1630,7 +1881,8 @@ function CanvasInner({
   nodesRef.current = nodes;
   const allMeasured =
     base.nodes.length > 0 &&
-    nodes.length === base.nodes.length &&
+    nodes.filter((n) => n.type !== "note").length ===
+      base.nodes.filter((n) => n.type !== "note").length &&
     nodes.every(
       (n) =>
         n.measured !== undefined &&
@@ -2003,6 +2255,16 @@ function CanvasInner({
     if (readOnly) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Backspace" && event.key !== "Delete") return;
+      // A selected note goes first, and nothing else: ⌫ on paper removes the
+      // paper, it does not delete the step the graph still has selected.
+      const noteId = activeNoteIdRef.current;
+      if (noteId !== null && notesEditable) {
+        const active = globalThis.document.activeElement;
+        if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) return;
+        event.preventDefault();
+        removeNote(noteId);
+        return;
+      }
       const ids = pageSelRef.current;
       if (ids.length === 0) return;
       event.preventDefault();
@@ -2010,7 +2272,7 @@ function CanvasInner({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [readOnly, deleteGuarded]);
+  }, [readOnly, notesEditable, deleteGuarded, removeNote]);
 
   const activeSelection = useMemo(
     () =>
@@ -2068,12 +2330,13 @@ function CanvasInner({
       onDrop={onDrop}
     >
       {/* The React Flow edge layer paints under the node layer (DOM order in
-       * the viewport), so scope group backgrounds would swallow the edges.
-       * Lift the edges above the nodes and the labels above the edges — the
-       * edge "+" buttons must stay clickable. */}
+       * the viewport), so scope group backgrounds would swallow the edges. Lift
+       * the edges above the nodes and the labels above the edges — the edge "+"
+       * buttons must stay clickable. The two levels sit ABOVE every node lane
+       * (steps 2, notes 1, groups 0) so the lift still means what it did. */}
       <style>
         {
-          ".studio-canvas .react-flow__edges{z-index:1}.studio-canvas .react-flow__edgelabel-renderer{z-index:2}"
+          ".studio-canvas .react-flow__edges{z-index:3}.studio-canvas .react-flow__edgelabel-renderer{z-index:4}"
         }
       </style>
       <div
@@ -2130,13 +2393,18 @@ function CanvasInner({
           onEdgesDelete={(deleted) =>
             deleteGuarded(deleted.filter((e) => e.type !== "trigger").map((e) => e.id))
           }
-          onPaneClick={() => {
+          onPaneClick={(event) => {
             setSource(null);
             setEditingScopeId(null);
             setCanvasPickerOpen(false);
             setIslandPicker(false);
             onSelectionChange?.([]);
             onSelect(null);
+            // The Note tool: a click on empty canvas puts a note there, on the
+            // grid, ready to type — then the island is back on Select.
+            if (tool === "note" && notesEditable) {
+              addNoteAt(clientToFlow(event.clientX, event.clientY));
+            } else clearNoteSelection();
           }}
           onNodeContextMenu={onNodeContextMenu}
           panOnDrag={tool !== "box"}

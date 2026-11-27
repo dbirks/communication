@@ -1582,6 +1582,7 @@ export function StudioPage() {
           phone={phone}
           onSelect={selectOne}
           onMove={readOnly ? undefined : studio.move}
+          onNotesChange={readOnly ? undefined : studio.setNotes}
           onInsertOnEdge={readOnly ? undefined : (edge, kind) => insertOnEdge(edge, kind)}
           onAddAfter={readOnly ? undefined : handleAddAfter}
           onConnect={

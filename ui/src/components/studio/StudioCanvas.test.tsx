@@ -39,9 +39,11 @@ import {
   FIT_TOP_PAD_PX,
   SMALL_WORKFLOW_OPEN_ZOOM,
   StudioCanvas,
+  moveNote,
+  newNote,
   type StudioCanvasProps,
 } from "./StudioCanvas";
-import { routeEdge, toFlow } from "./flowModel";
+import { routeEdge, toFlow, type CanvasNote } from "./flowModel";
 import { EDGE_ADD_LABEL_OFFSET_PX, EDGE_ADD_TARGET_PX } from "./edges";
 import { StudioInspector } from "./StudioInspector";
 
@@ -1800,5 +1802,175 @@ spec:
     fireEvent.click(await screen.findByTestId("studio-node-menu-settings"));
     expect(onOpenInspector).toHaveBeenCalledTimes(2);
     expect(onOpenInspector).toHaveBeenLastCalledWith("until");
+  });
+});
+
+/**
+ * The Note tool (review-1 09-1280-1): the island's fifth row, a click that
+ * puts a note on the canvas, and `ui_layout.notes` as the one place a note
+ * lives — never the graph, never the executable document.
+ *
+ * `NotePlayground` is the Studio's own loop: the canvas is presentational, so
+ * the note list has to be held by the caller and fed back in as `layout`.
+ */
+const noteFixture = { id: "note-1", x: 200, y: 100, width: 200, text: "check with Ada" };
+
+function NotePlayground({
+  notes: initial = [],
+  onNotesChange,
+}: {
+  notes?: CanvasNote[];
+  onNotesChange?: (notes: CanvasNote[]) => void;
+}) {
+  const [held, setHeld] = useState<CanvasNote[]>(initial);
+  const write = (next: CanvasNote[]) => {
+    onNotesChange?.(next);
+    setHeld(next);
+  };
+  return (
+    <div style={{ width: 960, height: 640 }}>
+      <StudioCanvas
+        model={fixtureModel}
+        document={parse(fixtureYaml)}
+        layout={{ nodes: {}, notes: held }}
+        selectedId={null}
+        readOnly={false}
+        stale={false}
+        onSelect={vi.fn()}
+        showToolIsland
+        onNotesChange={write}
+      />
+    </div>
+  );
+}
+
+describe("canvas notes", () => {
+  it("the N key picks the Note tool, as the island shows it", async () => {
+    render(<NotePlayground />);
+    await screen.findByTestId("canvas-step-check");
+    fireEvent.keyDown(window, { key: "n" });
+    expect(screen.getByTestId("tool-note").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("with the Note tool a click on empty canvas drops a snapped note and hands the tool back", async () => {
+    const onNotesChange = vi.fn();
+    render(<NotePlayground onNotesChange={onNotesChange} />);
+    fireEvent.keyDown(window, { key: "n" });
+    const pane = (await screen.findByTestId("canvas-step-check")).closest(".react-flow__pane");
+    expect(pane).toBeTruthy();
+    fireEvent.click(pane as HTMLElement, { clientX: 213, clientY: 137 });
+    expect(onNotesChange).toHaveBeenCalledWith([
+      { id: "note-1", x: 220, y: 140, width: 200, text: "" },
+    ]);
+    // The note is born typing, and the island is back on Select.
+    const area = await screen.findByTestId("canvas-note-input-note-1");
+    // The note is BORN typing: the click-then-type gesture needs the caret in
+    // its text without a second click.
+    await waitFor(() =>
+      expect(globalThis.document.activeElement?.getAttribute("data-testid")).toBe(
+        "canvas-note-input-note-1",
+      ),
+    );
+    expect(screen.getByTestId("tool-note").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByLabelText("Select (V)").getAttribute("aria-pressed")).toBe("true");
+    // Click → type → leave: the words are the note, and they persist with it.
+    fireEvent.change(area, { target: { value: "check with Ada before making live" } });
+    fireEvent.blur(area);
+    expect(onNotesChange).toHaveBeenLastCalledWith([
+      { id: "note-1", x: 220, y: 140, width: 200, text: "check with Ada before making live" },
+    ]);
+  });
+
+  it("typing into a note writes its text back through the note list", async () => {
+    const onNotesChange = vi.fn();
+    render(<NotePlayground notes={[noteFixture]} onNotesChange={onNotesChange} />);
+    const card = await screen.findByTestId("canvas-note-note-1");
+    expect(card.textContent).toContain("check with Ada");
+    fireEvent.doubleClick(card);
+    const area = await screen.findByTestId("canvas-note-input-note-1");
+    fireEvent.change(area, { target: { value: "check with Ada before making live" } });
+    fireEvent.blur(area);
+    expect(onNotesChange).toHaveBeenCalledWith([
+      { ...noteFixture, text: "check with Ada before making live" },
+    ]);
+    const saved = await screen.findByTestId("canvas-note-note-1");
+    expect(saved.textContent).toContain("before making live");
+  });
+
+  it("an emptied note is removed, not kept as blank paper", async () => {
+    const onNotesChange = vi.fn();
+    render(<NotePlayground notes={[noteFixture]} onNotesChange={onNotesChange} />);
+    const card = await screen.findByTestId("canvas-note-note-1");
+    fireEvent.doubleClick(card);
+    const area = await screen.findByTestId("canvas-note-input-note-1");
+    fireEvent.change(area, { target: { value: "   " } });
+    fireEvent.blur(area);
+    expect(onNotesChange).toHaveBeenCalledWith([]);
+    await waitFor(() => expect(screen.queryByTestId("canvas-note-note-1")).toBeNull());
+  });
+
+  it("Delete on a selected note removes the note, not the selected step", async () => {
+    const onNotesChange = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <div style={{ width: 960, height: 640 }}>
+        <StudioCanvas
+          model={fixtureModel}
+          document={parse(fixtureYaml)}
+          layout={{ notes: [noteFixture] }}
+          selectedId="plan"
+          readOnly={false}
+          stale={false}
+          onSelect={vi.fn()}
+          onNotesChange={onNotesChange}
+          onDelete={onDelete}
+        />
+      </div>,
+    );
+    fireEvent.click(await screen.findByTestId("canvas-note-note-1"));
+    fireEvent.keyDown(window, { key: "Delete" });
+    expect(onNotesChange).toHaveBeenCalledWith([]);
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it("a note drag stores the snapped position beside the note", () => {
+    expect(moveNote([noteFixture], "note-1", { x: 337, y: 211 })).toEqual([
+      { ...noteFixture, x: 340, y: 220 },
+    ]);
+    // A note id nobody holds leaves the list untouched.
+    expect(moveNote([noteFixture], "note-9", { x: 1, y: 1 })).toEqual([noteFixture]);
+  });
+
+  it("a new note takes the first free id and lands on the grid", () => {
+    expect(newNote({ x: 213, y: 137 }, [])).toEqual({
+      id: "note-1",
+      x: 220,
+      y: 140,
+      width: 200,
+      text: "",
+    });
+    expect(newNote({ x: 0, y: 0 }, [{ ...noteFixture }]).id).toBe("note-2");
+  });
+
+  it("shows notes without a way to change them, read-only", async () => {
+    const onNotesChange = vi.fn();
+    renderCanvas({ layout: { notes: [noteFixture] }, readOnly: true, onNotesChange });
+    const card = await screen.findByTestId("canvas-note-note-1");
+    expect(card.textContent).toContain("check with Ada");
+    fireEvent.doubleClick(card);
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(screen.queryByTestId("canvas-note-input-note-1")).toBeNull();
+    expect(onNotesChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps notes out of a box select — a note is never part of a wrap", async () => {
+    render(<NotePlayground notes={[noteFixture]} />);
+    const card = await screen.findByTestId("canvas-note-note-1");
+    const noteWrapper = card.closest(".react-flow__node") as HTMLElement;
+    const stepWrapper = (await screen.findByTestId("canvas-step-plan")).closest(
+      ".react-flow__node",
+    ) as HTMLElement;
+    expect(stepWrapper.className).toContain("selectable");
+    expect(noteWrapper.className).not.toContain("selectable");
   });
 });
