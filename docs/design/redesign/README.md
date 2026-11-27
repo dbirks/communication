@@ -6,7 +6,8 @@ This is a redesign of the Communication web UI (`ui/` in `dbirks/communication`)
 ## About the design files
 The files in this bundle are **design references built in HTML**. They are prototypes that show the intended look and behavior; they are not production code to copy. Recreate them in the existing app (`ui/`: Vite + React 19 + TypeScript + Tailwind v4, `@xyflow/react` for the canvas, `@tabler/icons-react` for icons), using its patterns: `ui/src/styles/tokens.css`, `ui/src/components/ds/*`, and react-router.
 
-- `Prototype.dc.html` is the **source of truth** for everything marked "Decided" below. Open it in a browser; it is clickable.
+- `Prototype v2.dc.html` is the **source of truth** for everything marked "Decided" below. Open it in a browser; it is clickable. It is `Prototype.dc.html` restyled with the visual language in **section 8** (Nov 27), plus draggable steps and an anchored wrap panel. `Prototype.dc.html` stays for reference only.
+- `Visual Directions.dc.html` is the look-and-feel board behind section 8 (turns 1–5, newest at top).
 - `Factory.dc.html`, `Shell.dc.html`, `Projects.dc.html`, `Chats.dc.html` and `Morning.dc.html` are the exploration boards (rounds 1–4, newest at top; every option has an id like `3e`). Use them for detail and for context on the open questions. **Don't build options that aren't in the prototype** unless this README says so.
 - `support.js` is only needed to open the `.dc.html` files locally.
 
@@ -110,7 +111,7 @@ Layout: a horizontal flex across the full viewport. From left: **project rail** 
     - git: `#efede7`
   - Title 13.5/600.
   - Subline in Red Hat Mono 11px `#6b675e`, one line, ellipsis.
-  - Selected: border `#2f4bd6`.
+  - Selected: border `#2f4bd6`. **(Superseded: see section 8 — gray edge + tonal shadow at rest, ink when selected.)**
   - Use the step icons from `lib/stepIcons.tsx`.
 - Connection handles appear on hover (10px circle, 1.5px `#2f4bd6` ring). Drag from one to connect.
 
@@ -127,7 +128,7 @@ Layout: a horizontal flex across the full viewport. From left: **project rail** 
 
 **Box select → wrap (the key interaction)**
 1. With Box select on, drag a box around steps. The selection is drawn as **marching ants**: an SVG rect, 1.5px `#2f4bd6`, `stroke-dasharray: 6 5`, radius 14, fill `rgba(47,75,214,.035)`, animated with `stroke-dashoffset` 0 → −22 over 0.7s linear, infinite. A mono 10.5 `#2a43b8` label "3 steps selected" sits above it.
-2. A **wrap panel** floats beside the box (340 wide, radius 14, shadow `0 10px 30px rgba(30,29,26,.10)`). It contains:
+2. A **wrap panel** floats beside the box, anchored with a caret (section 8). 340 wide. It contains:
    - Header "WRAP 3 STEPS IN" with an ×.
    - A **segmented control** with two tabs: **Repeat until** `ti-repeat` | **Side by side** `ti-columns`. Track `#f3f1ec`; the active tab is white with a `#cfc9bd` border.
    - **Repeat until** tab:
@@ -167,6 +168,40 @@ Layout: a horizontal flex across the full viewport. From left: **project rail** 
 
 ---
 
+### 8. Visual language (decided Nov 27 — overrides the soft shadows below)
+We stepped back from the soft, Pinterest-like look toward the original BTN-I system (`docs/design/handoff/README.md`), with rounder corners. Picks on `Visual Directions.dc.html`: **2a / 3a** for components, **3f / 4g** for nodes, **4h** for live state, **5b** for dragging. Rejected: 1c (too dense), 1d (too loud), 2b/2d (ink primary and ink edges), 2c (pills), 4a–4f (nav stays as today).
+
+**Buttons = BTN-I, rounded.** Same variants, colors and press as `.ds-btn` in `tokens.css`; only the radius and height change.
+- Radius **8** (compact 26–28px buttons: 7). Height 32 (34 on the editor's floating buttons). Text 13/600.
+- primary `#2f4bd6`, border `#2238a8`, shadow `2px 2px 0 #1a2d8f`
+- secondary `#efede7`, border + shadow `#cfc9bd`; secondary-plain is the same on white
+- danger `#fdd8d2` / `#b0281a`, border + shadow `#e5a99c`; ghost has no border or shadow
+- hover `filter: brightness(.96)`; pressed `translate(2px,2px)` + no shadow; focus ring as in `.ds-btn`
+- Round send buttons keep radius 999 but get the primary border and shadow.
+- In practice: add a `--radius-btn-rounded: 8px` (or change `--radius-btn`) and use `.ds-btn` everywhere in the new shell.
+
+**Depth = hard tonal offset, no blur.** Replace the redesign's soft shadows:
+- `--shadow-prompt` → `2px 2px 0 #e6e2d9`
+- workflow cards: `2px 2px 0 #ece9e2`; hover: border `#cfc9bd` + `2px 2px 0 #cfc9bd`
+- tool island: border `#cfc9bd`, `2px 2px 0 #e1ddd4`
+- `--shadow-pop` (wrap panel, versions panel) → border `#cfc9bd`, radius 12, `3px 3px 0 #e1ddd4`
+- `--shadow-modal` (new-workflow sheet) → radius 14, `4px 4px 0 #cfc9bd`
+- Unchanged: the **section pill** (still `--shadow-pill`, black active tab) and the quick-chat panel's left-edge shadow.
+
+**Search or ask** is plain: hairline pill, and "⌘K" is plain mono 10.5 `#6e6a62` text (no chip background).
+
+**Canvas nodes (3f / 4g)**
+- rest: border `#cfc9bd`, shadow `2px 2px 0 #e1ddd4`
+- selected (incl. box-selected): border + shadow `#1e1d1a`
+- **dragging (5b):** no box shadow; a diagonal-hatch shadow card sits 6px down-right behind the node: `repeating-linear-gradient(135deg, #b3ada2 0 1px, transparent 1px 4px)`, radius 10. A **dashed snap target** (1.5px dashed `#b3ada2`, radius 10) shows where it lands on the 20px grid. Edges follow the node live. Drop snaps to the grid.
+- A mouse-down that moves less than 4px is a click, not a drag.
+- **Live state during Try it / a run (4h):** a small mono status tag (9.5/600, radius 4, state tag colors, e.g. `● RUNNING`, `✓`, `· QUEUED`) on the node's top-right corner; the running node takes border `#1a6da6` + shadow `2px 2px 0 #8cc8ec`. Not wired in the prototype; see `Visual Directions` 4h.
+- Factory thumbnails use single dots (`#dcd8ce` 1px, 14px).
+
+**Wrap panel is anchored to the selection.** It sits 18px to the right of the marching-ants box, vertically centered on it, with a 12px rotated-square caret on its left edge pointing at the box's middle. It scrolls with the canvas. Selecting scrolls the board so both the box and the panel are visible.
+
+**Considered, not decided:** 3h (a mono "kind" row on every node) was interesting; revisit with Try it. Canvas sticky notes (`NoteNode.tsx`, amber `#fdf6e4` / `#e8cf94`) exist on main but aren't in the prototype; give them the same rest/selected/drag treatment as steps.
+
 ## Design tokens
 Keep `ui/src/styles/tokens.css` (Red Hat Text / Red Hat Mono / Kaisei Opti for the mark only; all state sets). Changes for this redesign:
 
@@ -181,7 +216,7 @@ Keep `ui/src/styles/tokens.css` (Red Hat Text / Red Hat Mono / Kaisei Opti for t
   - done: `#d9f0de` / `#1f6b37`, pale `#f1f7f2` / `#b9d3bf`
   - done progress segment: `#4a4740`
 - **Radii (new):** 6–8 for chips and inputs, 10 for cards and nodes, 12 for panels, 14 for the prompt box and wrap panel, 16 for the goal frame, 18 for modals, 999 for the pill, round buttons and starter pills.
-- **Shadows (new, soft):**
+- **Shadows:** superseded by section 8 (hard tonal offsets). The soft values below are kept only for the pill and the quick-chat panel:
   - pill `0 1px 3px rgba(30,29,26,.06)`
   - prompt box `0 4px 18px rgba(30,29,26,.06)`
   - popovers and panels `0 10px 30px rgba(30,29,26,.10)`
@@ -229,6 +264,8 @@ Routes (suggested):
 6. **Quick chat.** Docked panel vs a drop-down under the search field.
 
 ## Files in this bundle
-- `Prototype.dc.html`: the clickable prototype (source of truth)
+- `Prototype v2.dc.html`: the clickable prototype (source of truth)
+- `Visual Directions.dc.html`: look-and-feel board (section 8)
+- `Prototype.dc.html`: the earlier soft-styled prototype (reference)
 - `Factory.dc.html`, `Shell.dc.html`, `Projects.dc.html`, `Chats.dc.html`, `Morning.dc.html`: exploration boards (ids referenced above)
 - `support.js`: runtime for opening `.dc.html` files

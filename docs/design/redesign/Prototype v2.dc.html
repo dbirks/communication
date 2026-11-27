@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Text:wght@400;500;600;700&amp;family=Red+Hat+Mono:wght@400;500;600&amp;family=Kaisei+Opti:wght@500&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+<style>
+body{margin:0;background:#fff;font-family:'Red Hat Text',system-ui,sans-serif;color:#1e1d1a;-webkit-font-smoothing:antialiased}
+a{color:#2a43b8;text-decoration:none}a:hover{color:#1e1d1a}
+@keyframes ants{to{stroke-dashoffset:-22}}
+</style>
+</helmet>
+<div data-screen-label="Prototype v2" style="position:fixed;inset:0;display:flex;background:#fff">
+
+  <aside style="width:64px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px 0;border-right:1px solid #e6e2d9;background:#faf9f6">
+    <span style="position:relative;display:inline-block;width:26px;height:26px;margin-bottom:6px"><span style="position:absolute;top:3px;right:-3px;bottom:-3px;left:3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></span><span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1;padding-bottom:2px;box-sizing:border-box">C</span></span>
+    <sc-for list="{{ tiles }}" as="t" hint-placeholder-count="4">
+      <sc-if value="{{ t.divider }}" hint-placeholder-val="{{ false }}"><span style="width:24px;height:1px;background:#e6e2d9"></span></sc-if>
+      <span onClick="{{ t.onClick }}" title="{{ t.name }}" style="cursor:pointer;position:relative;width:38px;height:38px;display:grid;place-items:center;border-radius:11px;border:1px solid {{ t.bd }};background:{{ t.bg }};color:{{ t.fg }};font-family:'Red Hat Mono';font-size:{{ t.fs }};font-weight:600;box-sizing:border-box">{{ t.code }}<sc-if value="{{ t.badge }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-5px;right:-6px;height:15px;min-width:15px;display:flex;align-items:center;justify-content:center;border:2px solid #faf9f6;border-radius:999px;background:#f0a93a;color:#2a1a00;font-size:9px;font-weight:700;box-sizing:border-box">!</span></sc-if></span>
+    </sc-for>
+    <span title="Add a project" style="width:38px;height:38px;display:grid;place-items:center;border-radius:11px;border:1px dashed #cfcac0;color:#6b675e;box-sizing:border-box"><i class="ti ti-plus" style="font-size:17px"></i></span>
+    <div style="margin-top:auto;display:flex;flex-direction:column;align-items:center;gap:10px">
+      <span onClick="{{ goManage }}" title="Manage" style="cursor:pointer;width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:{{ manageBg }};color:{{ manageFg }}"><i class="ti ti-settings" style="font-size:19px"></i></span>
+      <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:999px;background:#fff;font-family:'Red Hat Mono';font-size:10.5px">DB</span>
+    </div>
+  </aside>
+
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative">
+    <div style="height:60px;flex-shrink:0;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:12px;padding:0 16px 0 24px;border-bottom:1px solid #e6e2d9;background:#fff;position:relative;z-index:4">
+      <div style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
+        <sc-if value="{{ isEditor }}" hint-placeholder-val="{{ false }}">
+          <span onClick="{{ goHome }}" style="cursor:pointer;font-size:14px;color:#6b675e">{{ projectName }}</span><span style="color:#cfcac0">/</span>
+          <span onClick="{{ goIndex }}" style="cursor:pointer;font-size:14px;color:#6b675e">Factory</span><span style="color:#cfcac0">/</span>
+          <span style="font-size:14px;font-weight:700;white-space:nowrap">{{ flowName }}</span>
+          <span style="display:flex;align-items:center;gap:6px;margin-left:6px;flex-shrink:0;font-size:12px;color:#6b675e;white-space:nowrap" title="2 changes from live v3"><span style="width:7px;height:7px;border-radius:50%;background:#f0a93a;flex-shrink:0"></span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">{{ draftLabel }}</span></span>
+        </sc-if>
+        <sc-if value="{{ notEditor }}" hint-placeholder-val="{{ true }}">
+          <span style="font-size:16px;font-weight:700;white-space:nowrap">{{ projectName }}</span>
+        </sc-if>
+      </div>
+      <nav style="display:flex;align-items:center;gap:2px;padding:3px;border:1px solid #e6e2d9;border-radius:999px;background:#fff;box-shadow:0 1px 3px rgba(30,29,26,.06)">
+        <sc-for list="{{ nav }}" as="n" hint-placeholder-count="3">
+          <span onClick="{{ n.onClick }}" style="cursor:pointer;display:flex;align-items:center;gap:7px;height:32px;padding:0 14px 0 11px;white-space:nowrap;border-radius:999px;background:{{ n.bg }};color:{{ n.fg }};font-size:13px;font-weight:{{ n.fw }}"><i class="{{ n.icon }}" style="font-size:18px"></i>{{ n.label }}</span>
+        </sc-for>
+      </nav>
+      <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;min-width:0">
+        <span onClick="{{ openQuick }}" style="cursor:pointer;flex:0 1 250px;min-width:0;height:32px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;color:#6b675e;box-sizing:border-box;overflow:hidden"><i class="ti ti-search" style="font-size:15px;flex-shrink:0"></i><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Search or ask</span><span style="font-family:'Red Hat Mono';font-size:10.5px;color:#6e6a62;padding-right:6px">⌘K</span></span>
+        <span onClick="{{ toggleListen }}" title="Hold ⌘K to talk" style="cursor:pointer;flex-shrink:0;width:32px;height:32px;display:grid;place-items:center;border-radius:999px;border:1px solid {{ micBd }};background:{{ micBg }};color:{{ micFg }};box-sizing:border-box"><i class="ti ti-microphone" style="font-size:16px"></i></span>
+      </div>
+    </div>
+
+    <div style="flex:1;min-height:0;position:relative;overflow:hidden">
+
+      <sc-if value="{{ isAllHome }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;overflow:auto">
+          <div style="max-width:1100px;margin:0 auto;display:flex;flex-direction:column;align-items:center;gap:40px;padding:48px 36px 48px">
+            <div style="width:100%;max-width:760px;display:flex;flex-direction:column;gap:14px">
+              <h2 style="margin:0;font-size:24px;font-weight:700;text-align:center">Morning, David. What are we working on?</h2>
+              <div style="display:flex;flex-direction:column;gap:12px;padding:14px 16px;border:1px solid #cfcac0;border-radius:14px;box-shadow:2px 2px 0 #e6e2d9">
+                <span style="font-size:15px;color:#6e6a62;min-height:40px">Ask, plan, or hand off a task…</span>
+                <div style="display:flex;align-items:center;gap:8px"><span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-folder" style="font-size:14px"></i>Pick a project<i class="ti ti-chevron-down" style="font-size:12px;color:#6b675e"></i></span><span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-robot" style="font-size:14px"></i>claude<i class="ti ti-chevron-down" style="font-size:12px;color:#6b675e"></i></span><span onClick="{{ goNewChat }}" style="white-space:nowrap;flex-shrink:0;cursor:pointer;margin-left:auto;width:32px;height:32px;display:grid;place-items:center;border-radius:999px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-arrow-up" style="font-size:17px"></i></span></div>
+              </div>
+            </div>
+            <div style="width:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,320px);gap:32px">
+              <div style="display:flex;flex-direction:column">
+                <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:8px;border-bottom:1px solid #e6e2d9"><span style="font-size:15px;font-weight:700">Since you left</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">9 h · 3 projects</span></div>
+                <sc-for list="{{ allSince }}" as="h" hint-placeholder-count="5">
+                  <div onClick="{{ h.onClick }}" style="cursor:pointer;display:grid;grid-template-columns:70px minmax(0,1fr) 52px;gap:12px;padding:12px 0;border-bottom:1px solid #f0ede6;align-items:baseline"><span style="font-family:'Red Hat Mono';font-size:11px;color:#2a43b8">{{ h.proj }}</span><span style="font-size:13.5px;line-height:20px"><b>{{ h.title }}</b> <span style="color:#3a3833">{{ h.body }}</span></span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;text-align:right">{{ h.time }}</span></div>
+                </sc-for>
+                <span style="padding:12px 0;font-size:12.5px;color:#6b675e">+ 8 routine updates</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:22px">
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#7a4a00">! NEEDS YOU · 2</span>
+                  <div onClick="{{ goLedger }}" style="cursor:pointer;display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid #e8cf94;background:#fdf6e4;border-radius:8px"><span style="font-size:13.5px;font-weight:600">Approve migration 0042</span><span style="font-size:12px;color:#5c3d00">ledger · waiting 17 min</span></div>
+                  <div onClick="{{ goFlagChat }}" style="cursor:pointer;display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid #e6e2d9;border-radius:8px"><span style="font-size:13.5px;font-weight:600">claude asked about a flag name</span><span style="font-size:12px;color:#6b675e">atlas · Checkout flag naming</span></div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#0f5e96">● RUNNING · 4</span>
+                  <span style="font-size:13.5px"><b>fix-issue #318</b> <span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">atlas · test, round 2</span></span>
+                  <span style="font-size:13.5px"><b>review-prs ×3</b> <span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">atlas · side by side</span></span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">FACTORY HEALTH</span>
+                  <span style="font-size:13.5px;line-height:20px">41 runs since midnight, 3 failed. All 3 are retried or have a fix queued.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isProjectHome }}" hint-placeholder-val="{{ true }}">
+        <div style="height:100%;overflow:auto">
+          <div style="max-width:1180px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));grid-template-columns:minmax(0,1fr) minmax(220px,300px);gap:32px;padding:28px 28px 48px">
+            <div style="display:flex;flex-direction:column;gap:24px;min-width:0">
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;flex-direction:column;gap:12px;padding:14px 16px;border:1px solid #cfcac0;border-radius:14px;box-shadow:2px 2px 0 #e6e2d9"><span style="font-size:15px;color:#6e6a62;min-height:28px">{{ ph.prompt }}</span><div style="display:flex;align-items:center;gap:8px"><span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-robot" style="font-size:14px"></i>claude<i class="ti ti-chevron-down" style="font-size:12px;color:#6b675e"></i></span><span onClick="{{ openSheet }}" style="cursor:pointer;height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;white-space:nowrap;flex-shrink:0"><i class="ti ti-building-factory-2" style="font-size:14px"></i>or run a workflow</span><span onClick="{{ goNewChat }}" style="white-space:nowrap;flex-shrink:0;cursor:pointer;margin-left:auto;width:32px;height:32px;display:grid;place-items:center;border-radius:999px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-arrow-up" style="font-size:17px"></i></span></div></div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <sc-for list="{{ ph.starters }}" as="s" hint-placeholder-count="3"><span onClick="{{ s.onClick }}" style="cursor:pointer;display:flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px"><i class="{{ s.icon }}" style="font-size:14px;color:#2238a8"></i>{{ s.text }}</span></sc-for>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#0f5e96">● HAPPENING NOW</span>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+                  <sc-for list="{{ ph.now }}" as="c" hint-placeholder-count="3">
+                    <div onClick="{{ c.onClick }}" style="cursor:pointer;display:flex;flex-direction:column;gap:6px;padding:12px 14px;border:1px solid {{ c.bd }};border-radius:10px;background:{{ c.bg }}"><span style="font-size:13.5px;font-weight:600">{{ c.title }}</span><span style="font-size:12px;color:{{ c.fg }}">{{ c.sub }}</span></div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column">
+                <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:8px;border-bottom:1px solid #e6e2d9"><span style="font-size:15px;font-weight:700">Since you left</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">{{ ph.sinceLabel }}</span></div>
+                <sc-for list="{{ ph.since }}" as="s" hint-placeholder-count="3">
+                  <div style="display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px;padding:11px 0;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;padding-top:2px">{{ s.t }}</span><span style="font-size:13.5px;line-height:20px"><b>{{ s.b }}</b> {{ s.rest }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:24px">
+              <div style="display:flex;flex-direction:column">
+                <span style="padding-bottom:8px;border-bottom:1px solid #e6e2d9;font-size:15px;font-weight:700">Repos</span>
+                <sc-for list="{{ ph.repos }}" as="r" hint-placeholder-count="3">
+                  <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono';font-size:12.5px">{{ r.name }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:{{ r.fg }}">{{ r.st }}</span></div>
+                </sc-for>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:9px">
+                <span style="padding-bottom:8px;border-bottom:1px solid #e6e2d9;font-size:15px;font-weight:700">Workflows here</span>
+                <sc-for list="{{ ph.wfs }}" as="w" hint-placeholder-count="3">
+                  <span style="font-size:13.5px;color:{{ w.fg }}"><b>{{ w.name }}</b> <span style="color:#6b675e">{{ w.when }}</span></span>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isChats }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;display:grid;grid-template-columns:300px minmax(0,1fr)">
+          <aside style="border-right:1px solid #f0ede6;display:flex;flex-direction:column;padding:16px 8px;gap:2px;overflow:auto">
+            <div style="display:flex;align-items:center;gap:8px;padding:0 6px 10px"><span style="flex:1;font-size:15px;font-weight:700">Chats</span><span onClick="{{ goNewChat }}" style="cursor:pointer;height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border-radius:8px;border:1px solid #cfc9bd;background:#efede7;color:#1e1d1a;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:12.5px;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-plus" style="font-size:14px"></i>New</span></div>
+            <sc-for list="{{ chatList }}" as="c" hint-placeholder-count="5">
+              <sc-if value="{{ c.head }}" hint-placeholder-val="{{ false }}"><span style="padding:12px 8px 4px;font-family:'Red Hat Mono';font-size:10px;font-weight:600;letter-spacing:.06em;color:#6e6a62">{{ c.head }}</span></sc-if>
+              <div onClick="{{ c.onClick }}" style="cursor:pointer;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:{{ c.bg }}"><div style="display:flex;gap:8px"><span style="flex:1;min-width:0;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.title }}</span><span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;color:{{ c.stFg }}">{{ c.st }}</span></div><span style="font-size:12.5px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.last }}</span></div>
+            </sc-for>
+          </aside>
+          <sc-if value="{{ isNewChat }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 48px 80px;gap:18px">
+              <h2 style="margin:0;font-size:24px;font-weight:700">New chat</h2>
+              <div style="width:100%;max-width:700px;display:flex;flex-direction:column;gap:12px;padding:14px 16px;border:1px solid #cfcac0;border-radius:14px;box-shadow:2px 2px 0 #e6e2d9;box-sizing:border-box">
+                <span style="font-size:15px;color:#6e6a62;min-height:56px">Ask, plan, or hand off a task…</span>
+                <div style="display:flex;align-items:center;gap:8px"><span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-folder" style="font-size:14px"></i>{{ chatProject }}<i class="ti ti-chevron-down" style="font-size:12px;color:#6b675e"></i></span><span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-robot" style="font-size:14px"></i>claude<i class="ti ti-chevron-down" style="font-size:12px;color:#6b675e"></i></span><span style="white-space:nowrap;flex-shrink:0;margin-left:auto;width:32px;height:32px;display:grid;place-items:center;border-radius:999px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-arrow-up" style="font-size:17px"></i></span></div>
+              </div>
+              <div style="width:100%;max-width:700px;display:flex;flex-direction:column;gap:4px">
+                <span style="padding:4px 2px 6px;font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">OR PICK UP</span>
+                <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f0ede6;border-radius:8px"><i class="ti ti-brand-apple" style="font-size:16px;color:#b0281a"></i><span style="flex:1;font-size:13.5px">atlas-mobile main has been red for 2 days</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">atlas</span></div>
+                <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f0ede6;border-radius:8px"><i class="ti ti-bug" style="font-size:16px;color:#6b675e"></i><span style="flex:1;font-size:13.5px">#322 flaky checkout.spec</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">atlas</span></div>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isThread }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;flex-direction:column;min-height:0">
+              <div style="height:54px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 28px;border-bottom:1px solid #f0ede6"><span style="font-size:15px;font-weight:700">{{ thread.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#3a3833;border:1px solid #e6e2d9;border-radius:4px;padding:2px 6px">{{ thread.repo }}</span><span style="margin-left:auto;font-size:12.5px;color:#6b675e">{{ thread.people }}</span></div>
+              <div style="flex:1;min-height:0;overflow:auto;display:flex;justify-content:center;padding:22px 28px">
+                <div style="width:100%;max-width:720px;display:flex;flex-direction:column;gap:16px">
+                  <sc-for list="{{ thread.msgs }}" as="m" hint-placeholder-count="3">
+                    <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">{{ m.who }}</span><p style="margin:0;font-size:14.5px;line-height:22px;text-wrap:pretty">{{ m.text }}</p></div>
+                  </sc-for>
+                  <sc-if value="{{ runStarted }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">you · now</span><p style="margin:0;font-size:14.5px;line-height:22px">Started fix-issue on #318.</p></div>
+                    <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border:1px solid #8cc8ec;border-radius:12px;background:#f3f9fd">
+                      <i class="ti ti-building-factory-2" style="font-size:18px;color:#0f4c78"></i>
+                      <div style="flex:1;display:flex;flex-direction:column;gap:7px"><div style="display:flex;justify-content:space-between"><span style="font-size:13.5px;font-weight:600">fix-issue #318 · round 1 of 3</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#0f4c78">● plan · 12s</span></div><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#1a6da6;border-radius:2px"></span><span style="flex:1;background:#fff;border-radius:2px"></span><span style="flex:1;background:#fff;border-radius:2px"></span><span style="flex:1;background:#fff;border-radius:2px"></span><span style="flex:1;background:#fff;border-radius:2px"></span></div></div>
+                      <span onClick="{{ openEditorFix }}" style="cursor:pointer;font-size:12.5px;font-weight:600;color:#2a43b8">Open in Factory</span>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+              <div style="padding:0 28px 20px;display:flex;justify-content:center">
+                <div style="width:100%;max-width:720px;display:flex;flex-direction:column;gap:8px">
+                  <sc-if value="{{ showSuggestion }}" hint-placeholder-val="{{ false }}">
+                    <div style="align-self:flex-start;display:flex;align-items:center;gap:10px;height:34px;padding:0 6px 0 12px;border:1px solid #dfe4fa;border-radius:999px;background:#f6f7fe;font-size:12.5px">
+                      <i class="ti ti-building-factory-2" style="font-size:15px;color:#2238a8"></i>
+                      <span>Run <b>fix-issue</b> on #318 instead? <span style="color:#6b675e">tests + goal check + review</span></span>
+                      <span onClick="{{ startRun }}" style="white-space:nowrap;flex-shrink:0;cursor:pointer;height:24px;display:flex;align-items:center;padding:0 10px;border-radius:999px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:12px;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none">Run it</span>
+                      <span onClick="{{ dismissSuggestion }}" style="cursor:pointer;width:24px;height:24px;display:grid;place-items:center;border-radius:999px;color:#6b675e"><i class="ti ti-x" style="font-size:14px"></i></span>
+                    </div>
+                  </sc-if>
+                  <div style="display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid #cfcac0;border-radius:12px">
+                    <span style="font-size:14px;color:#6e6a62">Reply, or type / for commands…</span>
+                    <div style="display:flex;align-items:center;gap:6px"><span style="height:26px;display:flex;align-items:center;gap:5px;padding:0 8px;border:1px solid #e6e2d9;border-radius:999px;font-size:12px"><i class="ti ti-robot" style="font-size:14px"></i>{{ thread.agent }}</span><span onClick="{{ startRun }}" style="cursor:pointer;height:26px;display:flex;align-items:center;gap:5px;padding:0 8px;border:1px solid #e6e2d9;border-radius:999px;font-size:12px"><i class="ti ti-building-factory-2" style="font-size:14px"></i>Run workflow</span><span style="white-space:nowrap;flex-shrink:0;margin-left:auto;width:30px;height:30px;display:grid;place-items:center;border-radius:999px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-arrow-up" style="font-size:16px"></i></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isIndex }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;overflow:auto">
+          <div style="max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:18px;padding:28px 36px 48px">
+            <div style="display:flex;align-items:center;gap:14px"><h2 style="margin:0;font-size:24px;font-weight:700">Factory</h2><span style="font-size:13.5px;color:#3a3833"><span style="font-family:'Red Hat Mono';color:#0f5e96">●</span> {{ factorySummary }}</span><span onClick="{{ openSheet }}" style="white-space:nowrap;flex-shrink:0;cursor:pointer;margin-left:auto;height:32px;display:flex;align-items:center;gap:6px;padding:0 12px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-plus" style="font-size:15px"></i>New workflow</span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px">
+              <sc-for list="{{ flows }}" as="f" hint-placeholder-count="4">
+                <div onClick="{{ f.onClick }}" style="cursor:pointer;display:flex;flex-direction:column;border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;box-shadow:2px 2px 0 #ece9e2" style-hover="border-color:#cfc9bd;box-shadow:2px 2px 0 #cfc9bd">
+                  <div style="height:120px;display:flex;align-items:center;justify-content:center;padding:0 20px;overflow:hidden;background-color:#faf9f6;background-image:radial-gradient(#dcd8ce 1px,transparent 1.2px);background-size:14px 14px;border-bottom:1px solid #f0ede6">
+                    <sc-for list="{{ f.steps }}" as="s" hint-placeholder-count="4">
+                      <sc-if value="{{ s.line }}" hint-placeholder-val="{{ false }}"><span style="width:18px;height:1.5px;background:#3a3833;flex-shrink:0"></span></sc-if>
+                      <span style="height:26px;display:flex;align-items:center;padding:0 9px;border:1px solid {{ s.bd }};border-radius:7px;background:{{ s.bg }};color:{{ s.fg }};font-size:11px;font-weight:600;white-space:nowrap;flex-shrink:0">{{ s.label }}</span>
+                    </sc-for>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:6px;padding:14px 16px">
+                    <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:15px;font-weight:700;white-space:nowrap">{{ f.name }}</span><span style="font-size:13px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.when }}</span><span style="margin-left:auto;font-family:'Red Hat Mono';font-size:11px;font-weight:600;color:{{ f.nowFg }};white-space:nowrap">{{ f.now }}</span></div>
+                    <span style="font-size:12px;color:#6b675e">{{ f.sub }}</span>
+                  </div>
+                </div>
+              </sc-for>
+              <div onClick="{{ openSheet }}" style="cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:200px;border:1px dashed #cfcac0;border-radius:12px;color:#6b675e;font-size:13.5px"><i class="ti ti-plus" style="font-size:20px"></i>New workflow</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isEditor }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:0;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          <div data-board="1" style="position:absolute;inset:0;overflow:auto"><div style="position:relative;width:1300px;height:820px">
+            {{ edgesSvg }}
+            <sc-if value="{{ looped }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute;left:{{ fr.x }}px;top:{{ fr.y }}px;width:{{ fr.w }}px;height:{{ fr.h }}px;border:1.5px solid #2f4bd6;border-radius:16px;background:rgba(47,75,214,.03);box-sizing:border-box"></div>
+              <div style="position:absolute;left:{{ fr.tx }}px;top:{{ fr.ty }}px;width:{{ fr.tw }}px;display:flex;flex-direction:column;gap:4px"><span style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#2238a8"><i class="{{ goalIcon }}" style="font-size:15px"></i>{{ goalHead }}</span><span style="font-size:13px;line-height:18px;text-wrap:pretty">{{ goalText }}</span></div>
+              <span style="position:absolute;left:{{ fr.tx }}px;top:{{ fr.by }}px;font-family:'Red Hat Mono';font-size:10.5px;color:#2a43b8">up to 3 rounds · then ask David</span>
+            </sc-if>
+            <sc-if value="{{ sel }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute;left:{{ sb.x }}px;top:{{ sb.y }}px;width:{{ sb.w }}px;height:{{ sb.h }}px">{{ ants }}</div>
+              <span style="position:absolute;left:{{ sb.x }}px;top:{{ sb.ly }}px;font-family:'Red Hat Mono';font-size:10.5px;color:#2a43b8">3 steps selected</span>
+            </sc-if>
+            <sc-if value="{{ dragging }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute;left:{{ ghost.sx }}px;top:{{ ghost.sy }}px;width:168px;height:56px;border:1.5px dashed #b3ada2;border-radius:10px;box-sizing:border-box"></div>
+              <div style="position:absolute;left:{{ ghost.hx }}px;top:{{ ghost.hy }}px;width:168px;height:56px;border-radius:10px;z-index:3;background:repeating-linear-gradient(135deg,#b3ada2 0 1px,transparent 1px 4px)"></div>
+            </sc-if>
+            <sc-for list="{{ nodes }}" as="n" hint-placeholder-count="7">
+              <div onMouseDown="{{ n.onDown }}" style="cursor:{{ n.cursor }};user-select:none;z-index:{{ n.z }};position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:1px solid {{ n.bd }};border-radius:10px;box-shadow:2px 2px 0 {{ n.sh }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div></div>
+            </sc-for>
+            <sc-if value="{{ sel }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute;left:{{ pop.x }}px;top:{{ pop.y }}px;width:340px;display:flex;flex-direction:column;gap:12px;padding:12px 14px 14px;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4;z-index:6;box-sizing:border-box">
+                <span style="position:absolute;left:-7px;top:{{ pop.ay }}px;width:12px;height:12px;background:#fff;border-left:1px solid #cfc9bd;border-bottom:1px solid #cfc9bd;transform:rotate(45deg)"></span>
+                <div style="display:flex;align-items:center"><span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">WRAP 3 STEPS IN</span><span onClick="{{ clearSel }}" style="cursor:pointer;margin-left:auto;color:#6b675e"><i class="ti ti-x" style="font-size:15px"></i></span></div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;padding:3px;border-radius:9px;background:#f3f1ec">
+                  <sc-for list="{{ wrapTabs }}" as="w" hint-placeholder-count="2"><span onClick="{{ w.onClick }}" style="cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;height:30px;border:1px solid {{ w.bd }};border-radius:7px;background:{{ w.bg }};color:{{ w.fg }};font-size:12.5px;font-weight:600;white-space:nowrap;box-sizing:border-box"><i class="{{ w.icon }}" style="font-size:15px"></i>{{ w.label }}</span></sc-for>
+                </div>
+                <sc-if value="{{ tabRepeat }}" hint-placeholder-val="{{ true }}">
+                  <span style="font-size:12.5px;color:#3a3833">Run these again until the goal is met.</span>
+                  <div style="display:flex;flex-direction:column;gap:4px">
+                    <span style="font-size:12.5px;font-weight:600;color:#3a3833">How do we know it's done?</span>
+                    <sc-for list="{{ goals }}" as="g" hint-placeholder-count="3">
+                      <span onClick="{{ g.onClick }}" style="cursor:pointer;display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid {{ g.bd }};border-radius:8px;background:{{ g.bg }};font-size:13px;font-weight:{{ g.fw }}"><i class="{{ g.icon }}" style="font-size:16px;color:{{ g.ic }}"></i><span style="flex:1">{{ g.label }}</span></span>
+                    </sc-for>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:5px"><span style="font-size:12.5px;font-weight:600;color:#3a3833">{{ goalFieldLabel }}</span><div style="padding:9px 10px;border:1px solid #cfcac0;border-radius:8px;font-size:13px;line-height:18px;font-family:{{ goalFont }}">{{ goalFieldValue }}</div></div>
+                  <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;white-space:nowrap"><span>Give up after</span><span style="display:flex;align-items:center;gap:8px;padding:2px 8px;border:1px solid #cfcac0;border-radius:6px;font-family:'Red Hat Mono'"><i class="ti ti-minus" style="font-size:12px;color:#6b675e"></i>3<i class="ti ti-plus" style="font-size:12px;color:#6b675e"></i></span><span>rounds</span><span onClick="{{ applyWrap }}" style="white-space:nowrap;flex-shrink:0;cursor:pointer;margin-left:auto;height:30px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none">Wrap</span></div>
+                </sc-if>
+                <sc-if value="{{ tabSide }}" hint-placeholder-val="{{ false }}">
+                  <span style="font-size:12.5px;line-height:18px;color:#3a3833">Start all three at the same time instead of one after another. The next step waits until all of them finish.</span>
+                  <div style="display:flex"><span style="white-space:nowrap;flex-shrink:0;margin-left:auto;height:30px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:12.5px;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none">Wrap</span></div>
+                </sc-if>
+              </div>
+            </sc-if>
+          </div></div>
+          <div onMouseEnter="{{ islandIn }}" onMouseLeave="{{ islandOut }}" style="position:absolute;left:16px;top:100px;width:{{ islandW }}px;display:flex;flex-direction:column;gap:1px;padding:5px;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:2px 2px 0 #e1ddd4;overflow:hidden;z-index:3">
+            <sc-for list="{{ tools }}" as="t" hint-placeholder-count="8">
+              <sc-if value="{{ t.sep }}" hint-placeholder-val="{{ false }}"><span style="height:1px;background:#f0ede6;margin:4px 6px"></span></sc-if>
+              <span onClick="{{ t.onClick }}" title="{{ t.label }}" style="cursor:pointer;display:flex;align-items:center;gap:10px;height:34px;padding:0 9px;border-radius:8px;background:{{ t.bg }};color:{{ t.fg }};font-size:13px;font-weight:{{ t.fw }};white-space:nowrap"><i class="{{ t.icon }}" style="font-size:18px;flex-shrink:0"></i><span style="opacity:{{ labelOpacity }}">{{ t.label }}</span><span style="margin-left:auto;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e;opacity:{{ labelOpacity }}">{{ t.key }}</span></span>
+            </sc-for>
+          </div>
+          <div style="position:absolute;right:16px;top:14px;display:flex;align-items:center;gap:8px;z-index:3">
+            <span onClick="{{ toggleVersions }}" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none" style="cursor:pointer;height:34px;display:flex;align-items:center;gap:6px;padding:0 12px;border:1px solid #cfc9bd;border-radius:8px;background:{{ versionsBg }};box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-history" style="font-size:16px"></i>Versions</span>
+            <span style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none" style="cursor:pointer;height:34px;display:flex;align-items:center;gap:6px;padding:0 12px;border:1px solid #cfc9bd;border-radius:8px;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap;flex-shrink:0"><i class="ti ti-player-play" style="font-size:14px"></i>Try it</span>
+            <span style="height:34px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap;flex-shrink:0" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none">Make live</span>
+          </div>
+          <span style="position:absolute;left:16px;bottom:16px;font-family:'Red Hat Mono';font-size:11px;color:#6b675e">{{ editorHint }}</span>
+          <sc-if value="{{ versions }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute;right:16px;top:62px;width:304px;display:flex;flex-direction:column;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4;z-index:5">
+              <div style="display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid #f0ede6"><span style="font-size:14px;font-weight:700">Versions</span><span onClick="{{ toggleVersions }}" style="cursor:pointer;margin-left:auto;color:#6b675e"><i class="ti ti-x" style="font-size:16px"></i></span></div>
+              <div style="display:flex;flex-direction:column;gap:16px;padding:14px 16px 18px">
+                <div style="display:flex;gap:12px"><span style="width:10px;height:10px;border-radius:50%;background:#f0a93a;margin-top:4px;flex-shrink:0"></span><div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:13.5px;font-weight:700">Your draft <span style="font-weight:400;color:#6b675e">· now</span></span><span style="font-size:12.5px;color:#3a3833">{{ draftChange }}</span><span style="font-size:12.5px;color:#3a3833">~ review prompt, 2 lines</span></div></div>
+                <div style="display:flex;gap:12px"><span style="width:10px;height:10px;border-radius:50%;background:#2a7a44;margin-top:4px;flex-shrink:0"></span><div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:13.5px;font-weight:700">v3 <span style="font-family:'Red Hat Mono';font-size:10px;font-weight:600;color:#1f6b37;background:#d9f0de;border-radius:2px;padding:1px 5px">LIVE</span></span><span style="font-size:12.5px;color:#6b675e">Dana · Nov 20 · ran 31 times</span></div></div>
+                <div style="display:flex;gap:12px"><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #cfcac0;box-sizing:border-box;margin-top:4px;flex-shrink:0"></span><div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:13.5px;font-weight:700">v2</span><span style="font-size:12.5px;color:#6b675e">David · Nov 12 · added approve</span></div></div>
+                <div style="display:flex;gap:12px"><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #cfcac0;box-sizing:border-box;margin-top:4px;flex-shrink:0"></span><div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:13.5px;font-weight:700">v1</span><span style="font-size:12.5px;color:#6b675e">David · Nov 3 · made from a chat</span></div></div>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isManage }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;display:grid;grid-template-columns:230px minmax(0,1fr)">
+          <aside style="border-right:1px solid #f0ede6;display:flex;flex-direction:column;gap:2px;padding:22px 10px">
+            <span style="padding:0 10px 12px;font-size:15px;font-weight:700">Manage</span>
+            <span style="display:flex;align-items:center;gap:9px;padding:8px 10px;font-size:13.5px"><i class="ti ti-folders" style="font-size:16px;color:#6b675e"></i>Projects</span>
+            <span style="display:flex;align-items:center;gap:9px;padding:8px 10px;font-size:13.5px"><i class="ti ti-brand-github" style="font-size:16px;color:#6b675e"></i>Repositories</span>
+            <span style="display:flex;align-items:center;gap:9px;padding:8px 10px;font-size:13.5px"><i class="ti ti-users" style="font-size:16px;color:#6b675e"></i>People &amp; access</span>
+            <span style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;background:#f6f7fe;font-size:13.5px;font-weight:600"><i class="ti ti-server" style="font-size:16px;color:#2238a8"></i>Runners</span>
+            <span style="display:flex;align-items:center;gap:9px;padding:8px 10px;font-size:13.5px"><i class="ti ti-robot" style="font-size:16px;color:#6b675e"></i>Agents &amp; models</span>
+            <span style="display:flex;align-items:center;gap:9px;padding:8px 10px;font-size:13.5px"><i class="ti ti-key" style="font-size:16px;color:#6b675e"></i>Secrets</span>
+          </aside>
+          <div style="display:flex;flex-direction:column;gap:18px;padding:26px 36px;overflow:auto">
+            <div style="display:flex;align-items:flex-end;gap:16px"><div style="display:flex;flex-direction:column;gap:4px"><h2 style="margin:0;font-size:22px;font-weight:700">Runners</h2><span style="font-size:13.5px;color:#6b675e">Machines that run agents and workflows.</span></div><span style="white-space:nowrap;flex-shrink:0;margin-left:auto;height:32px;display:flex;align-items:center;gap:6px;padding:0 12px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-plus" style="font-size:15px"></i>Add runner</span></div>
+            <div style="display:flex;flex-direction:column;border:1px solid #e6e2d9;border-radius:10px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:1.2fr 1.4fr 120px 110px 1fr;gap:14px;padding:9px 16px;background:#faf9f6;border-bottom:1px solid #e6e2d9;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e"><span>NAME</span><span>WHERE</span><span>STATUS</span><span>BUSY</span><span>USED BY</span></div>
+              <sc-for list="{{ runners }}" as="r" hint-placeholder-count="4">
+                <div style="display:grid;grid-template-columns:1.2fr 1.4fr 120px 110px 1fr;gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid #f0ede6;font-size:13px"><span style="font-family:'Red Hat Mono';font-weight:600">{{ r.name }}</span><span style="color:#3a3833">{{ r.where }}</span><span style="font-family:'Red Hat Mono';font-size:11px;font-weight:600;color:{{ r.fg }}">{{ r.st }}</span><span style="font-family:'Red Hat Mono';font-size:11px">{{ r.busy }}</span><span style="color:#3a3833">{{ r.used }}</span></div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ quick }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;right:0;top:0;bottom:0;width:400px;display:flex;flex-direction:column;background:#fff;border-left:1px solid #e6e2d9;box-shadow:-12px 0 30px rgba(30,29,26,.06);z-index:8">
+          <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #f0ede6"><i class="ti ti-sparkles" style="font-size:16px;color:#2f4bd6"></i><span style="font-size:14px;font-weight:700">Quick chat</span><span style="font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">stays open until you close it</span><span onClick="{{ closeQuick }}" style="cursor:pointer;margin-left:auto;color:#6b675e"><i class="ti ti-x" style="font-size:16px"></i></span></div>
+          <div style="flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:12px;padding:16px">
+            <div style="align-self:flex-end;max-width:300px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:12px 12px 4px 12px;background:#f3f1ec;font-size:13.5px"><i class="ti ti-microphone" style="font-size:14px;color:#6b675e"></i>check on the agents working on atlas-api</div>
+            <span style="font-size:13.5px;line-height:20px">Three are working, all healthy:</span>
+            <div style="display:flex;flex-direction:column;border:1px solid #f0ede6;border-radius:8px">
+              <div style="display:grid;grid-template-columns:54px minmax(0,1fr) 60px;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="font-family:'Red Hat Mono';font-size:11px;font-weight:600">codex</span><span>#318 · test, round 2</span><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#efede7"></span></div></div>
+              <div style="display:grid;grid-template-columns:54px minmax(0,1fr) 60px;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="font-family:'Red Hat Mono';font-size:11px;font-weight:600">claude</span><span>PR #214 · reading diff</span><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#efede7"></span><span style="flex:1;background:#efede7"></span></div></div>
+              <div style="display:grid;grid-template-columns:54px minmax(0,1fr) 60px;gap:8px;align-items:center;padding:7px 10px;font-size:12.5px"><span style="font-family:'Red Hat Mono';font-size:11px;font-weight:600">claude</span><span>PR #215 · commenting</span><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span></div></div>
+            </div>
+            <div style="align-self:flex-end;max-width:300px;padding:8px 12px;border-radius:12px 12px 4px 12px;background:#f3f1ec;font-size:13.5px">why did #318 fail round 1?</div>
+            <span style="font-size:13.5px;line-height:20px">The judge said the fix worked but nothing tested Feb 29. Round 2 added a leap-year test and is running it now.</span>
+          </div>
+          <sc-if value="{{ listening }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:10px;margin:0 16px 8px;padding:8px 12px;border-radius:999px;background:#1e1d1a;color:#fff"><span style="width:26px;height:26px;display:grid;place-items:center;border-radius:999px;background:#2f4bd6"><i class="ti ti-microphone" style="font-size:14px"></i></span><div style="display:flex;align-items:center;gap:3px;height:16px"><span style="width:3px;height:6px;border-radius:2px;background:#8fa0e6"></span><span style="width:3px;height:12px;border-radius:2px;background:#8fa0e6"></span><span style="width:3px;height:16px;border-radius:2px;background:#8fa0e6"></span><span style="width:3px;height:9px;border-radius:2px;background:#8fa0e6"></span></div><span style="font-size:13px">“what's ledger waiting on…”</span></div>
+          </sc-if>
+          <div style="padding:0 16px 16px"><div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid #cfcac0;border-radius:12px"><span style="flex:1;font-size:13.5px;color:#6e6a62">Reply, or hold ⌘K to talk</span><span onClick="{{ toggleListen }}" style="cursor:pointer;width:28px;height:28px;display:grid;place-items:center;border-radius:999px;background:{{ micBg }};color:{{ micFg }};border:1px solid {{ micBd }};box-sizing:border-box"><i class="ti ti-microphone" style="font-size:15px"></i></span><span style="font-size:12px;font-weight:600;color:#2a43b8">Open as chat</span></div></div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ sheet }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheet }}" style="position:absolute;inset:0;background:rgba(30,29,26,.18);z-index:9"></div>
+        <div style="position:absolute;left:50%;top:40px;transform:translateX(-50%);width:720px;display:flex;flex-direction:column;gap:20px;padding:24px 26px;background:#fff;border:1px solid #e6e2d9;border-radius:14px;box-shadow:4px 4px 0 #cfc9bd;z-index:10">
+          <div style="display:flex;align-items:center"><span style="font-size:19px;font-weight:700">New workflow in {{ projectName }}</span><span onClick="{{ closeSheet }}" style="cursor:pointer;margin-left:auto;color:#6b675e"><i class="ti ti-x" style="font-size:18px"></i></span></div>
+          <div style="display:flex;flex-direction:column;gap:12px;padding:14px 16px;border:1.5px solid #2f4bd6;border-radius:14px;box-shadow:0 0 0 4px #dfe4fa">
+            <span style="font-size:15px;line-height:23px;color:#6e6a62;min-height:46px">Describe what should happen, e.g. “When a PR opens, review it, check for leaked secrets, and leave one comment.”</span>
+            <div style="display:flex;align-items:center;gap:8px"><span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px"><i class="ti ti-microphone" style="font-size:14px"></i>Say it</span><span style="font-size:12px;color:#6b675e">Steps get sketched on the canvas. Nothing runs until you make it live.</span><span onClick="{{ sketchIt }}" style="white-space:nowrap;flex-shrink:0;cursor:pointer;margin-left:auto;height:32px;display:flex;align-items:center;gap:6px;padding:0 14px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none"><i class="ti ti-sparkles" style="font-size:15px"></i>Sketch it</span></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">OR FROM SOMETHING YOU KEEP DOING IN CHATS</span>
+            <div style="display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid #e6e2d9;border-radius:10px"><div style="flex:1;display:flex;flex-direction:column;gap:6px"><span style="font-size:13.5px;font-weight:600">Fix a bug from an issue <span style="font-weight:400;color:#6b675e">· 4 chats this week</span></span><div style="display:flex;align-items:center;gap:5px;font-family:'Red Hat Mono';font-size:11px;color:#3a3833"><span style="padding:2px 7px;border:1px solid #e6e2d9;border-radius:999px">find cause</span><i class="ti ti-arrow-right" style="font-size:12px;color:#6b675e"></i><span style="padding:2px 7px;border:1px solid #e6e2d9;border-radius:999px">patch</span><i class="ti ti-arrow-right" style="font-size:12px;color:#6b675e"></i><span style="padding:2px 7px;border:1px solid #e6e2d9;border-radius:999px">run tests</span><i class="ti ti-arrow-right" style="font-size:12px;color:#6b675e"></i><span style="padding:2px 7px;border:1px solid #e6e2d9;border-radius:999px">open PR</span></div></div><span onClick="{{ sketchIt }}" style="cursor:pointer;height:30px;display:flex;align-items:center;padding:0 12px;border:1px solid #cfc9bd;border-radius:8px;background:#fff;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:12.5px;font-weight:600;white-space:nowrap" style-hover="filter:brightness(.96)" style-active="transform:translate(2px,2px);box-shadow:none">Use this</span></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e;margin-right:4px">OR COPY</span><span style="padding:5px 11px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px">fix-issue</span><span style="padding:5px 11px;border:1px solid #e6e2d9;border-radius:999px;font-size:12.5px">review-prs</span><span style="margin-left:auto;font-size:12.5px;font-weight:600;color:#2a43b8">Blank canvas</span></div>
+        </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { project: 'atlas', section: 'home', fview: 'index', flow: 'fix-issue', chat: 'fix318', quick: false, listening: false, sheet: false, tool: 'box', sel: false, wrapTab: 'repeat', goal: 'judge', looped: false, versions: false, island: false, runStarted: false, suggestion: true, pos: {}, drag: null };
+
+  componentDidMount() {
+    this._mv = (e) => { const d = this.state.drag; if (!d) return; const dx = e.clientX - d.sx, dy = e.clientY - d.sy; this.setState({ drag: { ...d, x: d.ox + dx, y: d.oy + dy, moved: d.moved || Math.abs(dx) + Math.abs(dy) > 4 } }); };
+    this._up = () => { const d = this.state.drag; if (!d) return; if (d.moved) { this.setState({ drag: null, pos: { ...this.state.pos, [d.id]: { x: Math.max(0, Math.round(d.x / 20) * 20), y: Math.max(0, Math.round(d.y / 20) * 20) } } }); } else { this.setState({ drag: null }); if (this._click) this._click(); } };
+    window.addEventListener('mousemove', this._mv); window.addEventListener('mouseup', this._up);
+  }
+  componentWillUnmount() { window.removeEventListener('mousemove', this._mv); window.removeEventListener('mouseup', this._up); }
+  startDrag(id, p, e, click) {
+    if (e.button !== 0) return; e.preventDefault();
+    this._click = click;
+    this.setState({ drag: { id, ox: p.x, oy: p.y, sx: e.clientX, sy: e.clientY, x: p.x, y: p.y, moved: false } });
+  }
+
+  ants(w, h) {
+    return React.createElement('svg', { width: w, height: h, style: { position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none' } },
+      React.createElement('rect', { x: 0.75, y: 0.75, width: w - 1.5, height: h - 1.5, rx: 14, fill: 'rgba(47,75,214,0.035)', stroke: '#2f4bd6', strokeWidth: 1.5, strokeDasharray: '6 5', style: { animation: 'ants .7s linear infinite' } }));
+  }
+
+  go(patch) { this.setState({ quick: this.state.quick, ...patch }); }
+
+  renderVals() {
+    const S = this.state, set = (p) => this.setState(p);
+    const P = { all: { name: 'All projects' }, atlas: { name: 'atlas' }, ledger: { name: 'ledger' }, relay: { name: 'relay' } };
+    const tile = (id, code, name, badge, divider) => {
+      const on = S.project === id && S.section !== 'manage';
+      return { code, name, badge: !!badge, divider: !!divider, fs: id === 'all' ? '10.5px' : '12px', onClick: () => set({ project: id, section: S.section === 'manage' ? 'home' : S.section, fview: 'index', sel: false, versions: false }),
+        bg: on ? '#1e1d1a' : '#ffffff', fg: on ? '#ffffff' : '#1e1d1a', bd: on ? '#1e1d1a' : '#e6e2d9' };
+    };
+    const tiles = [tile('all', 'All', 'All projects'), tile('atlas', 'AT', 'atlas', false, true), tile('ledger', 'LE', 'ledger', true), tile('relay', 'RE', 'relay')];
+
+    const navItem = (key, label, icon) => {
+      const on = S.section === key;
+      return { label, icon, bg: on ? '#1e1d1a' : 'transparent', fg: on ? '#ffffff' : '#3a3833', fw: on ? 600 : 500, onClick: () => set({ section: key, fview: key === 'factory' ? 'index' : S.fview, sel: false, versions: false }) };
+    };
+    const nav = [navItem('home', 'Home', 'ti ti-sunrise'), navItem('chats', 'Chats', 'ti ti-message'), navItem('factory', 'Factory', 'ti ti-building-factory-2')];
+
+    const isEditor = S.section === 'factory' && S.fview === 'editor';
+    const pid = S.project;
+
+    const homes = {
+      atlas: { prompt: 'What should we do in atlas?', sinceLabel: 'atlas · 6 stories',
+        starters: [{ icon: 'ti ti-message-plus', text: 'Fix the red mobile build', onClick: () => set({ section: 'chats', chat: 'new' }) }, { icon: 'ti ti-building-factory-2', text: 'Run fix-issue on #322', onClick: () => set({ section: 'factory', fview: 'index' }) }, { icon: 'ti ti-arrow-back-up', text: 'Resume: Safari search', onClick: () => set({ section: 'chats', chat: 'safari' }) }],
+        now: [{ title: 'Checkout flag naming', sub: 'Dana + claude · chat', bd: '#e6e2d9', bg: '#ffffff', fg: '#6b675e', onClick: () => set({ section: 'chats', chat: 'flag' }) }, { title: '#318 · test, round 2', sub: 'fix-issue · codex · 6m', bd: '#8cc8ec', bg: '#f3f9fd', fg: '#0f4c78', onClick: () => set({ section: 'factory', fview: 'editor', flow: 'fix-issue' }) }, { title: '3 PR reviews', sub: 'review-prs · side by side', bd: '#8cc8ec', bg: '#f3f9fd', fg: '#0f4c78', onClick: () => set({ section: 'factory', fview: 'index' }) }],
+        since: [{ t: '8:40', b: 'Checkout redesign merged.', rest: "Dana's PR passed after claude asked for a loading state and an a11y label." }, { t: '7:52', b: "#318 started from Sam's chat.", rest: 'Round 1 missed a leap-year test; round 2 is testing.' }, { t: '2:10', b: 'Flaky test quarantined.', rest: 'nightly-triage opened #322 and queued a fix.' }],
+        repos: [{ name: 'atlas-web', st: '✓ 4 PRs', fg: '#1f6b37' }, { name: 'atlas-api', st: '● 3 agents', fg: '#0f5e96' }, { name: 'atlas-mobile', st: '× red 2 d', fg: '#b0281a' }],
+        wfs: [{ name: 'fix-issue', when: 'when an issue gets “ready”', fg: '#1e1d1a' }, { name: 'review-prs', when: 'when a PR opens', fg: '#1e1d1a' }, { name: 'nightly-triage', when: 'every night at 2 am', fg: '#1e1d1a' }, { name: 'release-web', when: 'Thursdays · paused', fg: '#6b675e' }] },
+      ledger: { prompt: 'What should we do in ledger?', sinceLabel: 'ledger · 3 stories',
+        starters: [{ icon: 'ti ti-user-check', text: 'Review migration 0042', onClick: () => set({ section: 'factory', fview: 'index' }) }, { icon: 'ti ti-message-plus', text: 'Write release notes for v2.14.1', onClick: () => set({ section: 'chats', chat: 'new' }) }],
+        now: [{ title: 'Migration 0042', sub: '! waiting on you · 17m', bd: '#e8cf94', bg: '#fdf6e4', fg: '#7a4a00', onClick: () => set({ section: 'factory', fview: 'index' }) }, { title: 'dep-bump', sub: 'installing · 40s', bd: '#8cc8ec', bg: '#f3f9fd', fg: '#0f4c78', onClick: () => set({ section: 'factory', fview: 'index' }) }, { title: 'Plan migration 0042', sub: 'Priya + claude · chat', bd: '#e6e2d9', bg: '#ffffff', fg: '#6b675e', onClick: () => set({ section: 'chats', chat: 'plan42' }) }],
+        since: [{ t: '11:30', b: 'v2.14.1 released.', rest: 'Invoice rounding fix, approved by Priya.' }, { t: '8:38', b: 'Migration 0042 dry-ran clean.', rest: '3 tables touched, no rows lost.' }],
+        repos: [{ name: 'ledger', st: '✓ main', fg: '#1f6b37' }],
+        wfs: [{ name: 'release-ledger', when: 'by hand, with approval', fg: '#1e1d1a' }, { name: 'dep-bump', when: 'every 6 hours', fg: '#1e1d1a' }] },
+      relay: { prompt: 'What should we do in relay?', sinceLabel: 'relay · 1 story',
+        starters: [{ icon: 'ti ti-message-plus', text: 'Check node pool capacity', onClick: () => set({ section: 'chats', chat: 'new' }) }],
+        now: [{ title: 'Quiet', sub: 'nothing running', bd: '#e6e2d9', bg: '#ffffff', fg: '#6b675e', onClick: () => {} }],
+        since: [{ t: '4:20', b: 'Disk alert cleared itself.', rest: 'nightly-triage rotated logs on node 3.' }],
+        repos: [{ name: 'relay-infra', st: '✓ main', fg: '#1f6b37' }],
+        wfs: [{ name: 'nightly-triage', when: 'every night at 2 am', fg: '#1e1d1a' }] },
+    };
+    const ph = homes[pid] || homes.atlas;
+
+    const allSince = [
+      { proj: 'atlas', title: 'Checkout redesign merged', body: '· Dana, after two agent revisions', time: '8:40', onClick: () => set({ project: 'atlas', section: 'home' }) },
+      { proj: 'ledger', title: 'v2.14.1 released', body: '· invoice rounding fix', time: '11:30', onClick: () => set({ project: 'ledger', section: 'home' }) },
+      { proj: 'atlas', title: 'Flaky test quarantined', body: '· fix #322 queued', time: '2:10', onClick: () => set({ project: 'atlas', section: 'home' }) },
+      { proj: 'relay', title: 'Disk alert self-cleared', body: '· logs rotated on node 3', time: '4:20', onClick: () => set({ project: 'relay', section: 'home' }) },
+    ];
+
+    const chats = [
+      { id: 'flag', proj: 'atlas', title: 'Checkout flag naming', last: 'claude: What should the flag be called?', st: '! you', stFg: '#7a4a00', repo: 'atlas-web', people: 'Dana · claude · you', agent: 'claude',
+        msgs: [{ who: 'Dana · 8:10', text: 'Wire the checkout redesign behind a flag so we can roll it out to 10% first.' }, { who: 'claude · 8:14', text: 'Done, and tests pass. One question before I open the PR: should the flag be checkout_v2 or checkout-redesign?' }] },
+      { id: 'fix318', proj: 'atlas', title: 'Fix #318 date parsing', last: 'codex: parseDay() assumes a 365-day year', st: '', stFg: '#0f5e96', repo: 'atlas-api', people: 'Sam · codex · you', agent: 'codex',
+        msgs: [{ who: 'Sam · 7:44', text: 'Invoices dated Feb 29 crash the importer (#318). Find the cause and fix it.' }, { who: 'codex · 7:46', text: 'parseDay() assumes a 365-day year. The fix is about four lines in dates/parseDay.ts.' }] },
+      { id: 'safari', proj: 'atlas', title: 'Why is search slow on Safari?', last: 'codex: The worker re-parses on every key', st: '', stFg: '#6b675e', repo: 'atlas-web', people: 'you · codex', agent: 'codex',
+        msgs: [{ who: 'you · Mon', text: 'Search feels slow on Safari only. Can you look?' }, { who: 'codex · Mon', text: 'The search worker re-parses the index on every keystroke in Safari because the cache key includes the user agent.' }] },
+      { id: 'plan42', proj: 'ledger', title: 'Plan migration 0042', last: 'claude: Here is a 3-step plan', st: '', stFg: '#6b675e', repo: 'ledger', people: 'Priya · claude', agent: 'claude',
+        msgs: [{ who: 'Priya · Tue', text: 'Plan the move of invoice totals to integer cents.' }, { who: 'claude · Tue', text: 'Three steps: add the new column, backfill in batches, then switch reads. I added a dry run first.' }] },
+      { id: 'nodes', proj: 'relay', title: 'Node pool upgrade checklist', last: 'Sam: done, thanks', st: '', stFg: '#6b675e', repo: 'relay-infra', people: 'Sam · claude', agent: 'claude',
+        msgs: [{ who: 'Sam · Tue', text: 'Make me a checklist for the 1.31 node pool upgrade.' }, { who: 'claude · Tue', text: 'Drain one node at a time, watch the disk alerts, and keep the old pool for an hour.' }] },
+    ];
+    let lastProj = null;
+    const visible = chats.filter(c => pid === 'all' || c.proj === pid);
+    const chatList = visible.map(c => {
+      const head = pid === 'all' && c.proj !== lastProj ? c.proj.toUpperCase() : '';
+      lastProj = c.proj;
+      const st = c.id === 'fix318' && S.runStarted ? '● run' : c.st;
+      return { ...c, head, st, bg: S.chat === c.id ? '#f6f7fe' : 'transparent', onClick: () => set({ chat: c.id }) };
+    });
+    const thread = chats.find(c => c.id === S.chat) || chats[1];
+    const isNewChat = S.section === 'chats' && S.chat === 'new';
+
+    const st = (label, k) => {
+      const m = { idle: ['#e6e2d9', '#ffffff', '#1e1d1a'], run: ['#1a6da6', '#d9eefa', '#0f5e96'], wait: ['#f0a93a', '#ffecc2', '#7a4a00'], trig: ['#1e1d1a', '#1e1d1a', '#ffffff'] }[k || 'idle'];
+      return { label, bd: m[0], bg: m[1], fg: m[2] };
+    };
+    const withLines = (arr) => arr.map((s, i) => ({ ...s, line: i > 0 }));
+    const openFlow = (name) => () => set({ fview: 'editor', flow: name, sel: false, versions: false });
+    const allFlows = [
+      { proj: 'atlas', name: 'fix-issue', when: 'when an issue gets the ready label', now: '● #318 · round 2', nowFg: '#0f5e96', sub: '11 of 12 passed this week · #322 queued', steps: [st('issue', 'trig'), st('plan'), st('implement'), st('● test', 'run'), st('review'), st('approve'), st('open PR')] },
+      { proj: 'atlas', name: 'review-prs', when: 'when a pull request opens', now: '● 3 side by side', nowFg: '#0f5e96', sub: '9 reviewed today', steps: [st('PR opened', 'trig'), st('read diff'), st('● review ×3', 'run'), st('comment')] },
+      { proj: 'atlas', name: 'nightly-triage', when: 'every night at 2 am', now: 'next in 16 h', nowFg: '#6b675e', sub: '7 nights in a row · opened #322 last night', steps: [st('2:00 am', 'trig'), st('scan alerts'), st('triage'), st('open issues')] },
+      { proj: 'ledger', name: 'release-ledger', when: 'by hand, with approval', now: '! waiting on you', nowFg: '#7a4a00', sub: 'migration 0042 · dry run clean', steps: [st('manual', 'trig'), st('build'), st('dry run'), st('! approve', 'wait'), st('migrate')] },
+      { proj: 'ledger', name: 'dep-bump', when: 'every 6 hours', now: '● installing', nowFg: '#0f5e96', sub: '4 bumps today, all green', steps: [st('every 6 h', 'trig'), st('● update', 'run'), st('test'), st('open PR')] },
+      { proj: 'relay', name: 'nightly-triage', when: 'every night at 2 am', now: '✓ 2:38 am', nowFg: '#1f6b37', sub: 'cleared a disk alert', steps: [st('2:00 am', 'trig'), st('scan alerts'), st('triage')] },
+    ];
+    const flows = allFlows.filter(f => pid === 'all' || f.proj === pid).map(f => ({ ...f, steps: withLines(f.steps), onClick: openFlow(f.name) }));
+    const runningCount = flows.filter(f => f.now.startsWith('●')).length;
+    const factorySummary = runningCount + ' running · ' + (pid === 'ledger' ? '1 waiting on you' : 'nothing failing');
+
+    const loopIds = ['implement', 'test', 'review'];
+    const pickLoop = () => { if (S.tool === 'box' && !S.looped) { const el = document.querySelector('[data-board]'); if (el) { el.scrollLeft = Math.max(0, pop.x + 364 - el.clientWidth); el.scrollTop = Math.max(0, sb.y + sb.h / 2 - el.clientHeight / 2); } set({ sel: true, versions: false }); } };
+    const N = (id, x, y, title, sub, icon, tileBg, tileFg) => {
+      const d = S.drag, p = d && d.id === id ? { x: d.x, y: d.y } : (S.pos[id] || { x, y });
+      const on = S.sel && loopIds.includes(id), lifted = !!(d && d.id === id && d.moved);
+      return { id, x: p.x, y: p.y, title, sub, icon, tileBg, tileFg, z: lifted ? 4 : 2, cursor: lifted ? 'grabbing' : 'grab',
+        bd: on ? '#1e1d1a' : '#cfc9bd', sh: lifted ? 'transparent' : on ? '#1e1d1a' : '#e1ddd4', onDown: (e) => this.startDrag(id, p, e, loopIds.includes(id) ? pickLoop : null) };
+    };
+    const nodes = [
+      N('trigger', 96, 380, 'issue ready', 'trigger · github', 'ti ti-bolt', '#1e1d1a', '#ffffff'),
+      N('plan', 336, 380, 'plan', 'agent · claude', 'ti ti-robot', '#eef0fc', '#2238a8'),
+      N('implement', 600, 260, 'implement', 'agent · codex', 'ti ti-robot', '#eef0fc', '#2238a8'),
+      N('test', 600, 380, 'test', 'pnpm test', 'ti ti-terminal-2', '#efede7', '#3a3833'),
+      N('review', 600, 500, 'review', 'agent · claude', 'ti ti-robot', '#eef0fc', '#2238a8'),
+      N('approve', 880, 640, 'approve', 'david', 'ti ti-user-check', '#ffecc2', '#7a4a00'),
+      N('pr', 1080, 640, 'open PR', 'git · publish', 'ti ti-git-pull-request', '#efede7', '#3a3833'),
+    ];
+    const pm = {}; nodes.forEach(n => { pm[n.id] = n; });
+    const W = 168, H = 56;
+    const curve = (x1, y1, x2, y2, horiz) => { if (horiz) { const m = (x1 + x2) / 2; return `M${x1} ${y1} C${m} ${y1} ${m} ${y2} ${x2} ${y2}`; } const m = (y1 + y2) / 2; return `M${x1} ${y1} C${x1} ${m} ${x2} ${m} ${x2} ${y2}`; };
+    const edgeD = (a, b) => { const A = pm[a], B = pm[b];
+      if (B.x >= A.x + W + 8) return curve(A.x + W, A.y + H / 2, B.x, B.y + H / 2, true);
+      if (B.y >= A.y + H) return curve(A.x + W / 2, A.y + H, B.x + W / 2, B.y, false);
+      if (A.x >= B.x + W + 8) return curve(A.x, A.y + H / 2, B.x + W, B.y + H / 2, true);
+      return curve(A.x + W / 2, A.y, B.x + W / 2, B.y + H, false); };
+    const edgesSvg = React.createElement('svg', { width: 1300, height: 820, style: { position: 'absolute', left: 0, top: 0, pointerEvents: 'none' } },
+      [['trigger', 'plan'], ['plan', 'implement'], ['implement', 'test'], ['test', 'review'], ['review', 'approve'], ['approve', 'pr']].map(([a, b]) => React.createElement('path', { key: a + b, d: edgeD(a, b), style: { fill: 'none', stroke: '#3a3833', strokeWidth: 1.5 } })));
+    const L = loopIds.map(i => pm[i]);
+    const minx = Math.min(...L.map(n => n.x)), miny = Math.min(...L.map(n => n.y)), maxx = Math.max(...L.map(n => n.x)) + W, maxy = Math.max(...L.map(n => n.y)) + H;
+    const fr = { x: minx - 28, y: miny - 114, w: maxx - minx + 56, h: maxy - miny + 150 }; fr.tx = fr.x + 16; fr.ty = fr.y + 14; fr.tw = fr.w - 28; fr.by = fr.y + fr.h - 28;
+    const sb = { x: minx - 20, y: miny - 20, w: maxx - minx + 40, h: maxy - miny + 40 }; sb.ly = sb.y - 24;
+    const popY = Math.max(12, sb.y + sb.h / 2 - 215);
+    const pop = { x: sb.x + sb.w + 18, y: popY, ay: Math.min(400, Math.max(16, sb.y + sb.h / 2 - popY - 6)) };
+    const dg = S.drag && S.drag.moved ? S.drag : null;
+    const ghost = dg ? { hx: dg.x + 6, hy: dg.y + 6, sx: Math.round(dg.x / 20) * 20, sy: Math.round(dg.y / 20) * 20 } : { hx: 0, hy: 0, sx: 0, sy: 0 };
+    const tool = (key, label, icon, k, sep) => {
+      const on = S.tool === key;
+      return { label, icon, key: k, sep: !!sep, bg: on ? '#eef0fc' : 'transparent', fg: on ? '#2238a8' : '#3a3833', fw: on ? 600 : 400, onClick: () => set({ tool: key }) };
+    };
+    const tools = [tool('select', 'Select', 'ti ti-pointer', 'V'), tool('move', 'Move around', 'ti ti-hand-stop', 'H'), tool('box', 'Box select', 'ti ti-marquee-2', 'B'), tool('connect', 'Connect', 'ti ti-line', 'C'), tool('note', 'Note', 'ti ti-note', 'N'),
+      tool('agent', 'Agent', 'ti ti-robot', '', true), tool('command', 'Command', 'ti ti-terminal-2', ''), tool('approval', 'Approval', 'ti ti-user-check', '')];
+    const wt = (key, label, icon) => { const on = S.wrapTab === key; return { label, icon, bd: on ? '#cfc9bd' : 'transparent', bg: on ? '#ffffff' : 'transparent', fg: on ? '#1e1d1a' : '#6b675e', onClick: () => set({ wrapTab: key }) }; };
+    const G = {
+      judge: { label: 'A judge says the goal is met', icon: 'ti ti-gavel', field: 'The goal', value: "Feb 29 invoices import cleanly, and there's a test for it.", font: "'Red Hat Text'", head: 'Repeat until a judge says:', text: "“Feb 29 invoices import cleanly, and there's a test for it.”" },
+      command: { label: 'A command passes', icon: 'ti ti-terminal-2', field: 'Command', value: 'pnpm test --filter atlas-api', font: "'Red Hat Mono'", head: 'Repeat until this passes:', text: 'pnpm test --filter atlas-api' },
+      contains: { label: 'The output contains…', icon: 'ti ti-text-scan-2', field: 'Look for', value: 'APPROVED', font: "'Red Hat Mono'", head: 'Repeat until review says:', text: '“APPROVED”' },
+    };
+    const goals = Object.keys(G).map(k => { const on = S.goal === k; return { label: G[k].label, icon: G[k].icon, bd: on ? '#2f4bd6' : 'transparent', bg: on ? '#f6f7fe' : 'transparent', fw: on ? 600 : 400, ic: on ? '#2238a8' : '#6b675e', onClick: () => set({ goal: k }) }; });
+    const g = G[S.goal];
+    const editorHint = S.looped ? 'wrapped · click Versions to see the change' : S.sel ? 'pick how to wrap them' : S.tool === 'box' ? 'drag any step to move it · Box select is on: click implement, test or review to box all three' : 'drag any step to move it · pick Box select (B) to wrap steps';
+
+    const micOn = S.listening;
+    return {
+      tiles, nav, projectName: P[pid].name,
+      manageBg: S.section === 'manage' ? '#1e1d1a' : 'transparent', manageFg: S.section === 'manage' ? '#ffffff' : '#3a3833',
+      goManage: () => set({ section: 'manage' }),
+      isEditor, notEditor: !isEditor, flowName: S.flow, draftLabel: S.looped ? 'Draft · 3 changes' : 'Draft · 2 changes',
+      goHome: () => set({ section: 'home' }), goIndex: () => set({ fview: 'index', sel: false, versions: false }),
+      openQuick: () => set({ quick: true }), closeQuick: () => set({ quick: false, listening: false }),
+      toggleListen: () => set({ quick: true, listening: !S.listening }),
+      micBg: micOn ? '#2f4bd6' : '#ffffff', micFg: micOn ? '#ffffff' : '#3a3833', micBd: micOn ? '#2f4bd6' : '#e6e2d9', listening: S.listening, quick: S.quick,
+      isAllHome: S.section === 'home' && pid === 'all', isProjectHome: S.section === 'home' && pid !== 'all', ph, allSince,
+      goNewChat: () => set({ section: 'chats', chat: 'new' }), goLedger: () => set({ project: 'ledger', section: 'home' }), goFlagChat: () => set({ project: 'atlas', section: 'chats', chat: 'flag' }),
+      isChats: S.section === 'chats', chatList, isNewChat, isThread: S.section === 'chats' && !isNewChat, thread, chatProject: pid === 'all' ? 'Pick a project' : P[pid].name,
+      runStarted: S.runStarted && thread.id === 'fix318', showSuggestion: S.suggestion && !S.runStarted && thread.id === 'fix318',
+      startRun: () => set({ runStarted: true, suggestion: false, chat: 'fix318' }), dismissSuggestion: () => set({ suggestion: false }),
+      openEditorFix: () => set({ section: 'factory', fview: 'editor', flow: 'fix-issue' }),
+      isIndex: S.section === 'factory' && S.fview === 'index', flows, factorySummary,
+      openSheet: () => set({ sheet: true }), closeSheet: () => set({ sheet: false }), sheet: S.sheet,
+      sketchIt: () => set({ sheet: false, section: 'factory', fview: 'editor', flow: 'new-workflow' }),
+      nodes, tools, sel: S.sel, looped: S.looped, ants: this.ants(sb.w, sb.h), edgesSvg, fr, sb, pop, ghost, dragging: !!dg, clearSel: () => set({ sel: false }),
+      islandIn: () => set({ island: true }), islandOut: () => set({ island: false }), islandW: S.island ? 176 : 48, labelOpacity: S.island ? 1 : 0,
+      wrapTabs: [wt('repeat', 'Repeat until', 'ti ti-repeat'), wt('side', 'Side by side', 'ti ti-columns')], tabRepeat: S.wrapTab === 'repeat', tabSide: S.wrapTab === 'side',
+      goals, goalFieldLabel: g.field, goalFieldValue: g.value, goalFont: g.font, goalIcon: S.goal === 'judge' ? 'ti ti-gavel' : S.goal === 'command' ? 'ti ti-terminal-2' : 'ti ti-text-scan-2', goalHead: g.head, goalText: g.text,
+      applyWrap: () => set({ looped: true, sel: false }),
+      draftChange: S.looped ? '+ repeat-until loop around implement → review' : '+ test step uses pnpm test',
+      versions: S.versions, toggleVersions: () => set({ versions: !S.versions }), versionsBg: S.versions ? '#eef0fc' : '#ffffff', editorHint,
+      isManage: S.section === 'manage',
+      runners: [{ name: 'lab-01', where: 'home cluster · kubernetes', st: '✓ online', fg: '#1f6b37', busy: '2 of 3', used: 'atlas, ledger' }, { name: 'lab-02', where: 'home cluster · kubernetes', st: '✓ online', fg: '#1f6b37', busy: '2 of 2', used: 'all projects' }, { name: 'sams-mini', where: "Sam's Mac mini · docker", st: '! draining', fg: '#7a4a00', busy: '1 of 1', used: 'relay' }, { name: 'ci-spot-3', where: 'cloud spot instance', st: '⊘ offline', fg: '#a5431c', busy: '—', used: 'atlas' }],
+    };
+  }
+}
+</script>
+</body>
+</html>
