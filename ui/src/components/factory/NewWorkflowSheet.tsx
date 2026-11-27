@@ -451,7 +451,7 @@ export function NewWorkflowSheet({
               rows={4}
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="When an issue gets the 'ready' label, plan it, implement it, run the tests, and ask me before merging."
+              placeholder="Describe what should happen, e.g. “When an issue gets the 'ready' label, plan it, implement it, run the tests, and ask me before merging.”"
               data-testid="new-workflow-description"
               className="w-full resize-none border-0 bg-transparent text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint"
             />

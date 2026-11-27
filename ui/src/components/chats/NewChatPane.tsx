@@ -315,7 +315,7 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
 
       <div
         data-testid="new-chat-body"
-        className="mx-auto flex min-h-full w-full max-w-[700px] flex-col justify-center gap-[18px] px-[20px] py-[48px] max-md:justify-start max-md:pt-[24px]"
+        className="mx-auto flex min-h-full w-full max-w-[740px] flex-col justify-center gap-[18px] px-[20px] py-[48px] max-md:justify-start max-md:pt-[24px]"
       >
         <h2 className="text-center text-[24px] font-bold text-ink">New chat</h2>
 

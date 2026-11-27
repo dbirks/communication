@@ -166,4 +166,16 @@ and the prototype.
 | Factory | "Recent runs" under the cards (newest first, 10 at a time) | Past runs had no other place to be found; there is no Runs tab |
 | Kept pages (run workbench, approvals, artifacts, repository) | the same rounded buttons as the new shell | One button style across the app (`--radius-btn` is 8) |
 | Editor, phone | opens at zoom 1 with the trigger at the left; later steps are reached by panning | Steps stay readable; the prototype is desktop-only |
+| Home | the heading greets by time of day ("Good morning", "Good afternoon"…) and uses the signed-in name the identity provider gives | "Morning" at 4pm would be wrong; the app has no separate first name |
+| Rail avatar | the person's photo when the identity provider has one, initials otherwise | Existing behaviour of the account avatar |
+| Project home, Repos | each repository shows its open issue count, and maintainers get "Add repository" | Real data the API has (the prototype's "✓ 4 PRs" has no source yet); adding a repository had no other door on this page |
+| Chat transcript | tool rows and permission cards keep their own tags ("✓ STATUS: COMPLETED", "kind: execute") | The transcript is a kept surface (CONTRACT "Kept as they are"); it prints what the agent protocol sent |
+| New workflow sheet | "Blank canvas" and "Import YAML" sit on their own row under "Or copy" | Importing a YAML file existed before; two links read better as a row than at the end of a wrapping chip list |
+| Editor | a ninth tool-island row "More steps…" and a "− + fit" zoom control bottom-right | The step kinds beyond Agent / Command / Approval need a door; zoom without a wheel or trackpad needs one too |
+| Editor | the hint under the canvas always reads "left to right · drag steps to arrange" | The prototype's changing hints narrate its own demo script |
+| Editor, tool island | sits 40px under the top bar | README section 5 gives (16, 100) in page coordinates: 100 − the 60px top bar |
+| Goal frame footer | "up to N rounds · then stop" | What the engine does when rounds run out; "then ask <person>" needs an escalation the engine does not have |
+| Quick chat | a pop-out icon in the header; a separate round send button; mic and "Open as chat" outside the reply field | Opening the assistant as a page and sending by button existed before; the footer keeps the prototype's three controls |
+| Manage, phone | the sub-nav is a horizontal strip of chips that scrolls, faded at both edges, opened at the current section | CONTRACT "Phone": two-column pages stack; six sections do not fit 390px |
+| Page gutters | Home and Factory content is centred at the README's max widths (1100 / 1180 including padding) | README section 2 gives max widths, not the prototype's left offset |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |
