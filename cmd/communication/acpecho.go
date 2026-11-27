@@ -49,7 +49,7 @@ func runACPEcho(stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "acp-echo: refusing to start: %s must be 1 (this is a test harness, not an agent)\n", envACPMode)
 		return 2
 	}
-	agent := &echoAgent{probe: os.Getenv(envACPModeProbe), log: stderr}
+	agent := &echoAgent{probe: os.Getenv(envACPModeProbe), log: stderr, ready: make(chan struct{})}
 	// The SDK starts reading the peer immediately, so the connection is handed to
 	// the agent before it can serve a prompt: the reply channel (session/update)
 	// is a method on the connection, not on the agent.
@@ -64,7 +64,11 @@ func runACPEcho(stdin io.Reader, stdout, stderr io.Writer) int {
 // an honest refusal, because a harness that quietly accepted work it cannot do
 // would prove less than one that says it cannot.
 type echoAgent struct {
+	// conn is written once by SetAgentConnection while the SDK's reader
+	// goroutines may already be serving requests; ready is closed after the
+	// write, so a prompt that arrives first waits for it instead of racing.
 	conn  *acp.AgentSideConnection
+	ready chan struct{}
 	probe string
 	log   io.Writer
 }
@@ -73,7 +77,10 @@ var _ acp.Agent = (*echoAgent)(nil)
 
 // SetAgentConnection installs the peer connection (the SDK's own convention; see
 // runACPEcho for why it is set by hand).
-func (a *echoAgent) SetAgentConnection(c *acp.AgentSideConnection) { a.conn = c }
+func (a *echoAgent) SetAgentConnection(c *acp.AgentSideConnection) {
+	a.conn = c
+	close(a.ready)
+}
 
 func (a *echoAgent) Initialize(_ context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
 	version := params.ProtocolVersion
@@ -110,7 +117,9 @@ func (a *echoAgent) NewSession(_ context.Context, params acp.NewSessionRequest) 
 
 func (a *echoAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.PromptResponse, error) {
 	reply := fmt.Sprintf("%s: prompt=%q probe=%q session=%q", acpEchoName, promptText(params.Prompt), a.probe, params.SessionId)
-	if a.conn == nil {
+	select {
+	case <-a.ready:
+	case <-ctx.Done():
 		return acp.PromptResponse{}, errors.New("acp-echo: no connection to answer on")
 	}
 	// Streaming a message chunk before answering is what the real harnesses do,
