@@ -184,7 +184,7 @@ export function AgentPicker({
           onClick={toggleOpen}
         >
           <span className="inline-flex min-w-0 items-center">
-            <span className="truncate font-semibold text-ink">
+            <span className="truncate font-semibold text-ink" data-testid="agent-picker-label">
               {selected ? selected.name : "Choose agent"}
             </span>
             {/* The separator carries its own spaces so the chip READS

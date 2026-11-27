@@ -116,7 +116,7 @@ describe("AgentPicker", () => {
   it("prints the chip label at 600 ink and a picker chevron (review SH-3)", () => {
     renderPicker({ value: claudeA.id });
     const chip = screen.getByTestId("agent-picker");
-    const label = chip.querySelector("span.truncate.font-semibold.text-ink");
+    const label = chip.querySelector('[data-testid="agent-picker-label"]');
     expect(label?.textContent).toBe("Bravo Claude");
     expect(label?.className).toContain("text-ink");
     // the robot icon and the chevron
