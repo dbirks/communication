@@ -2178,7 +2178,12 @@ describe("the wrap panel is anchored to the selection (README section 8)", () =>
       side: "left",
     });
     const wide = { x: 100, y: 200, width: 900, height: 100 };
-    expect(anchorWrapPanel(wide, { w: 1200, h: 700 }).side).toBe("right");
+    // Too wide for either side: the panel stays inside the pane.
+    expect(anchorWrapPanel(wide, { w: 1200, h: 700 })).toEqual({
+      left: 852,
+      top: 250,
+      side: "right",
+    });
   });
 
   it("asks for no pan when box and panel already fit", () => {

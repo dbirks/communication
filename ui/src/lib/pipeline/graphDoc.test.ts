@@ -1084,7 +1084,7 @@ describe("wrapInScope / unwrapScope", () => {
     expect(result.ok).toBe(false);
     if (!result.ok && "error" in result) {
       expect(result.error).toMatch(/publish/);
-      expect(result.error).toMatch(/resultBindings/);
+      expect(result.error).toMatch(/reads a result from a step in the selection/);
     }
   });
 

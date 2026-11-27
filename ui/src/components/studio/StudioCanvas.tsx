@@ -364,8 +364,12 @@ export function anchorWrapPanel(
   const top = target.y + target.height / 2;
   const rightLeft = target.x + target.width + gap;
   const leftLeft = target.x - gap - width;
-  if (pane.w > 0 && rightLeft + width > pane.w - 8 && leftLeft >= 8) {
-    return { left: leftLeft, top, side: "left" };
+  if (pane.w > 0 && rightLeft + width > pane.w - 8) {
+    if (leftLeft >= 8) return { left: leftLeft, top, side: "left" };
+    // A selection too wide for either side: the panel stays inside the pane
+    // and overlaps the box's right end. It must never hang past the edge —
+    // focusing a field out there scrolls the whole shell sideways.
+    return { left: Math.max(8, pane.w - width - 8), top, side: "right" };
   }
   return { left: rightLeft, top, side: "right" };
 }

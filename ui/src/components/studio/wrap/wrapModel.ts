@@ -58,6 +58,7 @@ import {
   type GraphNode,
   type OpResult,
   type ScopePath,
+  wrapReferrersSentence,
 } from "../../../lib/pipeline/graphDoc";
 
 export type GoalKind = "judge" | "command" | "contains";
@@ -664,7 +665,7 @@ export function wrapSideBySide(text: string, nodeIds: string[], opts?: { id?: st
   if (referrers.length > 0) {
     return {
       ok: false,
-      error: `cannot wrap into parallel: ${referrers.join(", ")} reference nodes.<member>.`,
+      error: wrapReferrersSentence(referrers),
     };
   }
 

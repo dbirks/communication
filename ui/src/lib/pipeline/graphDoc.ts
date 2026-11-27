@@ -928,10 +928,9 @@ export function wrapInScope(
       })
       .map((item) => String(item.get("id")));
     if (referrers.length > 0) {
-      throw new OpError(
-        `cannot wrap into ${scope.kind}: ${referrers.join(", ")} reference nodes.<member>. — ` +
-          "results of a step inside a loop are only visible through the loop's resultBindings",
-      );
+      // Engine rule: a result of a step inside a loop is only visible outside
+      // it through the loop's resultBindings. Said in the reader's terms.
+      throw new OpError(wrapReferrersSentence(referrers));
     }
     const at = listAt(doc, found[0].scope);
     if ("error" in at) throw new OpError(at.error);
@@ -1127,4 +1126,15 @@ export function moveIntoScope(text: string, id: string, scopeId: string): OpResu
     to.list.add(item);
     return [id];
   });
+}
+
+/** Why a selection cannot be wrapped: steps outside it read a result of a step
+ * inside it. One plain sentence, naming the steps. */
+export function wrapReferrersSentence(referrers: string[]): string {
+  const one = referrers.length === 1;
+  return (
+    `These steps can't be wrapped yet: ${referrers.join(", ")} ${one ? "reads" : "read"} a result ` +
+    `from a step in the selection. Select ${one ? "it" : "them"} too, or leave out the step ` +
+    `${one ? "it reads" : "they read"} from.`
+  );
 }
