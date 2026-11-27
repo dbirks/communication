@@ -19,6 +19,7 @@ import { IconPlus } from "@tabler/icons-react";
 import { useDuplicatePipeline } from "../api/pipelines";
 import { queryKeys, useMe, useProject, useProjects } from "../api/queries";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
+import { RecentRuns } from "../components/factory/RecentRuns";
 import { WorkflowCard } from "../components/factory/WorkflowCard";
 import { NewWorkflowSheet } from "../components/factory/NewWorkflowSheet";
 import { useFactoryWorkflows } from "../components/factory/factoryData";
@@ -243,6 +244,12 @@ export default function Factory() {
             </div>
           </section>
         ) : null}
+
+        {/* There is no Runs tab any more, so the way back to a past run lives
+            here: the scope's newest runs, under the cards (and under the
+            project's schedules, when the page shows them). Same board read the
+            cards are built from, so it costs no request. */}
+        <RecentRuns scope={scope} />
       </div>
 
       <TriggersDialog
