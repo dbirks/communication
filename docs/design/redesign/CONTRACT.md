@@ -160,6 +160,9 @@ and the prototype.
 | Factory, project scope | "Schedules and triggers here" under the cards | Seeing, adding and pausing a workflow's schedules had no other home |
 | Factory cards | a "…" menu (Triggers, Use in a project, Duplicate, Open YAML) and "Open run" / "Watch on canvas" on a live run | Existing actions |
 | Home | data blocks print one plain sentence when empty | Real data; the prototype is always populated |
+| Editor, goal frame | the wrapped steps stack top to bottom inside the frame (the prototype keeps them in a row) | A loop body has always been laid out top to bottom here, and README "Edges" allows "bottom→top inside a vertical stack". **Open: David has not confirmed this one** |
+| Editor, wrap | a selection that cannot be wrapped says why in one sentence above the canvas | The engine refuses a loop whose results are read from outside it; the prototype has no refusal state |
+| Top bar mic | a click opens Quick chat and starts listening; "Stop" in the dark capsule or a second click sends | README section 6: "The mic button does the same by click" |
 | Factory | "Recent runs" under the cards (newest first, 10 at a time) | Past runs had no other place to be found; there is no Runs tab |
 | Kept pages (run workbench, approvals, artifacts, repository) | the same rounded buttons as the new shell | One button style across the app (`--radius-btn` is 8) |
 | Editor, phone | opens at zoom 1 with the trigger at the left; later steps are reached by panning | Steps stay readable; the prototype is desktop-only |
