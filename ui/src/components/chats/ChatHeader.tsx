@@ -238,7 +238,7 @@ export function ChatHeader({
             {statusParts.length > 0 ? (
               <div
                 data-testid="chat-header-status"
-                className="flex min-w-0 items-center gap-[6px] overflow-x-auto font-mono text-[12px] text-muted max-md:h-[24px] max-md:flex-1 md:shrink-0 md:overflow-visible"
+                className="flex min-w-0 items-center gap-[6px] overflow-hidden font-mono text-[12px] text-muted max-md:h-[24px] max-md:flex-1 md:shrink-0 md:overflow-visible"
               >
                 {statusParts.map((part, index) => (
                   <Fragment key={part.key}>

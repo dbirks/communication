@@ -374,6 +374,13 @@ export function anchorWrapPanel(
   return { left: rightLeft, top, side: "right" };
 }
 
+/** The panel's top edge: centred on `middle`, kept 8px inside the pane. */
+export function clampWrapTop(middle: number, panelHeight: number, paneHeight: number): number {
+  const centred = middle - panelHeight / 2;
+  if (!(paneHeight > 0)) return centred;
+  return Math.max(8, Math.min(centred, Math.max(8, paneHeight - panelHeight - 8)));
+}
+
 /** How far the view must move so the selection box AND the panel anchored to
  * its right are both inside the pane (clear of the 72px top/left chrome).
  * `null` when nothing needs to move. Pane coordinates in, pane pixels out. */
@@ -2476,6 +2483,29 @@ function CanvasInner({
     [showWrapBox, model, activeSelection],
   );
   const wrapPlacement = antsRect ? anchorWrapPanel(antsRect, paneSize) : null;
+  // The panel is centred on the selection's middle, but never leaves the pane:
+  // its real height is measured, the top is clamped, and the caret keeps
+  // pointing at the box's middle from wherever the panel ended up.
+  const [wrapPanelHeight, setWrapPanelHeight] = useState(WRAP_PANEL_EST_HEIGHT_PX);
+  const wrapObserverRef = useRef<ResizeObserver | null>(null);
+  const measureWrapPanel = useCallback((el: HTMLDivElement | null) => {
+    wrapObserverRef.current?.disconnect();
+    wrapObserverRef.current = null;
+    if (!el) return;
+    const read = () => {
+      const h = el.offsetHeight;
+      if (h > 0) setWrapPanelHeight((current) => (Math.abs(current - h) < 1 ? current : h));
+    };
+    read();
+    if (typeof ResizeObserver !== "undefined") {
+      wrapObserverRef.current = new ResizeObserver(read);
+      wrapObserverRef.current.observe(el);
+    }
+  }, []);
+  const wrapTop = wrapPlacement ? clampWrapTop(wrapPlacement.top, wrapPanelHeight, paneSize.h) : 0;
+  const wrapCaretTop = wrapPlacement
+    ? Math.max(10, Math.min(wrapPanelHeight - 22, wrapPlacement.top - wrapTop - 6))
+    : 0;
   // Selecting brings the box and its panel into view (README section 8). Runs
   // once per selection, not on every pan, so the reader can still move away.
   const wrapKey = showWrapBox && !phone ? activeSelection.join("|") : "";
@@ -2811,15 +2841,8 @@ function CanvasInner({
             data-testid="wrap-panel-anchor"
             data-side={phone ? "sheet" : wrapPlacement.side}
             className={phone ? "fixed inset-x-0 bottom-0 z-40" : "absolute z-30"}
-            style={
-              phone
-                ? undefined
-                : {
-                    left: wrapPlacement.left,
-                    top: wrapPlacement.top,
-                    transform: "translateY(-50%)",
-                  }
-            }
+            style={phone ? undefined : { left: wrapPlacement.left, top: wrapTop }}
+            ref={measureWrapPanel}
             onPointerDown={(e) => e.stopPropagation()}
           >
             {!phone && (
@@ -2828,7 +2851,8 @@ function CanvasInner({
               <span
                 aria-hidden
                 data-testid="wrap-panel-caret"
-                className={`absolute top-[calc(50%-6px)] z-[1] h-[12px] w-[12px] rotate-45 bg-surface ${
+                style={{ top: wrapCaretTop }}
+                className={`absolute z-[1] h-[12px] w-[12px] rotate-45 bg-surface ${
                   wrapPlacement.side === "right"
                     ? "left-[-7px] border-b border-l border-fill-edge"
                     : "right-[-7px] border-t border-r border-fill-edge"

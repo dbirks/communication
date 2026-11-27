@@ -13,6 +13,7 @@ import { addNode, parseGraph, type OpResult } from "../../lib/pipeline/graphDoc"
 import {
   centerOnBox,
   anchorWrapPanel,
+  clampWrapTop,
   panToShowWrap,
   chooseFloatingPanelPlacement,
   chooseNodeMenuPlacement,
@@ -2184,6 +2185,12 @@ describe("the wrap panel is anchored to the selection (README section 8)", () =>
       top: 250,
       side: "right",
     });
+  });
+
+  it("keeps the panel inside the pane: under the top bar it is pushed down, at the bottom up", () => {
+    expect(clampWrapTop(300, 400, 800)).toBe(100);
+    expect(clampWrapTop(60, 400, 800)).toBe(8);
+    expect(clampWrapTop(760, 400, 800)).toBe(392);
   });
 
   it("asks for no pan when box and panel already fit", () => {
