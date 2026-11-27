@@ -166,7 +166,7 @@ export function WrapPanel({
 
   const containerLayout = sheet
     ? "w-full rounded-t-[14px] rounded-b-none"
-    : "w-[340px] rounded-[14px]";
+    : "w-[340px] rounded-[12px]";
 
   const repeatTabId = `${baseId}-tab-repeat`;
   const sideTabId = `${baseId}-tab-side`;

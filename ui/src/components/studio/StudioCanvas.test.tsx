@@ -12,6 +12,8 @@ import { parse } from "yaml";
 import { addNode, parseGraph, type OpResult } from "../../lib/pipeline/graphDoc";
 import {
   centerOnBox,
+  anchorWrapPanel,
+  panToShowWrap,
   chooseFloatingPanelPlacement,
   chooseNodeMenuPlacement,
   clampViewportToGraph,
@@ -2154,5 +2156,40 @@ describe("drag drop geometry", () => {
         style: { width: 240 },
       }),
     ).toEqual({ width: 240, height: 56 });
+  });
+});
+
+describe("the wrap panel is anchored to the selection (README section 8)", () => {
+  const box = { x: 300, y: 200, width: 200, height: 100 };
+
+  it("sits 18px right of the box, on its vertical middle", () => {
+    expect(anchorWrapPanel(box, { w: 1200, h: 700 })).toEqual({
+      left: 518,
+      top: 250,
+      side: "right",
+    });
+  });
+
+  it("flips to the left only when the right has no room and the left does", () => {
+    const far = { x: 800, y: 200, width: 200, height: 100 };
+    expect(anchorWrapPanel(far, { w: 1200, h: 700 })).toEqual({
+      left: 442,
+      top: 250,
+      side: "left",
+    });
+    const wide = { x: 100, y: 200, width: 900, height: 100 };
+    expect(anchorWrapPanel(wide, { w: 1200, h: 700 }).side).toBe("right");
+  });
+
+  it("asks for no pan when box and panel already fit", () => {
+    expect(
+      panToShowWrap({ x: 300, y: 300, width: 200, height: 100 }, { w: 1200, h: 800 }),
+    ).toBeNull();
+  });
+
+  it("pans left for a panel past the right edge and down for one under the top chrome", () => {
+    const move = panToShowWrap({ x: 700, y: 100, width: 300, height: 80 }, { w: 1200, h: 800 });
+    // right edge of the panel: 700 + 300 + 18 + 340 = 1358 → 1184; top: 140 - 210 = -70 → 72
+    expect(move).toEqual({ dx: -174, dy: 142 });
   });
 });

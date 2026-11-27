@@ -346,6 +346,58 @@ export function chooseFloatingPanelPlacement(
   return { left, top, side };
 }
 
+/** README section 8: the wrap panel is ANCHORED to the selection. It sits
+ * `gap` (18px) beside the marching-ants box, vertically centred on it (the
+ * caller centres with `translateY(-50%)`, so the panel's real height needs no
+ * guess), right of the box unless only the left has room. */
+export const WRAP_PANEL_GAP_PX = 18;
+export const WRAP_PANEL_WIDTH_PX = 340;
+/** The panel's tallest state (Repeat until, with a field and the stepper). */
+export const WRAP_PANEL_EST_HEIGHT_PX = 420;
+
+export function anchorWrapPanel(
+  target: { x: number; y: number; width: number; height: number },
+  pane: { w: number; h: number },
+  gap = WRAP_PANEL_GAP_PX,
+  width = WRAP_PANEL_WIDTH_PX,
+): { left: number; top: number; side: "right" | "left" } {
+  const top = target.y + target.height / 2;
+  const rightLeft = target.x + target.width + gap;
+  const leftLeft = target.x - gap - width;
+  if (pane.w > 0 && rightLeft + width > pane.w - 8 && leftLeft >= 8) {
+    return { left: leftLeft, top, side: "left" };
+  }
+  return { left: rightLeft, top, side: "right" };
+}
+
+/** How far the view must move so the selection box AND the panel anchored to
+ * its right are both inside the pane (clear of the 72px top/left chrome).
+ * `null` when nothing needs to move. Pane coordinates in, pane pixels out. */
+export function panToShowWrap(
+  target: { x: number; y: number; width: number; height: number },
+  pane: { w: number; h: number },
+  gap = WRAP_PANEL_GAP_PX,
+  width = WRAP_PANEL_WIDTH_PX,
+  panelHeight = WRAP_PANEL_EST_HEIGHT_PX,
+): { dx: number; dy: number } | null {
+  if (!(pane.w > 0) || !(pane.h > 0)) return null;
+  const mid = target.y + target.height / 2;
+  const half = Math.max(target.height, panelHeight) / 2;
+  const left = target.x;
+  const right = target.x + target.width + gap + width;
+  const top = mid - half;
+  const bottom = mid + half;
+  let dx = 0;
+  let dy = 0;
+  if (right > pane.w - 16) dx = pane.w - 16 - right;
+  // A pane too narrow for both keeps the box (the panel is what overflows).
+  if (left + dx < 72) dx = 72 - left;
+  if (bottom > pane.h - 16) dy = pane.h - 16 - bottom;
+  if (top + dy < 72) dy = 72 - top;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return null;
+  return { dx, dy };
+}
+
 export function computeSelectionPaneRect(
   selectedIds: string[],
   nodes: Node[],
@@ -2419,9 +2471,32 @@ function CanvasInner({
     () => (showWrapBox ? canWrap(model, activeSelection) : null),
     [showWrapBox, model, activeSelection],
   );
-  const wrapPlacement = antsRect
-    ? chooseFloatingPanelPlacement(antsRect, { w: 340, h: 420 }, paneSize, 16)
-    : null;
+  const wrapPlacement = antsRect ? anchorWrapPanel(antsRect, paneSize) : null;
+  // Selecting brings the box and its panel into view (README section 8). Runs
+  // once per selection, not on every pan, so the reader can still move away.
+  const wrapKey = showWrapBox && !phone ? activeSelection.join("|") : "";
+  const wrapPannedRef = useRef("");
+  useEffect(() => {
+    if (wrapKey === "") {
+      wrapPannedRef.current = "";
+      return;
+    }
+    if (wrapPannedRef.current === wrapKey || !antsRect) return;
+    wrapPannedRef.current = wrapKey;
+    const move = panToShowWrap(antsRect, paneSize);
+    if (!move) return;
+    void setViewport(
+      {
+        x: effectiveViewport.x + move.dx,
+        y: effectiveViewport.y + move.dy,
+        zoom: effectiveViewport.zoom,
+      },
+      { duration: 160 },
+    );
+    // antsRect/paneSize/effectiveViewport are read at the moment the selection
+    // changes; re-running on their change would fight the reader's own pan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wrapKey]);
 
   const editingScopeFlow = editingScopeId
     ? (base.nodes.find((n) => n.data.nodeId === editingScopeId && n.type === "scope") ?? null)
@@ -2464,7 +2539,18 @@ function CanvasInner({
           // says “grabbing”. React Flow's own `dragging` class on the node
           // wrapper is the only signal that fires for every node type.
           '.studio-canvas .react-flow__node.dragging [role="button"]{box-shadow:none}' +
-          ".studio-canvas .react-flow__node.dragging{cursor:grabbing}"}
+          ".studio-canvas .react-flow__node.dragging{cursor:grabbing}" +
+          // README §8: a box-selected step wears the selected look (ink edge
+          // and ink offset shadow) while the marching-ants box is up, without
+          // becoming the store's selection (that would open its "⋯" menu).
+          (showWrapBox
+            ? activeSelection
+                .map(
+                  (id) =>
+                    `.studio-canvas [data-step-node-id="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id}"]>[role="button"]{border-color:var(--color-ink);box-shadow:var(--shadow-node-selected)}`,
+                )
+                .join("")
+            : "")}
       </style>
       <div
         ref={paneRef}
@@ -2685,9 +2771,30 @@ function CanvasInner({
             data-testid="wrap-panel-anchor"
             data-side={phone ? "sheet" : wrapPlacement.side}
             className={phone ? "fixed inset-x-0 bottom-0 z-40" : "absolute z-30"}
-            style={phone ? undefined : { left: wrapPlacement.left, top: wrapPlacement.top }}
+            style={
+              phone
+                ? undefined
+                : {
+                    left: wrapPlacement.left,
+                    top: wrapPlacement.top,
+                    transform: "translateY(-50%)",
+                  }
+            }
             onPointerDown={(e) => e.stopPropagation()}
           >
+            {!phone && (
+              // The caret: a 12px rotated square on the panel's edge, pointing
+              // at the middle of the selection box.
+              <span
+                aria-hidden
+                data-testid="wrap-panel-caret"
+                className={`absolute top-[calc(50%-6px)] z-[1] h-[12px] w-[12px] rotate-45 bg-surface ${
+                  wrapPlacement.side === "right"
+                    ? "left-[-7px] border-b border-l border-fill-edge"
+                    : "right-[-7px] border-t border-r border-fill-edge"
+                }`}
+              />
+            )}
             <WrapPanel
               count={activeSelection.length}
               reason={wrapCheck && !wrapCheck.ok ? wrapCheck.reason : null}
