@@ -4,7 +4,7 @@
  * the picker and calls onInsertOnEdge, readOnly strips the "+" affordances,
  * and a refused connect surfaces its reason without calling onConnect.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -27,6 +27,9 @@ import {
   MENU_COMPACT_W_PX,
   mirrorOwnedChanges,
   moveDraggedNode,
+  absoluteNodePosition,
+  nodeGhostSize,
+  snapDroppedPosition,
   parseViewportTransform,
   PHONE_VIEWPORT_PX,
   CANVAS_DOT_COLOR,
@@ -44,6 +47,7 @@ import {
   type StudioCanvasProps,
 } from "./StudioCanvas";
 import { routeEdge, toFlow, type CanvasNote } from "./flowModel";
+import { snapToGrid20 } from "./DragGhost";
 import { EDGE_ADD_LABEL_OFFSET_PX, EDGE_ADD_TARGET_PX } from "./edges";
 import { StudioInspector } from "./StudioInspector";
 
@@ -1972,5 +1976,183 @@ describe("canvas notes", () => {
     ) as HTMLElement;
     expect(stepWrapper.className).toContain("selectable");
     expect(noteWrapper.className).not.toContain("selectable");
+  });
+});
+
+/* ------------------------------------ dragging a node (README §8, 5b) */
+
+/** React Flow's drag is d3-drag: after a mousedown it listens on the event's
+ * `view` (the window) for the moves and the release. jsdom rejects a Window
+ * passed through the MouseEvent init dict ("member view is not of type
+ * Window"), so the property is shadowed onto the event object instead — and
+ * every step runs in `act` so React flushes the state the handlers set. */
+function flowMouse(target: EventTarget, type: string, init: MouseEventInit) {
+  act(() => {
+    const event = new window.MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      ...init,
+    });
+    Object.defineProperty(event, "view", { get: () => window });
+    target.dispatchEvent(event);
+  });
+}
+
+function nodeWrapperOf(card: HTMLElement): HTMLElement {
+  return card.closest(".react-flow__node") as HTMLElement;
+}
+
+/** `translate(280px, 240px)` → [280, 240]. */
+function transformOf(wrapper: HTMLElement): [number, number] {
+  const m = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(wrapper.style.transform);
+  expect(m).toBeTruthy();
+  return [Number(m![1]), Number(m![2])];
+}
+
+describe("dragging a step (5b)", () => {
+  it("follows the pointer freely, shows its snap target, lands on the grid", async () => {
+    const onMove = vi.fn();
+    const { container } = renderCanvas({ layout: { nodes: { plan: { x: 200, y: 200 } } }, onMove });
+    const card = await screen.findByTestId("canvas-step-plan");
+    const wrapper = nodeWrapperOf(card);
+    expect(transformOf(wrapper)).toEqual([200, 200]);
+
+    flowMouse(wrapper, "mousedown", { clientX: 300, clientY: 300 });
+    for (const [x, y] of [
+      [320, 310],
+      [345, 325],
+      [375, 340],
+    ]) {
+      flowMouse(window, "mousemove", { clientX: x, clientY: y });
+    }
+
+    const portal = container.querySelector(".react-flow__viewport-portal") as HTMLElement;
+    const target = portal.querySelector('[data-testid="drag-snap-target"]') as HTMLElement;
+    const hatch = portal.querySelector('[data-testid="drag-hatch"]') as HTMLElement;
+    // Free drag: the card sits where the pointer left it, OFF the 20px grid,
+    // while the dashed target marks the grid point it will drop into and the
+    // hatch rides 6px down-right of the card.
+    const [freeX, freeY] = transformOf(wrapper);
+    expect(freeX).toBeGreaterThan(200);
+    expect(freeX % 20 !== 0 || freeY % 20 !== 0).toBe(true);
+    const [snapX, snapY] = [snapToGrid20(freeX), snapToGrid20(freeY)];
+    expect(snapX % 20).toBe(0);
+    expect(target.style.left).toBe(`${snapX}px`);
+    expect(target.style.top).toBe(`${snapY}px`);
+    expect(hatch.style.left).toBe(`${freeX + 6}px`);
+    expect(hatch.style.top).toBe(`${freeY + 6}px`);
+    expect(wrapper.className).toContain("dragging");
+
+    flowMouse(window, "mouseup", { clientX: 375, clientY: 340 });
+    expect(onMove).toHaveBeenCalledWith("plan", { x: snapX, y: snapY });
+    // The card is corrected to the snapped position even though the draft
+    // never moved (the page's `layout` prop is unchanged here), and the ghost
+    // is gone.
+    expect(transformOf(wrapper)).toEqual([snapX, snapY]);
+    expect(container.querySelector('[data-testid="drag-snap-target"]')).toBeNull();
+    expect(container.querySelector('[data-testid="drag-hatch"]')).toBeNull();
+  });
+
+  it("a press that moves less than 4px is a click, not a drag", async () => {
+    const onMove = vi.fn();
+    const { container } = renderCanvas({
+      layout: { nodes: { plan: { x: 200, y: 200 } } },
+      onMove,
+    });
+    const card = await screen.findByTestId("canvas-step-plan");
+    const wrapper = nodeWrapperOf(card);
+    flowMouse(wrapper, "mousedown", { clientX: 300, clientY: 300 });
+    flowMouse(window, "mousemove", { clientX: 302, clientY: 301 });
+    expect(container.querySelector('[data-testid="drag-hatch"]')).toBeNull();
+    flowMouse(window, "mouseup", { clientX: 302, clientY: 301 });
+    expect(onMove).not.toHaveBeenCalled();
+    expect(wrapper.className).not.toContain("dragging");
+    expect(transformOf(wrapper)).toEqual([200, 200]);
+  });
+
+  it("writes the snapped position when a note is dropped", async () => {
+    const onNotesChange = vi.fn();
+    render(<NotePlayground notes={[noteFixture]} onNotesChange={onNotesChange} />);
+    const card = await screen.findByTestId("canvas-note-note-1");
+    const wrapper = nodeWrapperOf(card);
+    flowMouse(wrapper, "mousedown", { clientX: 400, clientY: 400 });
+    for (const [x, y] of [
+      [430, 415],
+      [460, 430],
+      [475, 440],
+    ]) {
+      flowMouse(window, "mousemove", { clientX: x, clientY: y });
+    }
+    flowMouse(window, "mouseup", { clientX: 475, clientY: 440 });
+    expect(onNotesChange).toHaveBeenCalledTimes(1);
+    const [moved] = onNotesChange.mock.calls[0][0] as [CanvasNote];
+    expect(moved.id).toBe("note-1");
+    expect(moved.text).toBe(noteFixture.text);
+    // Down-right of where it started, and on the grid.
+    expect(moved.x).toBeGreaterThan(noteFixture.x);
+    expect(moved.y).toBeGreaterThan(noteFixture.y);
+    expect(moved.x % 20).toBe(0);
+    expect(moved.y % 20).toBe(0);
+  });
+
+  it("keeps the goal frame's own drag snapping on drop", async () => {
+    // Scope frames get no ghost, but the drop still lands on the grid.
+    expect(
+      snapDroppedPosition({ id: "frame", type: "scope", position: { x: 213, y: 137 } }, []),
+    ).toEqual({ x: 220, y: 140 });
+  });
+});
+
+describe("drag drop geometry", () => {
+  it("adds a child's position to its frame's", () => {
+    const frame = { id: "g1", type: "scope", position: { x: 13, y: 7 }, data: {} };
+    const child = {
+      id: "n1",
+      type: "step",
+      parentId: "g1",
+      position: { x: 105, y: 35 },
+      data: {},
+    };
+    expect(absoluteNodePosition(child, [frame, child])).toEqual({ x: 118, y: 42 });
+    // The grid is the ABSOLUTE one, so the relative number is whatever puts
+    // the card on 120/40 inside the off-grid frame.
+    expect(snapDroppedPosition(child, [frame, child])).toEqual({ x: 107, y: 33 });
+    expect(absoluteNodePosition({ ...child, parentId: "missing" }, [frame, child])).toEqual({
+      x: 105,
+      y: 35,
+    });
+  });
+
+  it("clamps a drop above the origin", () => {
+    expect(snapDroppedPosition({ id: "p", position: { x: 157, y: -8 } }, [])).toEqual({
+      x: 160,
+      y: 0,
+    });
+  });
+
+  it("sizes the ghost from the measured box, with the designed fallback", () => {
+    expect(
+      nodeGhostSize({
+        id: "s",
+        type: "step",
+        position: { x: 0, y: 0 },
+        data: {},
+        measured: { width: 168, height: 56 },
+      }),
+    ).toEqual({ width: 168, height: 56 });
+    expect(nodeGhostSize({ id: "s", type: "step", position: { x: 0, y: 0 }, data: {} })).toEqual({
+      width: 168,
+      height: 56,
+    });
+    expect(
+      nodeGhostSize({
+        id: "n",
+        type: "note",
+        position: { x: 0, y: 0 },
+        data: {},
+        style: { width: 240 },
+      }),
+    ).toEqual({ width: 240, height: 56 });
   });
 });

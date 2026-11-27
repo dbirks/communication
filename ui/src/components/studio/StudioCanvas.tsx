@@ -20,6 +20,7 @@ import {
   applyNodeChanges,
   useReactFlow,
   useViewport,
+  ViewportPortal,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -42,6 +43,8 @@ import {
   snapToNoteGrid,
   toFlow,
   NOTE_DEFAULT_WIDTH,
+  NOTE_MIN_HEIGHT,
+  STEP_BOX,
   type CanvasNote,
   type FlowModel,
 } from "./flowModel";
@@ -62,6 +65,7 @@ import {
   type TriggerNodeRender,
 } from "./nodes";
 import { NoteNode, type NoteNodeRender } from "./NoteNode";
+import { DragGhost, snapToGrid20 } from "./DragGhost";
 import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
 import { ToolIsland, type CanvasTool } from "./ToolIsland";
@@ -128,9 +132,23 @@ export function moveDraggedNode(
   // key "undefined", so the layout never matched a real node and the
   // next rebuild snapped it back to its dagre place.
   const data = node.data as unknown as { id: string };
+  onMove?.(data.id, snapDroppedPosition(node, nodes));
+}
+
+/** The part of a node the drop geometry reads.
+ * Exported so the tests can hand in a bare literal. */
+export type NodeDropTarget = Pick<Node, "id" | "type" | "position" | "parentId">;
+
+/** A node's position in ABSOLUTE flow coordinates: a step inside a goal frame
+ * carries its position relative to that frame, and both the drag ghost and
+ * the dropped layout are authored in absolute coordinates. */
+export function absoluteNodePosition(
+  node: NodeDropTarget,
+  nodes: Node[],
+): { x: number; y: number } {
   let x = node.position.x;
   let y = node.position.y;
-  let parentId = node.parentId;
+  let parentId: string | undefined = node.parentId;
   while (parentId) {
     const parent = nodes.find((item) => item.id === parentId);
     if (!parent) break;
@@ -138,7 +156,41 @@ export function moveDraggedNode(
     y += parent.position.y;
     parentId = parent.parentId;
   }
-  onMove?.(data.id, { x: Math.round(x / 20) * 20, y: Math.round(y / 20) * 20 });
+  return { x, y };
+}
+
+/** Where a released node lands: its ABSOLUTE position on the 20px grid, given
+ * back as the relative position React Flow renders — the same number for a
+ * node that hangs off the canvas rather than inside a goal frame. The dashed
+ * snap target shows exactly this. */
+export function snapDroppedPosition(node: NodeDropTarget, nodes: Node[]): { x: number; y: number } {
+  const absolute = absoluteNodePosition(node, nodes);
+  const snapped = { x: snapToGrid20(absolute.x), y: snapToGrid20(absolute.y) };
+  return {
+    x: node.position.x + (snapped.x - absolute.x),
+    y: node.position.y + (snapped.y - absolute.y),
+  };
+}
+
+/** The box the drag ghost is drawn at: the node's measured size, with the
+ * designed fallback for a node React Flow has not measured yet (a step card is
+ * 168×56; a note is authored by width and floors at 56px tall). */
+export function nodeGhostSize(node: Node): { width: number; height: number } {
+  const width =
+    node.measured?.width ?? (typeof node.style?.width === "number" ? node.style.width : undefined);
+  const height =
+    node.measured?.height ??
+    (typeof node.style?.height === "number" ? node.style.height : undefined);
+  return {
+    width: width ?? (node.type === "note" ? NOTE_DEFAULT_WIDTH : STEP_BOX.width),
+    height: height ?? (node.type === "note" ? NOTE_MIN_HEIGHT : STEP_BOX.height),
+  };
+}
+
+/** The node types that get the drag treatment: a step card or a sticky note.
+ * Goal frames (scope) and the trigger keep the plain React Flow drag. */
+function isDragGhostTarget(node: Node): boolean {
+  return node.type === "step" || node.type === "note";
 }
 
 export interface StudioCanvasProps {
@@ -1460,17 +1512,87 @@ function CanvasInner({
     [],
   );
 
+  // The drag ghost (README §8 “dragging (5b)”): while a step or a note is
+  // dragged it follows the pointer freely and these coordinates draw the
+  // dashed snap target plus the hatch shadow behind it. Only the drop commits
+  // the grid position, so the state is cleared there.
+  const [dragGhost, setDragGhost] = useState<{
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  // Edges follow the dragged card live. An edge is routed from the endpoint
+  // boxes `toFlow` laid out (edges.tsx `edgePath`), which only change when the
+  // drop commits; while the drag lasts, the dragged end's box is moved to
+  // where the card is now. The stored edges are left untouched.
+  const liveEdges = useMemo(() => {
+    if (dragGhost === null) return edges;
+    const at = { x: dragGhost.x, y: dragGhost.y };
+    return edges.map((edge) => {
+      if (edge.source !== dragGhost.id && edge.target !== dragGhost.id) return edge;
+      const data = edge.data as
+        | { sourceBox?: object | null; targetBox?: object | null; labelAnchor?: unknown }
+        | undefined;
+      if (!data?.sourceBox || !data?.targetBox) return edge;
+      return {
+        ...edge,
+        data: {
+          ...data,
+          // The label anchor was checked against the old geometry; fall back
+          // to the live path's own midpoint until the drop.
+          labelAnchor: undefined,
+          sourceBox: edge.source === dragGhost.id ? { ...data.sourceBox, ...at } : data.sourceBox,
+          targetBox: edge.target === dragGhost.id ? { ...data.targetBox, ...at } : data.targetBox,
+        },
+      };
+    });
+  }, [edges, dragGhost]);
+
+  const onNodeDragStart = useCallback(
+    (_event: unknown, node: Node) => {
+      if (!isDragGhostTarget(node)) return;
+      const { width, height } = nodeGhostSize(node);
+      const at = absoluteNodePosition(node, nodes);
+      setDragGhost({ id: node.id, x: at.x, y: at.y, width, height });
+    },
+    [nodes],
+  );
+
+  const onNodeDrag = useCallback(
+    (_event: unknown, node: Node) => {
+      setDragGhost((current) => {
+        if (current === null || current.id !== node.id || !isDragGhostTarget(node)) return current;
+        const at = absoluteNodePosition(node, nodes);
+        if (current.x === at.x && current.y === at.y) return current;
+        return { ...current, x: at.x, y: at.y };
+      });
+    },
+    [nodes],
+  );
+
   const onNodeDragStop = useCallback(
     (_event: unknown, node: Node) => {
+      setDragGhost(null);
+      const position = snapDroppedPosition(node, nodes);
+      // Correct the rendered card as well as the draft: when the snapped
+      // position is the one already stored, no rebuild follows the commit and
+      // the card would otherwise stay where the pointer let go.
+      setNodes((current) =>
+        current.map((item) => (item.id === node.id ? { ...item, position } : item)),
+      );
+      const dropped: Node = { ...node, position };
       // A dragged note writes `ui_layout.notes`, not a step position.
       if (node.type === "note") {
         const id = (node.data as NoteNodeRender).note?.id;
-        if (id) commitNoteMove(id, node.position);
+        if (id) commitNoteMove(id, position);
         return;
       }
-      moveDraggedNode(node, nodes, onMove);
+      moveDraggedNode(dropped, nodes, onMove);
     },
-    [commitNoteMove, onMove, nodes],
+    [commitNoteMove, nodes, onMove, setNodes],
   );
 
   // The hit test needs the pointer in FLOW coordinates. React Flow's
@@ -2335,9 +2457,14 @@ function CanvasInner({
        * buttons must stay clickable. The two levels sit ABOVE every node lane
        * (steps 2, notes 1, groups 0) so the lift still means what it did. */}
       <style>
-        {
-          ".studio-canvas .react-flow__edges{z-index:3}.studio-canvas .react-flow__edgelabel-renderer{z-index:4}"
-        }
+        {".studio-canvas .react-flow__edges{z-index:3}" +
+          ".studio-canvas .react-flow__edgelabel-renderer{z-index:4}" +
+          // README §8 “dragging (5b)”: a dragged card drops its hard offset
+          // shadow (the hatch ghost carries the depth now) and the pointer
+          // says “grabbing”. React Flow's own `dragging` class on the node
+          // wrapper is the only signal that fires for every node type.
+          '.studio-canvas .react-flow__node.dragging [role="button"]{box-shadow:none}' +
+          ".studio-canvas .react-flow__node.dragging{cursor:grabbing}"}
       </style>
       <div
         ref={paneRef}
@@ -2346,7 +2473,7 @@ function CanvasInner({
       >
         <ReactFlow
           nodes={nodes}
-          edges={edges}
+          edges={liveEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           // The “React Flow” badge is a library watermark, not information: the
@@ -2362,9 +2489,11 @@ function CanvasInner({
           onlyRenderVisibleElements={false}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onNodeDragStart={onNodeDragStart}
+          onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
-          snapToGrid
-          snapGrid={[20, 20]}
+          // A press that barely moves is a click, not a drag (README §8).
+          nodeDragThreshold={4}
           onConnect={handleConnect}
           onMoveStart={(event) => {
             // Only a GESTURE makes the view reader-owned. React Flow also
@@ -2419,6 +2548,19 @@ function CanvasInner({
             size={canvasDotSizePx(rfViewport.zoom)}
             offset={CANVAS_DOT_OFFSET_PX}
           />
+          {/* The drag marks live in the flow's own coordinate space, so they
+           * pan and zoom with the canvas and sit in the lane UNDER the node
+           * lanes (goal frames 0, notes 1, steps 2). */}
+          {dragGhost && (
+            <ViewportPortal>
+              <DragGhost
+                x={dragGhost.x}
+                y={dragGhost.y}
+                width={dragGhost.width}
+                height={dragGhost.height}
+              />
+            </ViewportPortal>
+          )}
         </ReactFlow>
         {showToolIsland && (
           <>
@@ -2451,7 +2593,7 @@ function CanvasInner({
                 data-testid="island-step-picker"
                 className={
                   phone
-                    ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[18px] border-t border-line bg-surface p-2 shadow-[var(--shadow-modal)]"
+                    ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[14px] border-t border-line bg-surface p-2 shadow-[var(--shadow-modal)]"
                     : "absolute left-[68px] top-4 z-30"
                 }
               >
