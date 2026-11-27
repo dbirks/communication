@@ -2631,7 +2631,9 @@ function CanvasInner({
           // The per-step "⋯" buttons of a multi-selection would sit on top of
           // the marching-ants box.
           (showWrapBox && activeSelection.length > 1
-            ? '.studio-canvas [data-testid^="node-menu-button-"]{display:none}'
+            ? '.studio-canvas [data-testid^="node-menu-button-"]{display:none}' +
+              // …and the room kept for that button goes back to the subline.
+              ".studio-canvas [data-step-text]{padding-right:0}"
             : "") +
           // A step being dragged shows no menu button or connection handles.
           '.studio-canvas .react-flow__node.dragging [data-testid^="node-menu-button-"],' +

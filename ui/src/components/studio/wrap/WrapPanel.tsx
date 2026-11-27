@@ -118,7 +118,10 @@ export function WrapPanel({
   const activeUnsupported = unsupported?.[goalKind];
   const canSubmitRepeat = currentDraft.trim().length > 0 && !activeUnsupported;
 
+  // Side by side needs at least two steps to run at the same time.
+  const sideDisabled = count < 2;
   function switchTab(next: WrapTab, focusTarget = false) {
+    if (next === "side" && sideDisabled) return;
     setTab(next);
     if (focusTarget) {
       const target = next === "repeat" ? repeatTabRef.current : sideTabRef.current;
@@ -238,9 +241,13 @@ export function WrapPanel({
                 aria-controls={panelId}
                 tabIndex={tab === "side" ? 0 : -1}
                 data-testid="wrap-tab-side"
+                disabled={sideDisabled}
+                title={
+                  sideDisabled ? "Select two or more steps to run them side by side" : undefined
+                }
                 onClick={() => switchTab("side")}
                 onKeyDown={handleTabKeyDown}
-                className={`flex h-[30px] items-center justify-center gap-[6px] whitespace-nowrap rounded-[7px] border text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+                className={`flex h-[30px] items-center justify-center gap-[6px] whitespace-nowrap rounded-[7px] border text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:text-disabled-fg disabled:hover:text-disabled-fg ${
                   tab === "side"
                     ? "border-fill-edge bg-surface text-ink"
                     : "border-transparent bg-transparent text-muted hover:text-ink"

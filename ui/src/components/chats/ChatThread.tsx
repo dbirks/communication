@@ -87,6 +87,18 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
   const [detailsSection, setDetailsSection] = useState<"details" | "artifacts">("details");
   const artifactsAnchorRef = useRef<HTMLDivElement | null>(null);
   const [startedRunIds, setStartedRunIds] = useState<string[]>([]);
+  // A run started from this chat (the suggestion's Run it or the hand-off
+  // dialog) appends its card at the end of the transcript: bring the end into
+  // view so the new card is what the reader sees (review-4 F4).
+  const messagesRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (startedRunIds.length === 0) return;
+    const frame = requestAnimationFrame(() => {
+      const el = messagesRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [startedRunIds.length]);
   const [suggestionDismissed, setSuggestionDismissed] = useState(() =>
     isWorkflowSuggestionDismissed(conversationId),
   );
@@ -387,6 +399,7 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
           scrollable-region-focusable): a transcript of plain text has no
           focusable child, so the scroller itself takes focus. */}
       <div
+        ref={messagesRef}
         className="min-h-0 flex-1 overflow-y-auto px-[20px] pt-[20px] pb-[12px] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
         data-capture-keep-scroll
         tabIndex={0}

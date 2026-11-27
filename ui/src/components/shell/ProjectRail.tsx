@@ -58,7 +58,14 @@ export function needsYouBadge(flag: Flag | undefined): boolean {
 /** The tile's target: the same section in the new scope. From Manage, a run
  * page or anywhere outside the three pill sections, a tile goes to that
  * project's home (`routes.scopeHome`). */
-export function tileHref(section: Section | null, scope: string | null): string {
+export function tileHref(
+  section: Section | null,
+  scope: string | null,
+  openChatId: string | null = null,
+): string {
+  // The open chat belongs to every wider scope: switching to All keeps it
+  // open, as the prototype does (review-4 F5).
+  if (section === "chats" && scope === null && openChatId) return routes.chat(openChatId, null);
   if (section === "chats") return routes.chats(scope);
   if (section === "factory") return routes.factory(scope);
   return routes.scopeHome(scope);
@@ -97,6 +104,8 @@ export default function ProjectRail({ testid = "project-rail" }: ProjectRailProp
   const projects = useProjects();
   const flags = useSidebarFlags();
   const section = sectionFromPath(location.pathname);
+  const openChat = /\/chats\/([^/]+)\/?$/.exec(location.pathname)?.[1];
+  const openChatId = openChat && openChat !== "new" ? decodeURIComponent(openChat) : null;
   const onManage = location.pathname.startsWith("/manage");
   const items = projects.data?.items ?? [];
   // On /manage/* Manage is the only selected thing on the rail (review
@@ -125,7 +134,7 @@ export default function ProjectRail({ testid = "project-rail" }: ProjectRailProp
           a 15px gutter inside it would move the tiles. */}
       <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-[10px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <Link
-          to={tileHref(section, null)}
+          to={tileHref(section, null, openChatId)}
           title="All projects"
           aria-label="All projects"
           aria-current={tileSelected(scope === null) ? "true" : undefined}

@@ -220,6 +220,17 @@ describe("WrapPanel", () => {
     expect(screen.getByTestId("wrap-submit").className).not.toContain("w-full");
   });
 
+  it("offers Side by side only when two or more steps are selected", () => {
+    render(
+      <WrapPanel count={1} onWrapRepeat={vi.fn()} onWrapSideBySide={vi.fn()} onClose={vi.fn()} />,
+    );
+    const side = screen.getByTestId("wrap-tab-side") as HTMLButtonElement;
+    expect(side.disabled).toBe(true);
+    expect(side.title).toBe("Select two or more steps to run them side by side");
+    fireEvent.click(side);
+    expect(screen.getByTestId("wrap-tab-repeat").getAttribute("aria-selected")).toBe("true");
+  });
+
   it("keeps the side-by-side Wrap button compact and right-aligned", () => {
     render(
       <WrapPanel count={3} onWrapRepeat={vi.fn()} onWrapSideBySide={vi.fn()} onClose={vi.fn()} />,

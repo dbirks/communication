@@ -1244,7 +1244,7 @@ export function StudioPage() {
     // no word says "live" in the one place the reader glances at.
     draftStatusNode = (
       <span
-        className="block min-w-[14ch] shrink truncate text-[12px] md:shrink-0 max-md:min-w-0 max-md:shrink-[4] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
+        className="block min-w-[14ch] shrink-0 truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className={`h-[7px] w-[7px] rounded-full ${runBannerState.strongBg}`} aria-hidden />
@@ -1254,7 +1254,7 @@ export function StudioPage() {
   } else if (studio.saving) {
     draftStatusNode = (
       <span
-        className="block min-w-[14ch] shrink truncate text-[12px] md:shrink-0 max-md:min-w-0 max-md:shrink-[4] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
+        className="block min-w-[14ch] shrink-0 truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
@@ -1283,7 +1283,7 @@ export function StudioPage() {
   } else if (!draftId && newestSummary) {
     draftStatusNode = (
       <span
-        className="block min-w-[14ch] shrink truncate text-[12px] md:shrink-0 max-md:min-w-0 max-md:shrink-[4] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
+        className="block min-w-[14ch] shrink-0 truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-done-tag-fg" aria-hidden />
@@ -1299,7 +1299,7 @@ export function StudioPage() {
           : "";
     draftStatusNode = (
       <span
-        className="block min-w-[14ch] shrink truncate text-[12px] md:shrink-0 max-md:min-w-0 max-md:shrink-[4] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
+        className="block min-w-[14ch] shrink-0 truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
@@ -1347,7 +1347,7 @@ export function StudioPage() {
           /
         </span>
         <span
-          className="min-w-[9ch] truncate font-bold text-ink"
+          className="min-w-[9ch] truncate font-bold text-ink max-md:min-w-[6ch]"
           data-testid="studio-title"
           title={pipelineName}
         >

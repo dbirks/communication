@@ -176,7 +176,7 @@ export function WorkflowCard({
             to={routes.factoryWorkflow(pipeline.id, scope)}
             data-testid={`workflow-card-link-${pipeline.id}`}
             title={name}
-            className="min-w-0 truncate text-[15px] font-bold text-ink no-underline group-hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent after:absolute after:inset-0 after:content-['']"
+            className="min-w-0 truncate text-[15px] font-bold text-ink no-underline max-md:flex-1 max-md:basis-0 group-hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent after:absolute after:inset-0 after:content-['']"
           >
             {name}
           </Link>

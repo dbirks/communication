@@ -200,4 +200,9 @@ and the prototype.
 | Editor, phone | the "…" menu of a selected step sits on the step's top-right corner, and the tool island may cover the leftmost step until the board is panned | 390px of board; the island stays reachable |
 | Editor, dragging | while a step is dragged past the border of a goal frame its edge to the frame is drawn straight | The edge ends at the frame's border (see above); it settles when the step is dropped |
 | Chat transcript | prints the agent's text as the agent sent it, chunks joined as received | The transcript is a kept surface |
+| New chat, phone | the header row holds the back arrow; "New chat" is the page heading under it | The same header every phone chat screen has (back arrow, then content); the title is the page's own |
+| Factory card thumbnails, phone | the step strip starts at the left and is cut at the card's edge | The strip reads left to right from the trigger; the card opens the whole workflow |
+| Tool island, touch | no hover labels; every tool carries its name (and key) as its accessible label | A touch screen cannot hover; the island stays 48px wide on a 390px board |
+| Goal frame | its "…" button shows while the frame is selected (right after a wrap it is), 8px inside the corner | The same rule as a step's "…" |
+| Wrap panel | "Side by side" is unavailable with one step selected, and says why on hover | One step cannot run beside itself |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |

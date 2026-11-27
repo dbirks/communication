@@ -175,7 +175,7 @@ export function HomePrompt({ projectId, placeholder, extraChips }: HomePromptPro
         value={text}
         onChange={setText}
         onSubmit={submit}
-        rows={2}
+        rows={projectId ? 1 : 2}
         disabled={noProjects}
         busy={create.isPending || !selectedId || !profileId}
         footer={footer}

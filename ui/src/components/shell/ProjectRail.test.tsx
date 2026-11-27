@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Me, Project } from "../../api/types";
 import type { Flag } from "../../lib/sidebarFlags";
 import { meFixture } from "../../test/fakes";
-import ProjectRail from "./ProjectRail";
+import ProjectRail, { tileHref } from "./ProjectRail";
 
 const projects = vi.hoisted(() => ({ current: [] as Project[] }));
 const flags = vi.hoisted(() => ({ current: {} as Record<string, Flag> }));
@@ -228,5 +228,14 @@ describe("the account row", () => {
     expect(avatar.className).toContain("border-ink");
     expect(avatar.style.width).toBe("30px");
     expect(avatar.style.fontSize).toBe("10.5px");
+  });
+});
+
+describe("tileHref", () => {
+  it("keeps the open chat when the rail switches Chats to All", () => {
+    expect(tileHref("chats", null, "c1")).toBe("/chats/c1");
+    expect(tileHref("chats", null)).toBe("/chats");
+    expect(tileHref("chats", "p1", "c1")).toBe("/p/p1/chats");
+    expect(tileHref("factory", null, "c1")).toBe("/factory");
   });
 });

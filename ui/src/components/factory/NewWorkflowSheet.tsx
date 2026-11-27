@@ -448,14 +448,14 @@ export function NewWorkflowSheet({
           <div className="flex flex-col gap-[10px] rounded-[14px] border-[1.5px] border-accent p-[14px_16px] ring-4 ring-accent-ring">
             <textarea
               id="new-workflow-description"
-              rows={4}
+              rows={3}
               value={description}
               onChange={(event) => setDescription(event.target.value)}
               placeholder="Describe what should happen, e.g. “When an issue gets the 'ready' label, plan it, implement it, run the tests, and ask me before merging.”"
               data-testid="new-workflow-description"
               className="w-full resize-none border-0 bg-transparent text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint"
             />
-            <div className="flex items-center gap-[8px]">
+            <div className="flex items-center gap-[8px] max-md:flex-wrap">
               {speech.supported ? (
                 <button
                   type="button"
@@ -473,7 +473,7 @@ export function NewWorkflowSheet({
               {/* The promise rides the box's own bottom row, between the two
                   buttons the prototype has it beside (review 08-1280-2) — it is
                   what `Sketch it` does, so it belongs with `Sketch it`. */}
-              <p className="m-0 min-w-0 flex-1 text-[12px] text-muted">
+              <p className="m-0 min-w-0 flex-1 text-[12px] text-muted max-md:order-last max-md:basis-full">
                 Steps get sketched on the canvas. Nothing runs until you make it live.
               </p>
               <button

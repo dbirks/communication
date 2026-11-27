@@ -437,7 +437,7 @@ export default function QuickChat({
       >
         <IconSparkles size={16} stroke={1.5} aria-hidden className="shrink-0 text-accent" />
         <span className="whitespace-nowrap text-[14px] font-bold text-ink">Quick chat</span>
-        <span className="hidden min-w-0 truncate font-mono text-[10.5px] text-muted min-[380px]:inline">
+        <span className="hidden min-w-0 truncate font-mono text-[10.5px] text-muted md:inline">
           stays open until you close it
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-[4px]">
