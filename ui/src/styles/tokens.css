@@ -524,3 +524,22 @@
     inset: calc(50% - 15px);
   }
 }
+
+/*
+ * Quick chat on a phone. The panel is not inside <main>, so the touch-target
+ * floor above never reached it: its reply field measured 36px, the mic and
+ * send 32px, the footer chips 28px and the header icons 24px (review-1,
+ * finding 47). Same floor, same breakpoint; icon buttons also get the width.
+ */
+@media (width < 560px) {
+  [data-testid="quick-chat"] button,
+  [data-testid="quick-chat"] [role="button"],
+  [data-testid="quick-chat"] textarea,
+  [data-testid="quick-chat"] input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]) {
+    min-height: 44px;
+  }
+  [data-testid="quick-chat"] button {
+    min-width: 44px;
+    align-items: center;
+  }
+}

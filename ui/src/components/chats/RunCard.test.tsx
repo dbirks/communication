@@ -97,6 +97,13 @@ describe("compressRunSegments", () => {
   });
 });
 
+/** Elements whose own (direct) text nodes mention `word`. */
+function textOwning(root: HTMLElement, word: RegExp) {
+  return [...root.querySelectorAll("*")].filter((el) =>
+    Array.from(el.childNodes).some((n) => n.nodeType === 3 && word.test(n.textContent ?? "")),
+  );
+}
+
 describe("RunCard", () => {
   it("renders a 3-step running card and links Open in Factory to routes.run(runId)", async () => {
     const nodes = [
@@ -107,7 +114,9 @@ describe("RunCard", () => {
     renderRunCard(baseRun, nodes);
 
     await screen.findByText("Workflow One");
-    expect(screen.getByTestId(`run-card-state-${baseRun.id}`).textContent).toBe("● running");
+    expect(screen.getByTestId(`run-card-state-${baseRun.id}`).textContent).toBe(
+      "● running · implement",
+    );
     expect(screen.getByTestId("run-card-step").textContent).toBe("implement");
     expect(screen.getByTestId("run-card-strip").children).toHaveLength(3);
     expect(screen.getByTestId("run-card-segment-0").getAttribute("data-segment-state")).toBe(
@@ -122,6 +131,60 @@ describe("RunCard", () => {
 
     const open = screen.getByTestId("run-card-open");
     expect(open.getAttribute("href")).toBe(`/runs/${baseRun.id}`);
+  });
+
+  it("says the running state once in a single-row card with the icon, name, strip and link", async () => {
+    const nodes = [
+      node(1, "first", "succeeded"),
+      node(2, "second", "running"),
+      node(3, "third", "pending"),
+    ];
+    const { container } = renderRunCard(baseRun, nodes);
+    await screen.findByText("Workflow One");
+    expect(container.querySelector(`[data-testid="run-card-${baseRun.id}"]`)).not.toBeNull();
+
+    const card = screen.getByTestId(`run-card-${baseRun.id}`) as HTMLElement;
+
+    // The state word appears exactly once in the card.
+    expect(textOwning(card, /\brunning\b/)).toHaveLength(1);
+    expect(screen.getByTestId(`run-card-state-${baseRun.id}`).textContent ?? "").toContain(
+      "running",
+    );
+
+    // Factory icon present, aria-hidden, sized 18.
+    const icon = card.querySelector("svg");
+    expect(icon).not.toBeNull();
+    expect(icon?.getAttribute("aria-hidden")).toBe("true");
+    expect(icon?.getAttribute("width")).toBe("18");
+
+    // One row: icon, the name+strip column, the link are the card's children.
+    expect([...card.children].map((el) => el.tagName)).toEqual(["svg", "DIV", "A"]);
+
+    // The strip sits in the same column as the workflow name and the state.
+    const name = textOwning(card, /Workflow One/)[0];
+    const strip = screen.getByTestId("run-card-strip");
+    const column = strip.parentElement as HTMLElement;
+    expect(column.tagName).toBe("DIV");
+    expect(column.contains(name)).toBe(true);
+    expect(column.contains(screen.getByTestId(`run-card-state-${baseRun.id}`))).toBe(true);
+    expect(column.parentElement).toBe(card);
+
+    // Running pale card classes.
+    expect(card.className).toContain("border-st-running-pale-edge");
+    expect(card.className).toContain("bg-st-running-pale-body");
+    expect(icon?.classList.contains("text-st-running-pale-fg")).toBe(true);
+  });
+
+  it("uses the done pale pair and drops the step suffix for a completed run", async () => {
+    const nodes = [node(1, "plan", "succeeded"), node(2, "implement", "succeeded")];
+    renderRunCard({ ...baseRun, status: "completed" }, nodes);
+    await screen.findByText("Workflow One");
+
+    const card = screen.getByTestId(`run-card-${baseRun.id}`);
+    expect(card.className).toContain("border-st-done-pale-edge");
+    expect(card.className).toContain("bg-st-done-pale-body");
+    expect(screen.getByTestId(`run-card-state-${baseRun.id}`).textContent).toBe("✓ done");
+    expect(screen.queryByTestId("run-card-step")).toBeNull();
   });
 
   it("compresses an 8-step run into 5 segments and shows state words for waiting/done/failed/interrupted", async () => {

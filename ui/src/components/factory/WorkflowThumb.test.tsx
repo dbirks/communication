@@ -1,12 +1,12 @@
 /**
  * WorkflowThumb — the strip's classes come from the state tokens (a raw hex
- * here would be a second palette), and the strip is announced rather than
- * hidden: its only statement of "where the run is" is visual.
+ * here would be a second palette) and its connectors and labels are readable at
+ * card size, and the strip is announced rather than hidden: its only statement
+ * of "where the run is" is visual.
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { CHIP_CLASS, WorkflowThumb, chipClasses, chipLabel, chipLabelMax } from "./WorkflowThumb";
-import { CHIP_LABEL_MAX, CHIP_LABEL_MAX_LONG } from "./WorkflowThumb";
+import { CHIP_CLASS, CHIP_LABEL_MAX, WorkflowThumb, chipClasses } from "./WorkflowThumb";
 import type { ThumbStep } from "./factoryData";
 
 afterEach(cleanup);
@@ -21,6 +21,13 @@ const steps: ThumbStep[] = [
 
 function chip(id: string): HTMLElement {
   return screen.getByTestId(`workflow-thumb-chip-${id}`);
+}
+
+/** A chip's label box — the element the CSS ellipsis is drawn in. */
+function chipLabelEl(id: string): HTMLElement {
+  const label = chip(id).firstElementChild;
+  if (!label) throw new Error(`chip ${id} has no label box`);
+  return label as HTMLElement;
 }
 
 describe("WorkflowThumb", () => {
@@ -55,32 +62,54 @@ describe("WorkflowThumb", () => {
     }
   });
 
-  it("cuts a long label at nine characters, with the whole text in the title", () => {
-    render(<WorkflowThumb steps={steps} />);
-    expect(chip("test").textContent).toBe(`${"run the w"}…`);
-    expect(chip("test").getAttribute("title")).toBe("run the whole test suite");
-    expect(chipLabel("123456789")).toBe("123456789");
+  it("renders a ten-character label in full", () => {
+    const ten: ThumbStep[] = [
+      { id: "deploy-stg", label: "deploy-stg", kind: "agent", state: "idle" },
+    ];
+    render(<WorkflowThumb steps={ten} />);
+    expect(chip("deploy-stg").textContent).toBe("deploy-stg");
   });
 
-  it("packs a long chain tighter instead of crushing every chip to one letter", () => {
-    // Measured on the lab's `feature-development` card: seven chips at the
-    // design's own padding overflowed the card and squeezed the step labels to
-    // `p…`, so a strip over five chips packs (`0 6`, a 14px connector) and
-    // cuts its labels at six characters.
+  // Review-1 finding 21: the strip used to slice the label at 9 (or 6) characters,
+  // so a `run the whole test suite` step read as `run the w…`. The chip now
+  // carries the whole word and CSS does the cut at the 14-character ceiling.
+  it("truncates only a label past the ceiling, in CSS, with the whole text in the title", () => {
     render(<WorkflowThumb steps={steps} />);
-    expect(chipLabelMax(steps.length)).toBe(CHIP_LABEL_MAX);
+    expect(chip("test").textContent).toBe("run the whole test suite");
+    expect(chip("test").getAttribute("title")).toBe("run the whole test suite");
+    const label = chipLabelEl("test").className;
+    expect(label).toContain("truncate");
+    expect(label).toContain(`max-w-[${CHIP_LABEL_MAX}ch]`);
+  });
+
+  // Review-1 finding 20: the pale connector vanished against the rail, so the
+  // strip read as loose chips instead of a sequence.
+  it("joins the chips with the design's 18px ink-2 line", () => {
+    render(<WorkflowThumb steps={steps} />);
+    const lines = screen.getAllByTestId("workflow-thumb-line");
+    expect(lines).toHaveLength(steps.length - 1);
+    expect(lines[0].className).toContain("bg-ink-2");
+    expect(lines[0].className).toContain("w-[18px]");
+    expect(lines[0].className).toContain("h-[1.5px]");
+  });
+
+  it("packs a long chain tighter without cutting its labels shorter", () => {
+    // Measured on the lab's `feature-development` card: seven chips at the
+    // design's own padding overflowed the card. A long chain still packs
+    // (`0 6`), but every chip keeps the same 14-character ceiling — the
+    // `+N` overflow is what keeps the row inside the card, not crushed type.
     const many: ThumbStep[] = Array.from({ length: 7 }, (_unused, index) => ({
       id: `step-${index}`,
-      label: `step-${index}`,
+      label: `step-${index}-alphas`,
       kind: index === 0 ? ("trigger" as const) : ("other" as const),
       state: "idle" as const,
     }));
     render(<WorkflowThumb steps={many} />);
-    expect(chipLabelMax(many.length)).toBe(CHIP_LABEL_MAX_LONG);
-    expect(chipLabel("implement", CHIP_LABEL_MAX_LONG)).toBe("implem…");
+    expect(screen.getAllByTestId("workflow-thumb-line")[0].className).toContain("w-[18px]");
     const packed = chip("step-1").className;
     expect(packed).toContain("px-[6px]");
     expect(packed).not.toContain("px-[8px]");
+    expect(chipLabelEl("step-1").className).toContain(`max-w-[${CHIP_LABEL_MAX}ch]`);
   });
 
   it("is announced as what it shows, not as decoration", () => {

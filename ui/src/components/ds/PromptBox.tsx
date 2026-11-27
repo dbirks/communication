@@ -159,7 +159,7 @@ export function PromptChip({
       disabled={disabled}
       onClick={onClick}
       {...aria}
-      className="inline-flex h-[26px] max-w-full items-center gap-[5px] rounded-[8px] border border-line bg-surface px-[8px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg"
+      className="inline-flex h-[28px] max-w-full items-center gap-[6px] rounded-full border border-line bg-surface px-[10px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg"
     >
       {icon}
       <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{children}</span>

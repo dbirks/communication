@@ -151,7 +151,7 @@ export default function Factory() {
             type="button"
             onClick={() => setSheetOpen(true)}
             data-testid="factory-new"
-            className="ml-auto flex h-[34px] shrink-0 items-center gap-[6px] rounded-[8px] bg-accent px-[14px] text-[13px] font-semibold text-white hover:bg-accent-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="ds-btn ds-btn--primary ds-btn--tall ml-auto shrink-0 gap-[6px]!"
           >
             <IconPlus size={15} stroke={1.5} aria-hidden />
             New workflow

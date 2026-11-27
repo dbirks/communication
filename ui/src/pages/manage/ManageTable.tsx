@@ -106,10 +106,7 @@ function ManageRows({
     );
   }
   return (
-    <div
-      data-testid={`${testid}-card`}
-      className="overflow-hidden rounded-[12px] border border-line bg-surface"
-    >
+    <div className="overflow-hidden rounded-[12px] border border-line bg-surface">
       <div className="px-[16px]">
         <table
           className="w-full border-collapse [&>tbody>tr:last-child>td]:border-b-0"

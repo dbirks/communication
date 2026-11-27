@@ -27,7 +27,6 @@ import { useState } from "react";
 import { defaultAgentSaveSentence, useSetProjectDefaultAgent } from "../../api/queries";
 import type { Project } from "../../api/types";
 import { AgentPicker } from "../shell/AgentPicker";
-import { ColumnHeading } from "./SectionLabel";
 
 export interface DefaultAgentLineProps {
   project: Project;
@@ -71,11 +70,15 @@ export function DefaultAgentLine({ project }: DefaultAgentLineProps) {
 
   return (
     <section className="min-w-0" aria-label="Default agent" data-testid="project-default-agent">
-      <ColumnHeading testid="project-default-agent-label">Default agent</ColumnHeading>
+      {/* One line under "Workflows here" (CONTRACT "Agents & models" 3), not a
+          third section with its own heading. */}
       <div
-        className="flex flex-wrap items-baseline gap-x-[8px]"
+        className="flex flex-wrap items-center gap-x-[8px] gap-y-[4px]"
         data-testid="project-default-agent-line"
       >
+        <span className="text-[12.5px] text-muted" data-testid="project-default-agent-label">
+          Default agent
+        </span>
         {canManage ? (
           <span className="flex min-w-0 flex-wrap items-baseline gap-x-[8px]">
             <AgentPicker

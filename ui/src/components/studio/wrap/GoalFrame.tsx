@@ -4,9 +4,10 @@
  * optional animated MarchingAnts outline while a run is executing.
  */
 import type { ReactNode } from "react";
-import { IconRepeat } from "@tabler/icons-react";
+import type { TablerIcon } from "@tabler/icons-react";
+import { IconGavel, IconRepeat, IconTerminal2, IconTextScan2 } from "@tabler/icons-react";
 import { MarchingAnts, type MarchingAntsRect } from "./MarchingAnts";
-import { goalSentence, type GoalSpec } from "./wrapModel";
+import { goalSentence, type GoalKind, type GoalSpec } from "./wrapModel";
 
 /**
  * The frame says its round bound ONCE. While editing that is the bound alone
@@ -28,6 +29,19 @@ export function runStatusLabel(word: string, round: number, maxRounds: number): 
 }
 
 const RUN_BOUND_PHRASE = /·\s*round (\d+) of up to (\d+)\s*$/;
+
+/**
+ * The header glyph names what the loop is judged BY, the same three icons the
+ * wrap panel offers (review-1 finding 39): a gavel, a command prompt, a text
+ * scan. A goal whose kind this build does not know keeps the repeat glyph — the
+ * frame is still a loop, and inventing a glyph for an unknown kind would say a
+ * fact the frame does not have.
+ */
+const GOAL_ICON: Partial<Record<GoalKind, TablerIcon>> = {
+  judge: IconGavel,
+  command: IconTerminal2,
+  contains: IconTextScan2,
+};
 
 /** `runStatusLabel`'s inverse: the trailing round count, and what is left of the
  * status line without it. A status with no count ("· not started", "⊘ stopped",
@@ -69,6 +83,7 @@ export function GoalFrame({
   className = "",
 }: GoalFrameProps) {
   const isMono = goal.kind === "command" || goal.kind === "contains";
+  const KindIcon = GOAL_ICON[goal.kind] ?? IconRepeat;
   const roundWord = goal.maxRounds === 1 ? "round" : "rounds";
   const tail = giveUpText ?? "then stop";
   const run = status ? splitRunLabel(status.text) : null;
@@ -77,7 +92,13 @@ export function GoalFrame({
   const headerContent = (
     <>
       <span className="flex items-center gap-[6px] text-[12px] font-semibold text-accent-edge">
-        <IconRepeat size={15} stroke={1.5} aria-hidden className="shrink-0" />
+        <KindIcon
+          size={15}
+          stroke={1.5}
+          aria-hidden
+          data-testid="goal-frame-icon"
+          className="shrink-0"
+        />
         <span>{goalSentence(goal)}</span>
       </span>
       <span

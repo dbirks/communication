@@ -36,24 +36,16 @@ export const CHIP_CLASS: Record<ThumbStepState, string> = {
  * workflow starts, and that fact never changes mid-run. */
 export const TRIGGER_CHIP_CLASS = "border-ink bg-ink text-surface";
 
-/** A chip label the strip can keep: nine characters, then an ellipsis. The
- * full label rides the chip's `title`, so the cut is never a lost fact. */
-export const CHIP_LABEL_MAX = 9;
+/** The longest label a chip shows whole. Only a longer label gets an ellipsis,
+ * and the whole label rides the chip's `title`, so the cut is never a lost
+ * fact (review-1 finding 21). A character slice used to stop a `plan`
+ * step at `pla…`; the chip now carries the word and CSS does the honest cut. */
+export const CHIP_LABEL_MAX = 14;
 
-/** A longer chain gives up characters per chip: at seven chips (the trigger,
- * five steps and the `+N` overflow) nine characters each do not fit a card,
- * and a pixel-crushed `p…` says less than an honest `plan…`. The cut is the
- * same rule, taken earlier — never past the nine-character ceiling. */
-export const CHIP_LABEL_MAX_LONG = 6;
-
-/** The label ceiling for a strip of this many chips. */
-export function chipLabelMax(count: number): number {
-  return count > 5 ? CHIP_LABEL_MAX_LONG : CHIP_LABEL_MAX;
-}
-
-export function chipLabel(label: string, max = CHIP_LABEL_MAX): string {
-  return label.length > max ? `${label.slice(0, max)}…` : label;
-}
+/** The chip's own label box: the {@link CHIP_LABEL_MAX} ceiling in `ch`, and
+ * the ellipsis Tailwind's `truncate` draws. Kept as a literal so the class is
+ * really generated; the test binds `14ch` to `CHIP_LABEL_MAX`. */
+const CHIP_LABEL = "max-w-[14ch] truncate";
 
 /** The classes for one chip; the trigger family owns its own inked look. */
 export function chipClasses(kind: ThumbStepKind, state: ThumbStepState): string {
@@ -65,21 +57,16 @@ const CHIP_BASE =
   "flex h-[24px] items-center rounded-[7px] border text-[11.5px] font-semibold whitespace-nowrap";
 /** A strip's own padding: the design's `0 8` while the row has room for it. */
 const CHIP_PAD = "px-[8px]";
-/** A long chain packs tighter — `0 6` on the chip and a 14px connector — so a
- * card at its 2-column width shows the trigger, five steps and the `+N`
- * without cutting any of them short. Measured on the lab's own
- * `feature-development` card (7 chips) at 1280 in the R4 browser pass. */
+/** A long chain packs its padding tighter — `0 6` — so a card at its 2-column
+ * width shows the trigger, five steps and the `+N`. The connector does not
+ * shrink with it: the design's line is 18px whatever the chip count.
+ * Measured on the lab's own `feature-development` card (7 chips) at 1280 in
+ * the R4 browser pass. */
 const CHIP_PAD_COMPACT = "px-[6px]";
-/** The connector between two chips. */
-const LINE_BASE = "h-[1.5px] w-[18px] shrink-0 bg-line-strong";
-const LINE_COMPACT = "h-[1.5px] w-[14px] shrink-0 bg-line-strong";
-
-/** The chips that never give up width: the trigger (how this workflow starts)
- * and the `+N` overflow (how many steps hide). A step id may lose characters
- * to fit — the whole label rides the chip's `title`. */
-function isPinnedChip(step: ThumbStep): boolean {
-  return step.kind === "trigger" || step.id.startsWith("+");
-}
+/** The connector between two chips: the design's own 18px line, 1.5px thick,
+ * in ink-2 — the pale hairline it used was invisible against the rail at card
+ * size, so the strip read as loose chips (review-1 finding 20). */
+const LINE = "h-[1.5px] w-[18px] shrink-0 bg-ink-2";
 
 export interface WorkflowThumbProps {
   steps: ThumbStep[];
@@ -105,10 +92,8 @@ function capThumbSteps(steps: ThumbStep[]): ThumbStep[] {
 
 export function WorkflowThumb({ steps, className = "" }: WorkflowThumbProps) {
   const displaySteps = capThumbSteps(steps);
-  const labelMax = chipLabelMax(displaySteps.length);
   const compact = displaySteps.length > 5;
   const chipPad = compact ? CHIP_PAD_COMPACT : CHIP_PAD;
-  const lineClass = compact ? LINE_COMPACT : LINE_BASE;
   // When the strip is narrower than the card, `mx-auto` centers it; when
   // wider, auto-margin collapses to 0 so the strip stays left-aligned and
   // clips only on the right behind the fade overlay, never clipping the
@@ -128,24 +113,21 @@ export function WorkflowThumb({ steps, className = "" }: WorkflowThumbProps) {
         <span className="mx-auto text-[11.5px] text-muted">no steps yet</span>
       ) : (
         <div data-testid="workflow-thumb-strip" className="mx-auto flex shrink-0 items-center">
-          {displaySteps.map((step, index) => {
-            const pinned = isPinnedChip(step);
-            return (
-              <span key={step.id} className={`flex shrink-0 items-center gap-[6px]`}>
-                {index > 0 ? <span aria-hidden className={lineClass} /> : null}
-                <span
-                  title={step.label}
-                  data-testid={`workflow-thumb-chip-${step.id}`}
-                  data-state={step.state}
-                  className={`${CHIP_BASE} ${chipPad} shrink-0 ${chipClasses(step.kind, step.state)}`}
-                >
-                  <span className={pinned ? "" : "whitespace-nowrap"}>
-                    {chipLabel(step.label, labelMax)}
-                  </span>
-                </span>
+          {displaySteps.map((step, index) => (
+            <span key={step.id} className={`flex shrink-0 items-center gap-[6px]`}>
+              {index > 0 ? (
+                <span aria-hidden data-testid="workflow-thumb-line" className={LINE} />
+              ) : null}
+              <span
+                title={step.label}
+                data-testid={`workflow-thumb-chip-${step.id}`}
+                data-state={step.state}
+                className={`${CHIP_BASE} ${chipPad} shrink-0 ${chipClasses(step.kind, step.state)}`}
+              >
+                <span className={CHIP_LABEL}>{step.label}</span>
               </span>
-            );
-          })}
+            </span>
+          ))}
         </div>
       )}
       {displaySteps.length > 0 ? (

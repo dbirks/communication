@@ -553,5 +553,6 @@
   "workflows-tabs": "redesign 2026-11-26: the Workflows | Steps | Collections tab row (pages/Workflows.tsx WorkflowsTabs) is gone — Steps and Collections are tabs of Manage → Agents & models now, and their tab row is AgentsTabs",
   "workflows-tab-*": "redesign 2026-11-26: the Workflows | Steps | Collections tab row (pages/Workflows.tsx WorkflowsTabs) is gone — Steps and Collections are tabs of Manage → Agents & models now, and their tab row is AgentsTabs",
   "steps-page": "redesign 2026-11-26: the Steps / Collections pages are embedded in Manage → Agents & models only, so their old full-page chrome (title, subtitle, band) is gone",
-  "collections-page": "redesign 2026-11-26: the Steps / Collections pages are embedded in Manage → Agents & models only, so their old full-page chrome (title, subtitle, band) is gone"
+  "collections-page": "redesign 2026-11-26: the Steps / Collections pages are embedded in Manage → Agents & models only, so their old full-page chrome (title, subtitle, band) is gone",
+  "wrap-panel-caret": "redesign v2: the wrap panel's caret is a decoration (aria-hidden) and exists only beside the desktop panel; with an id, the emulator's reflow check filed it as content lost at 390, where the panel is a bottom sheet"
 }

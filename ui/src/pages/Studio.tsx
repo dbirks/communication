@@ -1244,7 +1244,7 @@ export function StudioPage() {
     // no word says "live" in the one place the reader glances at.
     draftStatusNode = (
       <span
-        className="flex min-w-0 shrink-[4] items-center gap-[6px] overflow-hidden whitespace-nowrap text-[12px] [&>span:first-child]:shrink-0 text-muted"
+        className="block min-w-[3ch] shrink-[4] truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className={`h-[7px] w-[7px] rounded-full ${runBannerState.strongBg}`} aria-hidden />
@@ -1254,7 +1254,7 @@ export function StudioPage() {
   } else if (studio.saving) {
     draftStatusNode = (
       <span
-        className="flex min-w-0 shrink-[4] items-center gap-[6px] overflow-hidden whitespace-nowrap text-[12px] [&>span:first-child]:shrink-0 text-muted"
+        className="block min-w-[3ch] shrink-[4] truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />
@@ -1265,7 +1265,7 @@ export function StudioPage() {
     const errText = problemOf(studio.saveError).detail || problemOf(studio.saveError).title;
     draftStatusNode = (
       <span
-        className="flex min-w-0 shrink-[4] items-center gap-[6px] overflow-hidden whitespace-nowrap text-[12px] [&>span:first-child]:shrink-0 text-st-failed-tag-fg"
+        className="block min-w-[3ch] shrink-[4] truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-st-failed-tag-fg"
         data-testid="studio-draft-status"
       >
         × Couldn&apos;t save: {errText}
@@ -1274,7 +1274,7 @@ export function StudioPage() {
   } else if (studio.conflict) {
     draftStatusNode = (
       <span
-        className="flex min-w-0 shrink-[4] items-center gap-[6px] overflow-hidden whitespace-nowrap text-[12px] [&>span:first-child]:shrink-0 text-st-failed-tag-fg"
+        className="block min-w-[3ch] shrink-[4] truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-st-failed-tag-fg"
         data-testid="studio-draft-status"
       >
         × Conflict (server at v{studio.conflict.currentVersion})
@@ -1283,7 +1283,7 @@ export function StudioPage() {
   } else if (!draftId && newestSummary) {
     draftStatusNode = (
       <span
-        className="flex min-w-0 shrink-[4] items-center gap-[6px] overflow-hidden whitespace-nowrap text-[12px] [&>span:first-child]:shrink-0 text-muted"
+        className="block min-w-[3ch] shrink-[4] truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-done-tag-fg" aria-hidden />
@@ -1299,7 +1299,7 @@ export function StudioPage() {
           : "";
     draftStatusNode = (
       <span
-        className="flex min-w-0 shrink-[4] items-center gap-[6px] overflow-hidden whitespace-nowrap text-[12px] [&>span:first-child]:shrink-0 text-muted"
+        className="block min-w-[3ch] shrink-[4] truncate text-[12px] [&>span:first-child]:mr-[6px] [&>span:first-child]:inline-block [&>span:first-child]:align-middle text-muted"
         data-testid="studio-draft-status"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-st-waiting-strong" aria-hidden />

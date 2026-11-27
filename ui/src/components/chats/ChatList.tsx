@@ -201,7 +201,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
         </Link>
       </div>
 
-      <div className="flex flex-col gap-[6px] px-[8px] pb-[6px] md:flex-row md:items-center">
+      <div className="flex flex-col gap-[6px] px-[8px] pb-[6px]">
         <input
           type="search"
           data-testid="chat-search"
@@ -215,7 +215,7 @@ export function ChatList({ scope, selectedId = "" }: ChatListProps) {
           role="group"
           aria-label="Chat filters"
           data-testid="threads-filters"
-          className="grid h-[26px] grid-cols-3 gap-[2px] rounded-[8px] bg-disabled-bg p-[2px] md:w-fit md:shrink-0 max-md:h-auto max-md:min-h-[44px]"
+          className="grid h-[26px] w-full grid-cols-3 gap-[2px] rounded-[8px] bg-disabled-bg p-[2px] max-md:h-auto max-md:min-h-[44px]"
         >
           {(
             [

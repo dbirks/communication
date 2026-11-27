@@ -174,6 +174,64 @@ describe("WrapPanel", () => {
     expect(screen.queryByTestId("wrap-submit")).toBeNull();
   });
 
+  it("shows the helper sentence, compact right-aligned Wrap button on the rounds row, and prototype choice borders", () => {
+    const { unmount } = render(
+      <WrapPanel count={3} onWrapRepeat={vi.fn()} onWrapSideBySide={vi.fn()} onClose={vi.fn()} />,
+    );
+
+    // 1. Helper sentence directly under the segmented control on the Repeat tab.
+    expect(screen.getByTestId("wrap-repeat-helper").textContent).toBe(
+      "Run these again until the goal is met.",
+    );
+    expect(screen.getByTestId("wrap-repeat-helper").className).toContain("text-[12.5px]");
+
+    // 2. Compact, right-aligned primary Wrap button (no longer full width).
+    const submit = screen.getByTestId("wrap-submit");
+    expect(submit.className).toContain("ds-btn--primary");
+    expect(submit.className).not.toContain("w-full");
+
+    // 3. Wrap button shares the rounds row with the "rounds" text.
+    const roundsText = screen.getByText("rounds");
+    expect(roundsText.parentElement).toBe(submit.parentElement);
+    expect(submit.parentElement?.className).toContain("whitespace-nowrap");
+    expect(submit.className).toContain("ml-auto");
+
+    // 4. Choice borders: selected accent, unselected transparent.
+    expect(screen.getByTestId("wrap-goal-judge").className).toContain("border-accent");
+    expect(screen.getByTestId("wrap-goal-command").className).toContain("border-transparent");
+    expect(screen.getByTestId("wrap-goal-contains").className).toContain("border-transparent");
+    unmount();
+
+    // The helper and the compact Wrap button also show in edit mode.
+    render(
+      <WrapPanel
+        count={1}
+        mode="edit"
+        initialGoal={{ kind: "judge", text: "Tests pass", maxRounds: 2 }}
+        onWrapRepeat={vi.fn()}
+        onWrapSideBySide={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("wrap-repeat-helper").textContent).toBe(
+      "Run these again until the goal is met.",
+    );
+    expect(screen.getByTestId("wrap-submit").className).toContain("ds-btn--primary");
+    expect(screen.getByTestId("wrap-submit").className).not.toContain("w-full");
+  });
+
+  it("keeps the side-by-side Wrap button compact and right-aligned", () => {
+    render(
+      <WrapPanel count={3} onWrapRepeat={vi.fn()} onWrapSideBySide={vi.fn()} onClose={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByTestId("wrap-tab-side"));
+    const submit = screen.getByTestId("wrap-submit");
+    expect(submit.className).toContain("ds-btn--primary");
+    expect(submit.className).not.toContain("w-full");
+    expect(submit.parentElement?.className).toContain("flex");
+    expect(submit.parentElement?.className).toContain("justify-end");
+  });
+
   it("supports edit mode with prefilled goal, Update button, More settings link, and Unwrap link", () => {
     const onWrapRepeat = vi.fn();
     const onUnwrap = vi.fn();

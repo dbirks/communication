@@ -320,7 +320,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
       {data.status && (
         <span
           className={`pointer-events-none absolute z-[3] block h-[16px] rounded-[4px] px-[5px] font-mono text-[9.5px] font-semibold uppercase leading-[16px] tracking-[.04em] whitespace-nowrap ${tagTone}`}
-          style={{ right: showMenu ? 22 : -6, top: -9 }}
+          style={{ right: showMenu ? 22 : -6, top: -12 }}
           aria-label={`status: ${data.status.label}`}
           // The card's role=button aria-label OVERRIDES its text content for
           // an assistive tech, so the state word has to ride that name (and a

@@ -69,7 +69,7 @@ describe("StepNode live state tag (README 8 / 4h)", () => {
     // Absolutely positioned on the card's top-right corner, clear of the card.
     expect(el!.className).toContain("absolute");
     expect(el!.style.right).toBe("-6px");
-    expect(el!.style.top).toBe("-9px");
+    expect(el!.style.top).toBe("-12px");
     // The card still holds exactly two lines at its fixed height.
     expect(card().className).toContain("h-[56px]");
     expect(card().className).not.toContain("min-h-");

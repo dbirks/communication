@@ -71,7 +71,11 @@ describe("ManageTable", () => {
   it("sits in a card at desktop: 1px line, radius 12, white, 16px side padding, header inside (review 15-1280-2)", async () => {
     stubViewport(1280);
     renderTable();
-    const card = await screen.findByTestId("t-card");
+    // The card is presentational and carries no test id of its own: an id
+    // on it read as an item that "vanished" at 390, where the rows stack
+    // without a card (emulator reflow check).
+    const card = (await screen.findByTestId("t")).closest("div.rounded-\\[12px\\]") as HTMLElement;
+    expect(card).not.toBeNull();
     const table = screen.getByTestId("t");
     expect(card.querySelector("table")).toBe(table);
     expect(card.className).toContain("rounded-[12px]");

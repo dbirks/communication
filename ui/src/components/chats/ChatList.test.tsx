@@ -242,21 +242,23 @@ describe("ChatList", () => {
    * labels keep their long accessible names via aria-label, and both controls
    * always render — e2e depends on `threads-filter-runs` on a short list.
    */
-  it("shares one row between the search field and the filter, with short labels and long accessible names", async () => {
+  it("stacks the filter under a full-width search field, with short labels and long accessible names", async () => {
     renderChatList({ scope: null, items: [chatA] });
     const search = await screen.findByTestId("chat-search");
     const filters = screen.getByTestId("threads-filters");
 
-    // One row on desktop, stacked below 768px.
+    // The list column is 300px: side by side, the search field was squeezed
+    // until its placeholder was cut ("Search c", review-1 finding 9). Stacked
+    // at every width, each takes the full column.
     expect(search.parentElement).toBe(filters.parentElement);
     const rowClasses = (search.parentElement as HTMLElement).className.split(/\s+/);
     expect(rowClasses).toContain("flex-col");
-    expect(rowClasses).toContain("md:flex-row");
+    expect(rowClasses).not.toContain("md:flex-row");
 
-    for (const cls of ["md:flex-1", "md:min-w-0", "h-[30px]", "max-md:min-h-[44px]"]) {
+    for (const cls of ["w-full", "h-[30px]", "max-md:min-h-[44px]"]) {
       expect(search.className.split(/\s+/)).toContain(cls);
     }
-    for (const cls of ["md:w-fit", "md:shrink-0", "max-md:min-h-[44px]"]) {
+    for (const cls of ["w-full", "max-md:min-h-[44px]"]) {
       expect(filters.className.split(/\s+/)).toContain(cls);
     }
 

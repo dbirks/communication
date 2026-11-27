@@ -259,6 +259,10 @@ export function WrapPanel({
               aria-labelledby={isEdit ? undefined : repeatTabId}
               className="flex flex-col gap-[12px]"
             >
+              <p data-testid="wrap-repeat-helper" className="text-[12.5px] text-ink-2">
+                Run these again until the goal is met.
+              </p>
+
               <div className="flex flex-col gap-[6px]">
                 <span id={groupLabelId} className="text-[12.5px] font-semibold text-ink-2">
                   How do we know it&apos;s done?
@@ -266,7 +270,7 @@ export function WrapPanel({
                 <div
                   role="radiogroup"
                   aria-labelledby={groupLabelId}
-                  className="flex flex-col gap-[6px]"
+                  className="flex flex-col gap-[4px]"
                 >
                   {GOAL_CHOICES.map((choice, idx) => {
                     const choiceReason = unsupported?.[choice.kind];
@@ -289,12 +293,12 @@ export function WrapPanel({
                           if (!isDisabled) setGoalKind(choice.kind);
                         }}
                         onKeyDown={(e) => handleRadioKeyDown(e, idx)}
-                        className={`flex min-h-[40px] w-full items-center gap-[9px] rounded-[9px] border px-[10px] py-[6px] text-left focus-visible:outline-2 focus-visible:outline-accent ${
+                        className={`flex w-full items-center gap-[9px] rounded-[8px] border px-[10px] py-[8px] text-left text-[13px] max-md:min-h-[44px] focus-visible:outline-2 focus-visible:outline-accent ${
                           isDisabled
-                            ? "cursor-not-allowed border-line bg-disabled-bg text-muted"
+                            ? "cursor-not-allowed border-line bg-disabled-bg font-normal text-muted"
                             : selected
                               ? "border-accent bg-accent-wash font-semibold text-ink"
-                              : "border-line bg-surface text-ink hover:bg-paper"
+                              : "border-transparent bg-transparent font-normal text-ink hover:bg-paper"
                         }`}
                       >
                         <Icon
@@ -306,7 +310,7 @@ export function WrapPanel({
                           }`}
                         />
                         <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="text-[13.5px] leading-[18px]">{choice.label}</span>
+                          <span className="leading-[18px]">{choice.label}</span>
                           {choiceReason ? (
                             <span className="text-[11.5px] font-normal leading-[15px] text-muted">
                               {choiceReason}
@@ -352,23 +356,48 @@ export function WrapPanel({
                 )}
               </div>
 
-              <div className="flex items-center gap-[8px] text-[12.5px] text-ink-2">
-                <span>Give up after</span>
-                <div className="inline-flex items-center gap-[4px] rounded-[8px] border border-line-strong bg-surface p-[2px]">
+              {isEdit && (onUnwrap || onMoreSettings) ? (
+                <div className="flex items-center gap-3">
+                  {isEdit && onUnwrap ? (
+                    <button
+                      type="button"
+                      data-testid="goal-unwrap"
+                      onClick={onUnwrap}
+                      className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+                    >
+                      Unwrap
+                    </button>
+                  ) : null}
+                  {isEdit && onMoreSettings ? (
+                    <button
+                      type="button"
+                      data-testid="goal-card-more-settings"
+                      onClick={onMoreSettings}
+                      className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+                    >
+                      More settings
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="flex items-center gap-[8px] whitespace-nowrap text-[12.5px]">
+                <span className="text-ink-2">Give up after</span>
+                <div className="inline-flex items-center gap-[8px] rounded-[6px] border border-line-strong px-[8px] py-[2px] font-mono text-[12.5px]">
                   <button
                     type="button"
                     aria-label="Decrease rounds"
                     data-testid="wrap-rounds-dec"
                     disabled={rounds <= MIN_ROUNDS}
                     onClick={() => setRounds((r) => Math.max(MIN_ROUNDS, r - 1))}
-                    className="inline-flex h-[28px] w-[28px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink disabled:cursor-not-allowed disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
+                    className="inline-flex h-[22px] w-[18px] items-center justify-center rounded-[6px] text-muted max-md:h-[44px] max-md:w-[36px] hover:bg-fill hover:text-ink disabled:cursor-not-allowed disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
                   >
-                    <IconMinus size={14} stroke={1.5} aria-hidden />
+                    <IconMinus size={12} stroke={1.5} aria-hidden />
                   </button>
                   <span
                     aria-live="polite"
                     data-testid="wrap-rounds-value"
-                    className="min-w-[22px] text-center font-mono text-[13px] tabular-nums text-ink"
+                    className="min-w-[14px] text-center tabular-nums text-ink"
                   >
                     {rounds}
                   </span>
@@ -378,41 +407,18 @@ export function WrapPanel({
                     data-testid="wrap-rounds-inc"
                     disabled={rounds >= MAX_ROUNDS}
                     onClick={() => setRounds((r) => Math.min(MAX_ROUNDS, r + 1))}
-                    className="inline-flex h-[28px] w-[28px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink disabled:cursor-not-allowed disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
+                    className="inline-flex h-[22px] w-[18px] items-center justify-center rounded-[6px] text-muted max-md:h-[44px] max-md:w-[36px] hover:bg-fill hover:text-ink disabled:cursor-not-allowed disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
                   >
-                    <IconPlus size={14} stroke={1.5} aria-hidden />
+                    <IconPlus size={12} stroke={1.5} aria-hidden />
                   </button>
                 </div>
-                <span>{rounds === 1 ? "round" : "rounds"}</span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                {isEdit && onUnwrap ? (
-                  <button
-                    type="button"
-                    data-testid="goal-unwrap"
-                    onClick={onUnwrap}
-                    className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-                  >
-                    Unwrap
-                  </button>
-                ) : null}
-                {isEdit && onMoreSettings ? (
-                  <button
-                    type="button"
-                    data-testid="goal-card-more-settings"
-                    onClick={onMoreSettings}
-                    className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-                  >
-                    More settings
-                  </button>
-                ) : null}
+                <span className="text-ink-2">{rounds === 1 ? "round" : "rounds"}</span>
                 <button
                   type="button"
                   disabled={!canSubmitRepeat}
                   data-testid="wrap-submit"
                   onClick={handleRepeatSubmit}
-                  className="h-[34px] flex-1 rounded-[8px] bg-accent px-[14px] text-[13px] font-semibold text-white hover:brightness-95 disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg focus-visible:outline-2 focus-visible:outline-accent"
+                  className="ds-btn ds-btn--primary ml-auto h-[30px]! px-[14px]! text-[12.5px]!"
                 >
                   {isEdit ? "Update" : "Wrap"}
                 </button>
@@ -428,14 +434,16 @@ export function WrapPanel({
               <p className="text-[13px] leading-[19px] text-ink-2">
                 These steps run at the same time. The workflow continues when all of them finish.
               </p>
-              <button
-                type="button"
-                data-testid="wrap-submit"
-                onClick={onWrapSideBySide}
-                className="h-[34px] w-full rounded-[8px] bg-accent px-[14px] text-[13px] font-semibold text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-accent"
-              >
-                Wrap
-              </button>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  data-testid="wrap-submit"
+                  onClick={onWrapSideBySide}
+                  className="ds-btn ds-btn--primary h-[30px]! px-[14px]! text-[12.5px]!"
+                >
+                  Wrap
+                </button>
+              </div>
             </div>
           )}
         </>

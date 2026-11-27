@@ -1,7 +1,9 @@
 /**
  * Dark listening capsule shown above Quick chat's footer while dictation records,
  * transcribes, or displays the brief empty-transcript notice ("Didn't catch that.").
+ * Sits in normal flow (never absolutely positioned) so it cannot cover the answer above it.
  */
+import { IconMicrophone } from "@tabler/icons-react";
 import type { DictationPhase } from "./useDictation";
 
 export interface ListeningCapsuleProps {
@@ -16,6 +18,9 @@ export interface ListeningCapsuleProps {
   className?: string;
 }
 
+/** Bar heights (px) for the four-bar waveform, left to right. */
+const WAVEFORM_HEIGHTS = ["6px", "12px", "16px", "9px"];
+
 export default function ListeningCapsule({
   phase,
   liveTranscript = "",
@@ -28,13 +33,15 @@ export default function ListeningCapsule({
   const transcribing = phase === "transcribing";
   if (!recording && !transcribing && !notice) return null;
 
-  const label = notice
+  const transcript = liveTranscript.trim();
+  const phaseWords = notice
     ? notice
     : transcribing
       ? model
         ? `Transcribing · ${model}…`
         : "Transcribing…"
-      : liveTranscript.trim() || "Listening…";
+      : "Listening…";
+  const label = transcript ? `“${transcript}…”` : phaseWords;
 
   return (
     <>
@@ -45,6 +52,19 @@ export default function ListeningCapsule({
         }
         .quick-chat-listening-dot {
           animation: quick-chat-listening-pulse 1.2s ease-in-out infinite;
+        }
+        @keyframes quick-chat-waveform-bar {
+          0%, 100% { transform: scaleY(0.4); }
+          50% { transform: scaleY(1); }
+        }
+        @media (prefers-reduced-motion: no-preference) {
+          .quick-chat-waveform-bar {
+            transform: scaleY(0.4);
+            animation: quick-chat-waveform-bar 0.9s ease-in-out infinite;
+          }
+          .quick-chat-waveform-bar:nth-child(2) { animation-delay: 0.15s; }
+          .quick-chat-waveform-bar:nth-child(3) { animation-delay: 0.3s; }
+          .quick-chat-waveform-bar:nth-child(4) { animation-delay: 0.45s; }
         }
         @media (prefers-reduced-motion: reduce) {
           .quick-chat-listening-dot {
@@ -58,22 +78,42 @@ export default function ListeningCapsule({
         data-testid="listening-capsule"
         role="status"
         aria-live="polite"
-        className={`mx-[12px] mb-[8px] flex items-center gap-[10px] rounded-full bg-ink px-[14px] py-[8px] text-[13px] text-surface ${className}`}
+        className={`mx-[16px] mb-[8px] flex shrink-0 items-center gap-[10px] rounded-full bg-ink px-[12px] py-[8px] text-white ${className}`}
       >
         <span
           aria-hidden="true"
           data-testid="listening-capsule-dot"
-          className={`h-[8px] w-[8px] shrink-0 rounded-full bg-[#f0a93a] ${
+          className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-full bg-accent ${
             recording ? "quick-chat-listening-dot" : ""
           }`}
-        />
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        >
+          <IconMicrophone size={14} stroke={1.5} aria-hidden />
+        </span>
+        <span
+          aria-hidden="true"
+          data-testid="listening-capsule-waveform"
+          className="flex h-[16px] shrink-0 items-center gap-[3px]"
+        >
+          {WAVEFORM_HEIGHTS.map((height, i) => (
+            <span
+              key={i}
+              // The colour class ends at a space on purpose: written flush
+              // against `${`, Tailwind's scanner never saw `bg-accent-mid` and
+              // the bars rendered transparent.
+              className={`w-[3px] rounded-[2px] bg-accent-mid ${
+                recording ? "quick-chat-waveform-bar" : ""
+              }`}
+              style={{ height }}
+            />
+          ))}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
         {recording ? (
           <button
             type="button"
             data-testid="listening-capsule-stop"
             onClick={onStop}
-            className="ml-auto shrink-0 cursor-pointer border-none bg-transparent p-0 text-[12.5px] font-semibold text-surface hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+            className="shrink-0 cursor-pointer border-none bg-transparent p-0 text-[12.5px] font-semibold text-white underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-white min-h-[28px] max-md:min-h-[44px]"
           >
             Stop
           </button>

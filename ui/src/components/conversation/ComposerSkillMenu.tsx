@@ -32,7 +32,7 @@ import { Menu, type MenuEntry } from "../ds/Menu";
  *  (rx-c1). Kept as a literal because `PromptChip` itself cannot carry the
  *  trigger's `aria-label`. */
 const CHIP_TRIGGER_CLASS =
-  "inline-flex h-[26px] max-w-full items-center gap-[5px] rounded-[8px] border border-line bg-surface px-[8px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg";
+  "inline-flex h-[28px] max-w-full items-center gap-[6px] rounded-full border border-line bg-surface px-[10px] font-ui text-[12.5px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:text-disabled-fg";
 
 /** The retired panel's own look (AgentConversationPanel), kept for callers
  *  that do not sit in a PromptBox chip row. */

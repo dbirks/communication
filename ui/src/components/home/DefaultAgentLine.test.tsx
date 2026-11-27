@@ -75,15 +75,15 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("what the line says", () => {
-  it("heads the block with a sentence-case column heading", async () => {
+  it("labels the one line in plain small text, not with a section heading", async () => {
     harness([get(project({ my_role: "viewer" }))]);
 
-    const head = await screen.findByTestId("project-default-agent-label");
-    expect(head.tagName).toBe("H3");
-    expect(head.textContent).toBe("Default agent");
-    expect(head.className).toContain("text-[16px]");
-    expect(head.className).toContain("border-line-soft");
-    expect(head.className).not.toContain("font-mono");
+    const label = await screen.findByTestId("project-default-agent-label");
+    expect(label.tagName).toBe("SPAN");
+    expect(label.textContent).toBe("Default agent");
+    expect(label.className).toContain("text-[12.5px]");
+    // It sits on the same line as the agent's name.
+    expect(label.parentElement).toBe(screen.getByTestId("project-default-agent-line"));
   });
 
   it("prints the profile's own name for a member, with no way to move it", async () => {

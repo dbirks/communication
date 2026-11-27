@@ -2604,15 +2604,19 @@ function CanvasInner({
           // README §8: a box-selected step wears the selected look (ink edge
           // and ink offset shadow) while the marching-ants box is up, without
           // becoming the store's selection (that would open its "⋯" menu).
-          // While the marching-ants box is up it IS the selection mark: React
-          // Flow's own tinted selection rectangle and the per-step "⋯" buttons
-          // of a multi-selection would sit on top of it.
-          (showWrapBox
-            ? ".studio-canvas .react-flow__nodesselection-rect{background:transparent;border:0}" +
-              (activeSelection.length > 1
-                ? '.studio-canvas [data-testid^="node-menu-button-"]{display:none}'
-                : "")
+          // React Flow's own tinted, square-cornered selection rectangle is
+          // never drawn: a selected step or goal frame carries its own mark
+          // (ink edge), and the marching-ants box marks a box selection. Left
+          // on, it washed a freshly wrapped goal frame blue (review-1, 38).
+          ".studio-canvas .react-flow__nodesselection-rect{background:transparent;border:0}" +
+          // The per-step "⋯" buttons of a multi-selection would sit on top of
+          // the marching-ants box.
+          (showWrapBox && activeSelection.length > 1
+            ? '.studio-canvas [data-testid^="node-menu-button-"]{display:none}'
             : "") +
+          // A step being dragged shows no menu button or connection handles.
+          '.studio-canvas .react-flow__node.dragging [data-testid^="node-menu-button-"],' +
+          ".studio-canvas .react-flow__node.dragging .react-flow__handle{display:none}" +
           (showWrapBox
             ? activeSelection
                 .map(
@@ -2665,6 +2669,10 @@ function CanvasInner({
           // Shift+click just replaces the selection). The Shift+drag selection
           // box comes from the default selectionKeyCode=Shift.
           selectionMode={SelectionMode.Partial}
+          // Dragging a step moves it and nothing else: it is not selected by
+          // the drag, so its settings card does not open over the canvas
+          // mid-move. A click (under the 4px threshold) still selects.
+          selectNodesOnDrag={false}
           multiSelectionKeyCode="Shift"
           onSelectionChange={handleSelectionChange}
           onNodesDelete={(deleted) =>
@@ -2850,7 +2858,6 @@ function CanvasInner({
               // at the middle of the selection box.
               <span
                 aria-hidden
-                data-testid="wrap-panel-caret"
                 style={{ top: wrapCaretTop }}
                 className={`absolute z-[1] h-[12px] w-[12px] rotate-45 bg-surface ${
                   wrapPlacement.side === "right"
