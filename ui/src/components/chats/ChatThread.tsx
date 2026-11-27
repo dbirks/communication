@@ -383,9 +383,15 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
         </div>
       ) : null}
 
+      {/* A scrolling region must be reachable by keyboard (axe
+          scrollable-region-focusable): a transcript of plain text has no
+          focusable child, so the scroller itself takes focus. */}
       <div
-        className="min-h-0 flex-1 overflow-y-auto px-[20px] pt-[20px] pb-[12px]"
+        className="min-h-0 flex-1 overflow-y-auto px-[20px] pt-[20px] pb-[12px] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
         data-capture-keep-scroll
+        tabIndex={0}
+        role="region"
+        aria-label="Messages"
       >
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-[16px]">
           {interrupted ? (
