@@ -189,7 +189,9 @@ describe("NewChatPane", () => {
     renderNewChat(projectFixture.id, recentItems.slice(0, 2));
 
     const body = await screen.findByTestId("new-chat-body");
-    expect(body.getAttribute("class")).toContain("max-w-[700px]");
+    // 740 − the 20px side padding on each side = the README's 700px box.
+    expect(body.getAttribute("class")).toContain("max-w-[740px]");
+    expect(body.getAttribute("class")).toContain("px-[20px]");
     expect(body.getAttribute("class")).toContain("min-h-full");
     expect(body.getAttribute("class")).toContain("justify-center");
     expect(body.getAttribute("class")).toContain("py-[48px]");
