@@ -2480,27 +2480,54 @@ function CanvasInner({
   // once per selection, not on every pan, so the reader can still move away.
   const wrapKey = showWrapBox && !phone ? activeSelection.join("|") : "";
   const wrapPannedRef = useRef("");
+  // The latest geometry, for the pan that runs after the pointer is released.
+  const wrapPanInputRef = useRef({ wrapKey, antsRect, paneSize, effectiveViewport });
+  wrapPanInputRef.current = { wrapKey, antsRect, paneSize, effectiveViewport };
+  const pointerDownRef = useRef(false);
+  const panWrapIntoView = useCallback(() => {
+    const now = wrapPanInputRef.current;
+    if (now.wrapKey === "" || !now.antsRect) return;
+    if (wrapPannedRef.current === now.wrapKey) return;
+    wrapPannedRef.current = now.wrapKey;
+    const move = panToShowWrap(now.antsRect, now.paneSize);
+    if (!move) return;
+    void setViewport(
+      {
+        x: now.effectiveViewport.x + move.dx,
+        y: now.effectiveViewport.y + move.dy,
+        zoom: now.effectiveViewport.zoom,
+      },
+      { duration: 160 },
+    );
+  }, [setViewport]);
+  // Never while the box is still being dragged: the selection grows step by
+  // step during the drag, and moving the canvas under the pointer then would
+  // pull the steps out of the box being drawn. The pan waits for the release.
+  useEffect(() => {
+    const down = () => {
+      pointerDownRef.current = true;
+    };
+    const up = () => {
+      pointerDownRef.current = false;
+      // After React has rendered the final selection of this drag.
+      window.setTimeout(panWrapIntoView, 0);
+    };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+    };
+  }, [panWrapIntoView]);
   useEffect(() => {
     if (wrapKey === "") {
       wrapPannedRef.current = "";
       return;
     }
-    if (wrapPannedRef.current === wrapKey || !antsRect) return;
-    wrapPannedRef.current = wrapKey;
-    const move = panToShowWrap(antsRect, paneSize);
-    if (!move) return;
-    void setViewport(
-      {
-        x: effectiveViewport.x + move.dx,
-        y: effectiveViewport.y + move.dy,
-        zoom: effectiveViewport.zoom,
-      },
-      { duration: 160 },
-    );
-    // antsRect/paneSize/effectiveViewport are read at the moment the selection
-    // changes; re-running on their change would fight the reader's own pan.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wrapKey]);
+    if (!pointerDownRef.current) panWrapIntoView();
+  }, [wrapKey, panWrapIntoView]);
 
   const editingScopeFlow = editingScopeId
     ? (base.nodes.find((n) => n.data.nodeId === editingScopeId && n.type === "scope") ?? null)
@@ -2547,6 +2574,15 @@ function CanvasInner({
           // README §8: a box-selected step wears the selected look (ink edge
           // and ink offset shadow) while the marching-ants box is up, without
           // becoming the store's selection (that would open its "⋯" menu).
+          // While the marching-ants box is up it IS the selection mark: React
+          // Flow's own tinted selection rectangle and the per-step "⋯" buttons
+          // of a multi-selection would sit on top of it.
+          (showWrapBox
+            ? ".studio-canvas .react-flow__nodesselection-rect{background:transparent;border:0}" +
+              (activeSelection.length > 1
+                ? '.studio-canvas [data-testid^="node-menu-button-"]{display:none}'
+                : "")
+            : "") +
           (showWrapBox
             ? activeSelection
                 .map(
