@@ -8,6 +8,7 @@
 //
 // Ids come from the components in four shapes:
 //   data-testid="x" | data-testid={"x"} | "data-testid": "x" | testid = "x"
+// (also a prop that carries an id to a child, e.g. closeTestid="x")
 // and template ids (`data-testid={`repo-row-${name}`}`) compare as the literal
 // prefix `repo-row-*`.
 //
@@ -62,10 +63,12 @@ function revSources(revision) {
 export function definedIds(sources) {
   const ids = new Set();
   for (const [, src] of sources) {
-    for (const m of src.matchAll(/"?(?:data-testid|testid)"?\s*[=:]\s*\{?\s*"([^"]+)"/g)) {
+    for (const m of src.matchAll(/"?(?:data-testid|[a-z]*[tT]estid)"?\s*[=:]\s*\{?\s*"([^"]+)"/g)) {
       ids.add(m[1]);
     }
-    for (const m of src.matchAll(/"?(?:data-testid|testid)"?\s*[=:]\s*\{?\s*`([^`$]*)\$\{/g)) {
+    for (const m of src.matchAll(
+      /"?(?:data-testid|[a-z]*[tT]estid)"?\s*[=:]\s*\{?\s*`([^`$]*)\$\{/g,
+    )) {
       ids.add(`${m[1]}*`);
     }
   }
