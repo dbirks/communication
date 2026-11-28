@@ -254,12 +254,12 @@ export function RunTray({
 
       <div
         data-testid="run-tray-header"
-        className={`flex items-center gap-3 px-4 py-[10px] ${collapsed ? "" : "border-b border-line-soft"}`}
+        className={`flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-[10px] ${collapsed ? "" : "border-b border-line-soft"}`}
       >
         <span className={`${TAG_CLASS} ${TONE_CLASS[state.tone]}`}>
           {state.glyph} {state.word}
         </span>
-        <span className="min-w-0 truncate text-[13.5px] font-semibold text-ink">{title}</span>
+        <span className="min-w-[72px] truncate text-[13.5px] font-semibold text-ink">{title}</span>
         <span className="shrink-0 font-mono text-[11px] text-muted">{meta}</span>
         {actions ? (
           <div
@@ -273,7 +273,7 @@ export function RunTray({
         <div
           role="tablist"
           aria-label="Run tray view"
-          className="ml-auto flex shrink-0 items-center gap-[2px] rounded-[9px] bg-disabled-bg p-[3px]"
+          className="ml-auto flex shrink-0 items-center gap-[2px] rounded-[9px] bg-disabled-bg p-[3px] max-md:ml-0"
         >
           {TABS.map((entry) => {
             const selected = tab === entry.id;
@@ -325,10 +325,14 @@ export function RunTray({
       </div>
 
       {collapsed ? null : (
-        <div data-testid="run-tray-body" className="flex overflow-hidden" style={{ height }}>
+        <div
+          data-testid="run-tray-body"
+          className="flex overflow-hidden max-md:flex-col max-md:overflow-y-auto"
+          style={{ height }}
+        >
           {tab === "rounds" ? (
             <>
-              <div className="flex w-[400px] shrink-0 flex-col overflow-hidden">
+              <div className="flex w-[400px] shrink-0 flex-col overflow-hidden max-md:w-full">
                 <RoundList rounds={rounds} activeRound={activeRound} onRound={onRound} />
               </div>
               <LogPanel log={log} logStep={logStep} />

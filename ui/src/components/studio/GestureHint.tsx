@@ -50,7 +50,10 @@ export function GestureHint({ touch = false, onDismiss }: GestureHintProps): JSX
     <div
       data-testid="gesture-hint"
       role="note"
-      className="absolute left-[16px] top-[16px] z-20 flex items-center gap-[8px] rounded-[8px] border border-line bg-surface px-[8px] py-[4px] font-mono text-[10.5px] text-muted"
+      // On touch the toolbar fills the top row, so the hint sits below it.
+      className={`absolute left-[16px] z-20 flex items-center gap-[8px] rounded-[8px] border border-line bg-surface px-[8px] py-[4px] font-mono text-[10.5px] text-muted ${
+        touch ? "right-[16px] top-[72px]" : "top-[16px]"
+      }`}
     >
       {touch ? (
         <span className="flex items-center gap-[8px]">

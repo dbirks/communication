@@ -255,7 +255,7 @@ describe("ProposalReview", () => {
     const panel = screen.getByTestId("proposal-review");
     expect(panel.className).toContain("w-[372px]");
     expect(panel.className).toContain("right-4");
-    expect(panel.className).toContain("top-[62px]");
+    expect(panel.className).toContain("top-[138px]");
     expect(panel.className).toContain("border-fill-edge");
     expect(panel.getAttribute("aria-modal")).toBeNull();
     expect(screen.queryByTestId("proposal-review-footer")).toBeNull();

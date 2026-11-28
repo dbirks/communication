@@ -241,6 +241,10 @@ and the prototype.
 | Editor, Versions | Escape closes the panel (and the phone sheet) | It had only the × |
 | Editor, viewing a run (`?run=`) | "Open run" and "Back to editing" sit in the run tray header; the top run pill shows only when the run cannot load. The status chip keeps naming the run | The tray already states the run; the chip names the run because the canvas shows the run's pinned revision, not the draft |
 | Editor, note card | A selected note (not being typed in) opens the NOTE beside card: text box, "Delete note", autosaved | The board names the note body but does not draw it |
+| Editor, review view | The docked panel starts 138px below the pane top, under the proposal bar; on phone it is a bottom sheet | At 62px it covered the bar's right end and Apply |
+| Editor, read-only caption | The caption band says why the canvas is read-only: a proposal is showing, a run's pinned definition, an older version, no library role, a live version, or YAML errors | It said "the definition this run is pinned to" for every reason |
+| Editor, phone toolbar and hint | The top-right group is capped to the pane width so the status chip truncates; the touch gesture hint sits below it at 72px | At 390 the chip ran off the left edge and the hint sat under the group |
+| Editor, phone run tray | The header wraps (state, title, actions; then the tabs, Stop and collapse) and the rounds list stacks above the log | At 390 the tabs, Stop and collapse were off-screen |
 | Home, "Since you left" | rows keep two lines (headline, then summary); the project (All projects) and time stay Red Hat Mono; on a project home the row leads with the time and has no project column | Design review 10, F1: the story text comes from the server's catch-up and needs its second line |
 | Project home prompt | the box is 94px, 8px shorter than the prototype's | Design review 10, F2: low impact (Home's box is 116px); recorded rather than fixed |
 | Chat thread composer and header | the composer keeps the hard 2px shadow and is 94px; the header title inset is 21px | Design review 10, F3: one composer component everywhere |

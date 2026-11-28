@@ -338,7 +338,7 @@ export function ProposalReview({
 
   const frameClass = sheet
     ? "absolute inset-x-0 bottom-0 z-30 max-h-[60dvh] rounded-t-[14px] rounded-b-none"
-    : "absolute right-4 top-[62px] bottom-4 z-30 w-[372px] rounded-[12px]";
+    : "absolute right-4 top-[138px] bottom-4 z-30 w-[372px] rounded-[12px]";
 
   return (
     <section

@@ -211,6 +211,8 @@ export interface StudioCanvasProps {
   onSelectionChange?(ids: string[]): void;
   /** No handles, no + buttons, no drag-to-insert, no delete. */
   readOnly: boolean;
+  /** Why the canvas is read-only, for the caption band (defaults to the run wording). */
+  readOnlyCaption?: string;
   /** YAML currently invalid: render greyed with `staleMessage`. */
   stale: boolean;
   staleMessage?: string;
@@ -1089,6 +1091,7 @@ function CanvasInner({
   selectedIds,
   onSelectionChange,
   readOnly,
+  readOnlyCaption,
   stale,
   staleMessage,
   highlight,
@@ -3278,7 +3281,7 @@ function CanvasInner({
           data-testid="canvas-caption"
         >
           {readOnly
-            ? "read-only · the definition this run is pinned to"
+            ? (readOnlyCaption ?? "read-only · the definition this run is pinned to")
             : direction === "LR"
               ? "left to right · drag steps to arrange"
               : "always top to bottom · lines leave the bottom and enter the top"}

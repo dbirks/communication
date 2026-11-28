@@ -1715,6 +1715,19 @@ export function StudioPage() {
           selectedIds={activeSelectedIds}
           onSelectionChange={selectMany}
           readOnly={readOnly || !parseOk || proposal !== null}
+          readOnlyCaption={
+            proposal !== null
+              ? "read-only · a proposal is showing — Apply or Discard"
+              : isViewingRun
+                ? "read-only · the definition this run is pinned to"
+                : isViewingHistory
+                  ? "read-only · an older version"
+                  : !canAuthor
+                    ? "read-only · editing needs the library role"
+                    : status === "published"
+                      ? "read-only · this version is live; edits start a draft"
+                      : "read-only · the YAML has errors"
+          }
           stale={!parseOk}
           staleMessage="YAML has errors — the canvas shows the last valid version; graph editing is paused"
           highlight={highlight.length > 0 ? highlight : undefined}
@@ -1918,7 +1931,7 @@ export function StudioPage() {
 
         {/* Top-right action buttons (Versions, Try it, Make live, …) */}
         <div
-          className="absolute right-4 top-4 z-40 flex items-center gap-[8px]"
+          className="absolute right-4 top-4 z-40 flex max-w-[calc(100%-32px)] items-center gap-[8px]"
           data-testid="editor-top-actions"
         >
           {/* 1e: the draft status chip IS the Versions toggle. */}
