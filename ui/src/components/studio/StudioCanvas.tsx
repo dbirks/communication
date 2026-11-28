@@ -1731,6 +1731,14 @@ function CanvasInner({
   // dragged it follows the pointer freely and these coordinates draw the
   // dashed snap target plus the hatch shadow behind it. Only the drop commits
   // the grid position, so the state is cleared there.
+  const [boxSelecting, setBoxSelecting] = useState(false);
+  useEffect(() => {
+    if (!boxSelecting) return;
+    // Belt and braces: any pointer release ends the box, even one React Flow misses.
+    const end = () => setBoxSelecting(false);
+    window.addEventListener("pointerup", end);
+    return () => window.removeEventListener("pointerup", end);
+  }, [boxSelecting]);
   const [dragGhost, setDragGhost] = useState<{
     id: string;
     x: number;
@@ -2916,7 +2924,10 @@ function CanvasInner({
           selectNodesOnDrag={false}
           multiSelectionKeyCode="Shift"
           onSelectionChange={handleSelectionChange}
+          // 1b: the wrap card opens on release, not while the box is still being drawn.
+          onSelectionEnd={() => setBoxSelecting(false)}
           onSelectionStart={() => {
+            setBoxSelecting(true);
             if (!hintOpen) return;
             dismissGestureHint();
             setHintOpen(false);
@@ -3113,7 +3124,7 @@ function CanvasInner({
             label={`${activeSelection.length} ${activeSelection.length === 1 ? "step" : "steps"} selected`}
           />
         ) : null}
-        {showWrapBox && wrapPlacement ? (
+        {showWrapBox && wrapPlacement && !boxSelecting ? (
           <div
             data-testid="wrap-panel-anchor"
             data-side={phone ? "sheet" : wrapPlacement.side}
