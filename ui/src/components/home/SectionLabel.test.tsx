@@ -58,7 +58,7 @@ describe("ColumnHeading", () => {
     expect(head.className).toContain("font-bold");
     expect(head.className).toContain("text-ink");
     expect(head.className).toContain("border-b");
-    expect(head.className).toContain("border-line-soft");
+    expect(head.className).toContain("border-line");
     expect(head.className).toContain("pb-[8px]");
     expect(head.className).toContain("mb-[10px]");
     expect(head.className).not.toContain("uppercase");

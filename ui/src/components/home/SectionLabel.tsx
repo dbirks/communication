@@ -76,7 +76,7 @@ export function ColumnHeading({
   return (
     <h3
       data-testid={testid}
-      className={`mb-[10px] flex items-baseline gap-[8px] border-b border-line-soft pb-[8px] text-[15px] font-bold leading-[22px] text-ink ${className}`.trim()}
+      className={`mb-[10px] flex items-baseline gap-[8px] border-b border-line pb-[8px] text-[15px] font-bold leading-[22px] text-ink ${className}`.trim()}
     >
       <span className="min-w-0">{children}</span>
       {meta ? (

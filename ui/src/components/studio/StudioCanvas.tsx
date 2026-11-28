@@ -428,7 +428,7 @@ export function computeSelectionPaneRect(
   selectedIds: string[],
   nodes: Node[],
   viewport: { x: number; y: number; zoom: number },
-  padding = 14,
+  padding = 20,
 ): MarchingAntsRect | null {
   if (selectedIds.length === 0) return null;
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -3022,7 +3022,7 @@ function CanvasInner({
             // Issue #68: the hit box is 30×30 (was 28×26 — measured 29×27 at
             // 1280); the painted − glyph stays 13px. `icon-hit` keeps the
             // shared 30px floor for anyone who re-sizes the box later.
-            className="icon-hit h-[30px] w-[30px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+            className="icon-hit h-[30px] w-[30px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill max-md:h-[44px] max-md:w-[44px]"
           >
             −
           </button>
@@ -3035,7 +3035,7 @@ function CanvasInner({
               zoomIn({ duration: 200 });
             }}
             // Issue #68: 30×30 hit box, painted + glyph unchanged.
-            className="icon-hit h-[30px] w-[30px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+            className="icon-hit h-[30px] w-[30px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill max-md:h-[44px] max-md:w-[44px]"
           >
             +
           </button>
@@ -3047,7 +3047,7 @@ function CanvasInner({
               userMovedRef.current = false;
               safeFit();
             }}
-            className="icon-hit h-[30px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill"
+            className="icon-hit h-[30px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill max-md:h-[44px] max-md:min-w-[44px]"
           >
             fit
           </button>

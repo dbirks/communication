@@ -604,7 +604,7 @@ export function toFlow(
   // button below the card (~53px) above the 32px footer ("up to N rounds · …").
   // 88px preserves clear separation between the terminal + target and footer.
   const GOAL_BOTTOM_PAD = 88;
-  const GOAL_SIDE_PAD = 22;
+  const GOAL_SIDE_PAD = 28;
   // Deepest scopes first, so a nested group is expanded before its parent.
   const scopes = [...abs.values()]
     .filter((e) => e.node.isScope)

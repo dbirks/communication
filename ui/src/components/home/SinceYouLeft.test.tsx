@@ -85,7 +85,7 @@ describe("SinceYouLeft", () => {
     expect(head.textContent).toBe("Since you left");
     expect(head.className).toContain("text-[15px]");
     expect(head.className).toContain("font-bold");
-    expect(head.className).toContain("border-line-soft");
+    expect(head.className).toContain("border-line");
     expect(head.className).not.toContain("font-mono");
     expect(head.className).not.toContain("uppercase");
     expect(screen.getByRole("heading", { name: "Since you left" })).toBe(head);

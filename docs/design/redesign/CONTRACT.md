@@ -221,4 +221,9 @@ and the prototype.
 | Run card in a chat | the state reads "● running · <current step>" with no elapsed seconds | The step name tells where the run is; the card has no running clock (the prototype’s seconds are mock data) |
 | New chat | the block keeps the shared page top padding (it sits about 35px lower than the prototype) | One top padding for every page under the top bar |
 | Quick chat | a short conversation sits at the bottom of the panel, next to the reply field | Chat convention: the newest message is where the eye and the reply box are |
+| Project home, Repos | the first repository row keeps the list's own top padding (about 33px under the heading rule) | Every home list block uses one row rhythm, with or without the "Add repository" action |
+| New workflow sheet | the "Describe it" box opens three lines tall | A described workflow is usually two or three sentences; the box does not jump as the first line wraps |
+| Quick chat, phone | the "stays open until you close it" subtitle is hidden | The panel covers the whole screen on a phone; the line has no room and adds nothing there |
+| Chats list | each row is about 58px | Each row has two lines, the title and the agent’s last line, plus its padding |
+| Round send button, phone | draws a 32px circle with a transparent 44×44 touch area (`tokens.css` APP-SHELL-PHONE) | The design keeps a circle at every width |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |
