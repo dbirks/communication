@@ -164,7 +164,7 @@ describe("WorkflowsHere", () => {
     expect(row.querySelector("a")?.getAttribute("href")).toBe(
       `/p/${projectId}/factory/${pipelineId}`,
     );
-    expect(row.querySelector("em")?.textContent).toBe("when an issue gets 'ready'");
+    expect(row.querySelector("[data-trigger]")?.textContent).toBe("when an issue gets 'ready'");
   });
 
   it("falls back to the cron, then to the manual start, and says so when the reads fail", async () => {
@@ -195,7 +195,7 @@ describe("WorkflowsHere", () => {
     ]);
     render(<WorkflowsHere projectId={projectId} />, { wrapper: cronOnly.wrapper });
     const row = await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`);
-    expect(row.querySelector("em")?.textContent).toBe("every weekday at 09:00 UTC");
+    expect(row.querySelector("[data-trigger]")?.textContent).toBe("every weekday at 09:00 UTC");
     cleanup();
 
     const manual = harness([
@@ -206,8 +206,9 @@ describe("WorkflowsHere", () => {
     ]);
     render(<WorkflowsHere projectId={projectId} />, { wrapper: manual.wrapper });
     expect(
-      (await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`)).querySelector("em")
-        ?.textContent,
+      (await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`)).querySelector(
+        "[data-trigger]",
+      )?.textContent,
     ).toBe("when you start it");
     cleanup();
 
@@ -219,8 +220,9 @@ describe("WorkflowsHere", () => {
     ]);
     render(<WorkflowsHere projectId={projectId} />, { wrapper: failed.wrapper });
     expect(
-      (await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`)).querySelector("em")
-        ?.textContent,
+      (await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`)).querySelector(
+        "[data-trigger]",
+      )?.textContent,
     ).toBe("triggers unavailable");
   });
 });

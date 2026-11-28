@@ -411,7 +411,7 @@ export function NewWorkflowSheet({
       // top bar (60px / 52px on phone) stay undimmed and clickable, and the
       // sheet starts 40px under the bar — the prototype's placement
       // (review 08-1280-4). A phone keeps the contract's full-width bottom sheet.
-      className="fixed top-[52px] right-0 bottom-0 left-0 z-50 flex items-start justify-center bg-ink/25 p-4 max-md:items-end max-md:p-0 md:top-[60px] md:left-16 md:pt-[40px]"
+      className="fixed top-[52px] right-0 bottom-0 left-0 z-50 flex items-start justify-center bg-ink/18 p-4 max-md:items-end max-md:p-0 md:top-[60px] md:left-16 md:pt-[40px]"
       data-testid="new-workflow-backdrop"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -423,7 +423,7 @@ export function NewWorkflowSheet({
         aria-modal="true"
         aria-labelledby="new-workflow-sheet-title"
         data-testid="new-workflow-sheet"
-        className="flex max-h-full w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[14px] bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85dvh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
+        className="flex max-h-full w-[720px] max-w-full flex-col gap-[20px] overflow-y-auto rounded-[14px] border border-line bg-surface p-[24px] shadow-(--shadow-modal) max-md:max-h-[85dvh] max-md:w-full max-md:rounded-b-none max-md:p-[16px]"
       >
         <div className="flex items-center gap-[10px]">
           <h2 id="new-workflow-sheet-title" className="m-0 text-[18px] font-bold">

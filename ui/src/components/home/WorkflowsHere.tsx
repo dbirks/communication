@@ -74,11 +74,17 @@ export function WorkflowsHere({ projectId }: WorkflowsHereProps) {
                   {name}
                 </Link>{" "}
                 {triggerReadFailed ? (
-                  <em className="text-muted">triggers unavailable</em>
+                  <span data-trigger className="not-italic text-muted">
+                    triggers unavailable
+                  </span>
                 ) : !triggersSettled ? (
-                  <em className="text-muted">reading its triggers…</em>
+                  <span data-trigger className="not-italic text-muted">
+                    reading its triggers…
+                  </span>
                 ) : (
-                  <em className="text-muted">{sentence.text}</em>
+                  <span data-trigger className="not-italic text-muted">
+                    {sentence.text}
+                  </span>
                 )}
               </li>
             );

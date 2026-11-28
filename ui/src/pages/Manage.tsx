@@ -26,7 +26,7 @@ import { lazy, Suspense, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router";
 import {
   IconFolders,
-  IconGitBranch,
+  IconBrandGithub,
   IconKey,
   IconRobot,
   IconServer,
@@ -53,7 +53,7 @@ const ITEMS: readonly {
   Icon: typeof IconFolders;
 }[] = [
   { key: "projects", label: "Projects", Icon: IconFolders },
-  { key: "repositories", label: "Repositories", Icon: IconGitBranch },
+  { key: "repositories", label: "Repositories", Icon: IconBrandGithub },
   { key: "people", label: "People & access", Icon: IconUsers },
   { key: "runners", label: "Runners", Icon: IconServer },
   { key: "agents", label: "Agents & models", Icon: IconRobot },
@@ -190,7 +190,7 @@ function NavPill({
         size={16}
         stroke={1.5}
         aria-hidden
-        className={selected && !pill ? "text-accent-edge" : "text-muted"}
+        className={selected && !pill ? "text-accent-edge" : "text-ink-2"}
       />
       {item.label}
     </Link>

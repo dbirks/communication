@@ -260,7 +260,7 @@ describe("/p/:projectId — the project home", () => {
 
     const row = await screen.findByTestId(`workflow-here-${shortId(pipelineId)}`);
     expect(row.textContent).toContain("Workflow One");
-    expect(row.querySelector("em")?.textContent).toBe("every weekday at 09:00 UTC");
+    expect(row.querySelector("[data-trigger]")?.textContent).toBe("every weekday at 09:00 UTC");
   });
 
   it("keeps today's refusal: a project the caller cannot open is one sentence, not a half page", async () => {

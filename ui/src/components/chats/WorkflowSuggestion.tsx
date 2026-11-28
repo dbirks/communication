@@ -42,7 +42,7 @@ export function WorkflowSuggestion({
           {suggestion.summary ? (
             <>
               {" "}
-              <em className="italic text-muted">{suggestion.summary}</em>
+              <span className="text-muted">{suggestion.summary}</span>
             </>
           ) : null}
         </span>

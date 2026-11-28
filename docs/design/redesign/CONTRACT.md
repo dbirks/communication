@@ -205,7 +205,7 @@ and the prototype.
 | Tool island, touch | no hover labels; every tool carries its name (and key) as its accessible label | A touch screen cannot hover; the island stays 48px wide on a 390px board |
 | Goal frame | its "…" button shows while the frame is selected (right after a wrap it is), 8px inside the corner | The same rule as a step's "…" |
 | Wrap panel | "Side by side" is unavailable with one step selected, and says why on hover | One step cannot run beside itself |
-| Versions panel | a line joins the version dots, and each older version has "Restore as draft" | Restoring an old version existed before; the line reads the rows as one history |
+| Versions panel | a line joins the version dots, and each version (the live one included) has "Restore as draft" | Restoring an old version existed before; the line reads the rows as one history |
 | Versions panel, phone | rows are 44px touch targets | Phone touch floor |
 | Editor, after a wrap | the board keeps its place; the 24px clearance from the tool island is how the editor opens | Moving the board under the reader's hands after an edit loses their place |
 | Editor, phone | a selection made before the window narrows to phone width keeps its place; selecting on the phone slides the steps above the sheet | The slide runs when the selection is made |
@@ -217,4 +217,8 @@ and the prototype.
 | Editor draft status | "Your draft · N changes from live vN", "Your draft · unpublished" | README section 1 gives this wording; it also says what the changes are measured against |
 | Tool island, expanded | 174px wide, 34px rows | The ninth row ("More steps…") is decided; the island keeps the rows the same height as the step kinds above |
 | Editor, phone | "Versions" and "Try it" are icon-only 44px buttons beside "Make live" and "…" | Four labelled buttons do not fit beside the breadcrumb at 390px; both keep their names as accessible labels |
+| Factory card thumbnails | the connector is 18 × 1.5px, which a 1x screen draws 1px | README section 8 gives 1.5px |
+| Run card in a chat | the state reads "● running · <current step>" with no elapsed seconds | The step name tells where the run is; the card has no running clock (the prototype’s seconds are mock data) |
+| New chat | the block keeps the shared page top padding (it sits about 35px lower than the prototype) | One top padding for every page under the top bar |
+| Quick chat | a short conversation sits at the bottom of the panel, next to the reply field | Chat convention: the newest message is where the eye and the reply box are |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |
