@@ -122,6 +122,34 @@ describe("SinceYouLeft", () => {
     );
   });
 
+  it("leads with the time and drops the project column on a project home (design review 10, F1)", async () => {
+    const items = [catchUpItemFixture({ id: "w-1", importance: "must_know" })];
+    const props = { projectId: projectFixture.id, projectName: projectFixture.name };
+    renderSince(
+      [
+        {
+          path: "/api/v1/catch-up/items",
+          body: { items, total_unseen: 1, oldest_unseen_at: null },
+        },
+        { path: "/api/v1/catch-up/brief", body: briefFixture() },
+      ],
+      props,
+    );
+    const row = await screen.findByTestId("since-row-w-1");
+    expect(row.textContent).not.toContain("Project One");
+    expect(row.firstElementChild?.getAttribute("data-testid")).toBe("since-row-age-w-1");
+    expect(row.firstElementChild?.className).toContain("font-mono");
+    cleanup();
+    // All projects keeps the project column first, in mono.
+    renderSince([
+      { path: "/api/v1/catch-up/items", body: { items, total_unseen: 1, oldest_unseen_at: null } },
+      { path: "/api/v1/catch-up/brief", body: briefFixture() },
+    ]);
+    const all = await screen.findByTestId("since-row-w-1");
+    expect(all.firstElementChild?.textContent).toBe("Project One");
+    expect(all.firstElementChild?.className).toContain("font-mono");
+  });
+
   it("prints one sentence, not the quiet headline, when the window holds nothing", async () => {
     renderSince([
       {

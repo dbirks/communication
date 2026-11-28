@@ -44,16 +44,35 @@ export function emptySentence(projectId: string | undefined, projectName: string
   return "Nothing new since you left.";
 }
 
-function SinceRow({ item }: { item: CatchUpListItem }) {
+function SinceRow({ item, scoped }: { item: CatchUpListItem; scoped: boolean }) {
+  const age = (
+    <span
+      className={`font-mono text-[11px] text-muted ${scoped ? "" : "text-right"}`}
+      data-testid={`since-row-age-${item.id}`}
+    >
+      {formatAge(item.updated_at)}
+    </span>
+  );
   return (
     <Link
       to={`/catch-up/${item.id}`}
       data-testid={`since-row-${item.id}`}
-      className="grid grid-cols-[70px_minmax(0,1fr)_auto] items-baseline gap-x-[12px] border-b border-line-soft py-[10px] focus-visible:outline-2 focus-visible:outline-accent"
+      // On a project home the page already names the project: the row leads with
+      // the time and has no project column (prototype; design review 10, F1).
+      className={`grid ${
+        scoped ? "grid-cols-[44px_minmax(0,1fr)]" : "grid-cols-[70px_minmax(0,1fr)_auto]"
+      } items-baseline gap-x-[12px] border-b border-line-soft py-[10px] focus-visible:outline-2 focus-visible:outline-accent`}
     >
-      <span className="truncate font-mono text-[11.5px] text-accent-text" title={item.project.name}>
-        {item.project.name}
-      </span>
+      {scoped ? (
+        age
+      ) : (
+        <span
+          className="truncate font-mono text-[11.5px] text-accent-text"
+          title={item.project.name}
+        >
+          {item.project.name}
+        </span>
+      )}
       <span className="min-w-0">
         <span className="block truncate text-[14px] font-semibold text-ink" title={item.title}>
           {item.title}
@@ -62,9 +81,7 @@ function SinceRow({ item }: { item: CatchUpListItem }) {
           {item.summary}
         </span>
       </span>
-      <span className="text-right font-mono text-[11px] text-muted">
-        {formatAge(item.updated_at)}
-      </span>
+      {scoped ? null : age}
     </Link>
   );
 }
@@ -108,10 +125,10 @@ export function SinceYouLeft({ projectId, projectName }: SinceYouLeftProps) {
         </p>
       ) : null}
       {important.map((item) => (
-        <SinceRow key={item.id} item={item} />
+        <SinceRow key={item.id} item={item} scoped={Boolean(projectId)} />
       ))}
       {showRoutine ? (
-        routine.map((item) => <SinceRow key={item.id} item={item} />)
+        routine.map((item) => <SinceRow key={item.id} item={item} scoped={Boolean(projectId)} />)
       ) : routine.length > 0 ? (
         <button
           type="button"

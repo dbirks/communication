@@ -226,4 +226,14 @@ and the prototype.
 | Quick chat, phone | the "stays open until you close it" subtitle is hidden | The panel covers the whole screen on a phone; the line has no room and adds nothing there |
 | Chats list | each row is about 58px | Each row has two lines, the title and the agent’s last line, plus its padding |
 | Round send button, phone | draws a 32px circle with a transparent 44×44 touch area (`tokens.css` APP-SHELL-PHONE) | The design keeps a circle at every width |
+| Home, "Since you left" | rows keep two lines (headline, then summary); the project (All projects) and time stay Red Hat Mono; on a project home the row leads with the time and has no project column | Design review 10, F1: the story text comes from the server's catch-up and needs its second line |
+| Project home prompt | the box is 94px, 8px shorter than the prototype's | Design review 10, F2: low impact (Home's box is 116px); recorded rather than fixed |
+| Chat thread composer and header | the composer keeps the hard 2px shadow and is 94px; the header title inset is 21px | Design review 10, F3: one composer component everywhere |
+| Run card | names the workflow the run started (proven: "Run it" on "Run Scratch: fix an issue on #1" makes a "Scratch: fix an issue" card); the issue number and round are on the run page, not the card | Design review 10, F4: the run record carries the issue as a trigger fact the card does not read yet |
+| Chats scope switch | switching to All opens the newest thread of the new list instead of keeping the open one | Design review 10, F5: the scope switch resets the list and its selection; keeping the open thread is a later improvement |
+| New chat "Or pick up" | row pitch and gap differ by a few pixels | Design review 10, F6: negligible; the rows share the phone layout's 44px rows |
+| New workflow sheet | the describe box uses our own example text | Design review 10, F7 |
+| Editor tool island, wrap panel, post-wrap layout, phone selection zoom | as built in v2 | Design review 10, F8, F9, F10, F12: the editor interactions handoff replaces the tool island and wrap panel; F10 (trigger against the island after a wrap) and F12 (phone selection zooms to about 0.58) are named in TODO "Editor interactions" |
+| Section pill | about 5px wider | Design review 10, F13: low impact; recorded rather than fixed |
+| Versions draft lines | the change lines name steps and engine kinds ("+ until", "+ first → judge") | Design review 10, F14: they come from the step diff; plain-sentence lines belong with the editor interactions work |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |
