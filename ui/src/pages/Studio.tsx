@@ -1445,6 +1445,14 @@ export function StudioPage() {
       label: `Live v${newestSummary.revision_number}`,
       title: `Live v${newestSummary.revision_number}; no draft`,
     };
+  } else if (draftId && newestSummary && draftChangeCount === 0) {
+    // 1e "nothing to make live": the draft's steps match the live version.
+    statusChip = {
+      dot: null,
+      check: true,
+      label: `Live v${newestSummary.revision_number}`,
+      title: `Live v${newestSummary.revision_number}; the draft's steps match it`,
+    };
   } else if (draftId) {
     const label =
       newestSummary === null
@@ -2015,6 +2023,7 @@ export function StudioPage() {
                 proposal !== null ||
                 isViewingHistory ||
                 status === "published" ||
+                draftChangeCount === 0 ||
                 publish.isPending ||
                 validate.isPending ||
                 studio.saving
@@ -2024,7 +2033,9 @@ export function StudioPage() {
                   ? "Already live — edit the workflow to start a draft"
                   : status === "published"
                     ? "This draft is already live"
-                    : "Validate and make this draft live"
+                    : draftChangeCount === 0
+                      ? "Nothing to make live: the draft's steps match the live version"
+                      : "Validate and make this draft live"
               }
               onClick={() => void onMakeLive()}
               className="ds-btn ds-btn--primary ds-btn--tall shrink-0"

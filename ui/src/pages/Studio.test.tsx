@@ -285,9 +285,12 @@ describe("Workflow editor (rx-editor R5)", () => {
     // Editor interactions 1e: the breadcrumb is the path only; the draft status is the chip
     // beside Try it / Make live, and it opens Versions.
     expect(within(slot).queryByTestId("studio-draft-status")).toBeNull();
+    // This draft's steps match live v7, so the chip reads "✓ Live v7" (1e, nothing to make live)
+    // and Make live is off.
     expect(screen.getByTestId("editor-versions-btn").getAttribute("aria-label")).toContain(
-      "Your draft",
+      "Live v7",
     );
+    expect((screen.getByTestId("studio-publish") as HTMLButtonElement).disabled).toBe(true);
 
     expect(screen.queryByTestId("studio-header")).toBeNull();
     expect(screen.queryByTestId("studio-status-bar")).toBeNull();
@@ -467,7 +470,13 @@ spec:
   });
 
   it("Make live runs validation when invalid and renders findings with go-to-node", async () => {
-    const { requests } = mount(studioPath, [{ path: draftPath, body: parseableDraft() }]);
+    // The draft differs from live (1e: a draft that matches live has nothing to make live).
+    const changed = wireDraft(
+      "invalid",
+      undefined,
+      samplePipelineYaml.replace("maxConcurrentNodes: 1", "maxConcurrentNodes: 2"),
+    );
+    const { requests } = mount(studioPath, [{ path: draftPath, body: changed }]);
     await screen.findByTestId("studio-canvas");
     fireEvent.click(await screen.findByTestId("studio-publish"));
 
