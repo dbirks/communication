@@ -38,7 +38,7 @@
 // honest and are never weakened.
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { BASE_URL, AGENT_TURN_TIMEOUT_MS } from "./env.js";
-import { decideGate, gotoApp, repinAssignment, signIn } from "./helpers.js";
+import { decideGate, gotoApp, openFullStepPanel, repinAssignment, signIn } from "./helpers.js";
 import {
   IS_PI_LAUNCHER,
   LAB_LAUNCHER,
@@ -954,10 +954,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
 
     // The new node is selected: click "More settings" on its Agent step card
     // to open the inspector, then open the "Retries, timeout and outputs" disclosure.
-    const stepCard = page.getByTestId("agent-step-card");
-    if (await stepCard.isVisible().catch(() => false)) {
-      await page.getByTestId("agent-card-more-settings").click({ timeout: 30_000 });
-    }
+    await openFullStepPanel(page);
     await page
       .getByTestId("insp-advanced-disclosure")
       .locator("summary")

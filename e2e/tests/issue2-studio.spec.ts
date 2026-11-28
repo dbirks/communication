@@ -38,7 +38,13 @@ import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { checkA11y } from "./a11y.js";
-import { expectNoLegacyAppBar, gotoApp, scrollToTopForCapture, signIn } from "./helpers.js";
+import {
+  expectNoLegacyAppBar,
+  gotoApp,
+  openFullStepPanel,
+  scrollToTopForCapture,
+  signIn,
+} from "./helpers.js";
 
 const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
@@ -404,6 +410,8 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await checkA11y(page, "studio inspector (agent.acp)");
 
     await page.getByTestId("canvas-step-review").click();
+    // 1a: a command step opens its beside card; "More settings" opens the panel.
+    await openFullStepPanel(page);
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue("review");
     await checkA11y(page, "studio inspector (process.exec)");
@@ -817,10 +825,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       await page.mouse.up();
       stepId = await visibleStep();
     }
-    expect(
-      stepId,
-      "a non-agent step can be panned into the 390px canvas",
-    ).not.toBeNull();
+    expect(stepId, "a non-agent step can be panned into the 390px canvas").not.toBeNull();
     await page.getByTestId(`canvas-step-${stepId!}`).click();
     // Editor interactions 1a: command, approval and judge steps open their
     // beside card (a bottom sheet on the phone) first; "More settings" opens

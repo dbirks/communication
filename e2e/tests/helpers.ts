@@ -957,3 +957,18 @@ export function execDocker(args: string[]): Buffer {
     return run(["sudo", "-n", "-E", "docker"]);
   }
 }
+
+/**
+ * Editor interactions 1a: a selected step shows a beside card (the agent card
+ * for agent steps, the step card for command / approval / judge / model steps);
+ * the full step panel (`insp-node`) opens from its "More settings" link.
+ * Call after clicking a `canvas-step-<id>`.
+ */
+export async function openFullStepPanel(page: Page, timeoutMs = 30_000): Promise<void> {
+  const more = page.getByTestId("agent-card-more-settings").or(page.getByTestId("step-card-more"));
+  const panel = page.getByTestId("insp-node");
+  await expect(more.or(panel).first()).toBeVisible({ timeout: timeoutMs });
+  if (!(await panel.isVisible().catch(() => false)))
+    await more.first().click({ timeout: timeoutMs });
+  await expect(panel).toBeVisible({ timeout: timeoutMs });
+}

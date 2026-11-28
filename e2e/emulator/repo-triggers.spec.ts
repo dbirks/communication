@@ -36,7 +36,7 @@
 // attached, because the create had SUCCEEDED and the dialog had correctly
 // closed. A node that is not there is an answer, not a hang.
 import { apiMutate, expect, test } from "./fixtures.js";
-import { decideGate } from "../tests/helpers.js";
+import { decideGate, openFullStepPanel } from "../tests/helpers.js";
 import type { Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_ADMIN_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
@@ -143,6 +143,8 @@ test.describe("repo-triggers (admin pre-publishes the gated workflow)", () => {
     // fails with binding_error before the gate. Pick the allowed
     // flash-next option; the select itself lists only what may be called.
     await page.getByTestId("canvas-step-plan").click({ timeout: 20_000 });
+    // 1a: the step's beside card opens first; "More settings" opens the panel.
+    await openFullStepPanel(page, 20_000);
     const model = page.getByTestId("insp-config-model");
     await expect(model, "design 1g: the plan step's inspector exposes its model field").toBeVisible(
       { timeout: 20_000 },

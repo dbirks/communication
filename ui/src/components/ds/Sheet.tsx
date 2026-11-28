@@ -1,10 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useBodyScrollLock } from "../../lib/scrollLock";
 
 /**
  * Redesign modal frame (docs/design/redesign/README.md + CONTRACT.md "Phone"):
  * radius 18, `--shadow-modal`, 1px line, Escape + optional backdrop dismiss,
  * focus management/trap, and a full-width bottom sheet below 768px.
+ * Portaled to document.body so a sheet opened from a floating panel (the
+ * editor's step panel, z-20) is not trapped under that panel's stacking
+ * context, where the add bar (z-30) painted over its footer.
  */
 
 const FOCUSABLE =
@@ -86,7 +90,7 @@ export function Sheet({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, ignoreEsc, trapFocus]);
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/25 p-4 max-md:items-end max-md:p-0"
       {...backdropProps}
@@ -106,6 +110,7 @@ export function Sheet({
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

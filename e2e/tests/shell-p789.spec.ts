@@ -1066,6 +1066,15 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       await expect(composer, "the composer is enabled once no turn is in flight").toBeEnabled({
         timeout: 60_000,
       });
+      // 1d: on the editor Quick chat sends a change as a ghost proposal by
+      // default ("Change this workflow", gated by Apply, not by trust). Turn it
+      // off so the request is the assistant's draft-edit tool call that
+      // ask_all gates. The toggle resets on every open.
+      const changeWorkflow = page.getByTestId("quick-chat-change-workflow");
+      if ((await changeWorkflow.getAttribute("aria-pressed").catch(() => null)) === "true") {
+        await changeWorkflow.click();
+        await expect(changeWorkflow).toHaveAttribute("aria-pressed", "false");
+      }
       await composer.fill(
         `Add a human approval step named trust_check after plan in ${slug}'s draft`,
       );

@@ -1,6 +1,6 @@
 // journeys.spec.ts — end-to-end redesign walkthrough: Home (all + project) →
-// Factory index & New workflow sheet → Studio editor (canvas, Box select +
-// WrapPanel + GoalFrame, Versions, Make live) → Chats (list, new chat,
+// Factory index & New workflow sheet → Studio editor (canvas, select a step +
+// "Wrap in…" → WrapPanel + GoalFrame, Versions, Make live) → Chats (list, new chat,
 // thread) → Manage (Projects, Runners, Agents & models).
 import { test, expect, apiMutate } from "./fixtures";
 import { EMU_ADMIN_STATE, EMU_BASE_URL } from "./env";
@@ -62,10 +62,8 @@ test("redesign journey: Home, Factory, Studio editor, Chats, Manage", async ({
   await expect(page.getByTestId("studio-canvas")).toBeVisible();
   await emu.screen("editor", "canvas");
 
-  // 4. Editor: Box select -> WrapPanel -> Repeat until -> GoalFrame
-  const toolbar = page.getByRole("toolbar", { name: "Canvas tools" });
-  await toolbar.getByRole("button", { name: "Box select (B)" }).click();
-
+  // 4. Editor (1b modeless, 1a beside card): select a step -> "Wrap in…" ->
+  // WrapPanel -> Repeat until -> GoalFrame.
   const firstCard = page
     .locator(
       '[data-testid^="canvas-step-"]:not([data-testid^="canvas-step-tile-"]):not([data-testid^="canvas-step-fact-"]):not([data-testid^="canvas-step-row-"]) > [role="button"]',
@@ -73,6 +71,7 @@ test("redesign journey: Home, Factory, Studio editor, Chats, Manage", async ({
     .first();
   await expect(firstCard).toBeVisible();
   await firstCard.click();
+  await page.getByTestId("agent-card-wrap").or(page.getByTestId("step-card-wrap")).first().click();
 
   await expect(page.getByTestId("wrap-panel")).toBeVisible();
   await emu.screen("editor", "wrap");

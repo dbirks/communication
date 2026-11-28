@@ -45,6 +45,7 @@ import {
   shot,
   signIn,
   testidOf,
+  openFullStepPanel,
 } from "./helpers.js";
 
 /** A bounded wait for a real worker to prepare a workspace and run two nodes. */
@@ -647,11 +648,8 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("the step form changes one field: the survey node's timeout", async () => {
       // The canvas steps are addressed by node id: the survey node's timeout.
       await admin.getByTestId("canvas-step-survey").click();
-      const agentCard = admin.getByTestId("agent-step-card");
-      if (await agentCard.isVisible().catch(() => false)) {
-        await admin.getByTestId("agent-card-more-settings").click();
-      }
-      await expect(admin.getByTestId("insp-node")).toBeVisible();
+      // 1a: the step's beside card opens first; "More settings" opens the panel.
+      await openFullStepPanel(admin);
       // The node's timeout lives inside the collapsed "Retries, timeout and
       // outputs" disclosure — open it before touching the field.
       await admin.getByTestId("insp-advanced-disclosure").locator("summary").click();
