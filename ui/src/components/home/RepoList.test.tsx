@@ -68,7 +68,7 @@ describe("RepoList", () => {
     const head = await screen.findByTestId("repo-list-label");
     expect(head.tagName).toBe("H3");
     expect(head.textContent).toBe("Repos");
-    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("text-[15px]");
     expect(head.className).not.toContain("font-mono");
   });
 

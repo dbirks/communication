@@ -19,7 +19,7 @@ describe("WrapPanel", () => {
 
     fireEvent.keyDown(repeatTab, { key: "ArrowRight" });
     expect(sideTab.getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByText(/These steps run at the same time/)).toBeTruthy();
+    expect(screen.getByText(/Start all 3 at the same time instead of one after/)).toBeTruthy();
 
     fireEvent.keyDown(sideTab, { key: "ArrowLeft" });
     expect(repeatTab.getAttribute("aria-selected")).toBe("true");

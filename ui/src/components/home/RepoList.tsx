@@ -55,7 +55,7 @@ function RepoRow({ projectId, repo }: { projectId: string; repo: Repository }) {
       </Link>
       {status === null ? null : (
         <span
-          className="shrink-0 text-[12px] text-muted"
+          className="shrink-0 font-mono text-[11px] text-muted"
           data-testid={`repo-status-${repo.name}`}
           title={githubHosted ? "open issues read from GitHub" : undefined}
         >

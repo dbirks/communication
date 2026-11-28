@@ -212,4 +212,9 @@ and the prototype.
 | Quick chat composer | while listening, the mic button is a stop square | It stops the dictation; the capsule above carries the mic |
 | Lists (Repos, chats, runners) | the last row has no rule under it | A rule separates rows; the card's own edge ends the list |
 | Rail and top bar | their 1px rules can sit 1px from where the prototype draws them | A 1px offset review 5 measured; the rail keeps its 64px and the bar its 60px box |
+| Home, "Since you left" | no "9 h · 3 projects" aside next to the heading | The catch-up API gives no visit window or story count to print; a made-up number is not allowed |
+| New workflow sheet | 720px wide outside | README section 4: "720 wide" |
+| Editor draft status | "Your draft · N changes from live vN", "Your draft · unpublished" | README section 1 gives this wording; it also says what the changes are measured against |
+| Tool island, expanded | 174px wide, 34px rows | The ninth row ("More steps…") is decided; the island keeps the rows the same height as the step kinds above |
+| Editor, phone | "Versions" and "Try it" are icon-only 44px buttons beside "Make live" and "…" | Four labelled buttons do not fit beside the breadcrumb at 390px; both keep their names as accessible labels |
 | Phone (below 768px) | everything in "Phone" above | The prototype is desktop-only |

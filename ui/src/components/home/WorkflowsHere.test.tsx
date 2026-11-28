@@ -83,7 +83,7 @@ describe("WorkflowsHere", () => {
     const head = await screen.findByTestId("workflows-here-label");
     expect(head.tagName).toBe("H3");
     expect(head.textContent).toBe("Workflows here");
-    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("text-[15px]");
     expect(head.className).toContain("border-line-soft");
     expect(head.className).not.toContain("font-mono");
 

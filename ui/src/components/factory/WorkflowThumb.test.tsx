@@ -44,7 +44,7 @@ describe("WorkflowThumb", () => {
     render(<WorkflowThumb steps={steps} />);
     const chipClass = chip("plan").className;
     expect(chipClass).not.toContain("font-mono");
-    expect(chipClass).toContain("text-[11.5px]");
+    expect(chipClass).toContain("text-[11px]");
     expect(chipClass).toContain("font-semibold");
   });
 
@@ -108,7 +108,7 @@ describe("WorkflowThumb", () => {
     expect(screen.getAllByTestId("workflow-thumb-line")[0].className).toContain("w-[18px]");
     const packed = chip("step-1").className;
     expect(packed).toContain("px-[6px]");
-    expect(packed).not.toContain("px-[8px]");
+    expect(packed).not.toContain("px-[9px]");
     expect(chipLabelEl("step-1").className).toContain(`max-w-[${CHIP_LABEL_MAX}ch]`);
   });
 

@@ -83,7 +83,7 @@ describe("SinceYouLeft", () => {
     const head = await screen.findByTestId("since-you-left-label");
     expect(head.tagName).toBe("H3");
     expect(head.textContent).toBe("Since you left");
-    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("text-[15px]");
     expect(head.className).toContain("font-bold");
     expect(head.className).toContain("border-line-soft");
     expect(head.className).not.toContain("font-mono");

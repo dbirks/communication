@@ -122,9 +122,7 @@ function SubNav({ active, narrow }: { active: ManageSection; narrow: boolean }) 
   const title = (
     <span
       className={
-        narrow
-          ? "px-[10px] pb-[6px] text-[16px] font-bold"
-          : "px-[10px] pb-[10px] text-[16px] font-bold"
+        narrow ? "px-[10px] text-[16px] font-bold" : "px-[10px] pb-[10px] text-[16px] font-bold"
       }
     >
       Manage

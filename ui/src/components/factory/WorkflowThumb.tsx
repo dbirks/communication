@@ -54,9 +54,9 @@ export function chipClasses(kind: ThumbStepKind, state: ThumbStepState): string 
 
 /** A chip's own text: the UI sans, 11.5/600 (review 07-1280-5). */
 const CHIP_BASE =
-  "flex h-[24px] items-center rounded-[7px] border text-[11.5px] font-semibold whitespace-nowrap";
+  "flex h-[26px] items-center rounded-[7px] border text-[11px] font-semibold whitespace-nowrap";
 /** A strip's own padding: the design's `0 8` while the row has room for it. */
-const CHIP_PAD = "px-[8px]";
+const CHIP_PAD = "px-[9px]";
 /** A long chain packs its padding tighter — `0 6` — so a card at its 2-column
  * width shows the trigger, five steps and the `+N`. The connector does not
  * shrink with it: the design's line is 18px whatever the chip count.
@@ -114,7 +114,7 @@ export function WorkflowThumb({ steps, className = "" }: WorkflowThumbProps) {
       ) : (
         <div data-testid="workflow-thumb-strip" className="mx-auto flex shrink-0 items-center">
           {displaySteps.map((step, index) => (
-            <span key={step.id} className={`flex shrink-0 items-center gap-[6px]`}>
+            <span key={step.id} className="flex shrink-0 items-center">
               {index > 0 ? (
                 <span aria-hidden data-testid="workflow-thumb-line" className={LINE} />
               ) : null}

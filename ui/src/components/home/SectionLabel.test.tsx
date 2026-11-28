@@ -54,7 +54,7 @@ describe("ColumnHeading", () => {
     const head = screen.getByTestId("head");
     expect(head.tagName).toBe("H3");
     expect(head.textContent).toBe("Since you left");
-    expect(head.className).toContain("text-[16px]");
+    expect(head.className).toContain("text-[15px]");
     expect(head.className).toContain("font-bold");
     expect(head.className).toContain("text-ink");
     expect(head.className).toContain("border-b");

@@ -332,7 +332,7 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
               readOnly
               disabled
               placeholder="Ask, plan, or hand off a task…"
-              className="block w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint disabled:text-disabled-fg"
+              className="block min-h-[56px] w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint disabled:text-disabled-fg"
             />
             <div className="mt-[10px] flex items-center gap-[8px]">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-[6px]">{chips}</div>
@@ -362,6 +362,7 @@ export function NewChatPane({ scope, showBack = false }: NewChatPaneProps) {
             chips={chips}
             footer={validationError || create.error ? footer : undefined}
             testid="new-chat-prompt"
+            className="[&_textarea]:min-h-[56px]"
           />
         )}
 

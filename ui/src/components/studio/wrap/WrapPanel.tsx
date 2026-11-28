@@ -439,7 +439,8 @@ export function WrapPanel({
               className="flex flex-col gap-[12px]"
             >
               <p className="text-[13px] leading-[19px] text-ink-2">
-                These steps run at the same time. The workflow continues when all of them finish.
+                {count === 2 ? "Start both" : `Start all ${count}`} at the same time instead of one
+                after another. The next step waits until all of them finish.
               </p>
               <div className="flex justify-end">
                 <button

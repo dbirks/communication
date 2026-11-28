@@ -28,7 +28,7 @@ export function WorkflowSuggestion({
     <div className="mb-[8px] flex flex-col gap-[6px]">
       <div
         data-testid="workflow-suggestion"
-        className="inline-flex max-w-full flex-wrap items-center gap-[8px] self-start rounded-full border border-accent-mid bg-accent-wash py-[6px] max-md:rounded-[14px] pl-[14px] pr-[8px] text-[13px] text-ink"
+        className="inline-flex max-w-full flex-wrap items-center gap-[8px] self-start rounded-full border border-accent-ring bg-accent-wash py-[2px] max-md:rounded-[14px] max-md:py-[6px] pl-[14px] pr-[8px] text-[13px] text-ink"
       >
         <IconBuildingFactory2
           size={15}
