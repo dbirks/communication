@@ -163,7 +163,7 @@ describe("SinceYouLeft", () => {
     expect(screen.getByTestId("since-row-w-1").getAttribute("href")).toBe("/catch-up/w-1");
   });
 
-  it("prints the brief's ready headline above the rows", async () => {
+  it("prints no brief headline above the rows (design review 9, F3)", async () => {
     renderSince([
       {
         path: "/api/v1/catch-up/items",
@@ -178,8 +178,8 @@ describe("SinceYouLeft", () => {
         body: briefFixture({ headline: { state: "ready", text: "Two projects moved." } }),
       },
     ]);
-    expect(await screen.findByTestId("since-you-left-headline")).toBeTruthy();
-    expect(screen.getByTestId("since-you-left-headline").textContent).toBe("Two projects moved.");
+    expect(await screen.findByTestId("since-row-w-1")).toBeTruthy();
+    expect(screen.queryByTestId("since-you-left-headline")).toBeNull();
   });
 
   it("prints no headline when only routine updates came in", async () => {

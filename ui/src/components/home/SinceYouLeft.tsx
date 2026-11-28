@@ -5,8 +5,8 @@
  *
  * Same reads, same rules as `pages/CatchUp.tsx`: the item list is
  * `useCatchUpItems` on the default "unseen" window (filtered to one project
- * when `projectId` is given), the brief headline (ADR-0081) prints above the
- * rows when the model wrote one, and opening the section stamps the visit
+ * when `projectId` is given), with no brief headline (design review 9, F3), and
+ * opening the section stamps the visit
  * exactly once, fire-and-forget — the moment and the arguments are
  * CatchUp's.
  *
@@ -21,14 +21,12 @@
  * When the window holds nothing the section is exactly ONE plain sentence
  * (CONTRACT.md "Home": data blocks print one sentence when empty): scoped to
  * the whole workspace it reads "Nothing new since you left.", scoped to one
- * project it names that project. A brief headline is never printed beside an
- * empty list — with zero items it only restates the quiet, so the sentence
- * below says all there is to say.
+ * project it names that project.
  */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { ColumnHeading } from "./SectionLabel";
-import { useCatchUpBrief, useCatchUpItems, useRecordVisit } from "../../api/catchup";
+import { useCatchUpItems, useRecordVisit } from "../../api/catchup";
 import type { CatchUpListItem } from "../../api/catchup";
 import { useProject } from "../../api/queries";
 import { formatAge } from "../../lib/format";
@@ -78,7 +76,6 @@ export function SinceYouLeft({ projectId, projectName }: SinceYouLeftProps) {
    * in the all-projects scope. */
   const project = useProject(projectId && !projectName ? projectId : "");
   const items = useCatchUpItems({ projects: projectFilter, window: "unseen" });
-  const brief = useCatchUpBrief("unseen", projectFilter);
   const recordVisit = useRecordVisit();
   const [showRoutine, setShowRoutine] = useState(false);
 
@@ -95,27 +92,13 @@ export function SinceYouLeft({ projectId, projectName }: SinceYouLeftProps) {
   const list = items.data?.items ?? [];
   const important = list.filter((item) => item.importance !== "routine");
   const routine = list.filter((item) => item.importance === "routine");
-  const readyHeadline =
-    brief.data?.headline && brief.data.headline.state === "ready" && brief.data.headline.text
-      ? brief.data.headline.text
-      : null;
-  // Zero items: the headline would only repeat "it was quiet", so the single
-  // empty sentence below is all the section prints. Only routine items: the
-  // brief's "quiet stretch, nothing changed" would contradict the "+ N
-  // routine updates" line under it (review-5), so that line speaks alone.
-  const headline = important.length > 0 ? readyHeadline : null;
+  // No brief headline here: the prototype has none, and a headline written
+  // before the newest story contradicted the rows under it ("Quiet stretch:
+  // nothing changed" above a real story — design review 9, F3).
 
   return (
     <section data-testid="since-you-left" className="min-w-0">
       <ColumnHeading testid="since-you-left-label">Since you left</ColumnHeading>
-      {headline ? (
-        <p
-          data-testid="since-you-left-headline"
-          className="pb-[8px] text-[15px] leading-[22px] text-ink-2"
-        >
-          {headline}
-        </p>
-      ) : null}
       {items.isPending ? (
         <p className="py-[10px] text-[13px] text-faint">Reading your updates…</p>
       ) : null}
