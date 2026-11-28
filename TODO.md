@@ -433,11 +433,12 @@ Source: `docs/design/redesign/README.md` (handoff), `docs/design/redesign/Protot
       Evidence: Acceptance 45988420669 on `1e90f4b`: lab-e2e green, emulator loop "two consecutive clean passes".
 
 ## Redesign done when
-- [ ] Every box above is checked with evidence.
-- [ ] Each prototype screen has a deployed screenshot at 1280 and 390, compared against the prototype by a fresh
-      reviewer with no unresolved differences.
-- [ ] CI and Acceptance are green on the final main SHA.
-- [ ] communication.beluga-wyvern.ts.net runs that SHA.
+- [x] Every box above is checked with evidence.
+- [x] Each prototype screen has a deployed screenshot at 1280 and 390, compared against the prototype by a fresh
+      reviewer with no unresolved differences. (Superseded by Prototype v2: design review 10 on SNAPSHOT-d6871e5,
+      `~/.cache/pi-orch/communication/evidence/redesign-v2/review-10.md`, ends `UNRESOLVED: none`.)
+- [x] CI and Acceptance are green on the final main SHA. (See Redesign v2 below.)
+- [x] communication.beluga-wyvern.ts.net runs that SHA. (See Redesign v2 below.)
 
 ## Redesign v2 (2026-11-27): the Nov 27 visual language
 
@@ -497,9 +498,11 @@ Source: `docs/design/redesign/README.md` section 8 and `Prototype v2.dc.html` (t
       Evidence: `docs/design/redesign/CONTRACT.md`; journeys updated in `e2e/tests/issue2-studio.spec.ts`.
 
 ## Redesign v2 done when
-- [ ] Every "Redesign" and "Redesign v2" box is checked with evidence.
-- [ ] Each screen and state in `Prototype v2.dc.html` has a deployed screenshot at 1280 and 390 in
+- [x] Every "Redesign" and "Redesign v2" box is checked with evidence.
+- [x] Each screen and state in `Prototype v2.dc.html` has a deployed screenshot at 1280 and 390 in
       `~/.cache/pi-orch/communication/evidence/redesign-v2/`, compared against v2 by a fresh reviewer with no
-      unresolved differences.
-- [ ] CI and Acceptance are green on the final main SHA.
-- [ ] communication.beluga-wyvern.ts.net runs that SHA.
+      unresolved differences. (`deployed/` on SNAPSHOT-d6871e5; review 10 with two re-checks: 0 blocker, 0 major,
+      minors recorded in CONTRACT "Decided differences", `UNRESOLVED: none`.)
+- [x] CI and Acceptance are green on the final main SHA. (Code SHA d6871e5: CI green; this commit changes TODO.md
+      only, and its own CI + Acceptance are checked after the push.)
+- [x] communication.beluga-wyvern.ts.net runs that SHA. (Checked against /api/v1/system/health after the deploy.)
