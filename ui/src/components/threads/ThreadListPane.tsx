@@ -310,7 +310,7 @@ function ThreadItem({
         aria-current={selected ? "page" : undefined}
         className={`block rounded-[3px] border px-[10px] py-[9px] ${
           selected
-            ? "border-ink bg-accent-wash shadow-(--shadow-raised)"
+            ? "border-ink bg-accent-wash"
             : "border-transparent hover:border-line-strong hover:bg-surface"
         }`}
       >

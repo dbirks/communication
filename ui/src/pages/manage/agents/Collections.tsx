@@ -26,7 +26,6 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { SoftButton } from "../../../components/ds/SoftButton";
 import { Field } from "../../../components/ds/Field";
 import { Alert } from "../../../components/ds/Alert";
 import { Spinner } from "../../../components/Feedback";
@@ -162,14 +161,14 @@ function CollectionsList() {
     <div data-testid="collections-embedded">
       <div className="flex items-center justify-end">
         {canAuthor ? (
-          <SoftButton
-            variant="primary"
-            size="lg"
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary ds-btn--tall"
             onClick={() => setNewOpen(true)}
             data-testid="collections-new"
           >
             New collection
-          </SoftButton>
+          </button>
         ) : (
           <span className="font-mono text-[10.5px] text-faint">
             authoring needs {LIBRARY_ROLE_LABEL}
@@ -301,17 +300,22 @@ export function NewCollectionDialog({ open, onClose }: { open: boolean; onClose:
             </Alert>
           ) : null}
           <div className="flex justify-end gap-[8px] pt-[4px]">
-            <SoftButton variant="ghost" onClick={onClose} data-testid="collections-new-cancel">
+            <button
+              type="button"
+              className="ds-btn ds-btn--ghost"
+              onClick={onClose}
+              data-testid="collections-new-cancel"
+            >
               Cancel
-            </SoftButton>
-            <SoftButton
+            </button>
+            <button
+              className="ds-btn ds-btn--primary"
               type="submit"
-              variant="primary"
               disabled={!canSubmit}
               data-testid="collections-new-submit"
             >
               {busy ? "Creating…" : "Create collection"}
-            </SoftButton>
+            </button>
           </div>
         </form>
       </div>

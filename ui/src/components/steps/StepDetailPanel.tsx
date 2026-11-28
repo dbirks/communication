@@ -9,7 +9,6 @@
  */
 import { Link } from "react-router";
 import { Alert } from "../ds/Alert";
-import { SoftButton } from "../ds/SoftButton";
 import { StatusChip } from "../ds/Row";
 import { FormError, Spinner } from "../Feedback";
 import { ApiError } from "../../api/client";
@@ -198,23 +197,23 @@ export function StepDetailPanel({
       </section>
 
       <div className="mt-[12px] flex flex-col items-stretch gap-[8px]">
-        <SoftButton
-          variant="primary"
-          size="lg"
+        <button
+          type="button"
+          className="ds-btn ds-btn--primary ds-btn--tall"
           onClick={onEdit}
           disabled={!latest || !suggested}
           data-testid="step-detail-edit-for-all"
         >
           {suggested ? `Edit for all ${usages.length} → version ${suggested}` : "Edit for all"}
-        </SoftButton>
-        <SoftButton
-          variant="secondary"
-          size="lg"
+        </button>
+        <button
+          type="button"
+          className="ds-btn ds-btn--secondary ds-btn--tall"
           onClick={onDuplicate}
           data-testid="step-detail-duplicate"
         >
           Duplicate as a new step…
-        </SoftButton>
+        </button>
       </div>
     </div>
   );

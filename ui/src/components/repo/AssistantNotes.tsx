@@ -64,7 +64,7 @@ export function AssistantNotes({ notes, onDismiss }: AssistantNotesProps) {
   return (
     <section
       aria-labelledby="repo-assistant-notes-heading"
-      className="overflow-hidden rounded-[3px] border border-accent-ring border-l-2 border-l-accent bg-surface shadow-(--shadow-raised)"
+      className="overflow-hidden rounded-[3px] border border-accent-ring border-l-2 border-l-accent bg-surface"
       data-testid="repo-assistant-notes"
     >
       <div className="flex items-baseline justify-between gap-2 border-b border-accent-ring bg-accent-wash px-[10px] py-[6px] font-mono text-[10.5px] font-bold tracking-[.06em] text-accent-edge">

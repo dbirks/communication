@@ -22,7 +22,6 @@ import {
   type OverviewModel,
   type SystemOverview,
 } from "../../api/overview";
-import { SoftButton } from "../ds/SoftButton";
 import { OpsError, OpsSkeleton } from "./OpsPanel";
 import { StatusDot, type OpsStatus } from "./StatusDot";
 
@@ -205,15 +204,15 @@ export function ModelsPanel({
                       </span>
                     ) : null}
                     {probeable && isAdmin ? (
-                      <SoftButton
-                        variant="secondary"
-                        compact
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--secondary ds-btn--compact"
                         disabled={state.phase === "testing"}
                         onClick={() => void runProbe(model.kind)}
                         data-testid={`model-test-${model.kind}`}
                       >
                         {state.phase === "testing" ? "testing…" : "Test"}
-                      </SoftButton>
+                      </button>
                     ) : null}
                     {state.phase === "done" ? (
                       <span

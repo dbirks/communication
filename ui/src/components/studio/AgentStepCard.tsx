@@ -1,13 +1,13 @@
 /**
  * AgentStepCard — compact floating card shown beside a selected `agent.acp`
  * step (CONTRACT "Agents & models" 4): "AGENT STEP" label, step name field,
- * `AgentPicker` profile selector, 6-row autosizing prompt textarea, and a
+ * `AgentPicker` profile selector, 4–8-row autosizing prompt textarea, and a
  * "More settings" link that opens the full inspector panel.
  */
 import { useEffect, useState } from "react";
-import { IconX } from "@tabler/icons-react";
 import { renameNode, updateConfig, type OpResult } from "../../lib/pipeline/graphDoc";
 import { AgentPicker } from "../shell/AgentPicker";
+import { BesideCard, type BesideSide } from "./BesideCard";
 
 export interface AgentStepCardProps {
   nodeId: string;
@@ -21,6 +21,11 @@ export interface AgentStepCardProps {
   onClose: () => void;
   sheet?: boolean;
   className?: string;
+  /** 1a: "Wrap in…" — wrap this one step (opens the wrap card). */
+  onWrap?: () => void;
+  /** Caret side and offset from the beside-card placement (1a). */
+  side?: BesideSide;
+  caret?: number;
 }
 
 export function AgentStepCard({
@@ -35,6 +40,9 @@ export function AgentStepCard({
   onClose,
   sheet = false,
   className = "",
+  side,
+  caret,
+  onWrap,
 }: AgentStepCardProps) {
   const [nameDraft, setNameDraft] = useState(nodeId);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -72,35 +80,24 @@ export function AgentStepCard({
     apply((t) => updateConfig(t, nodeId, { prompt: promptDraft || undefined }));
   }
 
+  // Editor interactions 1a: the prompt box starts at 4 rows and grows to 8,
+  // then scrolls, so the card stays beside the step on an 800px screen.
   const promptRows = Math.max(
-    6,
-    Math.min(14, promptDraft.split("\n").length, Math.ceil(promptDraft.length / 42)),
+    4,
+    Math.min(8, Math.max(promptDraft.split("\n").length, Math.ceil(promptDraft.length / 42))),
   );
 
-  const containerLayout = sheet
-    ? "w-full rounded-t-[14px] rounded-b-none border-t border-line p-[16px] shadow-[var(--shadow-modal)]"
-    : "w-[340px] rounded-[14px] border border-fill-edge p-[14px] shadow-[var(--shadow-pop)]";
-
   return (
-    <div
-      data-testid="agent-step-card"
-      className={`flex flex-col gap-[12px] bg-surface ${containerLayout} ${className}`}
+    <BesideCard
+      title="AGENT STEP"
+      onClose={onClose}
+      side={side}
+      caret={caret}
+      sheet={sheet}
+      testid="agent-step-card"
+      closeTestid="agent-card-close"
+      className={className}
     >
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
-          AGENT STEP
-        </span>
-        <button
-          type="button"
-          aria-label="Close"
-          data-testid="agent-card-close"
-          onClick={onClose}
-          className="icon-hit ml-auto inline-flex h-[24px] w-[24px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-        >
-          <IconX size={15} stroke={1.5} aria-hidden />
-        </button>
-      </div>
-
       <div className="flex flex-col gap-[4px]">
         <label htmlFor="agent-card-name" className="text-[12.5px] font-semibold text-ink-2">
           Step name
@@ -163,7 +160,7 @@ export function AgentStepCard({
         />
       </div>
 
-      <div className="flex items-center justify-between pt-[2px]">
+      <div className="flex items-center gap-[14px] pt-[2px]">
         <button
           type="button"
           data-testid="agent-card-more-settings"
@@ -172,7 +169,18 @@ export function AgentStepCard({
         >
           More settings
         </button>
+        {onWrap ? (
+          <button
+            type="button"
+            data-testid="agent-card-wrap"
+            onClick={onWrap}
+            className="text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            Wrap in…
+          </button>
+        ) : null}
+        <span className="ml-auto font-mono text-[10.5px] text-faint">autosaved</span>
       </div>
-    </div>
+    </BesideCard>
   );
 }

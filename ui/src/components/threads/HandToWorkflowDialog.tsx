@@ -44,7 +44,6 @@ import { useCreateRun } from "../../api/runs";
 import type { RunCreateResponse } from "../../api/types";
 import { Field, Select, Textarea } from "../ds/Field";
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 import { ProblemBanner, Spinner } from "../Feedback";
 import {
   InputFieldControl,
@@ -459,27 +458,27 @@ function DialogBody({ conversation, onClose, onStarted }: DialogBodyProps) {
         ) : null}
 
         <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
-          <SoftButton
+          <button
+            className="ds-btn ds-btn--secondary"
             type="button"
-            variant="secondary"
             onClick={onClose}
             data-testid="handoff-cancel"
           >
             Cancel
-          </SoftButton>
+          </button>
           {created ? (
-            <SoftButton
+            <button
+              className="ds-btn ds-btn--primary"
               type="button"
-              variant="primary"
               onClick={onClose}
               data-testid="handoff-done"
             >
               Done
-            </SoftButton>
+            </button>
           ) : (
-            <SoftButton
+            <button
+              className="ds-btn ds-btn--primary"
               type="submit"
-              variant="primary"
               disabled={
                 busy ||
                 activeOption === null ||
@@ -490,7 +489,7 @@ function DialogBody({ conversation, onClose, onStarted }: DialogBodyProps) {
               data-testid="handoff-submit"
             >
               {busy ? "Starting run…" : "Start run"}
-            </SoftButton>
+            </button>
           )}
         </footer>
       </form>

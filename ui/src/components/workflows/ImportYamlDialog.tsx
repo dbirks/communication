@@ -122,7 +122,7 @@ function DialogBody({ onClose }: { onClose: () => void }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-yaml-title"
-        className="w-[640px] max-w-full rounded-[4px] border border-line bg-surface shadow-(--shadow-raised)"
+        className="w-[640px] max-w-full rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
         data-testid="import-yaml-dialog"
       >
         <h2

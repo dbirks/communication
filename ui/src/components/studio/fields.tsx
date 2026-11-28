@@ -7,7 +7,6 @@
  * against the schema's minimum/maximum before the value leaves the widget.
  */
 import { useEffect, useState } from "react";
-import { SoftButton } from "../ds/SoftButton";
 import { Field, Input, Select, Textarea } from "../ds/Field";
 
 export interface CommitProps {
@@ -384,24 +383,26 @@ export function ListField({
               data-testid={`insp-${id}-row-${i}`}
               onChange={(e) => commit(rows.map((r, j) => (j === i ? e.target.value : r)))}
             />
-            <SoftButton
-              variant="ghost"
+            <button
+              type="button"
+              className="ds-btn ds-btn--ghost"
               disabled={readOnly}
               data-testid={`insp-${id}-row-${i}-del`}
               onClick={() => commit(rows.filter((_, j) => j !== i))}
             >
               Remove
-            </SoftButton>
+            </button>
           </div>
         ))}
-        <SoftButton
-          variant="secondaryPlain"
+        <button
+          type="button"
+          className="ds-btn ds-btn--secondary-plain"
           disabled={readOnly}
           data-testid={`insp-${id}-add`}
           onClick={() => commit([...rows, ""])}
         >
           Add
-        </SoftButton>
+        </button>
       </div>
     </Field>
   );
@@ -515,20 +516,22 @@ export function RowsField({
                 );
               })}
               <div className="flex items-end">
-                <SoftButton
-                  variant="ghost"
+                <button
+                  type="button"
+                  className="ds-btn ds-btn--ghost"
                   disabled={readOnly}
                   data-testid={`insp-${id}-row-${i}-del`}
                   onClick={() => commit(rows.filter((_, j) => j !== i))}
                 >
                   Remove
-                </SoftButton>
+                </button>
               </div>
             </div>
           </div>
         ))}
-        <SoftButton
-          variant="secondaryPlain"
+        <button
+          type="button"
+          className="ds-btn ds-btn--secondary-plain"
           disabled={readOnly}
           data-testid={`insp-${id}-add`}
           onClick={() => {
@@ -538,7 +541,7 @@ export function RowsField({
           }}
         >
           Add row
-        </SoftButton>
+        </button>
       </div>
     </Field>
   );
@@ -602,24 +605,26 @@ export function KvField({
                 commit(rows.map(([k, vv], j) => (j === i ? [k, e.target.value] : [k, vv])))
               }
             />
-            <SoftButton
-              variant="ghost"
+            <button
+              type="button"
+              className="ds-btn ds-btn--ghost"
               disabled={readOnly}
               data-testid={`insp-${id}-row-${i}-del`}
               onClick={() => commit(rows.filter((_, j) => j !== i))}
             >
               Remove
-            </SoftButton>
+            </button>
           </div>
         ))}
-        <SoftButton
-          variant="secondaryPlain"
+        <button
+          type="button"
+          className="ds-btn ds-btn--secondary-plain"
           disabled={readOnly}
           data-testid={`insp-${id}-add`}
           onClick={() => commit([...rows, ["", ""]])}
         >
           Add
-        </SoftButton>
+        </button>
       </div>
     </Field>
   );

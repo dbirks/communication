@@ -21,7 +21,6 @@ import {
 } from "../../../api/agentAccounts";
 import { ApiError, problemOf } from "../../../api/client";
 import { Alert } from "../../../components/ds/Alert";
-import { SoftButton } from "../../../components/ds/SoftButton";
 import AgentLoginDialog, {
   type AgentLoginDialogTarget,
 } from "../../../components/settings/AgentLoginDialog";
@@ -227,16 +226,16 @@ function HarnessRow({
             item.state === "signed_out" ||
             (item.login !== null && isAgentLoginActive(item.login.status));
           return (
-            <SoftButton
+            <button
+              type="button"
+              className={`ds-btn ${needsAccent ? "ds-btn--primary" : "ds-btn--secondary"}`}
               key={`${item.launcher}/${item.worker_id}`}
-              size="sm"
-              variant={needsAccent ? "primary" : "secondary"}
               data-testid="agent-account-signin"
               onClick={() => onSignIn(item)}
               disabled={busy}
             >
               {buttonLabel(item)}
-            </SoftButton>
+            </button>
           );
         })}
       </span>

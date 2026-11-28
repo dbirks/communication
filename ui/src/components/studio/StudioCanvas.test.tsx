@@ -243,8 +243,8 @@ describe("StudioCanvas", () => {
     // Edges render only after the (stubbed) ResizeObserver has measured the
     // nodes — a microtask after mount.
     fireEvent.click(await screen.findByTestId("edge-add-plan-check"));
-    expect(screen.getByTestId("step-picker")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    expect(screen.getByTestId("insert-step-menu")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("insert-step-process.exec"));
     expect(onInsertOnEdge).toHaveBeenCalledTimes(1);
     const [edge, kind] = onInsertOnEdge.mock.calls[0];
     expect(edge.from).toBe("plan");
@@ -261,16 +261,16 @@ describe("StudioCanvas", () => {
     renderCanvas({ onInsertOnEdge });
     const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
     fireEvent.click(add);
-    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    expect(screen.getAllByTestId("insert-step-menu")).toHaveLength(1);
     // Re-clicking the "+" with its picker open changes nothing: still ONE
     // picker on the canvas, and no insert has happened yet.
     fireEvent.click(add);
-    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    expect(screen.getAllByTestId("insert-step-menu")).toHaveLength(1);
     expect(onInsertOnEdge).not.toHaveBeenCalled();
     // The single card click inserts exactly one step.
-    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    fireEvent.click(screen.getByTestId("insert-step-process.exec"));
     expect(onInsertOnEdge).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId("step-picker")).toBeNull();
+    expect(screen.queryByTestId("insert-step-menu")).toBeNull();
   });
 
   it("stacks the open picker above the “+” hit square (jsdom has no paint order)", async () => {
@@ -285,14 +285,14 @@ describe("StudioCanvas", () => {
     const group = add.parentElement as HTMLElement;
     expect(group.className).not.toContain("z-50");
     fireEvent.click(add);
-    const picker = screen.getByTestId("step-picker");
+    const picker = screen.getByTestId("insert-step-menu");
     const pickerWrap = picker.parentElement as HTMLElement;
     expect(pickerWrap.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
     expect(pickerWrap.className).toContain("z-50");
     expect(group.className).toContain("z-50");
-    // The 44px target and the 22px circle stay exactly as designed.
+    // The 44px target and the 24px circle stay exactly as designed (1h).
     expect(add.className).toContain("h-[44px]");
-    expect(add.querySelector("span[aria-hidden='true']")?.className).toContain("h-[22px]");
+    expect(add.querySelector("span[aria-hidden='true']")?.className).toContain("h-[24px]");
   });
 
   it("shows the trailing + only on terminal steps, and never in read-only mode", async () => {
@@ -344,30 +344,27 @@ describe("StudioCanvas", () => {
     expect(fact.getAttribute("title")).toContain("\u00b7 m");
   });
 
-  it("draws each insert + as a fixed 22px circle on a 44px target", async () => {
+  it("draws each insert + as a fixed 24px ink circle on a 44px target (1h)", async () => {
     const { container } = renderCanvas();
     const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
     // The phone band's 44px floor used to stretch the CIRCLE itself into a tall
     // pill (and the emulator measures the real box, so opting out is not an
-    // option): target and ink are separate elements — 44px button, 22px circle.
+    // option): target and ink are separate elements — 44px button, 24px circle.
     expect(add.className).toContain("h-[44px]");
     expect(add.className).toContain("w-[44px]");
     const circle = add.querySelector("span[aria-hidden='true']");
-    expect(circle?.className).toContain("h-[22px]");
-    expect(circle?.className).toContain("w-[22px]");
+    expect(circle?.className).toContain("h-[24px]");
+    expect(circle?.className).toContain("w-[24px]");
+    expect(circle?.className).toContain("border-ink");
     expect(circle?.className).toContain("rounded-full");
     const after = (await screen.findByTestId("add-after-check")) as HTMLElement;
     expect(after.className).toContain("h-[44px]");
-    // The terminal circle keeps its drawn size AND its seat on the stub: the
-    // extra hit area falls into the empty band under the sink.
-    const afterCircle = after.querySelector("span[aria-hidden='true']");
-    expect(afterCircle?.className).toContain("h-[22px]");
-    // Review-1 09-1280-7: the trailing “+” (and its stub) is a hover/focus
-    // affordance too — hidden until the step or the “+” itself is hovered or
-    // focused, never permanent ink.
-    expect(afterCircle?.className).toContain("opacity-0");
-    expect(afterCircle?.className).toContain("group-hover:opacity-100");
-    expect(afterCircle?.className).toContain("group-focus-within:opacity-100");
+    // Editor interactions 1h: the last step shows a dashed 24px "+" to its
+    // right (visible, with "next step"), the hit area still 44px.
+    const afterCircle = after.querySelector("span[aria-hidden]");
+    expect(afterCircle?.className).toContain("h-[24px]");
+    expect(afterCircle?.className).toContain("border-dashed");
+    expect(afterCircle?.className).not.toContain("opacity-0");
     expect(container.querySelector("[data-testid='add-after-plan']")).toBeNull();
   });
 
@@ -772,10 +769,10 @@ spec:
     renderCanvas();
     const addAfter = (await screen.findByTestId("add-after-check")) as HTMLElement;
     expect(addAfter).toBeTruthy();
-    // The stub wrapper sits on the node's vertical axis (left-1/2) and the
-    // "+" itself is centred on it.
+    // 1h: the dashed line and "+" sit to the step's RIGHT, on its middle.
     expect(addAfter.parentElement).toBeTruthy();
-    expect(addAfter.parentElement!.className).toContain("left-1/2");
+    expect(addAfter.parentElement!.style.left).toBe("100%");
+    expect(addAfter.parentElement!.textContent).toContain("next step");
   });
 });
 
@@ -849,7 +846,7 @@ describe("two consecutive picker adds across an inspector edit (studio-a2)", () 
     // 1) First add on the terminal step's “+”: exactly one new step, and the
     // canvas answers with it selected (the page's runOp selects `changed[0]`).
     fireEvent.click(await screen.findByTestId("add-after-check"));
-    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    fireEvent.click(screen.getByTestId("insert-step-process.exec"));
     await screen.findByTestId("canvas-step-process");
 
     // 2) The reader edits the fresh step in the inspector (fill + blur is a
@@ -868,17 +865,17 @@ describe("two consecutive picker adds across an inspector edit (studio-a2)", () 
     // this click). Asserted from the two targets a reader hits: the search
     // box and the kind card.
     fireEvent.click(screen.getByTestId("add-after-process"));
-    const picker = screen.getByTestId("step-picker");
+    const picker = screen.getByTestId("insert-step-menu");
     for (const flowClass of ["nowheel", "nopan", "nodrag"]) {
-      expect(picker.classList.contains(flowClass), `dialog carries ${flowClass}`).toBe(true);
+      expect(picker.closest(`.${flowClass}`), `menu inside ${flowClass}`).toBeTruthy();
     }
-    for (const chrome of ["step-picker-search", "step-picker-item-process.exec"]) {
+    for (const chrome of ["insert-step-process.exec"]) {
       expect(screen.getByTestId(chrome).closest(".nodrag"), `${chrome} in .nodrag`).toBeTruthy();
       expect(screen.getByTestId(chrome).closest(".nopan"), `${chrome} in .nopan`).toBeTruthy();
     }
 
     // 4) The pick lands: exactly ONE new step, named after the one before it.
-    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    fireEvent.click(screen.getByTestId("insert-step-process.exec"));
     await screen.findByTestId("canvas-step-process_2");
     // The outline row spells the edge the picker promised: after `process`.
     expect(screen.getByTestId("canvas-step-row-process_2").textContent).toContain("after process");
@@ -1311,54 +1308,48 @@ describe("evaluateConnect", () => {
   });
 });
 
-describe("canvas tools", () => {
-  it("switches tools with keys but ignores text fields and modifiers", () => {
-    renderCanvas({ showToolIsland: true });
-    fireEvent.keyDown(window, { key: "h" });
-    expect(
-      screen.getByRole("button", { name: "Move around (H)" }).getAttribute("aria-pressed"),
-    ).toBe("true");
-    const input = document.createElement("input");
-    document.body.appendChild(input);
-    fireEvent.keyDown(input, { key: "b" });
-    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
-    expect(
-      screen.getByRole("button", { name: "Move around (H)" }).getAttribute("aria-pressed"),
-    ).toBe("true");
-    input.remove();
-    fireEvent.keyDown(window, { key: "b" });
-    expect(
-      screen.getByRole("button", { name: "Box select (B)" }).getAttribute("aria-pressed"),
-    ).toBe("true");
+describe("canvas gestures (editor interactions 1b: no modes)", () => {
+  it("has no tool keys: V, H, B and C change nothing", async () => {
+    const onSelectionChange = vi.fn();
+    const { container } = renderCanvas({ showToolIsland: true, onSelectionChange });
+    const pane = container.querySelector(".react-flow__pane")!;
+    const before = pane.className;
+    const calls = onSelectionChange.mock.calls.length;
+    for (const key of ["v", "h", "b", "c"]) fireEvent.keyDown(window, { key });
+    expect(pane.className).toBe(before);
+    expect(onSelectionChange.mock.calls.length).toBe(calls);
   });
 
-  it("uses pane panning for move and selection dragging for box", () => {
+  it("drags on empty canvas select; holding Space pans and stops node dragging", () => {
     const { container } = renderCanvas({ showToolIsland: true });
     const pane = container.querySelector(".react-flow__pane")!;
     const node = container.querySelector(".react-flow__node")!;
-    expect(pane.classList.contains("draggable")).toBe(true);
+    // Left-drag on empty canvas draws a selection box (no pan); nodes drag.
+    expect(pane.classList.contains("draggable")).toBe(false);
     expect(node.classList.contains("draggable")).toBe(true);
-    fireEvent.keyDown(window, { key: "h" });
+    fireEvent.keyDown(window, { key: " ", code: "Space" });
     expect(pane.classList.contains("draggable")).toBe(true);
     expect(node.classList.contains("draggable")).toBe(false);
-    fireEvent.keyDown(window, { key: "b" });
+    fireEvent.keyUp(window, { key: " ", code: "Space" });
     expect(pane.classList.contains("draggable")).toBe(false);
   });
 
-  it("connects two clicked steps through validation and cancels with Escape", async () => {
+  it("selects every step with Cmd/Ctrl+A", async () => {
+    const onSelectionChange = vi.fn();
+    renderCanvas({ showToolIsland: true, onSelectionChange });
+    await screen.findByRole("button", { name: "Ask a model step plan" });
+    fireEvent.keyDown(window, { key: "a", ctrlKey: true });
+    expect(onSelectionChange).toHaveBeenLastCalledWith(expect.arrayContaining(["plan", "check"]));
+  });
+
+  it("a plain click on two steps selects them one after the other and never connects them", async () => {
     const onConnect = vi.fn();
-    const canConnect = vi.fn(() => ({ ok: true as const }));
-    renderCanvas({ showToolIsland: true, onConnect, canConnect });
+    renderCanvas({ showToolIsland: true, onConnect, canConnect: () => ({ ok: true as const }) });
     const plan = await screen.findByRole("button", { name: "Ask a model step plan" });
     const check = await screen.findByRole("button", { name: "Run command / tests step check" });
-    fireEvent.keyDown(window, { key: "c" });
     fireEvent.click(plan);
-    fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(check);
     expect(onConnect).not.toHaveBeenCalled();
-    fireEvent.click(plan);
-    expect(canConnect).toHaveBeenCalledWith("check", "plan");
-    expect(onConnect).toHaveBeenCalledWith("check", "plan");
   });
 });
 
@@ -1853,40 +1844,35 @@ function NotePlayground({
 }
 
 describe("canvas notes", () => {
-  it("the N key picks the Note tool, as the island shows it", async () => {
-    render(<NotePlayground />);
-    await screen.findByTestId("canvas-step-check");
-    fireEvent.keyDown(window, { key: "n" });
-    expect(screen.getByTestId("tool-note").getAttribute("aria-pressed")).toBe("true");
-  });
-
-  it("with the Note tool a click on empty canvas drops a snapped note and hands the tool back", async () => {
+  it("the N key drops a snapped note at the pointer, born typing", async () => {
     const onNotesChange = vi.fn();
-    render(<NotePlayground onNotesChange={onNotesChange} />);
+    const { container } = render(<NotePlayground onNotesChange={onNotesChange} />);
+    await screen.findByTestId("canvas-step-check");
+    const canvas = container.querySelector('[data-testid="studio-canvas"]') as HTMLElement;
+    fireEvent.pointerMove(canvas, { clientX: 213, clientY: 137 });
     fireEvent.keyDown(window, { key: "n" });
-    const pane = (await screen.findByTestId("canvas-step-check")).closest(".react-flow__pane");
-    expect(pane).toBeTruthy();
-    fireEvent.click(pane as HTMLElement, { clientX: 213, clientY: 137 });
     expect(onNotesChange).toHaveBeenCalledWith([
       { id: "note-1", x: 220, y: 140, width: 200, text: "" },
     ]);
-    // The note is born typing, and the island is back on Select.
     const area = await screen.findByTestId("canvas-note-input-note-1");
-    // The note is BORN typing: the click-then-type gesture needs the caret in
-    // its text without a second click.
     await waitFor(() =>
       expect(globalThis.document.activeElement?.getAttribute("data-testid")).toBe(
         "canvas-note-input-note-1",
       ),
     );
-    expect(screen.getByTestId("tool-note").getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByLabelText("Select (V)").getAttribute("aria-pressed")).toBe("true");
-    // Click → type → leave: the words are the note, and they persist with it.
     fireEvent.change(area, { target: { value: "check with Ada before making live" } });
     fireEvent.blur(area);
     expect(onNotesChange).toHaveBeenLastCalledWith([
       { id: "note-1", x: 220, y: 140, width: 200, text: "check with Ada before making live" },
     ]);
+  });
+
+  it("a click on empty canvas drops no note (the canvas has no Note mode)", async () => {
+    const onNotesChange = vi.fn();
+    render(<NotePlayground onNotesChange={onNotesChange} />);
+    const pane = (await screen.findByTestId("canvas-step-check")).closest(".react-flow__pane");
+    fireEvent.click(pane as HTMLElement, { clientX: 213, clientY: 137 });
+    expect(onNotesChange).not.toHaveBeenCalled();
   });
 
   it("typing into a note writes its text back through the note list", async () => {
@@ -1939,6 +1925,24 @@ describe("canvas notes", () => {
     fireEvent.keyDown(window, { key: "Delete" });
     expect(onNotesChange).toHaveBeenCalledWith([]);
     expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it("a selected note opens the NOTE beside card: edit its text or delete it (1a)", async () => {
+    const onNotesChange = vi.fn();
+    render(<NotePlayground notes={[noteFixture]} onNotesChange={onNotesChange} />);
+    fireEvent.click(await screen.findByTestId("canvas-note-note-1"));
+    const card = await screen.findByTestId("note-beside-card");
+    expect(card.textContent).toContain("NOTE");
+    const area = screen.getByTestId("note-card-text") as HTMLTextAreaElement;
+    expect(area.value).toBe("check with Ada");
+    fireEvent.change(area, { target: { value: "check with Ada first" } });
+    fireEvent.blur(area);
+    expect(onNotesChange).toHaveBeenLastCalledWith([
+      { ...noteFixture, text: "check with Ada first" },
+    ]);
+    fireEvent.click(screen.getByTestId("note-card-delete"));
+    expect(onNotesChange).toHaveBeenLastCalledWith([]);
+    await waitFor(() => expect(screen.queryByTestId("note-beside-card")).toBeNull());
   });
 
   it("a note drag stores the snapped position beside the note", () => {

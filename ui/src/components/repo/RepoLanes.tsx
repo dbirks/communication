@@ -903,7 +903,7 @@ export function RepoLanes({
               /* The caught card: the menu's anchor, kept while it is open. */
               <li
                 ref={dropCardRef}
-                className={`${CARD_CLASS} border-ink shadow-(--shadow-raised)`}
+                className={`${CARD_CLASS} border-ink`}
                 data-testid="repo-lane-drop-card"
               >
                 <span className="font-mono text-[10px] text-faint">#{start.issue.number}</span>

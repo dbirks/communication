@@ -506,3 +506,66 @@ Source: `docs/design/redesign/README.md` section 8 and `Prototype v2.dc.html` (t
 - [x] CI and Acceptance are green on the final main SHA. (Code SHA d6871e5: CI green; this commit changes TODO.md
       only, and its own CI + Acceptance are checked after the push.)
 - [x] communication.beluga-wyvern.ts.net runs that SHA. (Checked against /api/v1/system/health after the deploy.)
+
+## Editor interactions (2026-11-28)
+
+Source: `docs/design/editor-interactions/README.md` (wins over the redesign handoff for the editor canvas) and
+`Editor Ideas.dc.html`. Owner decisions E1 (touch: one finger pans, long-press on empty canvas selects, tap selects a
+step), E2 (review view designed by Claude, signed off on the plan page before it is built), E3 (goal-frame steps stay
+stacked vertically). Plan page: https://spruce-goose.beluga-wyvern.ts.net/plan/editor.html
+
+### E1 Shadows by role (1f)
+- [ ] `tokens.css`: soft blurred shadows removed; float / drag / press / static / flat roles as tokens.
+- [ ] Workflow cards, Home and Chats cards flat at rest (border `#e6e2d9`), hover `#cfc9bd` + `2px 2px 0 #cfc9bd` when they open something.
+- [ ] Float surfaces (menus, Versions panel, beside card, add bar, proposal bar): 1px `#cfc9bd`, radius 12, `3px 3px 0 #e1ddd4`.
+- [ ] `ds/SoftButton.tsx` deleted; every caller uses `.ds-btn`.
+
+### E2 Goal frame ink tab (1g)
+- [ ] Frame neutral (1px `#cfc9bd`, radius 16, fill `#faf9f6`); ink tab on the top border, REPEAT UNTIL / SIDE BY SIDE.
+- [ ] Goal in quotes plus the checker line; footer "up to N rounds · then …"; selected frame ink; tab click opens the goal card.
+- [ ] Wrap choices select in ink (`#f3f1ec` fill), not blue; steps stay stacked vertically (E3).
+
+### E3 Draft status group (1e)
+- [ ] Breadcrumb shows the path only.
+- [ ] Status chip (`● N changes ▾` / `✓ Live vN ▾`) beside Try it and Make live; opens Versions (304 wide) under the group.
+- [ ] Trying state: running split button with Stop; Make live disabled while trying or when nothing differs.
+
+### E4 Beside card (1a)
+- [ ] One `BesideCard` (340 wide, caret) with bodies: agent / command / approval / judge step, 2+ steps (wrap), note, frame, insert.
+- [ ] Placement right → left → below, caret on the selection, pan so both stay visible; hidden while dragging.
+- [ ] Esc, ×, empty-canvas click close it; edits autosave; "More settings" opens the full step panel.
+
+### E5 Insert + (1h)
+- [ ] Hovering a line highlights it ink and shows the 24px ink +; click opens INSERT STEP in the beside card (below, caret on top).
+- [ ] Rows Agent / Command / Approval / Judge with keyboard; "Or describe it…" sends to the assistant (1d proposal).
+- [ ] Dashed "next step" + after the last step (ADD STEP).
+
+### E6 Modeless canvas and add bar (1b)
+- [ ] No tool modes: drag empty canvas selects (blue box), Space / middle / trackpad pans, hover dots connect, N drops a note, Shift-click, ⌘A, Delete.
+- [ ] Add bar bottom-centre (Agent, Command, Approval, Judge | Note, More): click adds and opens the beside card; drag places with the hatch look.
+- [ ] One-line gesture hint, dismissible, remembered.
+- [ ] Touch (E1): one finger pans, long-press on empty canvas starts a selection box, tap selects a step.
+- [ ] From v2 design review 10: after a wrap the trigger keeps 24px clear of the add bar / island (F10); on phone a selection pans into view and zooms out only when it does not fit, never below a readable floor (F12); Versions draft lines read as sentences, not engine kinds (F14).
+
+### E7 Ghost proposals (1d)
+- [ ] ⌘K is the only entry point; ⌘J and "Ask to change this draft" removed; `AssistantProposalBox` replaced.
+- [ ] Ghost looks: PROPOSED (blue dashed + blue hatch), EDITED, REMOVED; dashed blue connections; canvas locked while showing.
+- [ ] Proposal bar with Discard / Apply; Apply writes the draft and bumps the change count.
+- [ ] Review view designed, signed off on the plan page, then built.
+
+### E8 Run tray (1c)
+- [ ] Tray under the canvas: header (state, title, meta, Rounds / Log / Output, Stop, collapse), resizable, height remembered.
+- [ ] Round list with verdicts and reasons; log filtered by clicked step or round; collapses to its header when the run ends.
+- [ ] Running node style, queued opacity, "● round N of up to M" in the goal frame.
+
+### E9 Contract, journeys, evidence
+- [ ] `CONTRACT.md`: v2 lines these reverse replaced; editor interactions named as the source for the canvas.
+- [ ] e2e journeys and the emulator design map updated for the new gestures and surfaces.
+
+## Editor interactions done when
+- [ ] Every "Editor interactions" box is checked with evidence.
+- [ ] Each board state (1a–1h, plus the review view) has a deployed screenshot at 1280 and 390 in
+      `~/.cache/pi-orch/communication/evidence/editor-interactions/`, compared by a fresh reviewer with no unresolved
+      differences.
+- [ ] CI and Acceptance are green on the final main SHA.
+- [ ] communication.beluga-wyvern.ts.net runs that SHA.

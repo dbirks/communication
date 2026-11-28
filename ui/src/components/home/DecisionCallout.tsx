@@ -23,7 +23,6 @@
  */
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
-import { SoftButton, softButtonClassName } from "../ds/SoftButton";
 import DecisionBar from "../ds/DecisionBar";
 import type { DecisionConflict } from "../ds/DecisionBar";
 import type { Approval } from "../../api/types";
@@ -123,14 +122,14 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
       </div>
       {rest > 0 ? (
         <p className="border-t border-st-waiting-pale-edge px-[12px] py-[8px] text-right">
-          <SoftButton
-            variant="secondary"
-            compact
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary ds-btn--compact"
             data-testid="home-show-more"
             onClick={() => setExpanded(true)}
           >
             Show {rest} more
-          </SoftButton>
+          </button>
         </p>
       ) : null}
     </section>
@@ -197,7 +196,7 @@ function CalloutRow({
       <div className="mt-[8px] flex flex-wrap items-center gap-2">
         <Link
           to={routes.approval(approval.id)}
-          className={softButtonClassName({ variant: "secondary", compact: true })}
+          className={"ds-btn ds-btn--secondary ds-btn--compact"}
           data-testid={`home-read-plan-${testidOf(approval.id)}`}
         >
           Read plan
@@ -213,14 +212,14 @@ function CalloutRow({
           }
         />
         {conflict !== null && onDismiss ? (
-          <SoftButton
-            variant="secondary"
-            compact
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary ds-btn--compact"
             data-testid={`home-callout-dismiss-${testidOf(approval.id)}`}
             onClick={onDismiss}
           >
             Dismiss
-          </SoftButton>
+          </button>
         ) : null}
       </div>
     </div>

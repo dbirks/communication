@@ -142,7 +142,7 @@ function UseWorkflowDialogBody({ projectId, projectName, onClose }: UseWorkflowD
         role="dialog"
         aria-modal="true"
         aria-labelledby="project-library-title"
-        className="w-[520px] max-w-full rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
+        className="w-[520px] max-w-full rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
         data-testid="project-library-dialog"
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">

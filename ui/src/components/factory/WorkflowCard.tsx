@@ -162,7 +162,7 @@ export function WorkflowCard({
   return (
     <article
       data-testid={`workflow-card-${pipeline.id}`}
-      className={`group relative rounded-[12px] border border-line bg-surface shadow-(--shadow-card) hover:border-fill-edge hover:shadow-(--shadow-card-hover) ${
+      className={`group relative rounded-[12px] border border-line bg-surface hover:border-fill-edge hover:shadow-(--shadow-card-hover) ${
         menuOpen ? "z-30" : ""
       }`}
     >

@@ -120,7 +120,7 @@ function DialogBody({
         aria-modal="true"
         aria-labelledby="new-conversation-dialog-title"
         data-testid="new-conversation-dialog"
-        className="w-full max-w-[440px] rounded-[3px] border border-line-strong bg-surface p-4 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
+        className="w-full max-w-[440px] rounded-[14px] border border-line bg-surface p-4 shadow-(--shadow-modal)"
       >
         <h2 id="new-conversation-dialog-title" className="text-[15px] font-bold">
           New thread

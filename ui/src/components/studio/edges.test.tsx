@@ -125,7 +125,7 @@ async function openEdgePicker() {
   renderCanvas();
   const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
   fireEvent.click(add);
-  return { add, picker: screen.getByTestId("step-picker") as HTMLElement };
+  return { add, picker: screen.getByTestId("insert-step-menu") as HTMLElement };
 }
 
 /**
@@ -166,17 +166,13 @@ describe("edge “+” picker — wheel stays in the picker (#67)", () => {
     expect(classes).toContain("z-50");
   });
 
-  it("marks its own scrollable list nowheel in every canvas-hosted picker", async () => {
+  it("keeps every row of the insert menu inside the nowheel/nopan/nodrag wrapper", async () => {
     const { picker } = await openEdgePicker();
-    const list = picker.querySelector("[data-testid='step-picker-list']") as HTMLElement;
-    // The list is the element that must swallow the wheel; StepPicker carries
-    // the classes itself, so the terminal “+”/scope/canvas pickers get the
-    // same behaviour from the same component.
-    const classes = list.className.split(/\s+/);
-    expect(classes).toContain("nowheel");
-    expect(classes).toContain("nopan");
-    expect(classes).toContain("nodrag");
-    expect(list.className).toContain("overflow-y-auto");
+    for (const row of Array.from(picker.querySelectorAll("[role='menuitem']"))) {
+      expect(row.closest(".nowheel")).toBeTruthy();
+      expect(row.closest(".nopan")).toBeTruthy();
+      expect(row.closest(".nodrag")).toBeTruthy();
+    }
   });
 });
 
@@ -189,14 +185,14 @@ describe("edge “+” picker — dismissal (#67)", () => {
     const event = new PointerEvent("pointerdown", { bubbles: true, cancelable: true });
     fireEvent(outside, event);
     expect(event.defaultPrevented).toBe(false);
-    expect(screen.queryByTestId("step-picker")).toBeNull();
+    expect(screen.queryByTestId("insert-step-menu")).toBeNull();
   });
 
   it("stays open on a pointerdown inside the picker", async () => {
     const { picker } = await openEdgePicker();
-    fireEvent.pointerDown(picker.querySelector("input") as HTMLElement);
+    fireEvent.pointerDown(picker.querySelector("[role='menuitem']") as HTMLElement);
     fireEvent.pointerDown(picker);
-    expect(screen.getByTestId("step-picker")).toBeTruthy();
+    expect(screen.getByTestId("insert-step-menu")).toBeTruthy();
   });
 
   it("closes on Escape when focus is NOT inside the picker", async () => {
@@ -208,15 +204,15 @@ describe("edge “+” picker — dismissal (#67)", () => {
     add.focus();
     expect(document.activeElement).toBe(add);
     fireEvent.keyDown(add, { key: "Escape" });
-    expect(screen.queryByTestId("step-picker")).toBeNull();
+    expect(screen.queryByTestId("insert-step-menu")).toBeNull();
   });
 
-  it("closes on Escape when focus IS inside the picker (search input)", async () => {
+  it("closes on Escape when focus IS inside the picker (a menu row)", async () => {
     const { picker } = await openEdgePicker();
-    const search = picker.querySelector("input") as HTMLElement;
+    const search = picker.querySelector("[role='menuitem']") as HTMLElement;
     search.focus();
     fireEvent.keyDown(search, { key: "Escape" });
-    expect(screen.queryByTestId("step-picker")).toBeNull();
+    expect(screen.queryByTestId("insert-step-menu")).toBeNull();
   });
 
   it("keeps one-click-one-step: the “+” is inert and its pointerdown does not close its own picker", async () => {
@@ -228,15 +224,15 @@ describe("edge “+” picker — dismissal (#67)", () => {
     renderCanvas({ onInsertOnEdge });
     const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
     fireEvent.click(add);
-    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    expect(screen.getAllByTestId("insert-step-menu")).toHaveLength(1);
     fireEvent.pointerDown(add);
-    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    expect(screen.getAllByTestId("insert-step-menu")).toHaveLength(1);
     fireEvent.click(add);
-    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    expect(screen.getAllByTestId("insert-step-menu")).toHaveLength(1);
     expect(onInsertOnEdge).not.toHaveBeenCalled();
     // One card click → exactly one insert.
-    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    fireEvent.click(screen.getByTestId("insert-step-process.exec"));
     expect(onInsertOnEdge).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId("step-picker")).toBeNull();
+    expect(screen.queryByTestId("insert-step-menu")).toBeNull();
   });
 });

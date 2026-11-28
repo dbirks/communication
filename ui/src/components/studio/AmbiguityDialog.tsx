@@ -6,7 +6,6 @@
  * `acceptAmbiguity` and keeps the target's guard and bindings as-is.
  */
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 
 export interface AmbiguityDialogProps {
   /** The one-line context, e.g. `Insert a step between plan and approve`. */
@@ -54,22 +53,22 @@ export function AmbiguityDialog({
         dependency on the step you are inserting after, so nothing is rewired silently — or cancel.
       </p>
       <div className="mt-3 flex justify-end gap-[8px]">
-        <SoftButton
-          variant="ghost"
-          compact
+        <button
+          type="button"
+          className="ds-btn ds-btn--ghost ds-btn--compact"
           data-testid="studio-ambiguity-cancel"
           onClick={onCancel}
         >
           Cancel
-        </SoftButton>
-        <SoftButton
-          variant="primary"
-          compact
+        </button>
+        <button
+          type="button"
+          className="ds-btn ds-btn--primary ds-btn--compact"
           data-testid="studio-ambiguity-insert"
           onClick={onInsertAnyway}
         >
           Insert and keep as-is
-        </SoftButton>
+        </button>
       </div>
     </Sheet>
   );

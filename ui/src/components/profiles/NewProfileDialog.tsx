@@ -55,7 +55,6 @@ import { hasVerifiedWorker, launcherEntry, sandboxChip, type Launcher } from "..
 import { Alert } from "../ds/Alert";
 import { Field, Input, Select } from "../ds/Field";
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 import { FormError, Spinner } from "../Feedback";
 
 export interface NewProfileDialogProps {
@@ -615,22 +614,22 @@ function DialogBody({
         {submitError ? <FormError error={submitError} testid="agents-new-problem" /> : null}
 
         <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
-          <SoftButton
+          <button
+            className="ds-btn ds-btn--secondary"
             type="button"
-            variant="secondary"
             onClick={onClose}
             data-testid="new-profile-cancel"
           >
             Cancel
-          </SoftButton>
-          <SoftButton
+          </button>
+          <button
+            className="ds-btn ds-btn--primary"
             type="submit"
-            variant="primary"
             disabled={!canSubmit}
             data-testid="agents-new-submit"
           >
             {busy ? "Creating…" : forStep ? `Create and use in ${forStep}` : "Create profile"}
-          </SoftButton>
+          </button>
         </footer>
       </form>
     </Sheet>

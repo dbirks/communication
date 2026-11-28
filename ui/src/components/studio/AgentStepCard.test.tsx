@@ -78,7 +78,8 @@ describe("AgentStepCard", () => {
     expect(screen.getByText("AGENT STEP")).toBeTruthy();
     expect((screen.getByTestId("agent-card-name") as HTMLInputElement).value).toBe("implement");
     const prompt = screen.getByTestId("agent-card-prompt") as HTMLTextAreaElement;
-    expect(prompt.rows).toBeGreaterThanOrEqual(6);
+    expect(prompt.rows).toBeGreaterThanOrEqual(4);
+    expect(prompt.rows).toBeLessThanOrEqual(8);
     expect(prompt.value).toBe("Write the code");
 
     await waitFor(() =>

@@ -106,7 +106,8 @@ describe("Row (ROW-I)", () => {
     );
     const el = screen.getByTestId("r");
     expect(el.className).toContain("border-ink");
-    expect(el.className).toContain("shadow-(--shadow-raised)");
+    // Editor interactions 1f: list rows are flat; selection is the ink edge only.
+    expect(el.className).not.toContain("shadow-(--shadow-raised)");
   });
 });
 

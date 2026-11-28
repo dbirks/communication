@@ -14,14 +14,16 @@ handoff README is silent, this file decides.
 - Real data only. A block whose data the API doesn't have yet shows a plain empty state sentence, never fake rows.
 - Tailwind v4 classes with the tokens in `ui/src/styles/tokens.css`. Radii: `rounded-[10px]` cards and steps,
   `rounded-[12px]` panels, `rounded-[14px]` prompt box and modals, `rounded-full` pills.
-- **Visual language (README section 8, Nov 27).** Depth is a hard tonal offset with no blur:
-  `--shadow-prompt` (`2px 2px 0 #e6e2d9`), `--shadow-card` / `--shadow-card-hover` (workflow cards),
-  `--shadow-island` (tool island), `--shadow-pop` (`3px 3px 0 #e1ddd4`, with a `border-fill-edge` border: wrap
-  panel, Versions panel, menus), `--shadow-modal` (`4px 4px 0 #cfc9bd`), `--shadow-node` /
-  `--shadow-node-selected` / `--shadow-node-running` (canvas steps and notes). Only the section pill
-  (`--shadow-pill`) and the Quick chat panel's left edge stay soft.
-- **Buttons are BTN-I, rounded**: `.ds-btn` + a variant (`ds/Button` or `ds/SoftButton`, which emit the same
-  classes): radius 8, height 32, 13/600; `ds-btn--compact` (26px, radius 7), `ds-btn--tall` (34px, the editor's
+- **Visual language (README section 8, Nov 27) with shadow roles (editor interactions 1f, Nov 28).** A shadow
+  means you can press it, drag it, or it floats; everything else is flat. Press: buttons (`.ds-btn`). Drag:
+  canvas steps and notes (`--shadow-node`, ink `--shadow-node-selected` when selected, hatch while dragging).
+  Float: beside card, Versions panel, add bar, proposal bar, review panel, menus (`--shadow-pop`,
+  `3px 3px 0 #e1ddd4`, with a `border-fill-edge` border; `--shadow-island` is the same 3px value). Modals:
+  `--shadow-modal` (`4px 4px 0 #cfc9bd`). Static cards (workflow cards, Home, Chats): border only, and on hover
+  when they open something `--shadow-card-hover`. Flat: inputs, chips, list rows, tags (focus ring only; a
+  selected row is an ink border, no shadow). The prompt box keeps `--shadow-prompt` (`2px 2px 0 #e6e2d9`).
+  Only the section pill (`--shadow-pill`) and the Quick chat panel's left edge stay soft.
+- **Buttons are BTN-I, rounded**: `.ds-btn` + a variant (`ds/Button` emits the same classes; `ds/SoftButton` is retired, editor interactions 1f): radius 8, height 32, 13/600; `ds-btn--compact` (26px, radius 7), `ds-btn--tall` (34px, the editor's
   floating buttons), `ds-btn--round` (the 32px send button). Never hand-roll a button's border and shadow.
 - Page background is white (`bg-surface`); the rail is `bg-rail`. `ds/Panel` chrome is not used on redesigned
   surfaces.
@@ -72,7 +74,7 @@ each page scrolls itself: the shell is `h-dvh overflow-hidden`, the content regi
 
 - Top bar left region: by default the scope name ("All projects" / the project's name, 16/700). A page replaces
   it by rendering `<TopBarLeft>…</TopBarLeft>` (`components/shell/TopBarSlot.tsx`, a portal into the left
-  region): the editor's breadcrumb + draft status, a run page's breadcrumb.
+  region): the editor's breadcrumb (path only), a run page's breadcrumb.
 - Pill items link to `routes.scopeHome(scope)`, `routes.chats(scope)`, `routes.factory(scope)`.
 - Rail tiles link to the **same section** in the new scope (on Chats, picking another project goes to that
   project's chats; from Manage or an unscoped page they go to that project's home).
@@ -89,7 +91,7 @@ each page scrolls itself: the shell is `h-dvh overflow-hidden`, the content regi
   a 36px round search button (opens the same Search-or-ask) and the mic.
 - Two-column pages stack to one column with 16px side padding. Chats shows the list at `/chats` and the thread
   alone at `/chats/:id` with a back arrow in its header. Modals become full-width bottom sheets (radius 18 on
-  top corners). The editor keeps the canvas (pan/zoom by touch); the tool island stays 48px; the wrap panel and
+  top corners). The editor keeps the canvas (pan/zoom by touch); the add bar stays bottom-centre and scrolls sideways; one finger pans, a long-press on empty canvas starts a selection box, a tap selects a step (E1); the wrap panel and
   Versions panel become bottom sheets. The quick chat panel covers the full width.
 - No horizontal page scroll at 390px on any page.
 
@@ -114,7 +116,7 @@ each page scrolls itself: the shell is `h-dvh overflow-hidden`, the content regi
 | Threads | Chats |
 | Workflows index, workflow page (overview / YAML / used in / history) | Factory index and the editor. History = Versions panel; YAML and Used in = panels opened from the editor's "…" menu |
 | Triggers dialogs | Opened from the trigger step on the canvas and from a Factory card's "…" menu |
-| Studio palette, header, status bar, inspector | Tool island, top-right buttons, the step inspector card |
+| Studio palette, header, status bar, inspector | Add bar, top-right button group with the status chip, the beside card |
 | Run workbench | Kept. Reached from run cards, "Open in Factory", Home |
 | Steps library, skill collections | Tabs inside Manage → Agents & models |
 | Agents (`/profiles`) | Manage → Agents & models |
@@ -160,7 +162,7 @@ and the prototype.
 | Factory, project scope | "Schedules and triggers here" under the cards | Seeing, adding and pausing a workflow's schedules had no other home |
 | Factory cards | a "…" menu (Triggers, Use in a project, Duplicate, Open YAML) and "Open run" / "Watch on canvas" on a live run | Existing actions |
 | Home | data blocks print one plain sentence when empty | Real data; the prototype is always populated |
-| Editor, goal frame | the wrapped steps stack top to bottom inside the frame (the prototype keeps them in a row) | A loop body has always been laid out top to bottom here, and README "Edges" allows "bottom→top inside a vertical stack". **Open: David has not confirmed this one** |
+| Editor, goal frame | the wrapped steps stack top to bottom inside the frame (the prototype keeps them in a row) | A loop body has always been laid out top to bottom here, and README "Edges" allows "bottom→top inside a vertical stack". **Confirmed by David (2026-11-28, E3)** |
 | Send, Wrap and Sketch it buttons | grey and disabled until there is something to send (text in the box, a goal in the field); primary with the hard shadow once there is | The prototype is a static picture with an empty box and a primary button; a button that does nothing must not look pressable |
 | Editor, goal frame | the judge of a "judge says" loop is a visible step inside the frame; the edge from the step before ends at the frame's border | The judge is a real model step (see the "Repeat until a judge says" line); a loop is entered as a whole, so the edge belongs to the frame |
 | Editor, box selection | the marching-ants box's pale fill lies over the selected steps | The box is drawn in the canvas overlay above the steps; the steps' ink edge is the selected mark |
@@ -175,15 +177,15 @@ and the prototype.
 | Project home, Repos | each repository shows its open issue count, and maintainers get "Add repository" | Real data the API has (the prototype's "✓ 4 PRs" has no source yet); adding a repository had no other door on this page |
 | Chat transcript | tool rows and permission cards keep their own tags ("✓ STATUS: COMPLETED", "kind: execute") | The transcript is a kept surface (CONTRACT "Kept as they are"); it prints what the agent protocol sent |
 | New workflow sheet | "Blank canvas" and "Import YAML" sit on their own row under "Or copy" | Importing a YAML file existed before; two links read better as a row than at the end of a wrapping chip list |
-| Editor | a ninth tool-island row "More steps…" and a "− + fit" zoom control bottom-right | The step kinds beyond Agent / Command / Approval need a door; zoom without a wheel or trackpad needs one too |
+| Editor | the add bar's "More" opens the rest of the step kinds; a "− + fit" zoom control sits bottom-right | Zoom without a wheel or trackpad needs one; the add bar covers the four common kinds |
 | Editor | the hint under the canvas always reads "left to right · drag steps to arrange" | The prototype's changing hints narrate its own demo script |
-| Editor, tool island | sits 40px under the top bar | README section 5 gives (16, 100) in page coordinates: 100 − the 60px top bar |
+| Editor | the add bar sits bottom-centre, 22px from the bottom (editor interactions 1b) | The tool island and its modes are gone |
 | Goal frame footer | "up to N rounds · then stop" | What the engine does when rounds run out; "then ask <person>" needs an escalation the engine does not have |
 | Quick chat | a pop-out icon in the header; a separate round send button; mic and "Open as chat" outside the reply field | Opening the assistant as a page and sending by button existed before; the footer keeps the prototype's three controls |
 | Manage, phone | the sub-nav is a horizontal strip of chips that scrolls, faded at both edges, opened at the current section | CONTRACT "Phone": two-column pages stack; six sections do not fit 390px |
 | Page gutters | Home and Factory content is centred at the README's max widths (1100 / 1180 including padding) | README section 2 gives max widths, not the prototype's left offset |
-| Editor breadcrumb | below 1440px the scope segment ("All projects /" or the project) is hidden, the rail tile shows the scope; on desktop the draft or run status is never shortened, and a long workflow name gives way and shows in full on hover | The status is short and bounded; a name is whatever people typed (the prototype's is "fix-issue") |
-| Editor | opens top- and left-aligned at zoom 1, the first step 24px clear of the tool island, not centred on the board | A centred fit opened long flows in their middle (review 1); the reader starts at the trigger |
+| Editor breadcrumb | the path only, at every width; the draft or run status is the chip beside Try it / Make live (editor interactions 1e), its full sentence in the chip's tooltip and accessible name | The status sits next to the button it affects |
+| Editor | opens top- and left-aligned at zoom 1, the first step 88px from the left edge, not centred on the board | A centred fit opened long flows in their middle (review 1); the reader starts at the trigger |
 | Goal frame | the space under the last step holds the step's "+" handle and the rounds footer (88px) | The "+" under a terminal step is how a step is added inside the loop |
 | Project home | the starter pills are the resumable chats first, then "Run <workflow>" and "New chat" | Real data: picking up recent work is the common case; the prototype's order is its fixed demo |
 | Prompt chips | a chip with no chevron (the project chip of a project-scoped New chat) is regular weight; a chevron chip is a picker and is 600 | Weight says "you can change this"; the project is fixed by the page's scope |
@@ -197,26 +199,24 @@ and the prototype.
 | Factory card state | "○ idle" when the workflow has nothing in flight | A card has to say something when there is no live run; ○ is the "not running" mark beside ● |
 | Factory, phone | the trigger sentence is a second line under the name; "New workflow" sits under the title, right-aligned | 390px has no room for name, trigger and state on one line |
 | Wrap panel | sits 18px right of the selection even when other canvas content is there | Section 8: the panel is anchored to the selection; both stay visible |
-| Editor, phone | the "…" menu of a selected step sits on the step's top-right corner, and the tool island may cover the leftmost step until the board is panned | 390px of board; the island stays reachable |
+| Editor, phone | the "…" menu of a selected step sits on the step's top-right corner | 390px of board |
 | Editor, dragging | while a step is dragged past the border of a goal frame its edge to the frame is drawn straight | The edge ends at the frame's border (see above); it settles when the step is dropped |
 | Chat transcript | prints the agent's text as the agent sent it, chunks joined as received | The transcript is a kept surface |
 | New chat, phone | the header row holds the back arrow; "New chat" is the page heading under it | The same header every phone chat screen has (back arrow, then content); the title is the page's own |
 | Factory card thumbnails, phone | the step strip starts at the left and is cut at the card's edge | The strip reads left to right from the trigger; the card opens the whole workflow |
-| Tool island, touch | no hover labels; every tool carries its name (and key) as its accessible label | A touch screen cannot hover; the island stays 48px wide on a 390px board |
 | Goal frame | its "…" button shows while the frame is selected (right after a wrap it is), 8px inside the corner | The same rule as a step's "…" |
 | Wrap panel | "Side by side" is unavailable with one step selected, and says why on hover | One step cannot run beside itself |
 | Versions panel | a line joins the version dots, and each version (the live one included) has "Restore as draft" | Restoring an old version existed before; the line reads the rows as one history |
 | Versions panel, phone | rows are 44px touch targets | Phone touch floor |
-| Editor, after a wrap | the board keeps its place; the 24px clearance from the tool island is how the editor opens | Moving the board under the reader's hands after an edit loses their place |
+| Editor, after a wrap | the board keeps its place; the opening fit applies only when the editor opens | Moving the board under the reader's hands after an edit loses their place |
 | Editor, phone | a selection made before the window narrows to phone width keeps its place; selecting on the phone slides the steps above the sheet | The slide runs when the selection is made |
 | Quick chat composer | while listening, the mic button is a stop square | It stops the dictation; the capsule above carries the mic |
 | Lists (Repos, chats, runners) | the last row has no rule under it | A rule separates rows; the card's own edge ends the list |
 | Rail and top bar | their 1px rules can sit 1px from where the prototype draws them | A 1px offset review 5 measured; the rail keeps its 64px and the bar its 60px box |
 | Home, "Since you left" | no "9 h · 3 projects" aside next to the heading | The catch-up API gives no visit window or story count to print; a made-up number is not allowed |
 | New workflow sheet | 720px wide outside | README section 4: "720 wide" |
-| Editor draft status | "Your draft · N changes from live vN", "Your draft · unpublished" | README section 1 gives this wording; it also says what the changes are measured against |
-| Tool island, expanded | 174px wide, 34px rows | The ninth row ("More steps…") is decided; the island keeps the rows the same height as the step kinds above |
-| Editor, phone | "Versions" and "Try it" are icon-only 44px buttons beside "Make live" and "…" | Four labelled buttons do not fit beside the breadcrumb at 390px; both keep their names as accessible labels |
+| Editor draft status chip | short labels "● N changes", "● New draft", "✓ Live vN", "Saving…", "× Couldn't save", "Run … · word"; the full sentence ("Your draft · N changes from live vN") is its tooltip and accessible name | The chip sits in the 34px button group (1e) |
+| Editor, phone | "Try it" is an icon-only 44px button; the status chip keeps its short label | Four labelled buttons do not fit at 390px; Try it keeps its name as its accessible label |
 | Factory card thumbnails | the connector is 18 × 1.5px, which a 1x screen draws 1px | README section 8 gives 1.5px |
 | Run card in a chat | the state reads "● running · <current step>" with no elapsed seconds | The step name tells where the run is; the card has no running clock (the prototype’s seconds are mock data) |
 | New chat | the block keeps the shared page top padding (it sits about 35px lower than the prototype) | One top padding for every page under the top bar |
@@ -226,6 +226,21 @@ and the prototype.
 | Quick chat, phone | the "stays open until you close it" subtitle is hidden | The panel covers the whole screen on a phone; the line has no room and adds nothing there |
 | Chats list | each row is about 58px | Each row has two lines, the title and the agent’s last line, plus its padding |
 | Round send button, phone | draws a 32px circle with a transparent 44×44 touch area (`tokens.css` APP-SHELL-PHONE) | The design keeps a circle at every width |
+| Editor interactions (2026-11-28) | `docs/design/editor-interactions/README.md` wins over this contract and the v2 prototype for the Factory editor canvas | The newer handoff; v2 stays the source for everything else |
+| Keyboard | ⌘K is the documented way to ask, and on the editor "Change this workflow" (on by default in Quick chat) sends the request to the open draft as a proposal; ⌘J still opens Quick chat as an alias | ⌘J is used across the app and its journeys; removing it is outside the editor |
+| Editor, step status tag | sits right 8, top −12 (4px over the card), not top −9 | The emulator's overlap check measures more than 4px of overlap as covered content |
+| Editor, last step | the dashed "+" with "next step" is always visible | Editor interactions 1h draws it; it replaces the review-1 hover-only "+" under the sink |
+| Editor, ghost proposals | a removed step is listed in the review panel (struck through) and not drawn on the canvas | The board does not draw removal; the canvas shows the proposed draft |
+| Editor, proposals | a request made while the last edit is still saving asks to try again | Proposals are made against the saved version |
+| Editor, single step | "Wrap in…" on a step's card opens the wrap card for that one step | Box select mode used to allow wrapping one step; the canvas has no modes now |
+| Editor, proposal bar | Top-centre 64px below the pane top (72px on phone), under the toolbar row | The board has no toolbar; at 18px the bar covered the status chip, Try it and Make live |
+| Editor, beside cards | A right/left card starts no higher than 60px below the pane top | Keeps the card clear of the toolbar row; the board's frames never reach the top |
+| Editor, insert / add step card | Keeps screen size at every zoom | It is drawn inside the zoomed canvas; at a fitted 50% zoom the board's 260px card read at 130px |
+| Editor, agent card prompt | 4 rows, grows to 8, then scrolls | The board's box is 4 rows; a long prompt pushed the card past an 800px screen |
+| Editor, goal card open | The frame is drawn selected (ink) while its goal card is open | The tab opens the card without selecting the frame; the card needs a visible owner |
+| Editor, Versions | Escape closes the panel (and the phone sheet) | It had only the × |
+| Editor, viewing a run (`?run=`) | "Open run" and "Back to editing" sit in the run tray header; the top run pill shows only when the run cannot load. The status chip keeps naming the run | The tray already states the run; the chip names the run because the canvas shows the run's pinned revision, not the draft |
+| Editor, note card | A selected note (not being typed in) opens the NOTE beside card: text box, "Delete note", autosaved | The board names the note body but does not draw it |
 | Home, "Since you left" | rows keep two lines (headline, then summary); the project (All projects) and time stay Red Hat Mono; on a project home the row leads with the time and has no project column | Design review 10, F1: the story text comes from the server's catch-up and needs its second line |
 | Project home prompt | the box is 94px, 8px shorter than the prototype's | Design review 10, F2: low impact (Home's box is 116px); recorded rather than fixed |
 | Chat thread composer and header | the composer keeps the hard 2px shadow and is 94px; the header title inset is 21px | Design review 10, F3: one composer component everywhere |

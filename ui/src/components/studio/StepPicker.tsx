@@ -15,7 +15,7 @@
  * catalogue). Keyboard contract: the search input autofocuses; ArrowUp/Down
  * move the active entry, Enter picks it — or, when the text matches no
  * offered kind and the page supplies `onDescribe`, hands the description to
- * the assistant draft-proposal flow (AssistantProposalBox / useDraftProposal)
+ * the assistant draft-proposal flow (⌘K → Studio proposal / useDraftProposal)
  * — and Escape closes.
  */
 import { offeredSteps } from "../../lib/pipeline/graphDoc";
@@ -173,7 +173,7 @@ export function StepPicker({
       role="dialog"
       aria-label={title ?? "Pick a step"}
       data-testid="step-picker"
-      className="nowheel nopan nodrag w-[360px] rounded-lg border border-line-strong bg-surface p-2 shadow-[0_4px_16px_rgba(30,29,26,0.12)]"
+      className="nowheel nopan nodrag w-[360px] rounded-[12px] border border-fill-edge bg-surface p-2 shadow-[var(--shadow-pop)]"
     >
       {title && <div className="mb-1.5 truncate text-[11px] font-semibold text-ink-2">{title}</div>}
       <input

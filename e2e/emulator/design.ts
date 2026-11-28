@@ -353,9 +353,9 @@ const EDITOR_CANVAS_LANDMARKS: Landmark[] = [
     any: [{ testid: "studio-canvas" }],
   },
   {
-    id: "tool-island",
-    desc: "the floating left tool island",
-    any: [{ testid: "tool-island" }],
+    id: "add-bar",
+    desc: "the add bar (editor interactions 1b)",
+    any: [{ testid: "add-bar" }],
   },
   {
     id: "editor-top-actions",
@@ -635,9 +635,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "editor proposal": [
     ...EDITOR_CANVAS_LANDMARKS,
     {
-      id: "assistant-proposal-box",
-      desc: "the Ask to edit proposal bar",
-      any: [{ testid: "assistant-proposal-box" }],
+      id: "proposal-bar",
+      desc: "the assistant proposal bar (editor interactions 1d)",
+      any: [{ testid: "proposal-bar" }],
     },
   ],
   "editor error": [

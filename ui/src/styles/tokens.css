@@ -196,7 +196,7 @@
   --shadow-prompt: 2px 2px 0 #e6e2d9;
   --shadow-card: 2px 2px 0 #ece9e2;
   --shadow-card-hover: 2px 2px 0 #cfc9bd;
-  --shadow-island: 2px 2px 0 #e1ddd4;
+  --shadow-island: 3px 3px 0 #e1ddd4; /* float role (editor interactions 1f) */
   --shadow-pop: 3px 3px 0 #e1ddd4;
   --shadow-modal: 4px 4px 0 #cfc9bd;
   /* Canvas steps: tonal at rest, ink when selected, blue while running. */

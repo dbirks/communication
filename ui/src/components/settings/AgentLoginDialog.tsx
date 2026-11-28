@@ -34,7 +34,6 @@ import { ApiError } from "../../api/client";
 import { Alert } from "../ds/Alert";
 import { Input } from "../ds/Field";
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 
 /** Which attempt the dialog shows, and the row it came from (the retry posts
  * to the same launcher and worker — the credential volume is theirs). */
@@ -158,14 +157,15 @@ function LoginBody({
       )}
       {active ? (
         <div className="border-t border-line pt-3">
-          <SoftButton
-            variant="secondary"
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary"
             data-testid="agent-login-cancel"
             onClick={onCancel}
             disabled={cancelBusy}
           >
             {cancelBusy ? "Cancelling…" : "Cancel sign-in"}
-          </SoftButton>
+          </button>
         </div>
       ) : null}
     </div>
@@ -272,9 +272,14 @@ function CodeCard({ code }: { code: string }) {
         >
           {code}
         </span>
-        <SoftButton variant="secondary" data-testid="agent-login-copy" onClick={copy}>
+        <button
+          type="button"
+          className="ds-btn ds-btn--secondary"
+          data-testid="agent-login-copy"
+          onClick={copy}
+        >
           {copied ? "Copied" : "Copy"}
-        </SoftButton>
+        </button>
       </div>
     </section>
   );
@@ -346,14 +351,15 @@ function PasteBackLogin({ login }: { login: AgentLogin }) {
             spellCheck={false}
             aria-invalid={rejected || undefined}
           />
-          <SoftButton
-            variant="primary"
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary"
             data-testid="agent-login-submit"
             onClick={onSubmit}
             disabled={trimmed === "" || submit.isPending}
           >
             {submit.isPending ? "Submitting…" : "Submit"}
-          </SoftButton>
+          </button>
         </div>
         {rejected ? (
           <p
@@ -400,9 +406,14 @@ function TerminalBody({
           <p className="text-[12.5px] text-st-done-tag-fg" data-testid="agent-login-status">
             {login.account_label ? `Signed in as ${login.account_label}.` : "Signed in."}
           </p>
-          <SoftButton variant="primary" data-testid="agent-login-done" onClick={onClose}>
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary"
+            data-testid="agent-login-done"
+            onClick={onClose}
+          >
             Done
-          </SoftButton>
+          </button>
         </>
       );
     case "failed":
@@ -413,14 +424,15 @@ function TerminalBody({
               {login.error ?? "The worker didn't say why."}
             </span>
           </Alert>
-          <SoftButton
-            variant="primary"
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary"
             data-testid="agent-login-retry"
             onClick={onRetry}
             disabled={retryBusy}
           >
             {retryBusy ? "Starting…" : "Try again"}
-          </SoftButton>
+          </button>
         </>
       );
     case "expired":
@@ -429,14 +441,15 @@ function TerminalBody({
           <p className="text-[12.5px] text-muted" data-testid="agent-login-status">
             The sign-in timed out after 15 minutes.
           </p>
-          <SoftButton
-            variant="primary"
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary"
             data-testid="agent-login-retry"
             onClick={onRetry}
             disabled={retryBusy}
           >
             {retryBusy ? "Starting…" : "Try again"}
-          </SoftButton>
+          </button>
         </>
       );
     default:
@@ -445,9 +458,14 @@ function TerminalBody({
           <p className="text-[12.5px] text-muted" data-testid="agent-login-status">
             Sign-in cancelled.
           </p>
-          <SoftButton variant="secondary" data-testid="agent-login-close" onClick={onClose}>
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary"
+            data-testid="agent-login-close"
+            onClick={onClose}
+          >
             Close
-          </SoftButton>
+          </button>
         </>
       );
   }

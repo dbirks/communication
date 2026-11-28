@@ -14,7 +14,6 @@ import { ApiError } from "../../api/client";
 import { useAddRepository } from "../../api/queries";
 import { Field, Input } from "../ds/Field";
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 import { FormError } from "../Feedback";
 
 export interface AddRepositoryDialogProps {
@@ -111,17 +110,22 @@ function AddRepositoryForm({ onClose, projectId }: Omit<AddRepositoryDialogProps
           />
         </Field>
         <div className="flex items-center gap-2 border-t border-line pt-3">
-          <SoftButton
+          <button
+            className="ds-btn ds-btn--primary"
             type="submit"
-            variant="primary"
             data-testid="repo-submit"
             disabled={add.isPending || !name.trim() || !gitUrl.trim()}
           >
             {add.isPending ? "Adding…" : "Add repository"}
-          </SoftButton>
-          <SoftButton variant="secondary" onClick={onClose} data-testid="repo-add-cancel">
+          </button>
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary"
+            onClick={onClose}
+            data-testid="repo-add-cancel"
+          >
             Cancel
-          </SoftButton>
+          </button>
         </div>
         {add.error instanceof ApiError && add.error.status === 409 ? (
           <p className="text-[12.5px] text-muted" data-testid="repo-add-conflict">

@@ -77,7 +77,7 @@ export function TakeControlCard({ step, onConfirm, onCancel }: TakeControlCardPr
       aria-modal="true"
       aria-label={`Take control of ${step}?`}
       data-testid="take-control-card"
-      className="space-y-[8px] rounded-[3px] border border-line-strong bg-surface p-3 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
+      className="space-y-[8px] rounded-[12px] border border-line bg-surface p-3"
     >
       <p
         className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"

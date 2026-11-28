@@ -4,6 +4,7 @@
  * GoalFrame / WrapPanel callbacks, AgentStepCard overlay, ?run= live state,
  * synthetic Trigger node, phone sheets, and assistant proposal lifecycle.
  */
+import { getDraftAskHandler } from "../lib/draftAsk";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -281,7 +282,12 @@ describe("Workflow editor (rx-editor R5)", () => {
     // workflow with no assignment or schedule starts “when you start it”.
     const triggerNode = await screen.findByTestId("mock-trigger-node");
     expect(triggerNode.textContent).toContain("when you start it");
-    expect(within(slot).getByTestId("studio-draft-status").textContent).toContain("Your draft");
+    // Editor interactions 1e: the breadcrumb is the path only; the draft status is the chip
+    // beside Try it / Make live, and it opens Versions.
+    expect(within(slot).queryByTestId("studio-draft-status")).toBeNull();
+    expect(screen.getByTestId("editor-versions-btn").getAttribute("aria-label")).toContain(
+      "Your draft",
+    );
 
     expect(screen.queryByTestId("studio-header")).toBeNull();
     expect(screen.queryByTestId("studio-status-bar")).toBeNull();
@@ -320,7 +326,7 @@ spec:
     expect(card.textContent).toContain("AGENT STEP");
     expect((screen.getByTestId("agent-card-name") as HTMLInputElement).value).toBe("plan");
     const promptBox = screen.getByTestId("agent-card-prompt") as HTMLTextAreaElement;
-    expect(promptBox.rows).toBeGreaterThanOrEqual(6);
+    expect(promptBox.rows).toBeGreaterThanOrEqual(4);
     expect(promptBox.value).toBe("Inspect recent changes.");
 
     // Edit prompt via card (commits on blur) -> YAML panel reflects it
@@ -532,6 +538,10 @@ spec:
       expect(requestsTo(requests, `/api/v1/revisions/${digest}`).length).toBeGreaterThanOrEqual(2),
     );
     await waitFor(() => expect(screen.queryByTestId("version-viewing-banner")).toBeNull());
+
+    // Escape closes the Versions panel.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("versions-panel")).toBeNull());
   });
 
   it("wraps selection in Repeat until, updates goal, unwraps, and wraps Side by side", async () => {
@@ -732,7 +742,8 @@ spec:
       },
     ]);
 
-    const banner = await screen.findByTestId("studio-run-banner");
+    // The run tray carries the run's state plus "Open run" / "Back to editing".
+    const banner = await screen.findByTestId("run-tray");
     expect(banner.textContent).toContain("Run");
     await waitFor(() => expect(banner.textContent).toContain("running"));
     expect(screen.getByTestId("studio-run-open").getAttribute("href")).toBe(`/runs/${runId}`);
@@ -826,7 +837,7 @@ spec:
       { path: `/api/v1/runs/${runId}/events`, body: { items: [] } },
     ]);
 
-    await screen.findByTestId("studio-run-banner");
+    await screen.findByTestId("run-tray");
     // The overlay arrives with the run reads; wait for the shape rather than
     // the first paint (an un-overlaid canvas is a legitimate intermediate).
     const overlay = await waitFor(() => {
@@ -846,7 +857,8 @@ spec:
     expect(status.textContent).toContain(`Run ${runId.slice(-8)}`);
     expect(status.textContent).toContain("failed");
     expect(status.textContent).not.toContain("draft");
-    expect(screen.getByTestId("studio-run-banner").textContent).toContain("×");
+    expect(screen.getByTestId("run-tray").textContent).toContain("×");
+    expect(screen.queryByTestId("studio-run-banner")).toBeNull();
   });
 
   // Observed on a real three-round loop whose `check` step never passed: the
@@ -1157,12 +1169,15 @@ spec:
       { path: "/api/v1/me", body: { ...admin, id: wireUserId } },
       { path: draftsPath, body: wireDraftSummaries },
     ]);
-    expect((await screen.findByTestId("studio-draft-status")).textContent).toContain("Your draft");
+    await screen.findByTestId("studio-draft-status");
+    expect(screen.getByTestId("editor-versions-btn").getAttribute("aria-label")).toContain(
+      "Your draft",
+    );
     expect(requestsTo(second.requests, draftPath)).toHaveLength(1);
   });
 });
 
-describe("the assistant proposal lifecycle (via Workflow settings)", () => {
+describe("the assistant proposal lifecycle (⌘K → ghost steps, editor interactions 1d)", () => {
   const proposalPath = "/api/v1/assistant/draft-proposals";
   const proposalOp = {
     op: "insert_after",
@@ -1188,25 +1203,29 @@ describe("the assistant proposal lifecycle (via Workflow settings)", () => {
       },
     ]);
     await screen.findByTestId("studio-canvas");
-    fireEvent.click(screen.getByTestId("editor-more-btn"));
-    fireEvent.click(screen.getByTestId("editor-menu-settings"));
-    fireEvent.click(await screen.findByTestId("assistant-proposal-footer"));
-    fireEvent.change(screen.getByTestId("assistant-proposal-input"), {
-      target: { value: "Add a note agent at the end" },
-    });
-    fireEvent.click(screen.getByTestId("assistant-proposal-submit"));
-    await screen.findByTestId("assistant-proposal-caption");
-    expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("1");
-    expect(screen.getByTestId("studio-proposal-caption")).toBeTruthy();
+    // ⌘K (Quick chat) hands "Change this workflow" requests to the editor.
+    await waitFor(() => expect(getDraftAskHandler()).not.toBeNull());
+    act(() => getDraftAskHandler()?.("Add a note agent at the end"));
+    expect(await screen.findByTestId("proposal-bar")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("1"),
+    );
+    expect(screen.getByTestId("proposal-bar-request").textContent).toBe(
+      "Add a note agent at the end",
+    );
+    // The canvas is locked while a proposal shows; Make live waits for Apply.
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-read-only")).toBe("true");
     return { requests };
   }
 
   it("clears the highlight when Apply saves", async () => {
     const { requests } = await mountPreviewing();
-    fireEvent.click(screen.getByTestId("assistant-proposal-apply"));
+    fireEvent.click(screen.getByTestId("proposal-bar-apply"));
     await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
-    expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
-    expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0"),
+    );
+    expect(screen.queryByTestId("proposal-bar")).toBeNull();
   });
 
   it("keeps the preview and shows the error when Apply fails", async () => {
@@ -1218,15 +1237,16 @@ describe("the assistant proposal lifecycle (via Workflow settings)", () => {
         body: { type: "server_error", title: "Internal server error", detail: "boom" },
       },
     ]);
-    fireEvent.click(screen.getByTestId("assistant-proposal-apply"));
+    fireEvent.click(screen.getByTestId("proposal-bar-apply"));
     expect(await screen.findByTestId("studio-save-error")).toBeTruthy();
     expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("1");
+    expect(screen.getByTestId("proposal-bar")).toBeTruthy();
   });
 
   it("clears the highlight when discarded", async () => {
     await mountPreviewing();
-    fireEvent.click(screen.getByTestId("assistant-proposal-discard"));
-    expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
+    fireEvent.click(screen.getByTestId("proposal-bar-discard"));
+    expect(screen.queryByTestId("proposal-bar")).toBeNull();
     expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
   });
 });

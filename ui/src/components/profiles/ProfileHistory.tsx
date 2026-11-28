@@ -27,7 +27,6 @@ import {
 } from "../../api/useProfileVersions";
 import type { AgentProfileVersion } from "../../api/types";
 import { Alert } from "../ds/Alert";
-import { SoftButton } from "../ds/SoftButton";
 import { Spinner } from "../Feedback";
 import { formatAge, formatTime } from "../../lib/format";
 
@@ -286,23 +285,23 @@ export default function ProfileHistory({ profileId, canWrite }: ProfileHistoryPr
                   {change.join(" · ")}
                 </span>
                 <span className="ml-auto flex items-center gap-x-2">
-                  <SoftButton
-                    variant="ghost"
-                    compact
+                  <button
+                    type="button"
+                    className="ds-btn ds-btn--ghost ds-btn--compact"
                     onClick={() => setViewing(version)}
                     data-testid={`profile-history-view-v${version.version}`}
                   >
                     View
-                  </SoftButton>
+                  </button>
                   {canWrite ? (
-                    <SoftButton
-                      variant="secondary"
-                      compact
+                    <button
+                      type="button"
+                      className="ds-btn ds-btn--secondary ds-btn--compact"
                       onClick={() => setConfirming(version)}
                       data-testid={`profile-history-restore-v${version.version}`}
                     >
                       Restore v{version.version}
-                    </SoftButton>
+                    </button>
                   ) : null}
                 </span>
               </li>
@@ -414,23 +413,23 @@ function ProfileHistoryConfirm({
           </div>
         ) : null}
         <div className="mt-3 flex justify-end gap-2">
-          <SoftButton
-            variant="secondary"
-            compact
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary ds-btn--compact"
             onClick={onClose}
             data-testid="profile-history-confirm-cancel"
           >
             Cancel
-          </SoftButton>
-          <SoftButton
-            variant="primary"
-            compact
+          </button>
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary ds-btn--compact"
             disabled={restore.isPending}
             onClick={() => void confirm()}
             data-testid="profile-history-restore-submit"
           >
             {restore.isPending ? "Restoring…" : "Restore"}
-          </SoftButton>
+          </button>
         </div>
       </div>
     </div>

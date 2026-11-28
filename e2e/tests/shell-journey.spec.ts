@@ -919,8 +919,8 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await edgeAdd.hover({ timeout: 30_000 });
     await edgeAdd.click({ timeout: 30_000 });
     console.log("journey a: edge + clicked");
-    await expect(page.getByTestId("step-picker")).toBeVisible({ timeout: 30_000 });
-    await page.getByTestId("step-picker-item-agent.acp").click({ timeout: 30_000 });
+    await expect(page.getByTestId("insert-step-menu")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("insert-step-agent.acp").click({ timeout: 30_000 });
 
     // §4 ambiguity rule (issue #2 A3): the approve step is guarded (it reads
     // nodes.plan.*), so the insert op refuses to rewire silently — the dialog

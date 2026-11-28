@@ -77,7 +77,7 @@ export function ChatDetailsSheet({ open, onClose, children }: ChatDetailsSheetPr
         role="dialog"
         aria-labelledby="chat-details-sheet-heading"
         data-testid="chat-details-sheet"
-        className="absolute inset-y-0 right-0 max-w-[22rem] w-[min(22rem,100vw)] overflow-y-auto border-l border-line-strong bg-surface shadow-(--shadow-raised)"
+        className="absolute inset-y-0 right-0 max-w-[22rem] w-[min(22rem,100vw)] overflow-y-auto border-l border-line bg-surface shadow-(--shadow-modal)"
       >
         <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-line-strong bg-surface px-3 py-2">
           <h2

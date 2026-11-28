@@ -209,7 +209,7 @@ function IssueTriggerDialogBody({
           role="dialog"
           aria-modal="true"
           aria-labelledby="trigger-add-issue-title"
-          className="w-[480px] max-w-full rounded-[4px] border border-line bg-surface shadow-(--shadow-raised)"
+          className="w-[480px] max-w-full rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
           data-testid="trigger-add-issue-dialog"
         >
           <h2
@@ -236,7 +236,7 @@ function IssueTriggerDialogBody({
         role="dialog"
         aria-modal="true"
         aria-labelledby="trigger-add-issue-title"
-        className="w-[560px] max-w-full rounded-[4px] border border-line bg-surface shadow-(--shadow-raised)"
+        className="w-[560px] max-w-full rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
         data-testid="trigger-add-issue-dialog"
       >
         <h2

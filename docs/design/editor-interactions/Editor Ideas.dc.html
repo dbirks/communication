@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Text:wght@400;500;600;700&amp;family=Red+Hat+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+<style>
+body{margin:0;background:#f3f1ec;font-family:'Red Hat Text',system-ui,sans-serif;color:#1e1d1a;-webkit-font-smoothing:antialiased}
+a{color:#2a43b8;text-decoration:none}a:hover{color:#1e1d1a}
+</style>
+</helmet>
+<section data-screen-label="Turn 1 · Editor ideas" style="padding:56px;display:flex;flex-direction:column;gap:40px">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <span style="font-family:'Red Hat Mono';font-size:11px;font-weight:600;letter-spacing:.06em;color:#6b675e">TURN 1 · NOV 27</span>
+    <h1 style="margin:0;font-size:26px;font-weight:700">Editor ideas</h1>
+    <p style="margin:0;font-size:14.5px;line-height:22px;color:#3a3833;text-wrap:pretty">From the review of Prototype v2 against main. Each idea stands on its own and builds on the section 8 visual language. <a href="#1c">1c</a> and <a href="#1d">1d</a> draw the loop with the <a href="#1g">1g</a> ink-tab frame.</p>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+
+    <div id="1a" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1a</span><span style="font-size:18px;font-weight:700">One card beside the selection</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">Whatever you select gets the same card in the same place: 18px to the right, caret on the selection's middle, 340 wide, the 3px floating shadow. One step opens the step card (main's AgentStepCard), several open the wrap panel, a note opens the note editor. Only one is open at a time.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="position:relative;height:420px;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          {{ a.svg }}
+          <sc-for list="{{ a.nodes }}" as="n" hint-placeholder-count="4"><div style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:{{ n.bw }} {{ n.bs }} {{ n.bd }};border-radius:10px;box-shadow:{{ n.sh }};opacity:{{ n.op }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div><sc-if value="{{ n.hasTag }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-9px;right:8px;padding:1px 5px;border-radius:4px;background:{{ n.tagBg }};color:{{ n.tagFg }};font-family:'Red Hat Mono';font-size:9.5px;font-weight:600;letter-spacing:.03em">{{ n.tagText }}</span></sc-if></div></sc-for>
+          <div style="position:absolute;left:626px;top:45px;width:340px;display:flex;flex-direction:column;gap:12px;padding:12px 14px 14px;box-sizing:border-box;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4">
+            <span style="position:absolute;left:-7px;top:159px;width:12px;height:12px;background:#fff;border-left:1px solid #cfc9bd;border-bottom:1px solid #cfc9bd;transform:rotate(45deg)"></span>
+            <div style="display:flex;align-items:center"><span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">AGENT STEP</span><i class="ti ti-x" style="margin-left:auto;font-size:15px;color:#6b675e"></i></div>
+            <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12.5px;font-weight:600;color:#3a3833">Step name</span><div style="padding:7px 10px;border:1px solid #cfcac0;border-radius:8px;font-family:'Red Hat Mono';font-size:13px">write-the-fix</div></div>
+            <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12.5px;font-weight:600;color:#3a3833">Agent</span><div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid #cfcac0;border-radius:8px"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:6px;background:#eef0fc;color:#2238a8"><i class="ti ti-robot" style="font-size:14px"></i></span><span style="font-size:13px;font-weight:600">fix-bot</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">claude-sonnet</span><i class="ti ti-chevron-down" style="margin-left:auto;font-size:14px;color:#6b675e"></i></div></div>
+            <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12.5px;font-weight:600;color:#3a3833">Prompt</span><div style="padding:9px 10px;border:1px solid #cfcac0;border-radius:8px;font-size:13px;line-height:19px;min-height:76px;text-wrap:pretty">Fix the bug described in the issue. Keep the change small and add a test that fails before the fix.</div></div>
+            <div style="display:flex;align-items:center"><span style="font-size:12.5px;font-weight:600;color:#2a43b8">More settings</span><span style="margin-left:auto;font-family:'Red Hat Mono';font-size:10.5px;color:#6e6a62">autosaved</span></div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;padding:16px 20px;border-top:1px solid #f0ede6">
+          <div style="display:flex;align-items:center;gap:14px"><span style="position:relative;padding:8px 12px 8px 14px;background:#fff;border:1px solid #cfc9bd;border-radius:8px;box-shadow:2px 2px 0 #e1ddd4;font-family:'Red Hat Mono';font-size:10px;font-weight:600;letter-spacing:.06em;color:#6b675e;white-space:nowrap"><span style="position:absolute;left:-5px;top:12px;width:8px;height:8px;background:#fff;border-left:1px solid #cfc9bd;border-bottom:1px solid #cfc9bd;transform:rotate(45deg)"></span>AGENT STEP</span><span style="font-size:12.5px;color:#3a3833">1 step</span></div>
+          <div style="display:flex;align-items:center;gap:14px"><span style="position:relative;padding:8px 12px 8px 14px;background:#fff;border:1px solid #cfc9bd;border-radius:8px;box-shadow:2px 2px 0 #e1ddd4;font-family:'Red Hat Mono';font-size:10px;font-weight:600;letter-spacing:.06em;color:#6b675e;white-space:nowrap"><span style="position:absolute;left:-5px;top:12px;width:8px;height:8px;background:#fff;border-left:1px solid #cfc9bd;border-bottom:1px solid #cfc9bd;transform:rotate(45deg)"></span>WRAP 3 STEPS IN</span><span style="font-size:12.5px;color:#3a3833">2 or more steps</span></div>
+          <div style="display:flex;align-items:center;gap:14px"><span style="position:relative;padding:8px 12px 8px 14px;background:#fff;border:1px solid #cfc9bd;border-radius:8px;box-shadow:2px 2px 0 #e1ddd4;font-family:'Red Hat Mono';font-size:10px;font-weight:600;letter-spacing:.06em;color:#6b675e;white-space:nowrap"><span style="position:absolute;left:-5px;top:12px;width:8px;height:8px;background:#fff;border-left:1px solid #cfc9bd;border-bottom:1px solid #cfc9bd;transform:rotate(45deg)"></span>NOTE</span><span style="font-size:12.5px;color:#3a3833">a sticky note</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="1b" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1b</span><span style="font-size:18px;font-weight:700">Canvas without modes</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">No tool modes to switch between. Dragging on empty canvas draws a selection, Space + drag moves around, dragging a step's dot connects it. The tool island becomes an add bar at the bottom with its labels always showing.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="position:relative;height:420px;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          <div style="position:absolute;left:16px;top:16px;display:flex;gap:18px;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e;background:#fff;padding:4px 6px;border-radius:6px">
+            <span><span style="color:#1e1d1a;font-weight:600">drag empty space</span> select</span>
+            <span><span style="color:#1e1d1a;font-weight:600">space + drag</span> move</span>
+            <span><span style="color:#1e1d1a;font-weight:600">drag a dot</span> connect</span>
+            <span><span style="color:#1e1d1a;font-weight:600">N</span> note</span>
+          </div>
+          {{ b.svg }}
+          <sc-for list="{{ b.nodes }}" as="n" hint-placeholder-count="4"><div style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:{{ n.bw }} {{ n.bs }} {{ n.bd }};border-radius:10px;box-shadow:{{ n.sh }};opacity:{{ n.op }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div></div></sc-for>
+          <div style="position:absolute;left:240px;top:110px;width:420px;height:140px;border:1px solid #2f4bd6;background:rgba(47,75,214,.05);border-radius:2px"></div>
+          <i class="ti ti-pointer" style="position:absolute;left:654px;top:244px;font-size:20px;color:#1e1d1a"></i>
+          <span style="position:absolute;left:695px;top:173px;width:10px;height:10px;box-sizing:border-box;border:1.5px solid #2f4bd6;border-radius:999px;background:#fff"></span>
+          <span style="position:absolute;left:863px;top:173px;width:10px;height:10px;box-sizing:border-box;border:1.5px solid #2f4bd6;border-radius:999px;background:#fff"></span>
+          <span style="position:absolute;left:700px;top:218px;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">hover shows the dots</span>
+          <div style="position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:5px;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4">
+            <span style="display:flex;align-items:center;gap:7px;height:34px;padding:0 11px;border-radius:8px;font-size:13px;color:#3a3833;white-space:nowrap"><i class="ti ti-robot" style="font-size:17px"></i>Agent</span>
+            <span style="display:flex;align-items:center;gap:7px;height:34px;padding:0 11px;border-radius:8px;font-size:13px;color:#3a3833;white-space:nowrap"><i class="ti ti-terminal-2" style="font-size:17px"></i>Command</span>
+            <span style="display:flex;align-items:center;gap:7px;height:34px;padding:0 11px;border-radius:8px;font-size:13px;color:#3a3833;white-space:nowrap"><i class="ti ti-user-check" style="font-size:17px"></i>Approval</span>
+            <span style="display:flex;align-items:center;gap:7px;height:34px;padding:0 11px;border-radius:8px;font-size:13px;color:#3a3833;white-space:nowrap"><i class="ti ti-gavel" style="font-size:17px"></i>Judge</span>
+            <span style="width:1px;height:20px;background:#e6e2d9;margin:0 4px"></span>
+            <span style="display:flex;align-items:center;gap:7px;height:34px;padding:0 11px;border-radius:8px;font-size:13px;color:#3a3833;white-space:nowrap"><i class="ti ti-note" style="font-size:17px"></i>Note<span style="font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">N</span></span>
+            <span style="display:flex;align-items:center;gap:7px;height:34px;padding:0 11px;border-radius:8px;font-size:13px;color:#3a3833;white-space:nowrap"><i class="ti ti-dots" style="font-size:17px"></i>More</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="1c" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1c</span><span style="font-size:18px;font-weight:700">Run tray under the canvas</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">Try it and live runs open a tray under the canvas. The canvas stays the map, with small state tags on steps (4h). Rounds, the judge's verdicts and the log live in the tray. Clicking a step filters the log to it.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="position:relative;height:290px;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          <div style="position:absolute;left:430px;top:60px;width:450px;height:200px;box-sizing:border-box;border:1px solid #cfc9bd;border-radius:16px;background:#faf9f6"></div>
+          <span style="position:absolute;left:448px;top:49px;display:flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff;font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em"><i class="ti ti-repeat" style="font-size:12px"></i>REPEAT UNTIL</span>
+          <span style="position:absolute;left:450px;top:80px;width:410px;font-size:13px;line-height:18px">“The reporter's steps no longer fail.” <span style="color:#6b675e;font-size:12px">a judge decides</span></span>
+          <span style="position:absolute;left:450px;top:232px;font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;color:#0f5e96">● round 2 of up to 3</span>
+          {{ c.svg }}
+          <sc-for list="{{ c.nodes }}" as="n" hint-placeholder-count="4"><div style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:{{ n.bw }} {{ n.bs }} {{ n.bd }};border-radius:10px;box-shadow:{{ n.sh }};opacity:{{ n.op }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div><sc-if value="{{ n.hasTag }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-9px;right:8px;padding:1px 5px;border-radius:4px;background:{{ n.tagBg }};color:{{ n.tagFg }};font-family:'Red Hat Mono';font-size:9.5px;font-weight:600;letter-spacing:.03em">{{ n.tagText }}</span></sc-if></div></sc-for>
+        </div>
+        <div style="border-top:1px solid #cfc9bd;background:#fff">
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #f0ede6">
+            <span style="padding:2px 6px;border-radius:4px;background:#d9eefa;color:#0f5e96;font-family:'Red Hat Mono';font-size:10px;font-weight:600">● RUNNING</span>
+            <span style="font-size:13.5px;font-weight:600">Try it on #318</span>
+            <span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e">round 2 of up to 3 · 1m 42s</span>
+            <div style="display:flex;gap:2px;padding:3px;border-radius:9px;background:#f3f1ec;margin-left:12px">
+              <span style="display:flex;align-items:center;height:26px;padding:0 10px;border:1px solid #cfc9bd;border-radius:7px;background:#fff;font-size:12.5px;font-weight:600;box-sizing:border-box">Rounds</span>
+              <span style="display:flex;align-items:center;height:26px;padding:0 10px;font-size:12.5px;color:#3a3833">Log</span>
+              <span style="display:flex;align-items:center;height:26px;padding:0 10px;font-size:12.5px;color:#3a3833">Output</span>
+            </div>
+            <span style="margin-left:auto;height:28px;display:flex;align-items:center;gap:6px;padding:0 11px;border-radius:7px;background:#fff;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:12.5px;font-weight:600;white-space:nowrap"><i class="ti ti-player-stop" style="font-size:14px"></i>Stop</span>
+            <i class="ti ti-chevron-down" style="font-size:16px;color:#6b675e"></i>
+          </div>
+          <div style="display:grid;grid-template-columns:400px minmax(0,1fr)">
+            <div style="display:flex;flex-direction:column;gap:2px;padding:8px">
+              <div style="display:grid;grid-template-columns:26px auto minmax(0,1fr);gap:10px;align-items:start;padding:9px 10px;border-radius:8px"><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;padding-top:1px">R1</span><span style="padding:1px 5px;border-radius:4px;background:#fdd8d2;color:#b0281a;font-family:'Red Hat Mono';font-size:9.5px;font-weight:600;white-space:nowrap">× NOT YET</span><span style="font-size:12.5px;line-height:18px;text-wrap:pretty">Judge: tests pass, but the reporter's steps still fail on Safari.</span></div>
+              <div style="display:grid;grid-template-columns:26px auto minmax(0,1fr);gap:10px;align-items:start;padding:9px 10px;border-radius:8px;background:#f6f7fe"><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;padding-top:1px">R2</span><span style="padding:1px 5px;border-radius:4px;background:#d9eefa;color:#0f5e96;font-family:'Red Hat Mono';font-size:9.5px;font-weight:600;white-space:nowrap">● RUNNING</span><span style="font-size:12.5px;line-height:18px">Write the fix · 38s</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;padding:12px 16px;border-left:1px solid #f0ede6">
+              <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">LOG · WRITE THE FIX</span>
+              <div style="font-family:'Red Hat Mono';font-size:11.5px;line-height:19px;color:#3a3833;display:flex;flex-direction:column">
+                <span><span style="color:#6e6a62">12:04:11</span>  reading src/editor/selection.ts</span>
+                <span><span style="color:#6e6a62">12:04:19</span>  found: range not cleared on blur (Safari only)</span>
+                <span><span style="color:#6e6a62">12:04:27</span>  editing src/editor/selection.ts  +6 −2</span>
+                <span><span style="color:#6e6a62">12:04:33</span>  adding test: clears range on blur</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="1d" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1d</span><span style="font-size:18px;font-weight:700">Assistant changes shown as ghost steps</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">Ask from ⌘K and the proposal lands on the canvas before anything is saved. New steps get a blue dashed outline and a blue hatch (your own drag stays grey), changed steps get an EDITED tag. One bar to Apply or Discard. Making it live stays a separate step.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="position:relative;height:400px;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          <sc-for list="{{ d.ghosts }}" as="n" hint-placeholder-count="1"><div style="position:absolute;left:{{ n.hx }}px;top:{{ n.hy }}px;width:168px;height:56px;border-radius:10px;background:repeating-linear-gradient(135deg,#8fa0e6 0 1px,transparent 1px 4px)"></div></sc-for>
+          {{ d.svg }}
+          <sc-for list="{{ d.nodes }}" as="n" hint-placeholder-count="5"><div style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:{{ n.bw }} {{ n.bs }} {{ n.bd }};border-radius:10px;box-shadow:{{ n.sh }};opacity:{{ n.op }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div><sc-if value="{{ n.hasTag }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-9px;right:8px;padding:1px 5px;border-radius:4px;background:{{ n.tagBg }};color:{{ n.tagFg }};font-family:'Red Hat Mono';font-size:9.5px;font-weight:600;letter-spacing:.03em">{{ n.tagText }}</span></sc-if></div></sc-for>
+          <div style="position:absolute;left:50%;top:32px;transform:translateX(-50%);width:600px;display:flex;align-items:center;gap:12px;padding:12px 14px;box-sizing:border-box;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4">
+            <span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:#eef0fc;color:#2238a8"><i class="ti ti-message-circle" style="font-size:17px"></i></span>
+            <div style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1"><span style="font-size:13.5px;font-weight:600;line-height:18px">Add a lint step before tests, and run tests in band.</span><span style="font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">from ⌘K · 2 changes · nothing saved yet</span></div>
+            <span style="height:30px;display:flex;align-items:center;padding:0 13px;border-radius:8px;background:#fff;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap">Discard</span>
+            <span style="height:30px;display:flex;align-items:center;padding:0 13px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap">Apply</span>
+          </div>
+          <div style="position:absolute;left:16px;bottom:16px;display:flex;align-items:center;gap:20px;padding:4px 6px;background:#fff;border-radius:6px;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:22px;height:12px;border-radius:3px;background:repeating-linear-gradient(135deg,#8fa0e6 0 1px,transparent 1px 4px)"></span>proposed by the assistant</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:22px;height:12px;border-radius:3px;background:repeating-linear-gradient(135deg,#b3ada2 0 1px,transparent 1px 4px)"></span>you, dragging</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="1e" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1e</span><span style="font-size:18px;font-weight:700">Draft status next to Make live</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">The draft state sits next to the button it affects. The draft chip replaces the Versions button and opens the same panel. The breadcrumb goes back to just the path.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;height:60px;padding:0 16px 0 24px;border-bottom:1px solid #e6e2d9">
+          <div style="display:flex;align-items:center;gap:8px;font-size:14px;white-space:nowrap"><span style="color:#6b675e">atlas</span><span style="color:#cfcac0">/</span><span style="color:#6b675e">Factory</span><span style="color:#cfcac0">/</span><span style="font-weight:700">fix-issue</span></div>
+          <div style="display:flex;gap:2px;padding:3px;border:1px solid #e6e2d9;border-radius:999px;box-shadow:0 1px 3px rgba(30,29,26,.06)">
+            <span style="display:flex;align-items:center;gap:7px;height:32px;padding:0 14px 0 11px;border-radius:999px;font-size:13px;color:#3a3833"><i class="ti ti-sunrise" style="font-size:18px"></i>Home</span>
+            <span style="display:flex;align-items:center;gap:7px;height:32px;padding:0 14px 0 11px;border-radius:999px;font-size:13px;color:#3a3833"><i class="ti ti-message" style="font-size:18px"></i>Chats</span>
+            <span style="display:flex;align-items:center;gap:7px;height:32px;padding:0 14px 0 11px;border-radius:999px;font-size:13px;background:#1e1d1a;color:#fff;font-weight:600"><i class="ti ti-building-factory-2" style="font-size:18px"></i>Factory</span>
+          </div>
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;font-size:12.5px;color:#6b675e"><i class="ti ti-search" style="font-size:15px"></i>Search or ask<span style="font-family:'Red Hat Mono';font-size:10.5px;color:#6e6a62">⌘K</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 16px 18px 24px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e;background:#fff;padding:2px 4px">DRAFT WITH CHANGES</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="height:34px;display:flex;align-items:center;gap:7px;padding:0 10px 0 12px;border-radius:8px;background:#fff;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap"><span style="width:7px;height:7px;border-radius:999px;background:#f0a93a"></span>2 changes<i class="ti ti-chevron-down" style="font-size:14px;color:#6b675e"></i></span>
+              <span style="height:34px;display:flex;align-items:center;gap:6px;padding:0 12px;border-radius:8px;background:#efede7;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap"><i class="ti ti-player-play" style="font-size:14px"></i>Try it</span>
+              <span style="height:34px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap">Make live</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 16px 18px 24px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e;background:#fff;padding:2px 4px">NOTHING TO MAKE LIVE</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="height:34px;display:flex;align-items:center;gap:7px;padding:0 10px 0 12px;border-radius:8px;background:#fff;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap"><i class="ti ti-check" style="font-size:14px;color:#1f6b37"></i>Live v3<i class="ti ti-chevron-down" style="font-size:14px;color:#6b675e"></i></span>
+              <span style="height:34px;display:flex;align-items:center;gap:6px;padding:0 12px;border-radius:8px;background:#efede7;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap"><i class="ti ti-player-play" style="font-size:14px"></i>Try it</span>
+              <span style="height:34px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#f3f1ec;color:#b3ada2;border:1px solid #e6e2d9;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap">Make live</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 16px 22px 24px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e;background:#fff;padding:2px 4px">TRYING IT</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="height:34px;display:flex;align-items:center;gap:7px;padding:0 10px 0 12px;border-radius:8px;background:#fff;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap"><span style="width:7px;height:7px;border-radius:999px;background:#f0a93a"></span>2 changes<i class="ti ti-chevron-down" style="font-size:14px;color:#6b675e"></i></span>
+              <span style="height:34px;display:flex;align-items:center;gap:8px;padding:0 6px 0 12px;border-radius:8px;background:#d9eefa;color:#0f5e96;border:1px solid #8cc8ec;box-shadow:2px 2px 0 #8cc8ec;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap">● Trying · round 2<span style="width:1px;height:18px;background:#8cc8ec"></span><span style="display:flex;align-items:center;gap:4px;padding:0 6px"><i class="ti ti-player-stop" style="font-size:14px"></i>Stop</span></span>
+              <span style="height:34px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#f3f1ec;color:#b3ada2;border:1px solid #e6e2d9;box-sizing:border-box;font-size:13px;font-weight:600;white-space:nowrap">Make live</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="1f" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1f</span><span style="font-size:18px;font-weight:700">Shadow rules by role</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">A shadow means you can press it, drag it, or it floats above the canvas. Everything else is flat, so the shadows keep their meaning.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff;padding:24px;display:flex;flex-direction:column;gap:20px">
+        <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">PRESS</span>
+            <span style="font-size:14px;font-weight:700">Buttons</span>
+            <div style="height:150px;border:1px solid #f0ede6;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px">
+              <span style="height:32px;display:flex;align-items:center;padding:0 14px;border-radius:8px;background:#2f4bd6;color:#fff;border:1px solid #2238a8;box-shadow:2px 2px 0 #1a2d8f;box-sizing:border-box;font-size:13px;font-weight:600">Make live</span>
+              <span style="height:32px;display:flex;align-items:center;gap:6px;padding:0 12px;border-radius:8px;background:#efede7;border:1px solid #cfc9bd;box-shadow:2px 2px 0 #cfc9bd;box-sizing:border-box;font-size:13px;font-weight:600"><i class="ti ti-player-play" style="font-size:14px"></i>Try it</span>
+            </div>
+            <span style="font-size:12.5px;line-height:18px;color:#3a3833;text-wrap:pretty">2px offset in the button's darker tone. Pressed, it moves 2px into the shadow.</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">DRAG</span>
+            <span style="font-size:14px;font-weight:700">Steps and notes</span>
+            <div style="height:150px;border:1px solid #f0ede6;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px">
+              <div style="width:150px;height:50px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:0 10px;background:#fff;border:1px solid #cfc9bd;border-radius:10px;box-shadow:2px 2px 0 #e1ddd4"><span style="width:26px;height:26px;flex-shrink:0;display:grid;place-items:center;border-radius:7px;background:#efede7;color:#3a3833"><i class="ti ti-terminal-2" style="font-size:15px"></i></span><span style="font-size:13px;font-weight:600">Run tests</span></div>
+              <div style="width:150px;padding:8px 10px;box-sizing:border-box;background:#fdf6e4;border:1px solid #e8cf94;border-radius:10px;box-shadow:2px 2px 0 #e8cf94;font-size:12px;line-height:16px;color:#5c3d00">Check Safari too</div>
+            </div>
+            <span style="font-size:12.5px;line-height:18px;color:#3a3833;text-wrap:pretty">2px #e1ddd4 at rest (notes use their own edge tone). Ink when selected, hatch while dragging.</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">FLOAT</span>
+            <span style="font-size:14px;font-weight:700">Panels and menus</span>
+            <div style="height:150px;border:1px solid #f0ede6;border-radius:10px;display:flex;align-items:center;justify-content:center;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px">
+              <div style="width:150px;display:flex;flex-direction:column;gap:6px;padding:10px;box-sizing:border-box;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4"><span style="font-family:'Red Hat Mono';font-size:9.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">VERSIONS</span><span style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:6px;height:6px;border-radius:999px;background:#f0a93a"></span>Your draft</span><span style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:6px;height:6px;border-radius:999px;background:#2a7a44"></span>v3 live</span></div>
+            </div>
+            <span style="font-size:12.5px;line-height:18px;color:#3a3833;text-wrap:pretty">Border #cfc9bd, 3px #e1ddd4. Beside card, versions, add bar, menus.</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">STATIC</span>
+            <span style="font-size:14px;font-weight:700">Cards</span>
+            <div style="height:150px;border:1px solid #f0ede6;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px">
+              <div style="width:150px;padding:9px 11px;box-sizing:border-box;border:1px solid #e6e2d9;border-radius:10px;display:flex;flex-direction:column;gap:2px"><span style="font-size:13px;font-weight:700">fix-issue</span><span style="font-family:'Red Hat Mono';font-size:10px;color:#6b675e">rest</span></div>
+              <div style="width:150px;padding:9px 11px;box-sizing:border-box;border:1px solid #cfc9bd;border-radius:10px;box-shadow:2px 2px 0 #cfc9bd;display:flex;flex-direction:column;gap:2px"><span style="font-size:13px;font-weight:700">fix-issue</span><span style="font-family:'Red Hat Mono';font-size:10px;color:#6b675e">hover, opens</span></div>
+            </div>
+            <span style="font-size:12.5px;line-height:18px;color:#3a3833;text-wrap:pretty">Border only. A card that opens something gets the 2px shadow on hover.</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">FLAT</span>
+            <span style="font-size:14px;font-weight:700">Inputs, chips, rows</span>
+            <div style="height:150px;border:1px solid #f0ede6;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px">
+              <div style="width:150px;padding:7px 10px;box-sizing:border-box;border:1px solid #cfcac0;border-radius:8px;font-family:'Red Hat Mono';font-size:12px">fix-bot</div>
+              <span style="padding:3px 8px;border-radius:6px;background:#f3f1ec;font-family:'Red Hat Mono';font-size:11px;color:#3a3833">label: ready</span>
+            </div>
+            <span style="font-size:12.5px;line-height:18px;color:#3a3833;text-wrap:pretty">No shadow, focus ring only. The section pill stays as is.</span>
+          </div>
+        </div>
+        <span style="font-size:12.5px;line-height:18px;color:#6b675e;padding-top:14px;border-top:1px solid #f0ede6">Changes from section 8: workflow cards lose their resting shadow, and the tool island / add bar moves from 2px to the 3px floating shadow.</span>
+      </div>
+    </div>
+
+    <div id="1g" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1g</span><span style="font-size:18px;font-weight:700">Goal frame without the blue</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">Selection is now ink, so a blue frame reads like a selection that never goes away. Two neutral frames: an ink tab on the border (matches the ink trigger tile), or a hatched edge. Blue stays for buttons, focus and the live box selection.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="position:relative;height:360px;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          <span style="position:absolute;left:30px;top:22px;font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e;background:#fff;padding:2px 4px">G1 · INK TAB</span>
+          <span style="position:absolute;left:520px;top:22px;font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e;background:#fff;padding:2px 4px">G2 · HATCHED EDGE</span>
+          <div style="position:absolute;left:30px;top:70px;width:460px;height:250px;box-sizing:border-box;border:1px solid #cfc9bd;border-radius:16px;background:#faf9f6"></div>
+          <span style="position:absolute;left:48px;top:59px;display:flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff;font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em"><i class="ti ti-repeat" style="font-size:12px"></i>REPEAT UNTIL</span>
+          <div style="position:absolute;left:50px;top:90px;width:420px;display:flex;flex-direction:column;gap:3px"><span style="font-size:13px;line-height:18px">“The reporter's steps no longer fail.”</span><span style="font-size:12px;color:#6b675e">a judge decides</span></div>
+          <span style="position:absolute;left:50px;top:290px;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">up to 3 rounds · then ask David</span>
+          <div style="position:absolute;left:520px;top:70px;width:450px;height:250px;border-radius:16px;border:1px solid #b3ada2;box-sizing:border-box;background:repeating-linear-gradient(135deg,#8f897e 0 1.5px,transparent 1.5px 5px)"></div>
+          <div style="position:absolute;left:530px;top:80px;width:430px;height:230px;border-radius:9px;border:1px solid #b3ada2;box-sizing:border-box;background:#fff"></div>
+          <div style="position:absolute;left:544px;top:90px;width:400px;display:flex;flex-direction:column;gap:4px"><span style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600"><i class="ti ti-repeat" style="font-size:14px"></i>Repeat until a judge says:</span><span style="font-size:13px;line-height:18px">“The reporter's steps no longer fail.”</span></div>
+          <span style="position:absolute;left:544px;top:290px;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">up to 3 rounds · then ask David</span>
+          {{ g.svg }}
+          <sc-for list="{{ g.nodes }}" as="n" hint-placeholder-count="4"><div style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:{{ n.bw }} {{ n.bs }} {{ n.bd }};border-radius:10px;box-shadow:{{ n.sh }};opacity:{{ n.op }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div></div></sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div id="1h" style="display:flex;flex-direction:column;gap:12px;width:1000px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono';font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;background:#1e1d1a;color:#fff">1h</span><span style="font-size:18px;font-weight:700">+ on lines to insert a step</span></div>
+      <p style="margin:0;max-width:800px;font-size:14px;line-height:21px;color:#3a3833;text-wrap:pretty">Hovering a connecting line shows a + at its middle. Clicking it opens the add card (the <a href="#1a">1a</a> pattern, caret on the +) to insert a step there. The last step gets a dashed + for the next one.</p>
+      <div style="border:1px solid #e6e2d9;border-radius:12px;overflow:hidden;background:#fff">
+        <div style="position:relative;height:460px;background-color:#fff;background-image:radial-gradient(#d6d2c8 1.1px,transparent 1.1px);background-size:20px 20px;background-position:10px 10px;overflow:hidden">
+          {{ h.svg }}
+          <sc-for list="{{ h.nodes }}" as="n" hint-placeholder-count="4"><div style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;height:56px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:0 12px;background:#fff;border:{{ n.bw }} {{ n.bs }} {{ n.bd }};border-radius:10px;box-shadow:{{ n.sh }};opacity:{{ n.op }}"><span style="width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:8px;background:{{ n.tileBg }};color:{{ n.tileFg }}"><i class="{{ n.icon }}" style="font-size:17px"></i></span><div style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:13.5px;font-weight:600">{{ n.title }}</span><span style="font-family:'Red Hat Mono';font-size:11px;color:#6b675e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sub }}</span></div></div></sc-for>
+          <span style="position:absolute;left:432px;top:186px;width:24px;height:24px;box-sizing:border-box;display:grid;place-items:center;border-radius:999px;background:#fff;border:1px solid #1e1d1a;box-shadow:2px 2px 0 #1e1d1a"><i class="ti ti-plus" style="font-size:14px"></i></span>
+          <div style="position:absolute;left:314px;top:228px;width:260px;display:flex;flex-direction:column;gap:2px;padding:10px;box-sizing:border-box;background:#fff;border:1px solid #cfc9bd;border-radius:12px;box-shadow:3px 3px 0 #e1ddd4">
+            <span style="position:absolute;left:123px;top:-7px;width:12px;height:12px;background:#fff;border-left:1px solid #cfc9bd;border-top:1px solid #cfc9bd;transform:rotate(45deg)"></span>
+            <div style="display:flex;align-items:baseline;gap:8px;padding:0 4px 6px"><span style="font-family:'Red Hat Mono';font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#6b675e">INSERT STEP</span><span style="font-size:11.5px;color:#6b675e">between Read and Write</span></div>
+            <span style="display:flex;align-items:center;gap:9px;height:32px;padding:0 8px;border-radius:8px;background:#f6f7fe;font-size:13px"><i class="ti ti-robot" style="font-size:16px;color:#2238a8"></i>Agent</span>
+            <span style="display:flex;align-items:center;gap:9px;height:32px;padding:0 8px;border-radius:8px;font-size:13px"><i class="ti ti-terminal-2" style="font-size:16px;color:#3a3833"></i>Command</span>
+            <span style="display:flex;align-items:center;gap:9px;height:32px;padding:0 8px;border-radius:8px;font-size:13px"><i class="ti ti-user-check" style="font-size:16px;color:#7a4a00"></i>Approval</span>
+            <span style="display:flex;align-items:center;gap:9px;height:32px;padding:0 8px;border-radius:8px;font-size:13px"><i class="ti ti-gavel" style="font-size:16px;color:#2238a8"></i>Judge</span>
+            <span style="height:1px;background:#f0ede6;margin:5px 4px"></span>
+            <div style="padding:7px 10px;border:1px solid #cfcac0;border-radius:8px;font-size:12.5px;color:#6e6a62">Or describe it…</div>
+          </div>
+          <span style="position:absolute;left:900px;top:186px;width:24px;height:24px;box-sizing:border-box;display:grid;place-items:center;border-radius:999px;border:1.5px dashed #b3ada2;background:#fff;color:#6b675e"><i class="ti ti-plus" style="font-size:13px"></i></span>
+          <span style="position:absolute;left:884px;top:218px;font-family:'Red Hat Mono';font-size:10.5px;color:#6b675e">next step</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const K = {
+      agent: ['#eef0fc', '#2238a8', 'ti ti-robot'],
+      command: ['#efede7', '#3a3833', 'ti ti-terminal-2'],
+      approval: ['#ffecc2', '#7a4a00', 'ti ti-user-check'],
+      trigger: ['#1e1d1a', '#fff', 'ti ti-bolt'],
+      git: ['#efede7', '#3a3833', 'ti ti-git-pull-request'],
+      judge: ['#eef0fc', '#2238a8', 'ti ti-gavel'],
+    };
+    const TAG = {
+      run: ['● RUNNING', '#d9eefa', '#0f5e96'], done: ['✓', '#d9f0de', '#1f6b37'],
+      queued: ['· QUEUED', '#eeece6', '#5e5a52'], edited: ['EDITED', '#eef0fc', '#2238a8'],
+      new: ['PROPOSED', '#eef0fc', '#2238a8'],
+    };
+    const T = {
+      trig: { k: 'trigger', title: 'Issue is ready', sub: 'label: ready' },
+      read: { k: 'agent', title: 'Read the issue', sub: 'claude · triage' },
+      fix: { k: 'agent', title: 'Write the fix', sub: 'claude · fix-bot' },
+      tests: { k: 'command', title: 'Run tests', sub: 'pnpm test' },
+      lint: { k: 'command', title: 'Lint', sub: 'pnpm lint' },
+    };
+    const at = (key, x, y, extra) => ({ ...T[key], x, y, ...(extra || {}) });
+    const node = (n) => {
+      const [tb, tf, ic] = K[n.k];
+      const s = n.s || 'rest';
+      let bd = '#cfc9bd', sh = '2px 2px 0 #e1ddd4', bw = '1px', bs = 'solid';
+      if (s === 'sel') { bd = '#1e1d1a'; sh = '2px 2px 0 #1e1d1a'; }
+      if (s === 'run') { bd = '#1a6da6'; sh = '2px 2px 0 #8cc8ec'; }
+      if (s === 'ghost') { bd = '#8fa0e6'; sh = 'none'; bw = '1.5px'; bs = 'dashed'; }
+      const t = TAG[n.tag || { run: 'run', done: 'done', queued: 'queued' }[s]];
+      return { ...n, tileBg: tb, tileFg: tf, icon: ic, bd, sh, bw, bs, op: s === 'queued' ? 0.7 : 1,
+        hx: n.x + 6, hy: n.y + 6, hasTag: !!t, tagText: t ? t[0] : '', tagBg: t ? t[1] : '', tagFg: t ? t[2] : '' };
+    };
+    const edgeD = (a, b) => {
+      if (Math.abs(a.x - b.x) < 40 && b.y > a.y + 56) {
+        const x1 = a.x + 84, y1 = a.y + 56, x2 = b.x + 84, y2 = b.y, c = (y2 - y1) / 2;
+        return `M${x1} ${y1} C${x1} ${y1 + c} ${x2} ${y2 - c} ${x2} ${y2}`;
+      }
+      const x1 = a.x + 168, y1 = a.y + 28, x2 = b.x, y2 = b.y + 28, c = Math.max(30, (x2 - x1) / 2);
+      return `M${x1} ${y1} C${x1 + c} ${y1} ${x2 - c} ${y2} ${x2} ${y2}`;
+    };
+    const mk = (nodes, edges, extra) => {
+      const ns = nodes.map(node);
+      const paths = edges.map(([i, j, o], k) => {
+        const st = o === 'dash' ? { stroke: '#8fa0e6', strokeWidth: 1.5, strokeDasharray: '5 4' }
+          : o === 'hl' ? { stroke: '#1e1d1a', strokeWidth: 2.5 } : { stroke: '#3a3833', strokeWidth: 1.5 };
+        return React.createElement('path', { key: 'e' + k, d: edgeD(nodes[i], nodes[j]), fill: 'none', ...st });
+      }).concat((extra || []).map((p, k) => React.createElement('path', { key: 'x' + k, fill: 'none', ...p })));
+      return {
+        nodes: ns,
+        ghosts: ns.filter((n) => n.s === 'ghost'),
+        svg: React.createElement('svg', { width: 1000, height: 460, style: { position: 'absolute', left: 0, top: 0, pointerEvents: 'none' } }, paths),
+      };
+    };
+    return {
+      a: mk([at('trig', 24, 182), at('read', 232, 182), at('fix', 440, 182, { s: 'sel' }), at('tests', 440, 330)], [[0, 1], [1, 2], [2, 3]]),
+      b: mk([at('trig', 40, 150), at('read', 260, 150), at('fix', 480, 150), at('tests', 700, 150)], [[0, 1], [1, 2], [2, 3]]),
+      c: mk([at('trig', 30, 130, { s: 'done' }), at('read', 236, 130, { s: 'done' }), at('fix', 452, 130, { s: 'run' }), at('tests', 690, 130, { s: 'queued' })], [[0, 1], [1, 2], [2, 3]]),
+      d: mk([at('trig', 30, 200), at('read', 230, 200), at('fix', 430, 200), at('lint', 630, 200, { s: 'ghost', tag: 'new' }), at('tests', 830, 200, { sub: 'pnpm test --runInBand', tag: 'edited' })], [[0, 1], [1, 2], [2, 3, 'dash'], [3, 4, 'dash']]),
+      g: mk([at('fix', 60, 170), at('tests', 290, 170), at('fix', 550, 170), at('tests', 774, 170)], [[0, 1], [2, 3]]),
+      h: mk([at('trig', 30, 170), at('read', 250, 170), at('fix', 470, 170), at('tests', 690, 170)], [[0, 1], [1, 2, 'hl'], [2, 3]],
+        [{ d: 'M858 198 L900 198', stroke: '#b3ada2', strokeWidth: 1.5, strokeDasharray: '4 4' }]),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -94,7 +94,7 @@ export function StepStrip({
                 data-testid={`workbench-step-cell-${cell.id}`}
                 onClick={() => onSelect(cell.id)}
                 className={`shrink-0 whitespace-nowrap rounded-[3px] border px-2.5 py-[6px] text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${spec.tagBg} ${spec.tagFg} ${
-                  selected ? "border-ink shadow-(--shadow-raised)" : "border-line"
+                  selected ? "border-ink" : "border-line"
                 }`}
               >
                 <span className="text-[12px] font-semibold">{cell.name}</span>{" "}

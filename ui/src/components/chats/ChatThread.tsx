@@ -39,7 +39,6 @@ import { NO_BRANCH_YET, threadBranch } from "../conversation/threadBranch";
 import { useConversationSession } from "../conversation/useConversationSession";
 import { conversationRunHref, instanceLeaf } from "../Conversations";
 import { Alert } from "../ds/Alert";
-import { SoftButton } from "../ds/SoftButton";
 import { TurnSandboxPanel } from "../Sandbox";
 import { WorkspaceWidget } from "../Workspaces";
 import HandToWorkflowDialog from "../threads/HandToWorkflowDialog";
@@ -548,8 +547,9 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
             <h3 className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
               Next
             </h3>
-            <SoftButton
-              variant="primary"
+            <button
+              type="button"
+              className="ds-btn ds-btn--primary"
               onClick={() => {
                 setDetailsOpen(false);
                 setHandoffOpen(true);
@@ -557,11 +557,12 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
               data-testid="hand-to-workflow"
             >
               Hand to a workflow…
-            </SoftButton>
+            </button>
             {session.isController ? (
               <div className="space-y-2" data-testid="thread-draft-pr">
-                <SoftButton
-                  variant="secondary"
+                <button
+                  type="button"
+                  className="ds-btn ds-btn--secondary"
                   onClick={() => {
                     setDraftPrConfirm(true);
                     setDraftPrError(null);
@@ -570,7 +571,7 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
                   data-testid="thread-draft-pr-open"
                 >
                   Open a draft PR from this branch
-                </SoftButton>
+                </button>
                 {draftPrConfirm ? (
                   <div
                     className="space-y-2 rounded-[8px] border border-line p-3"
@@ -581,16 +582,21 @@ export function ChatThread({ conversationId, scope, showBack = false }: ChatThre
                       token on its profile.
                     </p>
                     <div className="flex items-center justify-end gap-2">
-                      <SoftButton variant="secondary" onClick={() => setDraftPrConfirm(false)}>
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--secondary"
+                        onClick={() => setDraftPrConfirm(false)}
+                      >
                         Cancel
-                      </SoftButton>
-                      <SoftButton
-                        variant="primary"
+                      </button>
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--primary"
                         onClick={sendDraftPrPrompt}
                         disabled={session.sendMessage.isPending}
                       >
                         {session.sendMessage.isPending ? "Sending…" : "Send"}
-                      </SoftButton>
+                      </button>
                     </div>
                   </div>
                 ) : null}

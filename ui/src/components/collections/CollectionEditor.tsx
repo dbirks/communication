@@ -20,7 +20,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { IconArrowDown, IconArrowUp, IconGripVertical, IconPlus } from "@tabler/icons-react";
-import { SoftButton } from "../ds/SoftButton";
 import { Alert } from "../ds/Alert";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { problemOf } from "../../api/client";
@@ -190,24 +189,24 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
           <p className="mt-1 max-w-[720px] text-[13.5px] text-muted">{collection.description}</p>
         </div>
         <div className="flex shrink-0 items-center gap-[8px]">
-          <SoftButton
-            variant="secondary"
-            size="lg"
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary ds-btn--tall"
             disabled={!dirty || busy !== null}
             onClick={() => void saveDraft()}
             data-testid="collection-save-draft"
           >
             {busy === "save" ? "Saving…" : "Save draft"}
-          </SoftButton>
-          <SoftButton
-            variant="primary"
-            size="lg"
+          </button>
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary ds-btn--tall"
             disabled={publishable === null || busy !== null || dirty}
             onClick={() => setConfirmOpen(true)}
             data-testid="collection-publish"
           >
             {busy === "publish" ? "Publishing…" : publishLabel}
-          </SoftButton>
+          </button>
         </div>
       </header>
       <div className="pt-[14px]">
@@ -310,15 +309,15 @@ export function CollectionEditor({ collectionId }: CollectionEditorProps) {
                       className={`${SOFT_INPUT} min-w-0 flex-1 font-mono`}
                       data-testid="collection-add-ref"
                     />
-                    <SoftButton
-                      variant="secondary"
-                      compact
+                    <button
+                      type="button"
+                      className="ds-btn ds-btn--secondary ds-btn--compact"
                       onClick={addPackage}
                       data-testid="collection-add-package"
                     >
                       <IconPlus size={14} stroke={1.7} aria-hidden="true" />
                       Add package
-                    </SoftButton>
+                    </button>
                   </div>
                   {refError ? (
                     <p
@@ -403,17 +402,23 @@ function CollectionPublishDialog({
           A published revision is immutable — later edits land a new draft.
         </p>
         <div className="mt-[12px] flex justify-end gap-[8px]">
-          <SoftButton variant="ghost" onClick={onCancel} data-testid="collection-publish-cancel">
+          <button
+            type="button"
+            className="ds-btn ds-btn--ghost"
+            onClick={onCancel}
+            data-testid="collection-publish-cancel"
+          >
             Cancel
-          </SoftButton>
-          <SoftButton
-            variant="primary"
+          </button>
+          <button
+            type="button"
+            className="ds-btn ds-btn--primary"
             disabled={busy}
             onClick={() => void onConfirm()}
             data-testid="collection-publish-confirm"
           >
             {busy ? "Publishing…" : `Publish r${revision}`}
-          </SoftButton>
+          </button>
         </div>
       </div>
     </div>

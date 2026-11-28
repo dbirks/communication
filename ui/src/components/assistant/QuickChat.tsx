@@ -38,6 +38,7 @@ import {
 import { ChangeChip } from "./ChangeChip";
 import { draftLinkOf } from "./draftSteps";
 import { pageContextPayload, usePageContext, usePageContextOn } from "./pageContext";
+import { useDraftAskHandler } from "../../lib/draftAsk";
 import type { AssistantChange, AssistantMessage, TrustLevel } from "./types";
 import {
   isSpeechAvailable,
@@ -191,19 +192,29 @@ export default function QuickChat({
     [restoreDraft],
   );
 
+  // 1d: on the editor, ⌘K is also how the open workflow is changed. While the
+  // editor offers a handler, "Change this workflow" (on by default) sends the
+  // request there: it comes back as ghost steps, nothing saved until Apply.
+  const draftAsk = useDraftAskHandler();
+  const [changeWorkflow, setChangeWorkflow] = useState(true);
   const submit = useCallback(
     (text: string, options?: ComposerSendOptions) => {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
       spokenDraftRef.current = false;
       setDraft("");
+      if (draftAsk && changeWorkflow) {
+        draftAsk(trimmed);
+        onClose();
+        return;
+      }
       const resolvedOptions: ComposerSendOptions = options ?? {
         spoken: false,
         context: pageContextPayload(page, contextOn),
       };
       watchSend(onSend(trimmed, resolvedOptions), trimmed);
     },
-    [busy, contextOn, onSend, page, watchSend],
+    [busy, contextOn, onSend, page, watchSend, draftAsk, changeWorkflow, onClose],
   );
 
   const retrySend = useCallback(
@@ -616,6 +627,22 @@ export default function QuickChat({
             data-testid="quick-chat-controls-row"
             className="mt-[8px] flex min-w-0 items-center gap-[6px]"
           >
+            {draftAsk ? (
+              <button
+                type="button"
+                data-testid="quick-chat-change-workflow"
+                aria-pressed={changeWorkflow}
+                onClick={() => setChangeWorkflow((on) => !on)}
+                className={`inline-flex h-[26px] shrink-0 items-center gap-[5px] rounded-full border px-[10px] text-[12px] font-semibold focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px] ${
+                  changeWorkflow
+                    ? "border-accent-mid bg-accent-tint text-accent-edge"
+                    : "border-line bg-surface text-ink-2"
+                }`}
+                title="Send to the open workflow as a proposal (nothing is saved until Apply)"
+              >
+                Change this workflow
+              </button>
+            ) : null}
             <ContextButton chip page={page} on={contextOn} onToggle={setContextOn} />
             <TrustPill chip value={trustLevel} onChange={onTrustLevelChange} />
             <a

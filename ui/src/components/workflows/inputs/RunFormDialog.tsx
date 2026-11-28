@@ -14,7 +14,6 @@
  */
 import type { ReactNode } from "react";
 import { Sheet } from "../../ds/Sheet";
-import { SoftButton } from "../../ds/SoftButton";
 
 export interface RunFormDialogProps {
   title: string;
@@ -73,14 +72,14 @@ export function RunFormDialog({
         </p>
         <div className="flex shrink-0 items-center gap-[8px]">
           {onCancel ? (
-            <SoftButton
+            <button
+              className="ds-btn ds-btn--ghost"
               type="button"
-              variant="ghost"
               onClick={onCancel}
               data-testid="new-run-cancel"
             >
               Cancel
-            </SoftButton>
+            </button>
           ) : null}
           {submit}
         </div>

@@ -68,7 +68,7 @@ describe("StepNode live state tag (README 8 / 4h)", () => {
     expect(el!.getAttribute("aria-label")).toBe("status: running");
     // Absolutely positioned on the card's top-right corner, clear of the card.
     expect(el!.className).toContain("absolute");
-    expect(el!.style.right).toBe("-6px");
+    expect(el!.style.right).toBe("8px");
     expect(el!.style.top).toBe("-12px");
     // The card still holds exactly two lines at its fixed height.
     expect(card().className).toContain("h-[56px]");
@@ -101,6 +101,6 @@ describe("StepNode live state tag (README 8 / 4h)", () => {
   it("shifts the tag left of the selected step's ⋯ button", () => {
     renderStep({ status: { state: "running", label: "running" }, onMenu: vi.fn() }, true);
     expect(screen.getByTestId("node-menu-button-implement")).toBeTruthy();
-    expect(tag()!.style.right).toBe("22px");
+    expect(tag()!.style.right).toBe("34px");
   });
 });

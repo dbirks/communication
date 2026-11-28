@@ -93,14 +93,16 @@ describe("StepStrip", () => {
     expect(review.textContent).toContain("pending");
   });
 
-  it("raises only the selected step with the hard 2px 2px 0 ink shadow", () => {
+  // Editor interactions 1f: selection is an ink edge; shadows mean press, drag or float only.
+  it("marks only the selected step with the ink edge, and no shadow", () => {
     const { container } = render(
       <StepStrip cells={cells} selectedId="implement" onSelect={() => {}} />,
     );
     const buttons = Array.from(container.querySelectorAll('[data-testid^="workbench-step-cell-"]'));
-    const raised = buttons.filter((button) =>
-      button.className.includes("shadow-(--shadow-raised)"),
+    expect(buttons.some((button) => button.className.includes("shadow-(--shadow-raised)"))).toBe(
+      false,
     );
+    const raised = buttons.filter((button) => button.className.includes("border-ink"));
     expect(raised).toHaveLength(1);
     expect(raised[0].getAttribute("data-testid")).toBe("workbench-step-cell-implement");
     expect(raised[0].getAttribute("aria-pressed")).toBe("true");

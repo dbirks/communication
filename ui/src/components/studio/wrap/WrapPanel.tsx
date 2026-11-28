@@ -12,10 +12,10 @@ import {
   IconRepeat,
   IconTerminal2,
   IconTextScan2,
-  IconX,
   type TablerIcon,
 } from "@tabler/icons-react";
 import type { GoalKind, GoalSpec } from "./wrapModel";
+import { BesideCard, type BesideSide } from "../BesideCard";
 
 export type WrapTab = "repeat" | "side";
 
@@ -34,6 +34,9 @@ export interface WrapPanelProps {
   onClose: () => void;
   sheet?: boolean;
   className?: string;
+  /** Caret side and offset from the beside-card placement (1a). */
+  side?: BesideSide;
+  caret?: number;
 }
 
 const MIN_ROUNDS = 1;
@@ -89,6 +92,8 @@ export function WrapPanel({
   onClose,
   sheet = false,
   className = "",
+  side,
+  caret,
 }: WrapPanelProps) {
   const baseId = useId();
   const isEdit = mode === "edit";
@@ -167,10 +172,6 @@ export function WrapPanel({
     });
   }
 
-  const containerLayout = sheet
-    ? "w-full rounded-t-[14px] rounded-b-none"
-    : "w-[340px] rounded-[12px]";
-
   const repeatTabId = `${baseId}-tab-repeat`;
   const sideTabId = `${baseId}-tab-side`;
   const panelId = `${baseId}-tabpanel`;
@@ -178,28 +179,16 @@ export function WrapPanel({
   const fieldId = `${baseId}-field-${goalKind}`;
 
   return (
-    <div
-      role={sheet ? "dialog" : undefined}
-      aria-modal={sheet ? true : undefined}
-      aria-label={sheet ? "Wrap selected steps" : undefined}
-      data-testid="wrap-panel"
-      className={`flex flex-col gap-[12px] border border-fill-edge bg-surface p-[14px] shadow-[var(--shadow-pop)] ${containerLayout} ${className}`}
+    <BesideCard
+      title={isEdit ? "REPEAT UNTIL" : `WRAP ${count} ${count === 1 ? "STEP" : "STEPS"} IN`}
+      onClose={onClose}
+      side={side}
+      caret={caret}
+      sheet={sheet}
+      testid="wrap-panel"
+      closeTestid="wrap-panel-close"
+      className={className}
     >
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-muted">
-          {isEdit ? "REPEAT UNTIL" : `WRAP ${count} ${count === 1 ? "STEP" : "STEPS"} IN`}
-        </span>
-        <button
-          type="button"
-          aria-label="Close"
-          data-testid="wrap-panel-close"
-          onClick={onClose}
-          className="icon-hit ml-auto inline-flex h-[24px] w-[24px] items-center justify-center rounded-[6px] text-muted hover:bg-fill hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-        >
-          <IconX size={15} stroke={1.5} aria-hidden />
-        </button>
-      </div>
-
       {reason ? (
         <p data-testid="wrap-panel-reason" className="text-[13px] leading-[19px] text-ink-2">
           {reason}
@@ -304,7 +293,7 @@ export function WrapPanel({
                           isDisabled
                             ? "cursor-not-allowed border-line bg-disabled-bg font-normal text-muted"
                             : selected
-                              ? "border-accent bg-accent-wash font-semibold text-ink"
+                              ? "border-ink bg-disabled-bg font-semibold text-ink"
                               : "border-transparent bg-transparent font-normal text-ink hover:bg-paper"
                         }`}
                       >
@@ -456,6 +445,6 @@ export function WrapPanel({
           )}
         </>
       )}
-    </div>
+    </BesideCard>
   );
 }

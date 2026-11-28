@@ -130,7 +130,7 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
   return (
     <div data-testid="repo-chat-box">
       <div
-        className={`flex items-stretch gap-2 rounded-[3px] border border-ink bg-surface p-[5px] shadow-(--shadow-raised) ${
+        className={`flex items-stretch gap-2 rounded-[14px] border border-line-strong bg-surface p-[5px] shadow-[var(--shadow-prompt)] ${
           phoneWidth ? "flex-wrap" : "flex-nowrap"
         }`}
         data-testid="repo-chat-row"

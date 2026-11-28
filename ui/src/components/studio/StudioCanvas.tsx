@@ -68,7 +68,9 @@ import { NoteNode, type NoteNodeRender } from "./NoteNode";
 import { DragGhost, snapToGrid20 } from "./DragGhost";
 import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
-import { ToolIsland, type CanvasTool } from "./ToolIsland";
+import { AddBar, type CanvasTool } from "./ToolIsland";
+import { BesideCard, placeBesideCard, type BesideSide } from "./BesideCard";
+import { dismissGestureHint, GestureHint, gestureHintDismissed } from "./GestureHint";
 import { PALETTE_DRAG_TYPE } from "./StudioPalette";
 import { MarchingAnts, type MarchingAntsRect } from "./wrap/MarchingAnts";
 import { WrapPanel } from "./wrap/WrapPanel";
@@ -80,6 +82,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type ReactNode,
 } from "react";
@@ -213,6 +216,12 @@ export interface StudioCanvasProps {
   staleMessage?: string;
   /** Node ids to ring with `data-highlight="assistant-proposed"`. */
   highlight?: string[];
+  /** 1a: open the wrap card for the ONE selected step ("Wrap in…" on its card). */
+  wrapOne?: boolean;
+  /** 1h: "Or describe it…" in a line's insert menu (sent to the assistant). */
+  onDescribeInsert?(edge: { from: string; to: string }, text: string): void;
+  /** 1d: ghost looks for an assistant proposal being previewed. */
+  ghosts?: Record<string, "proposed" | "edited">;
   /** Render a text+icon badge on the matching step. */
   statusOverlay?: Record<string, { state: string; label: string }>;
   onSelect(id: string | null): void;
@@ -258,7 +267,7 @@ export interface StudioCanvasProps {
   trigger?: { subline: string; onClick?: () => void } | null;
   renderNodeOverlay?: (info: {
     nodeId: string;
-    placement: { left: number; top: number; side: "right" | "left" };
+    placement: { left: number; top: number; side: BesideSide; caret: number };
     sheet: boolean;
   }) => ReactNode;
 }
@@ -1083,6 +1092,9 @@ function CanvasInner({
   stale,
   staleMessage,
   highlight,
+  ghosts,
+  onDescribeInsert,
+  wrapOne = false,
   statusOverlay,
   onSelect,
   onMove,
@@ -1168,6 +1180,8 @@ function CanvasInner({
   const onDuplicateRef = useRef(onDuplicate);
   const canConnectRef = useRef(canConnect);
   const onConnectRef = useRef(onConnect);
+  const onDescribeInsertRef = useRef(onDescribeInsert);
+  onDescribeInsertRef.current = onDescribeInsert;
   const onTriggerClickRef = useRef(trigger?.onClick);
   onSelectRef.current = onSelect;
   onSelectionChangeRef.current = onSelectionChange;
@@ -1191,6 +1205,14 @@ function CanvasInner({
   const onNotesChangeRef = useRef(onNotesChange);
   onNotesChangeRef.current = onNotesChange;
   const notesEditable = !readOnly && !stale && onNotesChange !== undefined;
+  const notesEditableRef = useRef(notesEditable);
+  notesEditableRef.current = notesEditable;
+  // The last pointer position over the canvas: `N` drops a note there (1b).
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const clientToFlowRef = useRef<(x: number, y: number) => { x: number; y: number }>((x, y) => ({
+    x,
+    y,
+  }));
 
   const saveNote = useCallback((id: string, text: string) => {
     setEditingNoteId((current) => (current === id ? null : current));
@@ -1311,34 +1333,146 @@ function CanvasInner({
         return;
       }
       const target = event.target;
-      if (
-        readOnly ||
-        stale ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        (target instanceof HTMLElement &&
-          (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))
-      )
+      const typing =
+        target instanceof HTMLElement &&
+        (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+      if (readOnly || stale || typing || event.altKey) return;
+      // Editor interactions 1b: the canvas has no modes. ⌘A / Ctrl+A selects
+      // every step; N drops a sticky note at the pointer.
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        const all = nodesRef.current
+          .filter((n) => n.type === "step")
+          .map((n) => (n.data as { id?: string }).id ?? "")
+          .filter(Boolean);
+        onSelectionChangeRef.current?.(all);
         return;
-      const next: Record<string, CanvasTool> = {
-        v: "select",
-        h: "move",
-        b: "box",
-        c: "connect",
-        n: "note",
-      };
-      const selected = next[event.key.toLowerCase()];
-      if (selected) {
-        setTool(selected);
-        setSource(null);
-        clearNoteSelection();
+      }
+      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key.toLowerCase() === "n" && notesEditableRef.current) {
+        event.preventDefault();
+        const rect = paneRef.current?.getBoundingClientRect();
+        const at =
+          lastPointerRef.current ??
+          (rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null);
+        if (at) addNoteAt(clientToFlowRef.current(at.x, at.y));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showToolIsland, readOnly, stale, setTool, clearNoteSelection]);
+  }, [showToolIsland, readOnly, stale, addNoteAt]);
+
+  // E1 (touch): one finger pans; a long-press on EMPTY canvas starts a selection
+  // box. The pan has already begun under the finger, so once the press fires the
+  // canvas takes the following moves itself (window capture, before React Flow's
+  // pan handler), draws the box, and selects every step it touches on release.
+  const [touchBox, setTouchBox] = useState<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!phone || !pane) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let start: { x: number; y: number; id: number } | null = null;
+    let active = false;
+    const clear = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const down = (event: PointerEvent) => {
+      if (event.pointerType === "mouse") return;
+      const target = event.target as HTMLElement | null;
+      if (!target?.classList.contains("react-flow__pane")) return;
+      start = { x: event.clientX, y: event.clientY, id: event.pointerId };
+      clear();
+      timer = setTimeout(() => {
+        if (!start) return;
+        active = true;
+        setTouchBox({ x0: start.x, y0: start.y, x1: start.x, y1: start.y });
+        navigator.vibrate?.(10);
+      }, 450);
+    };
+    const move = (event: PointerEvent) => {
+      if (!start || event.pointerId !== start.id) return;
+      if (!active) {
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) {
+          clear();
+          start = null;
+        }
+        return;
+      }
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      const s0 = start;
+      setTouchBox({ x0: s0.x, y0: s0.y, x1: event.clientX, y1: event.clientY });
+    };
+    const up = (event: PointerEvent) => {
+      if (!start || event.pointerId !== start.id) return;
+      clear();
+      if (active) {
+        event.stopImmediatePropagation();
+        const left = Math.min(start.x, event.clientX);
+        const right = Math.max(start.x, event.clientX);
+        const top = Math.min(start.y, event.clientY);
+        const bottom = Math.max(start.y, event.clientY);
+        const ids: string[] = [];
+        for (const el of Array.from(pane.querySelectorAll<HTMLElement>("[data-step-node-id]"))) {
+          const r = el.getBoundingClientRect();
+          if (r.right >= left && r.left <= right && r.bottom >= top && r.top <= bottom) {
+            const id = el.dataset.stepNodeId;
+            if (id) ids.push(id);
+          }
+        }
+        if (ids.length > 0) onSelectionChangeRef.current?.(ids);
+      }
+      active = false;
+      start = null;
+      setTouchBox(null);
+    };
+    pane.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move, { capture: true, passive: false });
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    return () => {
+      clear();
+      pane.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+    };
+  }, [phone]);
+
+  // 1b: a one-line gesture hint on first open, gone after the first selection
+  // drag or its ×, remembered in this browser.
+  const [hintOpen, setHintOpen] = useState(() => !gestureHintDismissed());
+
+  // 1b: Space held = pan (grab cursor), like a design canvas.
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  useEffect(() => {
+    const isTyping = (target: EventTarget | null) =>
+      target instanceof HTMLElement &&
+      (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(target.tagName));
+    const down = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || isTyping(event.target)) return;
+      event.preventDefault();
+      setSpaceHeld(true);
+    };
+    const up = (event: KeyboardEvent) => {
+      if (event.code === "Space") setSpaceHeld(false);
+    };
+    const blur = () => setSpaceHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
 
   // The node content's click handler calls `onSelect` unconditionally (it has
   // no access to the event). While Shift is held, React Flow's own click
@@ -1602,6 +1736,18 @@ function CanvasInner({
     height: number;
   } | null>(null);
 
+  // 1a: beside cards hide while a step or note is dragged and come back on
+  // the drop. The step cards render outside the canvas (Studio), so the flag
+  // sits on <body> for one CSS rule to reach them all.
+  const dragging = dragGhost !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    window.document.body.dataset.canvasDragging = "";
+    return () => {
+      delete window.document.body.dataset.canvasDragging;
+    };
+  }, [dragging]);
+
   // Edges follow the dragged card live. An edge is routed from the endpoint
   // boxes `toFlow` laid out (edges.tsx `edgePath`), which only change when the
   // drop commits; while the drag lasts, the dragged end's box is moved to
@@ -1695,6 +1841,7 @@ function CanvasInner({
       y: (clientY - rect.top - ty) / zoom,
     };
   }, []);
+  clientToFlowRef.current = clientToFlow;
 
   const hitAt = useCallback(
     (clientX: number, clientY: number) =>
@@ -1875,7 +2022,7 @@ function CanvasInner({
           zIndex: b.zIndex,
           // Draggable with the Select tool only, like a step; a note being
           // typed in never drags.
-          draggable: notesEditable && tool === "select" && editingNoteId !== note.id,
+          draggable: notesEditable && editingNoteId !== note.id,
           // Never selectable, so a box-select wrap can never swallow a note.
           selectable: false,
           focusable: false,
@@ -1917,11 +2064,13 @@ function CanvasInner({
         readOnly,
         stale,
         highlight: highlight?.includes(scope.nodeId) ?? false,
+        ghost: ghosts?.[scope.nodeId] ?? null,
         status: statusOverlay?.[scope.nodeId] ?? null,
         goal: scope.goal,
         verdicts: verdictsByScope?.[scope.nodeId],
         boxWidth: b.width,
         boxHeight: b.height,
+        editingGoal: editingScopeId === scope.nodeId,
         onEditGoal:
           !readOnly && !stale && scope.goal ? () => setEditingScopeId(scope.nodeId) : undefined,
         onSelect: () => {
@@ -1932,7 +2081,7 @@ function CanvasInner({
           // Issue #66: a plain click SELECTS — and nothing else. The
           // Duplicate/Delete menu no longer follows the click; it answers
           // right-click, the ⋯ on the selected step, and the keyboard only.
-          if (toolRef.current === "connect" && !readOnly && !stale) {
+          if (false as boolean) {
             const from = sourceRef.current;
             if (!from) {
               setSource(scope.nodeId);
@@ -2017,6 +2166,9 @@ function CanvasInner({
         labelAnchor: b.labelX !== null && b.labelY !== null ? { x: b.labelX, y: b.labelY } : null,
         preview: preview?.edgeId === b.id ? preview.label : null,
         onInsert: (kind: string) => onInsertOnEdgeRef.current?.(b.data.edge, kind),
+        onDescribe: onDescribeInsertRef.current
+          ? (text: string) => onDescribeInsertRef.current?.(b.data.edge, text)
+          : undefined,
         // The routing geometry: the edge draws `routeEdge(sourceBox, targetBox,
         // axis)` — the same path the label anchor was checked against.
         sourceBox: b.sourceBox,
@@ -2036,6 +2188,8 @@ function CanvasInner({
     verdictsByScope,
     preview,
     direction,
+    ghosts,
+    editingScopeId,
     // A note's own flags ride in its `data`, so these rebuild the node set.
     tool,
     notes,
@@ -2483,7 +2637,7 @@ function CanvasInner({
     !readOnly &&
     !stale &&
     Boolean(onWrapRepeat && onWrapSideBySide) &&
-    (activeSelection.length >= 2 || (tool === "box" && activeSelection.length === 1));
+    (activeSelection.length >= 2 || (wrapOne && activeSelection.length === 1));
   const domViewport = parseViewportTransform(viewportEl()?.style.transform ?? null);
   const effectiveViewport = domViewport ?? rfViewport;
   const paneSize = {
@@ -2497,7 +2651,6 @@ function CanvasInner({
     () => (showWrapBox ? canWrap(model, activeSelection) : null),
     [showWrapBox, model, activeSelection],
   );
-  const wrapPlacement = antsRect ? anchorWrapPanel(antsRect, paneSize) : null;
   // The panel is centred on the selection's middle, but never leaves the pane:
   // its real height is measured, the top is clamped, and the caret keeps
   // pointing at the box's middle from wherever the panel ended up.
@@ -2517,10 +2670,20 @@ function CanvasInner({
       wrapObserverRef.current.observe(el);
     }
   }, []);
-  const wrapTop = wrapPlacement ? clampWrapTop(wrapPlacement.top, wrapPanelHeight, paneSize.h) : 0;
-  const wrapCaretTop = wrapPlacement
-    ? Math.max(10, Math.min(wrapPanelHeight - 22, wrapPlacement.top - wrapTop - 6))
-    : 0;
+  // Beside cards start below the editor toolbar (status group, Try it, Make
+  // live: 16px from the pane top, 32px tall) so they never slide under it.
+  const BESIDE_TOP_INSET_PX = 60;
+  // 1a: one placement for every beside card — right, then left, then below.
+  const wrapPlacement = antsRect
+    ? placeBesideCard(
+        antsRect,
+        { w: WRAP_PANEL_WIDTH_PX, h: wrapPanelHeight },
+        paneSize,
+        WRAP_PANEL_GAP_PX,
+        phone ? 8 : BESIDE_TOP_INSET_PX,
+      )
+    : null;
+  const wrapTop = wrapPlacement?.top ?? 0;
   // Selecting brings the box and its panel into view (README section 8). Runs
   // once per selection, not on every pan, so the reader can still move away.
   const wrapKey = showWrapBox ? activeSelection.join("|") : "";
@@ -2587,15 +2750,55 @@ function CanvasInner({
       ? computeSelectionPaneRect([editingScopeId], nodes, effectiveViewport, 0)
       : null;
   const editGoalPlacement = editingScopeRect
-    ? chooseFloatingPanelPlacement(editingScopeRect, { w: 340, h: 380 }, paneSize, 16)
+    ? placeBesideCard(
+        editingScopeRect,
+        { w: 340, h: 380 },
+        paneSize,
+        WRAP_PANEL_GAP_PX,
+        phone ? 8 : BESIDE_TOP_INSET_PX,
+      )
     : null;
 
   const singleSelectedRect =
     !showWrapBox && !editingScopeId && selectedId && renderNodeOverlay
       ? computeSelectionPaneRect([selectedId], nodes, effectiveViewport, 0)
       : null;
+  // 1a: a selected sticky note (not being typed in) gets the NOTE beside card.
+  const noteForCard =
+    notesEditable && activeNoteId && editingNoteId !== activeNoteId
+      ? ((notes ?? []).find((n) => n.id === activeNoteId) ?? null)
+      : null;
+  const noteRect = (() => {
+    if (!noteForCard) return null;
+    const node = nodes.find(
+      (n) => n.type === "note" && (n.data as { note?: { id: string } }).note?.id === noteForCard.id,
+    );
+    if (!node) return null;
+    const zoom = effectiveViewport.zoom;
+    return {
+      x: node.position.x * zoom + effectiveViewport.x,
+      y: node.position.y * zoom + effectiveViewport.y,
+      width: (node.measured?.width ?? noteForCard.width) * zoom,
+      height: (node.measured?.height ?? 80) * zoom,
+    };
+  })();
+  const notePlacement = noteRect
+    ? placeBesideCard(
+        noteRect,
+        { w: 340, h: 220 },
+        paneSize,
+        WRAP_PANEL_GAP_PX,
+        phone ? 8 : BESIDE_TOP_INSET_PX,
+      )
+    : null;
   const singleOverlayPlacement = singleSelectedRect
-    ? chooseFloatingPanelPlacement(singleSelectedRect, { w: 340, h: 340 }, paneSize, 16)
+    ? placeBesideCard(
+        singleSelectedRect,
+        { w: 340, h: 340 },
+        paneSize,
+        WRAP_PANEL_GAP_PX,
+        phone ? 8 : BESIDE_TOP_INSET_PX,
+      )
     : null;
 
   return (
@@ -2603,7 +2806,16 @@ function CanvasInner({
       ref={canvasRef}
       className="studio-canvas flex h-full min-h-0 flex-col bg-surface"
       data-testid="studio-canvas"
+      // Menus drawn inside the zoomed flow (insert / add step) divide by this
+      // to stay at screen size.
+      style={{ "--canvas-zoom": effectiveViewport.zoom } as CSSProperties}
       onDragOver={onDragOver}
+      onPointerMove={(event) => {
+        lastPointerRef.current = { x: event.clientX, y: event.clientY };
+      }}
+      onPointerLeave={() => {
+        lastPointerRef.current = null;
+      }}
       onDrop={onDrop}
     >
       {/* The React Flow edge layer paints under the node layer (DOM order in
@@ -2620,6 +2832,7 @@ function CanvasInner({
           // wrapper is the only signal that fires for every node type.
           '.studio-canvas .react-flow__node.dragging [role="button"]{box-shadow:none}' +
           ".studio-canvas .react-flow__node.dragging{cursor:grabbing}" +
+          "body[data-canvas-dragging] [data-beside-card]{visibility:hidden}" +
           // README §8: a box-selected step wears the selected look (ink edge
           // and ink offset shadow) while the marching-ants box is up, without
           // becoming the store's selection (that would open its "⋯" menu).
@@ -2628,6 +2841,10 @@ function CanvasInner({
           // (ink edge), and the marching-ants box marks a box selection. Left
           // on, it washed a freshly wrapped goal frame blue (review-1, 38).
           ".studio-canvas .react-flow__nodesselection-rect{background:transparent;border:0}" +
+          // 1h: hovering a connecting line highlights it in ink (its "+" shows too).
+          ".studio-canvas .react-flow__edge-insertable:hover .react-flow__edge-path{stroke:var(--color-ink)!important;stroke-width:2.5px!important}" +
+          // 1b: the live selection box while dragging on empty canvas.
+          ".studio-canvas .react-flow__selection{border:1px solid var(--color-accent);background:rgba(47,75,214,.05);border-radius:2px}" +
           // The per-step "⋯" buttons of a multi-selection would sit on top of
           // the marching-ants box.
           (showWrapBox && activeSelection.length > 1
@@ -2696,6 +2913,11 @@ function CanvasInner({
           selectNodesOnDrag={false}
           multiSelectionKeyCode="Shift"
           onSelectionChange={handleSelectionChange}
+          onSelectionStart={() => {
+            if (!hintOpen) return;
+            dismissGestureHint();
+            setHintOpen(false);
+          }}
           onNodesDelete={(deleted) =>
             deleteGuarded(
               deleted
@@ -2714,17 +2936,18 @@ function CanvasInner({
             setIslandPicker(false);
             onSelectionChange?.([]);
             onSelect(null);
-            // The Note tool: a click on empty canvas puts a note there, on the
-            // grid, ready to type — then the island is back on Select.
-            if (tool === "note" && notesEditable) {
-              addNoteAt(clientToFlow(event.clientX, event.clientY));
-            } else clearNoteSelection();
+            void event;
+            clearNoteSelection();
           }}
           onNodeContextMenu={onNodeContextMenu}
-          panOnDrag={tool !== "box"}
-          selectionOnDrag={tool === "box"}
-          style={tool === "move" ? { cursor: "grab" } : undefined}
-          nodesDraggable={!readOnly && !stale && tool !== "move"}
+          // 1b: no modes. Desktop: drag empty canvas = selection box; Space+drag,
+          // middle-drag or two-finger scroll = pan. Touch (E1): one finger pans;
+          // a long-press on empty canvas starts a selection box (below).
+          panOnDrag={phone || spaceHeld ? true : [1]}
+          selectionOnDrag={!phone && !spaceHeld}
+          panOnScroll={!phone}
+          style={spaceHeld ? { cursor: "grab" } : undefined}
+          nodesDraggable={!readOnly && !stale && !spaceHeld}
           nodesConnectable={!readOnly && !stale}
         >
           <Background
@@ -2747,17 +2970,39 @@ function CanvasInner({
             </ViewportPortal>
           )}
         </ReactFlow>
+        {showToolIsland && hintOpen && !readOnly && !stale ? (
+          <GestureHint touch={phone} onDismiss={() => setHintOpen(false)} />
+        ) : null}
+        {touchBox && paneRef.current ? (
+          <div
+            data-testid="touch-selection-box"
+            aria-hidden
+            className="pointer-events-none absolute z-20 rounded-[2px] border border-accent bg-[rgba(47,75,214,.05)]"
+            style={(() => {
+              const r = paneRef.current.getBoundingClientRect();
+              return {
+                left: Math.min(touchBox.x0, touchBox.x1) - r.left,
+                top: Math.min(touchBox.y0, touchBox.y1) - r.top,
+                width: Math.abs(touchBox.x1 - touchBox.x0),
+                height: Math.abs(touchBox.y1 - touchBox.y0),
+              };
+            })()}
+          />
+        ) : null}
         {showToolIsland && (
           <>
-            <ToolIsland
-              tool={tool}
+            <AddBar
               narrow={phone}
-              onTool={(next) => {
-                setIslandPicker(false);
-                setTool(next);
-                setSource(null);
-              }}
               disabled={readOnly || stale}
+              dragType={PALETTE_DRAG_TYPE}
+              onDragKind={setPaletteDragKind}
+              onAddNote={() => {
+                setIslandPicker(false);
+                if (!notesEditable) return;
+                const rect = paneRef.current?.getBoundingClientRect();
+                if (rect)
+                  addNoteAt(clientToFlow(rect.left + rect.width / 2, rect.top + rect.height / 2));
+              }}
               onMoreSteps={() => setIslandPicker((open) => !open)}
               onAddStep={(kind) => {
                 setIslandPicker(false);
@@ -2779,7 +3024,7 @@ function CanvasInner({
                 className={
                   phone
                     ? "fixed inset-x-0 bottom-0 z-40 max-h-[75dvh] overflow-y-auto rounded-t-[14px] border-t border-line bg-surface p-2 shadow-[var(--shadow-modal)]"
-                    : "absolute left-[68px] top-4 z-30"
+                    : "absolute bottom-[72px] left-1/2 z-30 -translate-x-1/2"
                 }
               >
                 <StepPicker
@@ -2874,20 +3119,9 @@ function CanvasInner({
             ref={measureWrapPanel}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            {!phone && (
-              // The caret: a 12px rotated square on the panel's edge, pointing
-              // at the middle of the selection box.
-              <span
-                aria-hidden
-                style={{ top: wrapCaretTop }}
-                className={`absolute z-[1] h-[12px] w-[12px] rotate-45 bg-surface ${
-                  wrapPlacement.side === "right"
-                    ? "left-[-7px] border-b border-l border-fill-edge"
-                    : "right-[-7px] border-t border-r border-fill-edge"
-                }`}
-              />
-            )}
             <WrapPanel
+              side={phone ? undefined : wrapPlacement.side}
+              caret={wrapPlacement.caret}
               count={activeSelection.length}
               reason={wrapCheck && !wrapCheck.ok ? wrapCheck.reason : null}
               sheet={phone}
@@ -2908,6 +3142,46 @@ function CanvasInner({
             />
           </div>
         ) : null}
+        {noteForCard && notePlacement ? (
+          <div
+            data-testid="note-card-anchor"
+            className={phone ? "fixed inset-x-0 bottom-0 z-40" : "absolute z-30"}
+            style={phone ? undefined : { left: notePlacement.left, top: notePlacement.top }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <BesideCard
+              title="NOTE"
+              testid="note-beside-card"
+              side={phone ? undefined : notePlacement.side}
+              caret={notePlacement.caret}
+              sheet={phone}
+              onClose={() => setActiveNoteId(null)}
+            >
+              <textarea
+                key={noteForCard.id}
+                data-testid="note-card-text"
+                aria-label="Note text"
+                defaultValue={noteForCard.text}
+                rows={5}
+                onBlur={(e) => {
+                  if (e.target.value !== noteForCard.text) saveNote(noteForCard.id, e.target.value);
+                }}
+                className="w-full resize-none rounded-[8px] border border-line-strong bg-surface px-[10px] py-[7px] text-[13px] leading-[19px] text-ink outline-none focus-visible:border-accent"
+              />
+              <div className="flex items-center gap-[14px]">
+                <button
+                  type="button"
+                  data-testid="note-card-delete"
+                  onClick={() => removeNote(noteForCard.id)}
+                  className="text-[12.5px] font-semibold text-st-failed-tag-fg hover:underline focus-visible:outline-2 focus-visible:outline-accent max-md:min-h-[44px]"
+                >
+                  Delete note
+                </button>
+                <span className="ml-auto font-mono text-[10.5px] text-faint">autosaved</span>
+              </div>
+            </BesideCard>
+          </div>
+        ) : null}
         {editingScopeId && editingScopeGoal && editGoalPlacement && !readOnly && !stale ? (
           <div
             data-testid="goal-edit-anchor"
@@ -2918,6 +3192,8 @@ function CanvasInner({
           >
             <WrapPanel
               mode="edit"
+              side={phone ? undefined : editGoalPlacement.side}
+              caret={editGoalPlacement.caret}
               count={0}
               initialGoal={editingScopeGoal}
               sheet={phone}

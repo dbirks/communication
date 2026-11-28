@@ -3245,9 +3245,9 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
 
     await test.step("the draft is the open one, the YAML preview says so", async () => {
       await expect(
-        page.getByTestId("studio-draft-status"),
-        "design 1j: the header marks the open draft",
-      ).toContainText(/your draft/i, { timeout: 30_000 });
+        page.getByTestId("editor-versions-btn"),
+        "editor interactions 1e: the status chip marks the open draft",
+      ).toHaveAttribute("aria-label", /your draft/i, { timeout: 30_000 });
       await expect(
         page.getByTestId("inputs-yaml-preview"),
         "design 1j: the YAML preview carries the inputs block",

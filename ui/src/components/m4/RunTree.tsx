@@ -150,7 +150,7 @@ function RunTreeRowView({
       aria-posinset={row.posinset}
       data-testid={`run-tree-row-${row.key}`}
       className={`flex h-[var(--row-condensed)] items-center gap-[7px] pr-[10px] ${
-        selected ? "bg-tree-active shadow-(--shadow-raised)" : "hover:bg-accent-wash"
+        selected ? "bg-tree-active" : "hover:bg-accent-wash"
       }`}
       style={indent}
     >

@@ -66,7 +66,6 @@ import { problemOf } from "../../api/client";
 import type { components } from "../../api/schema";
 import type { Repository, RunCreate } from "../../api/types";
 import { formatAge } from "../../lib/format";
-import { SoftButton } from "../ds/SoftButton";
 import { Field, Input, labelClass, Select, Textarea } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { routes } from "../../lib/routes";
@@ -909,9 +908,9 @@ export function NewRunForm({
           ) : null}
 
           <div className="mt-3 flex items-center gap-2">
-            <SoftButton
+            <button
+              className="ds-btn ds-btn--primary"
               type="submit"
-              variant="primary"
               disabled={blocked}
               data-testid="new-run-submit"
               title={
@@ -921,16 +920,16 @@ export function NewRunForm({
               }
             >
               {createRun.isPending ? "Starting run…" : "Start run"}
-            </SoftButton>
+            </button>
             {onCancel && !wrapDialog ? (
-              <SoftButton
+              <button
+                className="ds-btn ds-btn--ghost"
                 type="button"
-                variant="ghost"
                 onClick={onCancel}
                 data-testid="new-run-cancel"
               >
                 Cancel
-              </SoftButton>
+              </button>
             ) : null}
             <span
               className="ml-auto font-mono text-[10.5px] text-faint"
@@ -956,15 +955,15 @@ export function NewRunForm({
         }
         onCancel={onCancel}
         submit={
-          <SoftButton
+          <button
+            className="ds-btn ds-btn--primary"
             type="button"
-            variant="primary"
             disabled={typedBlocked}
             onClick={startTyped}
             data-testid="new-run-submit"
           >
             {createRun.isPending ? "Starting run…" : "Start run"}
-          </SoftButton>
+          </button>
         }
       >
         {wrapDialog?.headerSlot ? (
@@ -1398,9 +1397,13 @@ export function GitHubIssueSection({
               aria-label="Filter issues by label"
               className="w-40 rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[11.5px] text-ink placeholder:text-faint focus-visible:border-ink focus-visible:outline-none"
             />
-            <SoftButton type="button" variant="ghost" onClick={() => setLabel(labelDraft)}>
+            <button
+              className="ds-btn ds-btn--ghost"
+              type="button"
+              onClick={() => setLabel(labelDraft)}
+            >
               Apply label
-            </SoftButton>
+            </button>
           </div>
           {issues.isPending ? <Spinner label="Reading GitHub" /> : null}
           {issues.isError ? (
@@ -1456,16 +1459,14 @@ function IssueRow({ issue, onFill }: IssueRowProps) {
         >
           {issue.title}
         </span>
-        <SoftButton
+        <button
+          className="ds-btn ds-btn--ghost ds-btn--compact ml-auto shrink-0"
           type="button"
-          variant="ghost"
-          compact
-          className="ml-auto shrink-0"
           onClick={onFill}
           data-testid={`issue-use-${issue.number}`}
         >
           Use this issue
-        </SoftButton>
+        </button>
       </div>
       <div className="flex items-center gap-[6px] font-mono text-[10px] text-muted">
         {issue.labels.length > 0 ? (

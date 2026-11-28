@@ -8,7 +8,6 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { FormError } from "../Feedback";
-import { SoftButton } from "../ds/SoftButton";
 import { Field } from "../ds/Field";
 import { useDuplicateNodeTemplate, type NodeTemplate } from "../../api/nodeTemplates";
 import { StepDialog } from "./StepDialog";
@@ -85,17 +84,22 @@ export function DuplicateDialog({ open, onClose, source }: DuplicateDialogProps)
         </Field>
         {error ? <FormError error={error} testid="duplicate-error" /> : null}
         <div className="flex justify-end gap-[8px]">
-          <SoftButton variant="secondary" onClick={onClose} data-testid="duplicate-cancel">
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary"
+            onClick={onClose}
+            data-testid="duplicate-cancel"
+          >
             Cancel
-          </SoftButton>
-          <SoftButton
-            variant="primary"
+          </button>
+          <button
+            className="ds-btn ds-btn--primary"
             type="submit"
             disabled={duplicate.isPending || !valid}
             data-testid="duplicate-submit"
           >
             {duplicate.isPending ? "Duplicating…" : "Duplicate"}
-          </SoftButton>
+          </button>
         </div>
       </form>
     </StepDialog>

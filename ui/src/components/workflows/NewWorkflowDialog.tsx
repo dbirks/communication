@@ -285,7 +285,7 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
         aria-modal="true"
         aria-labelledby="new-workflow-title"
         onSubmit={submit}
-        className="flex max-h-[calc(100vh-8rem)] w-[520px] max-w-full flex-col rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
+        className="flex max-h-[calc(100vh-8rem)] w-[520px] max-w-full flex-col rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
         data-testid="new-workflow-dialog"
       >
         <div

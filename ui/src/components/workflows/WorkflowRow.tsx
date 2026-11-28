@@ -506,7 +506,7 @@ export function MoveToFolderDialog({ pipeline, folders, onClose }: MoveToFolderD
         role="dialog"
         aria-modal="true"
         aria-labelledby="move-folder-title"
-        className="w-[360px] max-w-full rounded-[4px] border border-line bg-surface shadow-(--shadow-raised)"
+        className="w-[360px] max-w-full rounded-[12px] border border-fill-edge bg-surface shadow-[var(--shadow-pop)]"
         data-testid="move-folder-dialog"
       >
         <h2

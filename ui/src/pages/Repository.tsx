@@ -634,7 +634,7 @@ function RunFormModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="repo-run-form-title"
-        className="max-h-[calc(100vh-12rem)] w-[540px] max-w-full overflow-y-auto rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
+        className="max-h-[calc(100vh-12rem)] w-[540px] max-w-full overflow-y-auto rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
         data-testid="repo-run-form"
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
@@ -707,7 +707,7 @@ function ChatFormModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="repo-chat-form-title"
-        className="w-[540px] max-w-full rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
+        className="w-[540px] max-w-full rounded-[14px] border border-line bg-surface shadow-(--shadow-modal)"
         data-testid="repo-new-chat-dialog"
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">

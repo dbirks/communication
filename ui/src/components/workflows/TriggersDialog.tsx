@@ -17,7 +17,6 @@ import { useCreateSchedule, usePatchSchedule, useRevision } from "../../api/pipe
 import { useRepositories } from "../../api/queries";
 import { Field, Input, Select } from "../ds/Field";
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import {
   defaultValuesOf,
@@ -231,24 +230,24 @@ function TriggersDialogBody({
           aria-label="cron presets"
         >
           {CRON_PRESETS.map(([label, expr]) => (
-            <SoftButton
+            <button
+              type="button"
+              className={`ds-btn ds-btn--compact ${cron === expr ? "ds-btn--primary" : "ds-btn--ghost"}`}
               key={expr}
-              compact
-              variant={cron === expr ? "primary" : "ghost"}
               data-testid={`trigger-preset-${expr.replace(/\*/g, "star").replace(/\s/g, "-")}`}
               onClick={() => setCron(expr)}
             >
               {label}
-            </SoftButton>
+            </button>
           ))}
-          <SoftButton
-            compact
-            variant="ghost"
+          <button
+            type="button"
+            className="ds-btn ds-btn--ghost ds-btn--compact"
             data-testid="trigger-preset-custom"
             onClick={() => setCron("")}
           >
             custom
-          </SoftButton>
+          </button>
         </div>
         {revision.isPending ? <Spinner label="Loading the pinned revision" /> : null}
         {revision.isError ? (
@@ -266,18 +265,22 @@ function TriggersDialogBody({
           />
         ))}
         <div className="flex items-center gap-[6px]">
-          <SoftButton
+          <button
+            className="ds-btn ds-btn--primary ds-btn--compact"
             type="submit"
-            variant="primary"
-            compact
             disabled={blocked}
             data-testid="trigger-add-confirm"
           >
             {editing ? "Save" : "Add"}
-          </SoftButton>
-          <SoftButton compact variant="ghost" data-testid="trigger-add-cancel" onClick={onClose}>
+          </button>
+          <button
+            type="button"
+            className="ds-btn ds-btn--ghost ds-btn--compact"
+            data-testid="trigger-add-cancel"
+            onClick={onClose}
+          >
             Cancel
-          </SoftButton>
+          </button>
         </div>
         {create.isError || patch.isError ? (
           <FormError

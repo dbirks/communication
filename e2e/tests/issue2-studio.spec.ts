@@ -332,9 +332,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // The "+" on the test → review edge (inside the until scope) opens the step
     // picker.
     await page.getByTestId("edge-add-test-review").click();
-    const picker = page.getByTestId("step-picker");
+    const picker = page.getByTestId("insert-step-menu");
     await expect(picker).toBeVisible();
-    await page.getByTestId("step-picker-item-agent.acp").click();
+    await page.getByTestId("insert-step-agent.acp").click();
 
     // New agent.acp node opens the compact AgentStepCard first; clicking
     // "More settings" opens the full inspector.
@@ -448,7 +448,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     const addStep = async (afterId: string, kind: string): Promise<string> => {
       const before = new Set(await stepIds());
       await page.getByTestId(`add-after-${afterId}`).click();
-      await page.getByTestId(`step-picker-item-${kind}`).click();
+      await page.getByTestId(`insert-step-${kind}`).click();
       const added = (await stepIds()).filter((id) => !before.has(id));
       expect(added.length, `the ${kind} picker item must create exactly one new step`).toBe(1);
       return added[0];
@@ -458,16 +458,16 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // newly created node immediately; close the floating right-hand inspector
     // after each edit so the next rightmost `+` / step is never covered.
     const implId = await addStep(lastTerminal, "process.exec");
-    await expect(page.getByTestId("insp-config-executable")).toBeVisible();
-    await page.getByTestId("insp-config-executable").fill("echo");
-    await page.getByTestId("insp-config-executable").blur();
-    await page.getByTestId("editor-inspector-close").click();
+    await expect(page.getByTestId("step-beside-card")).toBeVisible();
+    await page.getByTestId("step-card-command").fill("echo");
+    await page.getByTestId("step-card-command").blur();
+    await page.getByTestId("step-card-close").click();
 
     const checkId = await addStep(implId, "process.exec");
-    await expect(page.getByTestId("insp-config-executable")).toBeVisible();
-    await page.getByTestId("insp-config-executable").fill("echo");
-    await page.getByTestId("insp-config-executable").blur();
-    await page.getByTestId("editor-inspector-close").click();
+    await expect(page.getByTestId("step-beside-card")).toBeVisible();
+    await page.getByTestId("step-card-command").fill("echo");
+    await page.getByTestId("step-card-command").blur();
+    await page.getByTestId("step-card-close").click();
 
     const reviewId = await addStep(checkId, "agent.acp");
     await expect(page.getByTestId("agent-step-card")).toBeVisible();
@@ -603,13 +603,13 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     const before = await readYaml(page);
     await backToCanvas(page);
 
-    // Tool island replaces the retired StudioPalette sidebar; add a Human
-    // approval step via the plan → approve edge (which carries a binding),
-    // verify the AmbiguityDialog, undo/redo, and also test ToolIsland add.
-    await expect(page.getByTestId("tool-island")).toBeVisible();
+    // The add bar replaces the tool island (editor interactions 1b); add a
+    // Human approval step via the plan → approve edge (which carries a binding),
+    // verify the AmbiguityDialog and undo/redo.
+    await expect(page.getByTestId("add-bar")).toBeVisible();
     await page.getByTestId("edge-add-plan-approve").click();
-    await expect(page.getByTestId("step-picker")).toBeVisible();
-    await page.getByTestId("step-picker-item-human.approval").click();
+    await expect(page.getByTestId("insert-step-menu")).toBeVisible();
+    await page.getByTestId("insert-step-human.approval").click();
 
     if ((await page.getByTestId("studio-ambiguity-dialog").count()) > 0) {
       await page.getByTestId("studio-ambiguity-insert").click();
@@ -651,7 +651,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // AmbiguityDialog naming the condition before anything changes.
     const beforeAmbiguity = afterRedo;
     await page.getByTestId("edge-add-verdict-publish_needs_attention").click();
-    await page.getByTestId("step-picker-item-human.approval").click();
+    await page.getByTestId("insert-step-human.approval").click();
     const dialog = page.getByTestId("studio-ambiguity-dialog");
     await expect(dialog).toBeVisible();
     await expect(page.getByTestId("studio-ambiguity-reasons")).toContainText(
@@ -687,55 +687,58 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       `${ANCHOR_ID} must start with no dependents for the ask to be unambiguous`,
     ).toBe(false);
 
-    // In the editor redesign, assistant-proposal-footer lives inside Workflow settings.
-    await page.getByTestId("editor-more-btn").click();
-    await expect(page.getByTestId("editor-more-menu")).toBeVisible();
-    await page.getByTestId("editor-menu-settings").click();
-    const footer = page.getByTestId("assistant-proposal-footer");
-    const assistantInput = page.getByTestId("assistant-proposal-input");
-    await expect(footer.or(assistantInput).first()).toBeVisible({ timeout: 30_000 });
-    if (await footer.isVisible().catch(() => false)) await footer.click();
-    await expect(assistantInput).toBeVisible({ timeout: 30_000 });
-    await assistantInput.fill(
+    // Editor interactions 1d: ⌘K is the one way to ask. On the editor the
+    // palette's ask row reads "Change this workflow" and hands the request to
+    // the open draft, which comes back as ghost steps under a proposal bar.
+    await page.keyboard.press("Control+k");
+    const paletteInput = page.getByTestId("palette-input");
+    await expect(paletteInput).toBeVisible({ timeout: 30_000 });
+    await paletteInput.fill(
       `Add a new agent.acp step named ${NEW_NODE_ID} that runs right after ${ANCHOR_ID} — nothing depends on ${ANCHOR_ID} yet, so ${NEW_NODE_ID} must depend on ${ANCHOR_ID}`,
     );
-    await page.getByTestId("assistant-proposal-submit").click();
+    await expect(page.getByTestId("palette-ask")).toContainText("Change this workflow");
+    await page.getByTestId("palette-ask").click();
 
-    const caption = page.getByTestId("assistant-proposal-caption");
-    const error = page.getByTestId("assistant-proposal-error");
-    await expect(
-      caption.or(error),
-      "the assistant must either propose or report an error",
-    ).toBeVisible({ timeout: AGENT_TURN_TIMEOUT_MS });
-
-    if ((await error.isVisible().catch(() => false)) && (await caption.count()) === 0) {
-      // The lab's assistant is configured: an error here — a 503
-      // assistant_not_configured among them — is a FAIL, not a skip.
-      throw new Error(`assistant proposal failed: ${((await error.textContent()) ?? "").trim()}`);
+    const bar = page.getByTestId("proposal-bar");
+    await expect(bar, "the editor shows the proposal bar").toBeVisible({ timeout: 30_000 });
+    const apply = page.getByTestId("proposal-bar-apply");
+    const barRequest = page.getByTestId("proposal-bar-request");
+    await expect
+      .poll(
+        async () =>
+          (await apply.isVisible().catch(() => false)) ||
+          /working on it/i.test((await bar.textContent()) ?? "") === false,
+        { timeout: AGENT_TURN_TIMEOUT_MS },
+      )
+      .toBe(true);
+    if (!(await apply.isVisible().catch(() => false))) {
+      // The lab's assistant is configured: an error here is a FAIL, not a skip.
+      throw new Error(`assistant proposal failed: ${((await bar.textContent()) ?? "").trim()}`);
     }
+    await expect(barRequest).toContainText(NEW_NODE_ID);
+    const caption = page.getByTestId("ghost-tag-" + NEW_NODE_ID);
 
     // The proposal previews: caption + the highlighted node(s) on the canvas
     // (the proposed step plus the steps it reasons about), while the
     // server-side draft version is untouched.
-    await expect(caption).toBeVisible();
+    await expect(caption, "the new step is a PROPOSED ghost").toBeVisible();
     const highlighted = page.locator('[data-highlight="assistant-proposed"]');
     expect(
       await highlighted.count(),
       "the proposal must highlight the step(s) it touches",
     ).toBeGreaterThan(0);
     await expect(highlighted.first()).toBeVisible();
-    await expect(page.getByTestId("studio-proposal-caption")).toBeVisible();
     const versionPreview = await draftVersion(page, draft2Id);
     expect(versionPreview, "a proposal must not bump the server draft version").toBe(versionBefore);
     await evidence(
       page,
       "studio-a8-proposed",
-      `the assistant's proposal previews on the canvas (highlighted node + caption) with the draft still at version ${versionBefore} on the server — nothing saved, nothing published`,
+      `the assistant's proposal previews on the canvas (ghost steps + proposal bar) with the draft still at version ${versionBefore} on the server — nothing saved, nothing published`,
     );
 
     // Apply: the saved version increments (the save is async, so poll the
     // server); no publish happened.
-    await page.getByTestId("assistant-proposal-apply").click();
+    await apply.click();
     await expect
       .poll(async () => draftVersion(page, draft2Id), { timeout: 30_000 })
       .toBeGreaterThan(versionBefore);
@@ -785,7 +788,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
     expect(await page.locator(".react-flow").count(), "the canvas is the phone surface").toBe(1);
     expect(await page.getByTestId("step-outline").count(), "no outline below 768px").toBe(0);
-    await expect(page.getByTestId("tool-island")).toBeVisible();
+    await expect(page.getByTestId("add-bar")).toBeVisible();
 
     // The editor opens at zoom 1 with the trigger at the left, so at 390px the
     // next step starts off-screen to the right. Pan the canvas left (a drag on
@@ -819,7 +822,15 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       "a non-agent step can be panned into the 390px canvas",
     ).not.toBeNull();
     await page.getByTestId(`canvas-step-${stepId!}`).click();
+    // Editor interactions 1a: command, approval and judge steps open their
+    // beside card (a bottom sheet on the phone) first; "More settings" opens
+    // the full inspector. Other kinds open the inspector directly.
+    const stepCard = page.getByTestId("step-beside-card");
     const outline = page.getByTestId("insp-node");
+    await expect(stepCard.or(outline).first()).toBeVisible();
+    if (await stepCard.isVisible().catch(() => false)) {
+      await page.getByTestId("step-card-more").click();
+    }
     await expect(outline).toBeVisible();
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue(stepId!);

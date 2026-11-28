@@ -217,7 +217,7 @@ describe("the Run Workbench", () => {
     });
     // The deep-link selection (node=plan) is the raised cell.
     expect(planCell.getAttribute("aria-pressed")).toBe("true");
-    expect(planCell.className).toContain("shadow-(--shadow-raised)");
+    expect(planCell.className).toContain("border-ink");
 
     // Clicking the loop's cell is clicking its node on the graph: the dock
     // follows to the scope's own execution.

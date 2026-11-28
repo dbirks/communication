@@ -5,11 +5,12 @@
  * stay dumb enough to render in isolation.
  */
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { IconBolt, IconCheck } from "@tabler/icons-react";
+import { IconBolt, IconCheck, IconPlus } from "@tabler/icons-react";
 import type { CSSProperties, KeyboardEvent } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StepKindIcon } from "../../lib/stepIcons";
 import { StepPicker } from "./StepPicker";
+import { InsertStepMenu } from "./InsertStepMenu";
 import { GoalFrame } from "./wrap/GoalFrame";
 import type { GoalSpec } from "./wrap/wrapModel";
 import { VerdictStack, type VerdictRound } from "./wrap/VerdictStack";
@@ -25,6 +26,8 @@ export type StepNodeRender = {
   readOnly: boolean;
   stale: boolean;
   highlight: boolean;
+  /** 1d: an assistant proposal's ghost look (preview, nothing saved). */
+  ghost?: "proposed" | "edited" | null;
   status: { state: string; label: string } | null;
   /** The node's own config (the kind's fields) — the one key fact the second
    * line carries; absent when the kind has none / the doc has none. */
@@ -63,6 +66,8 @@ export type ScopeNodeRender = {
   boxHeight?: number;
   /** Clicking a GoalFrame header opens its edit card. */
   onEditGoal?: () => void;
+  /** The goal card is open for this frame: draw it selected (ink). */
+  editingGoal?: boolean;
   /** Opens this scope's NodeMenu (⋯ button on the selected scope). */
   onMenu?: (() => void) | null;
   /** Present only when the body is empty: opens the picker, then adds inside. */
@@ -188,6 +193,17 @@ const handleClass = (interactive: boolean): string =>
 export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   const { data, selected } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The ADD STEP menu closes on a pointerdown anywhere outside it (1h).
+  const addAfterRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDown = (event: PointerEvent) => {
+      if (addAfterRef.current?.contains(event.target as globalThis.Node)) return;
+      setPickerOpen(false);
+    };
+    globalThis.document.addEventListener("pointerdown", onDown, true);
+    return () => globalThis.document.removeEventListener("pointerdown", onDown, true);
+  }, [pickerOpen]);
   const interactive = !data.readOnly && !data.stale;
   // The Studio canvas is ALWAYS top-to-bottom (design 1g): the handles ride
   // the node's top and bottom in every canvas view that renders a definition
@@ -230,11 +246,15 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           : stateCat === "interrupted"
             ? "bg-st-interrupted-pale-body"
             : "bg-surface";
-  const edgeClass = selected
-    ? "border-ink shadow-(--shadow-node-selected)"
-    : stateCat === "running"
-      ? "border-st-running-strong shadow-(--shadow-node-running)"
-      : "border-fill-edge shadow-(--shadow-node)";
+  const ghost = data.ghost ?? null;
+  const edgeClass =
+    ghost === "proposed"
+      ? "border-dashed border-[1.5px] border-accent-mid"
+      : selected
+        ? "border-ink shadow-(--shadow-node-selected)"
+        : stateCat === "running"
+          ? "border-st-running-strong shadow-(--shadow-node-running)"
+          : "border-fill-edge shadow-(--shadow-node)";
   const cardSurfaceClass = `${edgeClass} ${bodyClass}`;
   const tileClass =
     stateCat === "done"
@@ -272,6 +292,14 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
     >
       <Handle id="in" type="target" position={inPosition} className={handleClass(interactive)} />
       <Handle id="out" type="source" position={outPosition} className={handleClass(interactive)} />
+      {ghost === "proposed" ? (
+        // 1d: blue hatch = proposed by the assistant (grey hatch = you, dragging).
+        <span
+          aria-hidden
+          data-testid={`ghost-hatch-${data.id}`}
+          className="pointer-events-none absolute top-[6px] left-[6px] h-[56px] w-[168px] rounded-[10px] bg-[repeating-linear-gradient(135deg,#8fa0e6_0_1px,transparent_1px_4px)]"
+        />
+      ) : null}
       <div
         role="button"
         tabIndex={interactive ? 0 : -1}
@@ -282,7 +310,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         }
         onClick={() => data.onSelect()}
         onKeyDown={pick}
-        className={`flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${cardSurfaceClass} ${data.stale ? "opacity-70" : ""}`}
+        className={`relative flex h-[56px] w-[168px] items-center gap-[10px] rounded-[10px] border px-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-accent ${cardSurfaceClass} ${data.stale || /queued|pending/i.test(data.status?.state ?? "") ? "opacity-70" : ""}`}
       >
         <span
           data-testid={`canvas-step-tile-${data.id}`}
@@ -317,10 +345,19 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           DOM text exactly as the old line had it (glyph + space + label) and is
           capitalised by CSS `uppercase`, so existing tests/e2e that compare the
           lower-case label still match. */}
+      {ghost ? (
+        <span
+          className="pointer-events-none absolute z-[3] block rounded-[4px] bg-accent-tint px-[5px] py-[1px] font-mono text-[9.5px] font-semibold uppercase tracking-[.03em] text-accent-edge"
+          style={{ right: 8, top: -9 }}
+          data-testid={`ghost-tag-${data.id}`}
+        >
+          {ghost === "proposed" ? "Proposed" : "Edited"}
+        </span>
+      ) : null}
       {data.status && (
         <span
           className={`pointer-events-none absolute z-[3] block h-[16px] rounded-[4px] px-[5px] font-mono text-[9.5px] font-semibold uppercase leading-[16px] tracking-[.04em] whitespace-nowrap ${tagTone}`}
-          style={{ right: showMenu ? 22 : -6, top: -12 }}
+          style={{ right: showMenu ? 34 : 8, top: -12 }}
           aria-label={`status: ${data.status.label}`}
           // The card's role=button aria-label OVERRIDES its text content for
           // an assistive tech, so the state word has to ride that name (and a
@@ -372,38 +409,22 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
       )}
 
       {data.terminal && interactive && data.onAddAfter && (
+        // 1h: the last step shows a dashed "+" to its right, 42px away, with a
+        // dashed line to it and "next step"; it opens the ADD STEP menu below.
         <div
-          className="group absolute left-1/2 flex -translate-x-1/2 flex-col items-center"
-          style={{ top: "100%" }}
+          ref={addAfterRef}
+          className="absolute flex items-center"
+          style={{ left: "100%", top: 28, transform: "translateY(-50%)" }}
         >
-          {/* Short dashed stub below the sink, on the node's vertical axis
-              (design 1g); the “+” sits at the end of the stub, never on the
-              node's edge. Review-1 09-1280-7: stub and “+” are an affordance,
-              hidden until the step is hovered or holds keyboard focus (the
-              node's own `group` wrapper covers both), and stay revealed while
-              the picker they open is focused. */}
           <span
             aria-hidden="true"
-            className={`h-[10px] w-px border-l border-dashed border-line-strong transition-opacity ${
-              pickerOpen
-                ? "opacity-100"
-                : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-            }`}
+            className="w-[42px] border-t-[1.5px] border-dashed border-hatch"
           />
           <button
             type="button"
             data-testid={`add-after-${data.id}`}
             aria-label={`Add a step after ${data.id}`}
-            // A 44px target that DRAWS a 22px circle (the phone band's
-            // `min-height: 44px` stretched the circle itself into a tall pill,
-            // and the emulator's touch-target check measures the real box): the
-            // circle sits at the top of the button, on the stub's end exactly
-            // where it always sat, and the extra 22px of hit area falls into
-            // the empty band below it.
-            className="-mt-px grid h-[44px] w-[44px] place-items-start justify-center bg-transparent outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            // The "+" opens the picker and NOTHING else: without the
-            // pointerdown guard the gesture reaches the node and the step
-            // gets selected on the same click that opens the picker.
+            className="grid h-[44px] w-[44px] place-items-center bg-transparent outline-none focus-visible:ring-2 focus-visible:ring-accent -mx-[10px]"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
@@ -412,19 +433,29 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           >
             <span
               aria-hidden
-              className={`grid h-[22px] w-[22px] place-items-center rounded-full border-[2px] border-dashed border-line-strong bg-surface text-sm leading-none text-ink-2 transition-opacity group-hover:border-accent group-hover:text-accent ${
-                pickerOpen
-                  ? "opacity-100"
-                  : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-focus-within:border-accent group-focus-within:text-accent"
-              }`}
+              className="grid h-[24px] w-[24px] place-items-center rounded-full border-[1.5px] border-dashed border-hatch bg-surface text-ink-2"
             >
-              +
+              <IconPlus size={14} stroke={2} aria-hidden />
             </span>
           </button>
+          <span
+            className="ml-[4px] whitespace-nowrap font-mono text-[10.5px] text-muted"
+            aria-hidden
+          >
+            next step
+          </span>
           {pickerOpen && (
-            <div className="absolute left-1/2 top-full z-50 -translate-x-1/2">
-              <StepPicker
-                title={`Add a step after ${data.label} (${data.id})`}
+            <div
+              className="nowheel nopan nodrag absolute left-[42px] top-[34px] z-50"
+              style={{
+                transform: "translateX(calc(-50% + 12px)) scale(calc(1 / var(--canvas-zoom, 1)))",
+                transformOrigin: "calc(50% - 12px) 0",
+              }}
+            >
+              <InsertStepMenu
+                mode="add"
+                side="below"
+                caret={130}
                 onPick={(kind) => {
                   setPickerOpen(false);
                   data.onAddAfter?.(kind);
@@ -516,6 +547,7 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
           rect={{ x: 0, y: 0, width, height }}
           goal={data.goal}
           running={running}
+          selected={selected || data.editingGoal === true}
           status={frameStatus}
           onHeaderClick={interactive ? data.onEditGoal : undefined}
         >

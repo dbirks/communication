@@ -188,26 +188,23 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     const edgePlus = page.locator('[data-testid^="edge-add-"]').first();
     await expect(edgePlus).toBeVisible({ timeout: 30_000 });
     await edgePlus.click();
-    const picker = page.getByTestId("step-picker");
+    const picker = page.getByTestId("insert-step-menu");
     await expect(picker).toBeVisible();
+    // Editor interactions 1h: the line's "+" opens INSERT STEP with the four
+    // kinds the handoff lists (Agent, Command, Approval, Judge).
     expect(
-      await page
-        .getByTestId("step-picker-featured")
-        .locator('[data-testid^="step-picker-item-"]')
-        .count(),
-      "the START A NEW STEP cards are the five primary kinds",
-    ).toBe(5);
-    expect(await picker.getByText("Publish", { exact: true }).count(), "no Publish kind card").toBe(
-      0,
-    );
+      await picker.getByRole("menuitem").count(),
+      "the INSERT STEP menu lists the four kinds",
+    ).toBe(4);
+    expect(await picker.getByText("Publish", { exact: true }).count(), "no Publish row").toBe(0);
     await evidence(
       page,
       "shell-p4-step-picker",
-      "the edge + opens the step picker with exactly five primary kind cards (Agent, Command, Approval, Loop, Workflow) and no Publish card",
+      "the edge + opens INSERT STEP with the four kinds (Agent, Command, Approval, Judge) and no Publish row",
     );
     // New Agent step → opens the compact AgentStepCard with AgentPicker; clicking
     // "More settings" reveals the full inspector's profile select.
-    await page.getByTestId("step-picker-item-agent.acp").click();
+    await page.getByTestId("insert-step-agent.acp").click();
     const ambiguity = page.getByTestId("studio-ambiguity-dialog");
     const hasAmbiguity = await ambiguity
       .waitFor({ state: "visible", timeout: 5_000 })

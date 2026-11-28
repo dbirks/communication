@@ -27,7 +27,6 @@ import { routes } from "../../lib/routes";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 import { Field, Input, Select } from "../ds/Field";
 import { Sheet } from "../ds/Sheet";
-import { SoftButton } from "../ds/SoftButton";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import type { UsedInRevision } from "./UsedIn";
 
@@ -430,18 +429,22 @@ function DialogBody({
             button), the primary verb last, both pushed to the right edge. */}
         {!nothingToAssign ? (
           <div className="flex justify-end gap-[8px] border-t border-line pt-[10px]">
-            <SoftButton variant="secondary" compact data-testid="assign-cancel" onClick={onClose}>
+            <button
+              type="button"
+              className="ds-btn ds-btn--secondary ds-btn--compact"
+              data-testid="assign-cancel"
+              onClick={onClose}
+            >
               Cancel
-            </SoftButton>
-            <SoftButton
+            </button>
+            <button
+              className="ds-btn ds-btn--primary ds-btn--compact"
               type="submit"
-              variant="primary"
-              compact
               disabled={!canConfirm}
               data-testid="assign-confirm"
             >
               {create.isPending ? "Using…" : "Confirm"}
-            </SoftButton>
+            </button>
           </div>
         ) : null}
         {resolvedRevision.isPending && projectId && newestPublished ? (

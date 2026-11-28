@@ -154,7 +154,7 @@ export function IssueRunExpansion({
 
   return (
     <div
-      className="mx-3 my-2 rounded-[3px] border border-ink bg-surface shadow-(--shadow-raised)"
+      className="mx-3 my-2 rounded-[3px] border border-line bg-surface"
       data-testid={`repo-issue-expand-${issue.number}`}
     >
       <div className="flex items-center gap-3 px-3 py-[10px]">

@@ -19,7 +19,8 @@ import {
 import type { GraphEdge } from "../../lib/pipeline/graphDoc";
 import { EDGE_ADD_LABEL_OFFSET_PX, routeEdge, type EdgeAxis, type EdgeBox } from "./flowModel";
 import { useState, useEffect, useRef, type CSSProperties } from "react";
-import { StepPicker } from "./StepPicker";
+import { IconPlus } from "@tabler/icons-react";
+import { InsertStepMenu } from "./InsertStepMenu";
 
 /** The endpoint geometry a routed edge is drawn from (see `routeEdge`). */
 type RoutedGeometry = {
@@ -44,6 +45,8 @@ export type InsertableEdgeRender = RoutedGeometry & {
   labelAnchor: { x: number; y: number } | null;
   /** The picked kind — present only when the canvas can insert here. */
   onInsert: (kind: string) => void;
+  /** 1h: "Or describe it…" sends the text to the assistant (a 1d proposal). */
+  onDescribe?: (text: string) => void;
 };
 
 export type ErrorEdgeRender = RoutedGeometry & {
@@ -78,7 +81,7 @@ const addHit =
  * midpoint reveals it, and `group-focus-within` keeps it revealed (and the
  * picker anchored) while the picker it opens holds focus. */
 const addCircle =
-  "grid h-[22px] w-[22px] place-items-center rounded-full border border-line-strong bg-surface text-ink-2 shadow-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 group-hover:border-accent group-hover:text-accent group-focus-within:border-accent group-focus-within:text-accent";
+  "grid h-[24px] w-[24px] place-items-center rounded-full border border-ink bg-surface text-ink shadow-(--shadow-node-selected) opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100";
 
 /**
  * Where the edge label copy sits: the "+" is a 44px target (`addHit`) centred on
@@ -249,7 +252,7 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               }}
             >
               <span aria-hidden className={`${addCircle}${pickerOpen ? " opacity-100" : ""}`}>
-                +
+                <IconPlus size={14} stroke={2} aria-hidden />
               </span>
             </button>
           )}
@@ -263,14 +266,32 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               // zooming the canvas, `nopan`/`nodrag` keep a pointer-down inside
               // the picker from panning or dragging the graph underneath.
               className="nowheel nopan nodrag pointer-events-auto absolute z-50"
-              style={{ left: 0, top: 24, transform: "translate(-50%, -50%)" }}
+              // 1h: the insert menu is the beside card BELOW the "+", caret on top.
+              // It keeps screen size at any zoom (--canvas-zoom is set by StudioCanvas).
+              style={{
+                left: 0,
+                top: 26,
+                transform: "translateX(-50%) scale(calc(1 / var(--canvas-zoom, 1)))",
+                transformOrigin: "50% 0",
+              }}
             >
-              <StepPicker
-                title={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
+              <InsertStepMenu
+                mode="insert"
+                between={{ from: data.edge.from, to: data.edge.to }}
+                side="below"
+                caret={130}
                 onPick={(kind) => {
                   setPickerOpen(false);
                   data.onInsert(kind);
                 }}
+                onDescribe={
+                  data.onDescribe
+                    ? (text) => {
+                        setPickerOpen(false);
+                        data.onDescribe?.(text);
+                      }
+                    : undefined
+                }
                 onClose={() => setPickerOpen(false)}
               />
             </div>
@@ -286,7 +307,7 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               word 30px+ off the circle and read as unrelated page text. */}
           {pillText === null && interactive && (
             <span
-              className="pointer-events-none absolute whitespace-nowrap font-mono text-[10.5px] text-accent opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+              className="pointer-events-none absolute whitespace-nowrap font-mono text-[10.5px] text-ink-2 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
               style={{ left: EDGE_ADD_LABEL_OFFSET_PX, top: 0, transform: "translateY(-50%)" }}
               data-testid={`edge-add-label-${data.edge.from}-${data.edge.to}`}
             >

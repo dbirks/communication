@@ -197,7 +197,7 @@ describe("WrapPanel", () => {
     expect(submit.className).toContain("ml-auto");
 
     // 4. Choice borders: selected accent, unselected transparent.
-    expect(screen.getByTestId("wrap-goal-judge").className).toContain("border-accent");
+    expect(screen.getByTestId("wrap-goal-judge").className).toContain("border-ink");
     expect(screen.getByTestId("wrap-goal-command").className).toContain("border-transparent");
     expect(screen.getByTestId("wrap-goal-contains").className).toContain("border-transparent");
     unmount();

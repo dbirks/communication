@@ -36,6 +36,7 @@ import { useHomeConversations } from "../api/home";
 import { openAssistantPopover } from "./assistant/AssistantPopover";
 import { dispatchHoldAction } from "./assistant/askControl";
 import { useHoldToTalk } from "./assistant/HoldToTalk";
+import { useDraftAskHandler } from "../lib/draftAsk";
 import { isSpeechAvailable, useSpeechPrefs, useSpeechStatus } from "./assistant/useDictation";
 import { queryKeys, useAgentProfiles, useProjects } from "../api/queries";
 import { usePipelines } from "../api/pipelines";
@@ -404,9 +405,13 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
     navigate(item.to);
   };
 
-  const askAssistant = () => {
+  // 1d: on the editor the ask row changes the open workflow (a proposal shown
+  // as ghost steps); ⌘↵ still asks the assistant a question.
+  const draftAsk = useDraftAskHandler();
+  const askAssistant = (plain = false) => {
     if (!trimmed) return;
-    openAssistantPopover(trimmed);
+    if (draftAsk && !plain) draftAsk(trimmed);
+    else openAssistantPopover(trimmed);
     onClose();
   };
 
@@ -423,7 +428,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
     }
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
-      askAssistant();
+      askAssistant(true);
       return;
     }
     if (rowCount === 0) return;
@@ -550,14 +555,15 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
             aria-selected={currentActive === askIndex}
             data-testid="palette-ask"
             onMouseEnter={() => moveActive(askIndex)}
-            onClick={askAssistant}
+            onClick={() => askAssistant()}
             className={`mt-[2px] flex h-[38px] cursor-pointer items-center gap-[10px] rounded-[8px] px-[10px] hover:bg-fill ${
               currentActive === askIndex ? "bg-accent-wash" : ""
             }`}
           >
             <IconSparkles size={16} stroke={1.5} aria-hidden className="shrink-0 text-accent" />
             <span className="min-w-0 flex-1 truncate text-[13.5px] text-ink">
-              Ask: {`\u201C${trimmed}\u201D`}
+              {draftAsk ? "Change this workflow: " : "Ask: "}
+              {`\u201C${trimmed}\u201D`}
             </span>
             <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">↵</span>
           </li>

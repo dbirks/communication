@@ -68,7 +68,6 @@ import {
 } from "./fields";
 import { readRunInputs, runInputNameProblem, writeRunInputs, type RunInputRow } from "./runInputs";
 import { Field, Input } from "../ds/Field";
-import { SoftButton } from "../ds/SoftButton";
 import { routes } from "../../lib/routes";
 import { KindChip } from "../m4/KindChip";
 
@@ -372,15 +371,15 @@ function RunInputsEditor({
                 />
                 required
               </label>
-              <SoftButton
-                variant="ghost"
-                className="shrink-0"
+              <button
+                type="button"
+                className="ds-btn ds-btn--ghost shrink-0"
                 disabled={readOnly}
                 data-testid={`${line}-del`}
                 onClick={() => write(rows.filter((_, i) => i !== index))}
               >
                 Remove
-              </SoftButton>
+              </button>
             </div>
             <p className="font-mono text-[10.5px] text-faint" data-testid={`${line}-takes`}>
               {`a run gets ${declared.get(row.name) ?? "a value"}`}
@@ -396,8 +395,9 @@ function RunInputsEditor({
           </div>
         );
       })}
-      <SoftButton
-        variant="secondaryPlain"
+      <button
+        type="button"
+        className="ds-btn ds-btn--secondary-plain"
         disabled={readOnly}
         data-testid="insp-pipeline-inputs-add"
         onClick={() =>
@@ -405,7 +405,7 @@ function RunInputsEditor({
         }
       >
         Add input
-      </SoftButton>
+      </button>
     </div>
   );
 }
@@ -1261,14 +1261,14 @@ export function StudioInspector({
               {prevId ? `${kindWord(kind)} · after ${prevId}` : kindWord(kind)}
             </div>
           </div>
-          <SoftButton
-            variant="danger"
-            compact
+          <button
+            type="button"
+            className="ds-btn ds-btn--danger ds-btn--compact"
             onClick={() => onDelete?.(nodeId)}
             data-testid="insp-delete"
           >
             Delete
-          </SoftButton>
+          </button>
         </div>
         {/* The e2e suite and screen readers read the kind word from the chip
             — keep it in the DOM, visually superseded by the icon above. */}

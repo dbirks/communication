@@ -24,7 +24,6 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { IconArrowDown, IconArrowUp, IconX } from "@tabler/icons-react";
-import { SoftButton } from "../ds/SoftButton";
 import { Field } from "../ds/Field";
 import { Alert } from "../ds/Alert";
 import { Spinner } from "../Feedback";
@@ -168,15 +167,15 @@ export function ProfileSkills({ profile, canWrite }: ProfileSkillsProps) {
       ) : null}
       {canWrite ? (
         <div className="flex items-center gap-[8px] pt-[6px]">
-          <SoftButton
-            variant="secondary"
-            compact
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary ds-btn--compact"
             disabled={collections.data === null}
             onClick={() => setPickerOpen(true)}
             data-testid={`agent-skills-attach-${profile.id}`}
           >
             Attach collection
-          </SoftButton>
+          </button>
           <a
             href={collectionsRoute}
             className="text-[11.5px] text-muted underline underline-offset-2 hover:text-ink"
@@ -432,22 +431,27 @@ function AttachCollectionDialog({
                     {collection.published_revisions === 1 ? "published" : "published revisions"}
                   </span>
                 </span>
-                <SoftButton
-                  variant="secondary"
-                  compact
+                <button
+                  type="button"
+                  className="ds-btn ds-btn--secondary ds-btn--compact"
                   onClick={() => onAttach(collection.id)}
                   data-testid={`agent-skills-picker-attach-${collection.id}`}
                 >
                   Attach
-                </SoftButton>
+                </button>
               </li>
             ))}
           </ul>
         )}
         <div className="flex justify-end pt-[8px]">
-          <SoftButton variant="ghost" onClick={onClose} data-testid="agent-skills-picker-close">
+          <button
+            type="button"
+            className="ds-btn ds-btn--ghost"
+            onClick={onClose}
+            data-testid="agent-skills-picker-close"
+          >
             Close
-          </SoftButton>
+          </button>
         </div>
       </div>
     </div>

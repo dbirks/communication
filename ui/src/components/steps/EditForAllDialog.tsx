@@ -13,7 +13,6 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { parse, stringify } from "yaml";
 import { FormError } from "../Feedback";
-import { SoftButton } from "../ds/SoftButton";
 import { Field } from "../ds/Field";
 import {
   useCreateNodeTemplateRevision,
@@ -173,17 +172,22 @@ export function EditForAllDialog({
           </div>
         ) : null}
         <div className="flex justify-end gap-[8px]">
-          <SoftButton variant="secondary" onClick={onClose} data-testid="edit-for-all-close">
+          <button
+            type="button"
+            className="ds-btn ds-btn--secondary"
+            onClick={onClose}
+            data-testid="edit-for-all-close"
+          >
             {result !== null ? "Done" : "Cancel"}
-          </SoftButton>
-          <SoftButton
-            variant="primary"
+          </button>
+          <button
+            className="ds-btn ds-btn--primary"
             type="submit"
             disabled={createRevision.isPending}
             data-testid="edit-for-all-submit"
           >
             {createRevision.isPending ? "Publishing…" : "Publish revision"}
-          </SoftButton>
+          </button>
         </div>
       </form>
     </StepDialog>

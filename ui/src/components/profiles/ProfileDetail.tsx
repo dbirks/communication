@@ -21,7 +21,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQueryClient, useQueries } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { SoftButton } from "../ds/SoftButton";
 import { Field } from "../ds/Field";
 import { Alert } from "../ds/Alert";
 import { StatusChip } from "../ds/Row";
@@ -259,15 +258,15 @@ export default function ProfileDetail({
         </p>
         {canWrite ? (
           <div className="flex items-center gap-2">
-            <SoftButton
-              variant="secondary"
-              compact
+            <button
+              type="button"
+              className="ds-btn ds-btn--secondary ds-btn--compact"
               disabled={duplicateBusy}
               onClick={() => void duplicate()}
               data-testid={`profiles-duplicate-${profile.id}`}
             >
               {duplicateBusy ? "Duplicating…" : "Duplicate…"}
-            </SoftButton>
+            </button>
             {duplicateProblem ? (
               <ProblemCode
                 error={duplicateProblem}
@@ -366,14 +365,14 @@ export default function ProfileDetail({
         headingId={`profile-apm-${profile.id}`}
         meta={
           canWrite ? (
-            <SoftButton
-              variant="ghost"
-              compact
+            <button
+              type="button"
+              className="ds-btn ds-btn--ghost ds-btn--compact"
               onClick={onApmToggle}
               data-testid={`agent-apm-edit-${profile.id}`}
             >
               {apmOpen ? "Close" : pinned ? "Edit" : "Attach skill package"}
-            </SoftButton>
+            </button>
           ) : undefined
         }
       >
@@ -841,17 +840,17 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
             data-testid={`agents-digest-input-${profile.id}`}
           />
         </Field>
-        <SoftButton
+        <button
+          className="ds-btn ds-btn--primary"
           type="submit"
-          variant="primary"
           disabled={patch.isPending}
           data-testid={`agents-apm-save-${profile.id}`}
         >
           {patch.isPending ? "Saving…" : `Save as v${profile.version + 1}`}
-        </SoftButton>
-        <SoftButton
+        </button>
+        <button
+          className="ds-btn ds-btn--secondary"
           type="button"
-          variant="secondary"
           disabled={patch.isPending}
           onClick={() =>
             void save({ apm_package_ref: null, apm_target: null, apm_lock_digest: null })
@@ -859,16 +858,16 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           data-testid={`agents-apm-remove-${profile.id}`}
         >
           Remove package
-        </SoftButton>
-        <SoftButton
+        </button>
+        <button
+          className="ds-btn ds-btn--secondary"
           type="button"
-          variant="secondary"
           disabled={!lockReady || lockInFlight}
           onClick={() => void lockProfile.mutateAsync(profile.id).catch(() => {})}
           data-testid="profile-apm-lock"
         >
           {lockInFlight ? "Locking…" : "Lock it"}
-        </SoftButton>
+        </button>
       </div>
       {lockStatus.data?.status === "queued" ||
       lockStatus.data?.status === "claimed" ||
@@ -905,14 +904,14 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           role="alert"
           testid={`agent-apm-stale-${profile.id}`}
           action={
-            <SoftButton
-              variant="secondary"
-              compact
+            <button
+              type="button"
+              className="ds-btn ds-btn--secondary ds-btn--compact"
               onClick={() => void reloadProfile()}
               data-testid={`agent-apm-stale-reload-${profile.id}`}
             >
               Reload
-            </SoftButton>
+            </button>
           }
         >
           <span>
@@ -991,17 +990,16 @@ export function DigestHelp({
         <pre className="min-w-0 flex-1 overflow-x-auto rounded-[8px] border border-line bg-fill px-[10px] py-[6px] font-mono text-[10.5px] whitespace-pre text-ink">
           {commandBlock}
         </pre>
-        <SoftButton
+        <button
+          className="ds-btn ds-btn--ghost ds-btn--compact"
           type="button"
-          variant="ghost"
-          compact
           disabled={!navigator.clipboard}
           onClick={copy}
           data-testid={`agents-digest-help-copy-${profileId}`}
           title={navigator.clipboard ? "Copy commands" : "Clipboard not available in this context"}
         >
           {copied ? "Copied" : "Copy"}
-        </SoftButton>
+        </button>
       </div>
     </details>
   );
